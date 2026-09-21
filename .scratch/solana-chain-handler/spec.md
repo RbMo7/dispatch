@@ -8,7 +8,22 @@ The first real Chain Handler, plugging into the scaffold from `.scratch/core-eng
 
 ## Solution
 
-A `SolanaChainHandler` satisfying the Chain Handler interface (`.scratch/core-engine-scaffold/issues/05`) and passing its conformance suite, covering native SOL transfers and SPL token transfers (USDC first), blockhash-refresh-and-resubmit as the default retry mode (ADR-0007), and status/confirmation tracking against Solana's own commitment levels (`processed`/`confirmed`/`finalized`). Tested against real solana-devnet RPC calls per ADR-0013 — no fake chain behavior.
+A `SolanaChainHandler` satisfying the Chain Handler interface (`.scratch/core-engine-scaffold/issues/05`) and passing its conformance suite. Not built in one pass — each concern is its own issue, in dependency order, because every one of them is independently load-bearing for a production tx engine and none should be proven only as a side effect of another:
+
+1. `01` — Account resolution (ATA derivation, existence, idempotent create)
+2. `02` — Native SOL transfer (build)
+3. `03` — SPL token transfer (build, depends on 01)
+4. `04` — Signing wiring
+5. `05` — Broadcast (happy path)
+6. `06` — Blockhash-refresh-and-resubmit retry
+7. `07` — Status and confirmation tracking
+8. `08` — `ABANDONED` timeout decision
+9. `09` — Error mapping (dedicated pass, not inline per earlier issue)
+10. `10` — Bundling multiple payments into one transaction
+11. `11` — Conformance suite validation
+12. `12` — Devnet volume test (the actual proof this is done)
+
+Tested against real solana-devnet RPC calls throughout, per ADR-0013 — no fake chain behavior at any stage.
 
 ## Out of Scope
 
