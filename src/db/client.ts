@@ -7,3 +7,5 @@ import * as schema from './schema.js';
 const queryClient = postgres(config.databaseUrl);
 
 export const db = drizzle(queryClient, { schema });
+
+export type Database = typeof db;

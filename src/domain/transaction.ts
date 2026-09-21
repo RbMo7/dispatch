@@ -19,10 +19,15 @@ export type TransactionStatus = 'PENDING' | 'CONFIRMED' | 'FAILED' | 'ABANDONED'
  */
 export type Transaction = {
   id: string;
+  dispatchId: string;
+  /** Position of the Call within its Dispatch's items this Transaction executes. */
+  callIndex: number;
   chain: Chain;
   hash: string;
   signedBytes: string;
   status: TransactionStatus;
+  /** Structured reason (ADR-0010) once status is FAILED or ABANDONED; null otherwise. */
+  error: DispatchError | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */
