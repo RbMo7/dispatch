@@ -1,3 +1,7 @@
+---
+status: packaging half superseded by ADR-0020 (DI/constructor-injection call still stands)
+---
+
 # One package, plain constructor injection — no premature structural infrastructure
 
 Chain Handlers live as folders in one package (`chains/evm/`, `chains/solana/`, …), not separate npm workspace packages — a real package split only pays for itself when a third party needs to publish or version a Chain Handler independently, which isn't a near-term need; the Chain Handler interface already gives the isolation that matters. Dependency wiring is plain constructor injection plus a small registry/factory at the composition root (matching the reference implementation's `createXExecutor(signer, config)` + `registry.ts` pattern) rather than a DI framework — it already satisfies "accept dependencies, don't create them," and a framework's payoff (auto-wiring a large graph) doesn't exist yet at this module count.

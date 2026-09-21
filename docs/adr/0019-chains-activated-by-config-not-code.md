@@ -1,0 +1,3 @@
+# Chain Handlers are activated by config, not by code
+
+An operator may only want one or two chains (e.g. just Solana), not every chain the project supports. `ENABLED_CHAINS` (an env var/config list, e.g. `solana,stellar`) drives the registry: for each named chain, its Chain Handler module is dynamically imported and registered; anything not listed is never imported, never opens an RPC connection, never starts a confirmation-polling loop. A `/dispatch` request naming a chain that isn't enabled gets a structured `CHAIN_NOT_ENABLED` error (ADR-0010), not a crash or a silent no-op. Turning a chain on or off is a config change, never a source edit — consistent with ADR-0015's extendibility rule.
