@@ -25,8 +25,11 @@ The chain-specific plugin (one per chain family — EVM, Solana, …) responsibl
 _Avoid_: Chain Executor, Adapter
 
 **Chain**:
-A fully-qualified chain-family-and-tier identifier (e.g. `base-sepolia`, `solana-devnet`) — one registered Chain Handler configuration per value. Tier (Sandbox vs. Live) is derived from the value's suffix, never stored separately.
-_Avoid_: Network, Environment
+A chain family (e.g. `evm`, `solana`) — one Chain Handler implementation per Chain, shared by every network in that family. Which network an operator talks to (devnet vs. mainnet-beta, Sepolia vs. Base mainnet) is a deployment config detail (RPC URL, chain ID, mint/contract addresses) passed into that one Chain Handler, never a separate type-level identity — there is no multi-tenancy or per-network wallet-provisioning rule here that would require one.
+_Avoid_: Network, Environment, Tier, Sandbox/Live (all of these are config values an operator sets, not concepts the engine's own code branches on)
+
+**Sender Pool** (roadmap — not yet built):
+Several Sender wallets under one logical operator, each with its own independent nonce sequence, that a large Managed Dispatch batch spreads across — inspired by Stellar SDP's channel accounts. The purpose is fault isolation, not raw throughput: a transaction stuck in one Sender's sequence only blocks that Sender's own remaining queue, not the whole batch. Requires pre-funding/allocation across the pool and each member registered with a Signer — deferred out of the first phase; single-Sender sequential dispatch (already safe via the atomic nonce counter and the `ABANDONED`/Retry Policy handling) ships first.
 
 **Transaction**:
 One broadcastable, chain-native unit with its own hash/signature.

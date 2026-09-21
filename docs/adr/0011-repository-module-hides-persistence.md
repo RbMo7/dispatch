@@ -1,0 +1,3 @@
+# The Coordinator talks to a repository module, not to Postgres directly
+
+The reference implementation mixes raw Drizzle queries directly into orchestration logic — the claim/retry/mark-abandoned decision and the SQL that implements it are the same lines of code, so the decision logic can't be tested without a real database. A small repository module (domain-shaped methods — claim queued work, record a broadcast, mark a transaction abandoned) sits behind the Coordinator's persistence seam instead, so the Coordinator's own decision logic (the actually valuable, actually complex part — Retry Policy, `ABANDONED` timing) can be tested against a fake.
