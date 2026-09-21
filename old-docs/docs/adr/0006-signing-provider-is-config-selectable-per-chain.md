@@ -1,0 +1,11 @@
+# Signing Provider is config-selectable per chain, not hardcoded to Turnkey
+
+Turnkey's signing quota was exhausted mid-build (`Turnkey error 8: Resource exhausted`), blocking all further real broadcasts through it. Rather than wait, the `SigningProvider` interface — already generic (`sign(payload, curve, walletId)`, no chain-specific methods) — was used exactly as designed: swap the implementation, touch nothing else.
+
+Two real alternatives were built behind the same interface: a `LocalKeypairSigningProvider` (a throwaway local keypair, used as a temporary stopgap for Solana only) and a `PrivyProvider` (a second real BYOS-compatible MPC signer, verified live on both Base and Solana). Each chain's `ChainExecutor` now takes its provider via `EVM_SIGNING_PROVIDER` / `SOLANA_SIGNING_PROVIDER` config rather than a hardcoded Turnkey instance, so the choice is per-chain and reversible by editing one env var, not one line of code.
+
+This wasn't a planned feature — it was forced by the quota block — but it validates the extensibility goal from ADR-0001/CONTEXT.md's Signing Provider entry: adding a second provider required zero changes to `ChainExecutor`, the Coordinator, or `SigningProvider`'s own interface. Building `PrivyProvider` did surface one real interface question, resolved without changing the interface: Privy's generic `raw_sign` endpoint rejects Ethereum/Solana wallets ("not supported for this low-level signature endpoint") and requires their chain-specific methods (`secp256k1_sign`, `signMessage`) instead — both verified live to return the same primitives (`signature` + secp256k1 recovery byte) our interface already modeled.
+
+Consequence: production use should default back to `turnkey` once its quota is resolved; `local` and `privy` remain available as documented fallbacks, not because either is preferred, but because the block that forced them could recur.
+
+Note (ADR-0010): "Base" and "Solana" above predate the Chain rename — the registered chain values are now the fully-qualified `base-sepolia`/`base-mainnet`/`solana-devnet`/`solana-mainnet`, but this ADR's provider-selection reasoning applies unchanged to all four (one SigningProvider instance per chain family, shared across both of that family's tiers).
