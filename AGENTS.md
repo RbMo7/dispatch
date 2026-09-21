@@ -16,6 +16,11 @@ Default five canonical roles, unchanged. See `docs/agents/triage-labels.md`.
 
 Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
 
+## Review cadence
+
+- **`core-engine-scaffold`**: one issue at a time. Implement issue `NN`, stop, and let it be reviewed before starting `NN+1` — this is the foundation everything else plugs into, so mistakes here are the most expensive to leave uncaught.
+- **Chain-specific work** (`solana-chain-handler` and every chain after it): work through a whole feature's `spec.md` — all its issues — in one pass, then report back. No per-issue check-in required once the scaffold itself is settled and proven.
+
 ## Where things stand
 
 - `old-docs/` is a frozen snapshot from the prior product this repo diverged from — reference only, never treat it as current.
