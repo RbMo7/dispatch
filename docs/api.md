@@ -16,12 +16,17 @@ Body:
   "chain": "solana",
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "amount": "10" },
-    { "type": "call", "to": "<program or contract>", "data": "<hex/base64>", "value": "0" }
+    {
+      "type": "call",
+      "programId": "<program id>",
+      "accounts": [{ "pubkey": "<address>", "isSigner": false, "isWritable": true }],
+      "data": "<base64>"
+    }
   ]
 }
 ```
 
-`items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
+A `call` item's fields beyond `type` mirror the target chain's `Call` primitive exactly (CONTEXT.md, ADR-0018) — `{ programId, accounts, data }` for a `solana` Dispatch as shown above, `{ to, data, value }` for an `evm` one. `items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
 
 Response (`202 Accepted` — this is always async, never a synchronous chain result):
 ```json
