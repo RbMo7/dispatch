@@ -1,0 +1,7 @@
+dist
+drizzle
+pnpm-lock.yaml
+.scratch
+old-docs
+docs
+*.md
