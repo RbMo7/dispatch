@@ -20,6 +20,13 @@ _Avoid_: SigningProvider (an earlier, in-process/library-coupled shape — delib
 The wallet a Managed Dispatch's transaction is signed and paid from — the address whose Signer the engine calls, and whose nonce it owns. Never the recipient's wallet; a recipient only ever needs a public address, no Signer involved.
 _Avoid_: Wallet (ambiguous — always say Sender or Recipient)
 
+**Call**:
+The primitive a Chain Handler actually consumes for one line item of a Managed Dispatch: a destination plus opaque, caller-supplied data — `{to, data, value}` on EVM, `{programId, accounts, data}` on Solana — that the engine submits without needing to understand its semantics. Anything beyond a plain transfer, including a beneficiary's own application-defined contract call, is a Call the caller already encoded themselves (they own the ABI/IDL, not the engine).
+_Avoid_: Transaction (that's the broadcast unit a Call becomes, not the request shape), Instruction (Solana-specific; a Call generalizes across chains)
+
+**Payment**:
+The convenience shape for a plain asset transfer — `recipient`/`asset`/`amount` — that the API layer translates into a Call (a native transfer or a known token-transfer encoding) before it ever reaches a Chain Handler. Every Payment is a Call; not every Call is a Payment.
+
 **Chain Handler**:
 The chain-specific plugin (one per chain family — EVM, Solana, …) responsible for building an unsigned transaction, broadcasting a signed one, and checking a transaction's status. A Chain Handler never itself calls a Signer or holds key material — that boundary belongs to the engine core, not the plugin.
 _Avoid_: Chain Executor, Adapter
