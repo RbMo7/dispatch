@@ -27,6 +27,13 @@ _Avoid_: Transaction (that's the broadcast unit a Call becomes, not the request 
 **Payment**:
 The convenience shape for a plain asset transfer — `recipient`/`asset`/`amount` — that the API layer translates into a Call (a native transfer or a known token-transfer encoding) before it ever reaches a Chain Handler. Every Payment is a Call; not every Call is a Payment.
 
+**Idempotency Key**:
+A client-supplied string, required on every Dispatch, that makes creating one a create-once operation — resubmitting the same key returns the original Dispatch rather than creating a new one. Scoped globally, not per-tenant (there is no tenant dimension here).
+
+**Funding Check**:
+A pre-flight check the Coordinator runs before forming an Execution Plan for a claimed batch: aggregates the required amount per asset across it and compares against the Sender's real balance (via the Chain Handler's `getBalance`). A shortfall fails the affected Calls immediately with a structured `INSUFFICIENT_FUNDS` error naming exactly which asset and how much more is needed — never discovered one `Call` at a time. Runs in the Coordinator's claim step, never on the `POST /v1/dispatch` ingest path.
+_Avoid_: Prefunded/Reactive Funding Mode (an old-repo distinction not carried over — this is the single, simpler check; an auto-resume-once-funded mode would be a later addition on top of it, not a redesign)
+
 **Chain Handler**:
 The chain-specific plugin (one per chain family — EVM, Solana, …) responsible for building an unsigned transaction, broadcasting a signed one, and checking a transaction's status. A Chain Handler never itself calls a Signer or holds key material — that boundary belongs to the engine core, not the plugin.
 _Avoid_: Chain Executor, Adapter

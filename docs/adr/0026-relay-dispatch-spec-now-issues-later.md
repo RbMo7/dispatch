@@ -1,0 +1,3 @@
+# Relay Dispatch gets a spec now; its issues wait until Managed Dispatch's broadcast/status/retry lands
+
+Relay Dispatch (ADR-0005) has a decided shape but no implementation plan yet. Its spec is drafted now (`.scratch/relay-dispatch/spec.md`) since ADR-0005 already gives it a clear shape to write from. Detailed issues are deferred until Solana's broadcast, blockhash-retry, and status-tracking work (`solana-chain-handler` issues 05–07) has actually landed — Relay Dispatch reuses that same machinery (it broadcasts and tracks status too, it just never builds or signs), and issues written against it before that work is proven would likely need rewriting.
