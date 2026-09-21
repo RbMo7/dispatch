@@ -1,0 +1,3 @@
+# Blockhash-refresh-and-resubmit is the default Solana submission mode; durable nonce accounts are opt-in
+
+Solana has no account-nonce model — transactions are valid only against a recent blockhash (~150 slots, ~60-90s), and a stuck or slow-to-broadcast transaction needs a fresh blockhash and re-signing to remain valid. Durable nonce accounts remove this expiry race entirely, but cost an extra on-chain account (rent) per Sender plus an extra "advance nonce" instruction on every transaction. The default is blockhash-refresh-and-resubmit, covering the common case with no extra setup; Durable Nonce Execution (CONTEXT.md) is exposed as an opt-in mode for a Sender that specifically needs offline/async signing or hits expiry problems at high volume.

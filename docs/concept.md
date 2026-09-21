@@ -1,0 +1,16 @@
+# Concept
+
+Sending a blockchain transaction reliably is harder than it looks: nonce sequencing, batching, RPC failures, stuck/underpriced transactions, and confirmation tracking are the same tedious, easy-to-get-wrong problem on every chain, solved slightly differently on every chain. This engine exists to be that solved problem once, for any application built on top of it.
+
+## Scenarios this covers
+
+1. **Bulk disbursement.** A developer needs to pay hundreds or thousands of recipients. They configure their own chain RPC and a Signer (see CONTEXT.md), call `/dispatch`, and the engine handles nonce sequencing, batching, retries, and per-payment status — see **Managed Dispatch**.
+2. **High-throughput backend/contract settlement.** A backend or contract-triggered process needs to fire many transactions from one wallet without hand-rolling nonce coordination under concurrency — also **Managed Dispatch**.
+3. **Bring-your-own-wallet applications.** A DEX, DAO, or any application whose own end users sign their own transactions can hand the engine an already-signed transaction purely for reliable delivery and confirmation tracking, without the engine ever touching a user's key — **Relay Dispatch**.
+4. **Chain coverage that grows without disruption.** Each chain family is its own Chain Handler behind one interface; adding a chain is adding a handler, never a change to the engine core, the Signer contract, or an existing handler.
+
+## Delivery approach
+
+Chain by chain, not all at once: each Chain Handler is built, tested, and hardened against its own real failure modes (see `docs/adr/`) before the next chain starts. Base Sepolia (EVM) and Solana Devnet are first.
+
+See `CONTEXT.md` for vocabulary and `docs/adr/` for the specific decisions and their reasoning.
