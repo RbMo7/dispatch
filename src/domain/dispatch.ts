@@ -19,4 +19,12 @@ export type Dispatch<C extends Chain = Chain> = {
   idempotencyKey: string;
   items: CallForChain<C>[];
   status: DispatchStatus;
+  /**
+   * Whether the Coordinator may fee-bump a stuck transaction instead of
+   * marking it ABANDONED after its chain-aware timeout (ADR-0003/0004).
+   * Defaults off; already resolved (request value or the operator's global
+   * default) by the time a Dispatch is created — the Coordinator just
+   * reads it.
+   */
+  retryPolicy: boolean;
 };

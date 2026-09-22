@@ -14,6 +14,7 @@ Body:
 ```json
 {
   "chain": "solana",
+  "retryPolicy": false,
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "amount": "10" },
     {
@@ -27,6 +28,8 @@ Body:
 ```
 
 A `call` item's fields beyond `type` mirror the target chain's `Call` primitive exactly (CONTEXT.md, ADR-0018) — `{ programId, accounts, data }` for a `solana` Dispatch as shown above, `{ to, data, value }` for an `evm` one. `items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
+
+`retryPolicy` (ADR-0003/0004) is optional; omitting it falls back to the operator's configured global default (itself off unless the operator opts in) — a Dispatch never silently costs more than what was explicitly authorized for it. Once resolved (request value or the global default) it's fixed for that Dispatch's whole lifetime.
 
 Response (`202 Accepted` — this is always async, never a synchronous chain result):
 ```json
@@ -52,4 +55,3 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 
 - Webhooks (ADR-0023) — polling above is the required baseline for now.
 - Relay Dispatch's own endpoint shape — see `.scratch/relay-dispatch/spec.md`.
-- Retry Policy's actual request field (ADR-0003/0004 — off by default, configurable per request) — pin this alongside issue 02 once the Coordinator's timeout logic (scaffold issue 06) is being built, not before.

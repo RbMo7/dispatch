@@ -1,4 +1,13 @@
-import { integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 import type { Call } from '../domain/call.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -11,6 +20,7 @@ export const dispatches = pgTable(
     idempotencyKey: text('idempotency_key').notNull(),
     items: jsonb('items').notNull().$type<Call[]>(),
     status: text('status').notNull().default('queued'),
+    retryPolicy: boolean('retry_policy').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],
@@ -27,6 +37,7 @@ export const transactions = pgTable('transactions', {
   hash: text('hash'),
   status: text('status').notNull().default('PENDING'),
   error: jsonb('error').$type<DispatchError | null>(),
+  broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
 });
 
 export const attempts = pgTable('attempts', {

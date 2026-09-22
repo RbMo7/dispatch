@@ -40,7 +40,7 @@ export class StubChainHandler implements ChainHandler<'evm'> {
   ): Promise<Result<PreparedTransaction[], DispatchError>> {
     const prepared = items.map((item, callIndex) => ({
       callIndex,
-      unsignedTransaction: { ...item },
+      unsignedTransaction: JSON.stringify(item),
     }));
     return Promise.resolve(ok(prepared));
   }
@@ -55,9 +55,7 @@ export class StubChainHandler implements ChainHandler<'evm'> {
     prepared: PreparedTransaction,
     _senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
-    return Promise.resolve(
-      ok({ ...(prepared.unsignedTransaction as EvmCall), signature: 'stub-signature' }),
-    );
+    return Promise.resolve(ok(`${prepared.unsignedTransaction}:stub-signature`));
   }
 
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {

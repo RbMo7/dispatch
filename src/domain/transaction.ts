@@ -29,6 +29,8 @@ export type Transaction = {
   status: TransactionStatus;
   /** Structured reason (ADR-0010) once status is FAILED or ABANDONED; null otherwise. */
   error: DispatchError | null;
+  /** When this Transaction was first broadcast — null exactly when hash/signedBytes are (never broadcast). What the ABANDONED timeout (ADR-0004) measures elapsed time against. */
+  broadcastAt: Date | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */

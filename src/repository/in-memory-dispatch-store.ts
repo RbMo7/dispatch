@@ -24,6 +24,9 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly transactions = new Map<string, Transaction>();
   private readonly attempts = new Map<string, Attempt[]>();
 
+  /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
+  constructor(private readonly now: () => Date = () => new Date()) {}
+
   createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>> {
     const existing = [...this.dispatches.values()].find(
       (dispatch) => dispatch.idempotencyKey === input.idempotencyKey,
@@ -38,6 +41,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       idempotencyKey: input.idempotencyKey,
       items: input.items,
       status: 'queued',
+      retryPolicy: input.retryPolicy,
     };
     this.dispatches.set(dispatch.id, dispatch);
 
@@ -80,6 +84,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       signedBytes: input.signedBytes,
       status: 'PENDING',
       error: null,
+      broadcastAt: this.now(),
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -97,11 +102,21 @@ export class InMemoryDispatchStore implements DispatchStore {
       signedBytes: null,
       status: 'FAILED',
       error: input.error,
+      broadcastAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
 
     return Promise.resolve(transaction);
+  }
+
+  listPendingTransactions(limit: number): Promise<Transaction[]> {
+    const pending = [...this.transactions.values()]
+      .filter((transaction) => transaction.status === 'PENDING')
+      .sort((a, b) => (a.broadcastAt?.getTime() ?? 0) - (b.broadcastAt?.getTime() ?? 0))
+      .slice(0, limit);
+
+    return Promise.resolve(pending);
   }
 
   recordBroadcast(transactionId: string, hash: string): Promise<void> {

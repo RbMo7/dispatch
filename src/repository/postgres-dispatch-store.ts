@@ -23,6 +23,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     idempotencyKey: row.idempotencyKey,
     items: row.items,
     status: row.status as DispatchStatus,
+    retryPolicy: row.retryPolicy,
   };
 }
 
@@ -36,6 +37,7 @@ function toTransaction(row: TransactionRow): Transaction {
     signedBytes: row.signedBytes,
     status: row.status as TransactionStatus,
     error: row.error ?? null,
+    broadcastAt: row.broadcastAt,
   };
 }
 
@@ -53,6 +55,7 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         idempotencyKey: input.idempotencyKey,
         items: input.items,
+        retryPolicy: input.retryPolicy,
       })
       .onConflictDoNothing({ target: dispatches.idempotencyKey })
       .returning();
@@ -104,6 +107,15 @@ export class PostgresDispatchStore implements DispatchStore {
     return [...rows].map(toDispatch);
   }
 
+  async listPendingTransactions(limit: number): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: eq(transactions.status, 'PENDING'),
+      orderBy: transactions.broadcastAt,
+      limit,
+    });
+    return rows.map(toTransaction);
+  }
+
   async createTransaction(input: NewTransactionInput): Promise<Transaction> {
     const [row] = await this.db
       .insert(transactions)
@@ -113,6 +125,7 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         signedBytes: input.signedBytes,
         hash: input.hash,
+        broadcastAt: new Date(),
       })
       .returning();
 

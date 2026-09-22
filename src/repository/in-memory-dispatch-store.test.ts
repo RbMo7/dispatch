@@ -18,6 +18,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       expect(dispatch.chain).toBe('solana');
@@ -32,12 +33,14 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       const second = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [],
+        retryPolicy: false,
       });
 
       expect(second).toEqual(first);
@@ -48,11 +51,13 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const second = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-2',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       expect(second.id).not.toBe(first.id);
@@ -69,6 +74,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       expect(await store.getDispatch(created.id)).toEqual(created);
@@ -81,6 +87,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       const claimed = await store.claimQueued(10);
@@ -92,7 +99,12 @@ describe('InMemoryDispatchStore', () => {
     });
 
     it('never claims the same Dispatch twice', async () => {
-      await store.createDispatch({ chain: 'solana', idempotencyKey: 'key-1', items: [] });
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [],
+        retryPolicy: false,
+      });
 
       const first = await store.claimQueued(10);
       const second = await store.claimQueued(10);
@@ -102,8 +114,18 @@ describe('InMemoryDispatchStore', () => {
     });
 
     it('respects the limit', async () => {
-      await store.createDispatch({ chain: 'solana', idempotencyKey: 'key-1', items: [] });
-      await store.createDispatch({ chain: 'solana', idempotencyKey: 'key-2', items: [] });
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [],
+        retryPolicy: false,
+      });
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-2',
+        items: [],
+        retryPolicy: false,
+      });
 
       const claimed = await store.claimQueued(1);
 
@@ -117,6 +139,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       const transaction = await store.createTransaction({
@@ -136,6 +159,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const transaction = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -155,6 +179,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const transaction = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -181,6 +206,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const transaction = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -200,6 +226,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const transaction = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -220,6 +247,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
       const transaction = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -237,6 +265,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       const transaction = await store.recordCallFailure({
@@ -262,6 +291,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall, solanaCall],
+        retryPolicy: false,
       });
       const second = await store.createTransaction({
         dispatchId: dispatch.id,
@@ -288,6 +318,7 @@ describe('InMemoryDispatchStore', () => {
         chain: 'solana',
         idempotencyKey: 'key-1',
         items: [solanaCall],
+        retryPolicy: false,
       });
 
       expect(await store.listTransactions(dispatch.id)).toEqual([]);

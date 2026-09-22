@@ -8,6 +8,7 @@ export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
   idempotencyKey: string;
   items: CallForChain<C>[];
+  retryPolicy: boolean;
 };
 
 export type NewTransactionInput = {
@@ -40,6 +41,8 @@ export interface DispatchStore {
   listTransactions(dispatchId: string): Promise<Transaction[]>;
   /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). */
   claimQueued(limit: number): Promise<Dispatch[]>;
+  /** Up to `limit` still-PENDING Transactions, oldest-broadcast first — the Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
+  listPendingTransactions(limit: number): Promise<Transaction[]>;
   /** Persists a Call's freshly-signed Transaction, once broadcast for the first time. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
