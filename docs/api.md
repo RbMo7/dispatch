@@ -51,6 +51,8 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 
 `error` follows ADR-0010's structured shape exactly — never a bare string.
 
+Per-item `status` is `queued | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`); the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`.
+
 ## Not yet specced here
 
 - Webhooks (ADR-0023) — polling above is the required baseline for now.
