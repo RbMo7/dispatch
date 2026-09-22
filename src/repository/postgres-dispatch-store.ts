@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, transactions } from '../db/schema.js';
@@ -90,21 +90,34 @@ export class PostgresDispatchStore implements DispatchStore {
 
   async claimQueued(limit: number): Promise<Dispatch[]> {
     // Concurrency-safe outbox claim: lock and skip rows another worker is
-    // already claiming, per ADR-0009's shared-outbox pattern.
-    const rows = await this.db.execute<DispatchRow>(sql`
-      UPDATE ${dispatches}
-      SET status = 'broadcasting'
-      WHERE id IN (
-        SELECT id FROM ${dispatches}
-        WHERE status = 'queued'
-        ORDER BY created_at
-        LIMIT ${limit}
-        FOR UPDATE SKIP LOCKED
-      )
-      RETURNING *
-    `);
+    // already claiming, per ADR-0009's shared-outbox pattern. Via the query
+    // builder (not a raw sql`` template) so the returned rows go through
+    // Drizzle's own camelCase mapping — the same one every other method
+    // here relies on — rather than postgres.js's raw snake_case columns.
+    return this.db.transaction(async (tx) => {
+      const claimable = await tx
+        .select({ id: dispatches.id })
+        .from(dispatches)
+        .where(eq(dispatches.status, 'queued'))
+        .orderBy(dispatches.createdAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
 
-    return [...rows].map(toDispatch);
+      if (claimable.length === 0) return [];
+
+      const rows = await tx
+        .update(dispatches)
+        .set({ status: 'broadcasting' })
+        .where(
+          inArray(
+            dispatches.id,
+            claimable.map((row) => row.id),
+          ),
+        )
+        .returning();
+
+      return rows.map(toDispatch);
+    });
   }
 
   async listPendingTransactions(limit: number): Promise<Transaction[]> {
