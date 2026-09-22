@@ -45,6 +45,12 @@ export class StubChainHandler implements ChainHandler<'evm'> {
     return Promise.resolve(ok(prepared));
   }
 
+  /**
+   * A real ChainHandler.sign delegates to an injected SignerClient
+   * (ADR-0002) — this stub has no Signer at all and fabricates a signature
+   * inline, since the conformance suite only checks that `sign` doesn't
+   * mutate its input and succeeds, never how a signature is produced.
+   */
   sign(
     prepared: PreparedTransaction,
     _senderAddress: string,
