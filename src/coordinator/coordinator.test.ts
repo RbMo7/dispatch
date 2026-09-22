@@ -292,6 +292,32 @@ describe('Coordinator Funding Check', () => {
     expect(handler.validateCall).not.toHaveBeenCalled();
   });
 
+  it('aggregates the required amount across separate Dispatches claimed in the same batch', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '150' }));
+    const first = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [paymentItem('USDC', '80')],
+      retryPolicy: false,
+    });
+    const second = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-2',
+      items: [paymentItem('USDC', '80')],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.getBalance).toHaveBeenCalledTimes(1);
+    const [firstTransaction] = await store.listTransactions(first.id);
+    const [secondTransaction] = await store.listTransactions(second.id);
+    expect(firstTransaction?.status).toBe('FAILED');
+    expect(secondTransaction?.status).toBe('FAILED');
+    expect(firstTransaction?.error?.chainDetail).toEqual({ asset: 'USDC', short: '10' });
+  });
+
   it('never fund-checks a call-type item, since it has no Payment to derive a required amount from', async () => {
     const { store, handler, coordinator } = setup();
     await store.createDispatch({

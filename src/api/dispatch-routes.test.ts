@@ -122,6 +122,23 @@ describe('POST /v1/dispatch', () => {
     ]);
   });
 
+  it('rejects a payment amount that is not a non-negative integer string', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
+      payload: {
+        chain: 'evm',
+        items: [{ type: 'payment', recipient: '0xrecipient', asset: 'USDC', amount: '10.5' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorResponseBody>().error).toMatch(/non-negative integer string/);
+  });
+
   it('rejects a payment whose translation fails, with the structured DispatchError', async () => {
     const { app } = await buildTestApp();
 

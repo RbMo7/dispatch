@@ -1,8 +1,16 @@
 import type { ChainHandler } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import type { DispatchError } from '../domain/errors.js';
 import type { Transaction } from '../domain/transaction.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+
+type FundingRequirement = {
+  chain: Chain;
+  asset: string;
+  required: bigint;
+  items: { dispatch: Dispatch; callIndex: number }[];
+};
 
 export type CoordinatorDeps = {
   store: DispatchStore;
@@ -80,15 +88,7 @@ export class Coordinator {
    */
   private async runFundingCheck(dispatches: Dispatch[]): Promise<Set<string>> {
     const failedKeys = new Set<string>();
-    const requirements = new Map<
-      string,
-      {
-        chain: Chain;
-        asset: string;
-        required: bigint;
-        items: { dispatch: Dispatch; callIndex: number }[];
-      }
-    >();
+    const requirements = new Map<string, FundingRequirement>();
 
     for (const dispatch of dispatches) {
       dispatch.items.forEach((item, callIndex) => {
@@ -117,38 +117,43 @@ export class Coordinator {
 
       const balanceResult = await handler.getBalance(senderAddress, asset);
       if (!balanceResult.ok) {
-        for (const { dispatch, callIndex } of items) {
-          await this.store.recordCallFailure({
-            dispatchId: dispatch.id,
-            callIndex,
-            chain: dispatch.chain,
-            error: balanceResult.error,
-          });
-          failedKeys.add(callKey(dispatch.id, callIndex));
-        }
+        await this.failFundingItems(items, balanceResult.error, failedKeys);
         continue;
       }
 
       const available = BigInt(balanceResult.value.amount);
       if (available < required) {
         const short = (required - available).toString();
-        for (const { dispatch, callIndex } of items) {
-          await this.store.recordCallFailure({
-            dispatchId: dispatch.id,
-            callIndex,
-            chain: dispatch.chain,
-            error: {
-              code: 'INSUFFICIENT_FUNDS',
-              message: `insufficient ${asset} balance`,
-              chainDetail: { asset, short },
-            },
-          });
-          failedKeys.add(callKey(dispatch.id, callIndex));
-        }
+        await this.failFundingItems(
+          items,
+          {
+            code: 'INSUFFICIENT_FUNDS',
+            message: `insufficient ${asset} balance`,
+            chainDetail: { asset, short },
+          },
+          failedKeys,
+        );
       }
     }
 
     return failedKeys;
+  }
+
+  /** Records the same failure reason for every (dispatch, callIndex) a Funding Check requirement covers, and marks each skipped in the caller's main processing loop. */
+  private async failFundingItems(
+    items: { dispatch: Dispatch; callIndex: number }[],
+    error: DispatchError,
+    failedKeys: Set<string>,
+  ): Promise<void> {
+    for (const { dispatch, callIndex } of items) {
+      await this.store.recordCallFailure({
+        dispatchId: dispatch.id,
+        callIndex,
+        chain: dispatch.chain,
+        error,
+      });
+      failedKeys.add(callKey(dispatch.id, callIndex));
+    }
   }
 
   /**
