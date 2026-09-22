@@ -1,5 +1,5 @@
-import type { CallForChain } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
+import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Transaction } from '../domain/transaction.js';
@@ -7,7 +7,7 @@ import type { Transaction } from '../domain/transaction.js';
 export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
   idempotencyKey: string;
-  items: CallForChain<C>[];
+  items: DispatchItem<C>[];
   retryPolicy: boolean;
 };
 

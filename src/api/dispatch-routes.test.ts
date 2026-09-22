@@ -94,7 +94,9 @@ describe('POST /v1/dispatch', () => {
     expect(body.status).toBe('queued');
 
     const dispatch = await store.getDispatch(body.dispatchId);
-    expect(dispatch?.items).toEqual([{ to: '0xabc', data: '0x', value: '0' }]);
+    expect(dispatch?.items).toEqual([
+      { call: { to: '0xabc', data: '0x', value: '0' }, payment: null },
+    ]);
   });
 
   it('translates a payment item into a Call via the Chain Handler', async () => {
@@ -112,7 +114,12 @@ describe('POST /v1/dispatch', () => {
 
     expect(response.statusCode).toBe(202);
     const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
-    expect(dispatch?.items).toEqual([{ to: '0xrecipient', data: '0x', value: '10' }]);
+    expect(dispatch?.items).toEqual([
+      {
+        call: { to: '0xrecipient', data: '0x', value: '10' },
+        payment: { recipient: '0xrecipient', asset: 'USDC', amount: '10' },
+      },
+    ]);
   });
 
   it('rejects a payment whose translation fails, with the structured DispatchError', async () => {
@@ -229,7 +236,7 @@ describe('GET /v1/dispatch/:id', () => {
     const dispatch = await store.createDispatch({
       chain: 'evm',
       idempotencyKey: 'key-1',
-      items: [{ to: '0xabc', data: '0x', value: '0' }],
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
 
@@ -250,7 +257,7 @@ describe('GET /v1/dispatch/:id', () => {
     const dispatch = await store.createDispatch({
       chain: 'evm',
       idempotencyKey: 'key-1',
-      items: [{ to: '0xabc', data: '0x', value: '0' }],
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
     await store.claimQueued(10);
@@ -281,8 +288,8 @@ describe('GET /v1/dispatch/:id', () => {
       chain: 'evm',
       idempotencyKey: 'key-1',
       items: [
-        { to: '0xa', data: '0x', value: '0' },
-        { to: '0xb', data: '0x', value: '0' },
+        { call: { to: '0xa', data: '0x', value: '0' }, payment: null },
+        { call: { to: '0xb', data: '0x', value: '0' }, payment: null },
       ],
       retryPolicy: false,
     });
@@ -324,7 +331,7 @@ describe('GET /v1/dispatch/:id', () => {
     const dispatch = await store.createDispatch({
       chain: 'evm',
       idempotencyKey: 'key-1',
-      items: [{ to: '0xabc', data: '0x', value: '0' }],
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
     await store.claimQueued(10);
@@ -351,7 +358,7 @@ describe('GET /v1/dispatch/:id', () => {
     const dispatch = await store.createDispatch({
       chain: 'evm',
       idempotencyKey: 'key-1',
-      items: [{ to: '0xabc', data: '0x', value: '0' }],
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
     await store.claimQueued(10);

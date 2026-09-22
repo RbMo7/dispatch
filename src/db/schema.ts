@@ -9,7 +9,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 
-import type { Call } from '../domain/call.js';
+import type { DispatchItem } from '../domain/call.js';
 import type { DispatchError } from '../domain/errors.js';
 
 export const dispatches = pgTable(
@@ -18,7 +18,7 @@ export const dispatches = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     chain: text('chain').notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
-    items: jsonb('items').notNull().$type<Call[]>(),
+    items: jsonb('items').notNull().$type<DispatchItem[]>(),
     status: text('status').notNull().default('queued'),
     retryPolicy: boolean('retry_policy').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

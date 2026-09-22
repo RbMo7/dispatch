@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { ChainHandler } from '../chain-handler/chain-handler.js';
-import type { Call } from '../domain/call.js';
+import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -53,17 +53,22 @@ type PostDispatchBody = {
   items: Record<string, unknown>[];
 };
 
+const INTEGER_STRING = /^\d+$/;
+
 /**
- * Turns one wire item into a Call — a `payment` item is translated via the
- * Chain Handler's `paymentToCall` (ADR-0028); a `call` item's fields beyond
- * `type` are already chain-shaped and caller-owned (ADR-0018), so they pass
- * through untouched rather than being deeply validated here.
+ * Turns one wire item into a DispatchItem — a `payment` item is translated
+ * via the Chain Handler's `paymentToCall` (ADR-0028), with the original
+ * Payment kept alongside the resulting Call so the Funding Check (ADR-0024)
+ * can aggregate required funds later without decoding an opaque Call. A
+ * `call` item's fields beyond `type` are already chain-shaped and
+ * caller-owned (ADR-0018), so they pass through untouched rather than being
+ * deeply validated here, and carry no Payment.
  */
 async function translateItem(
   handler: ChainHandler,
   raw: Record<string, unknown>,
   index: number,
-): Promise<Result<Call, RouteError>> {
+): Promise<Result<DispatchItem, RouteError>> {
   const { type, ...rest } = raw;
 
   if (type === 'payment') {
@@ -75,13 +80,17 @@ async function translateItem(
         ),
       );
     }
-    const translated = await handler.paymentToCall({ recipient, asset, amount });
+    if (!INTEGER_STRING.test(amount)) {
+      return err(invalidRequest(`items[${index}]: amount must be a non-negative integer string`));
+    }
+    const payment: Payment = { recipient, asset, amount };
+    const translated = await handler.paymentToCall(payment);
     if (!translated.ok) return err({ status: 400, body: translated.error });
-    return ok(translated.value);
+    return ok({ call: translated.value, payment });
   }
 
   if (type === 'call') {
-    return ok(rest as Call);
+    return ok({ call: rest as Call, payment: null });
   }
 
   return err(
@@ -158,7 +167,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       }
       const handler = registryResult.value;
 
-      const translated: Call[] = [];
+      const translated: DispatchItem[] = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         if (!item) continue;

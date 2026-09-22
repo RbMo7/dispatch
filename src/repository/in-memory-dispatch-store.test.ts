@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { SolanaCall } from '../domain/call.js';
+import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
+const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 describe('InMemoryDispatchStore', () => {
   let store: InMemoryDispatchStore;
@@ -17,13 +18,13 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
       expect(dispatch.chain).toBe('solana');
       expect(dispatch.idempotencyKey).toBe('key-1');
-      expect(dispatch.items).toEqual([solanaCall]);
+      expect(dispatch.items).toEqual([solanaItem]);
       expect(dispatch.status).toBe('queued');
       expect(dispatch.id).toBeTruthy();
     });
@@ -32,7 +33,7 @@ describe('InMemoryDispatchStore', () => {
       const first = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -50,13 +51,13 @@ describe('InMemoryDispatchStore', () => {
       const first = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const second = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-2',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -73,7 +74,7 @@ describe('InMemoryDispatchStore', () => {
       const created = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -86,7 +87,7 @@ describe('InMemoryDispatchStore', () => {
       const created = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -138,7 +139,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -158,7 +159,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const transaction = await store.createTransaction({
@@ -178,7 +179,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const transaction = await store.createTransaction({
@@ -205,7 +206,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const transaction = await store.createTransaction({
@@ -225,7 +226,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const transaction = await store.createTransaction({
@@ -246,7 +247,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
       const transaction = await store.createTransaction({
@@ -264,7 +265,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
@@ -290,7 +291,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall, solanaCall],
+        items: [solanaItem, solanaItem],
         retryPolicy: false,
       });
       const second = await store.createTransaction({
@@ -317,7 +318,7 @@ describe('InMemoryDispatchStore', () => {
       const dispatch = await store.createDispatch({
         chain: 'solana',
         idempotencyKey: 'key-1',
-        items: [solanaCall],
+        items: [solanaItem],
         retryPolicy: false,
       });
 
