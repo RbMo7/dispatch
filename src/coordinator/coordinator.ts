@@ -6,8 +6,8 @@ import type { DispatchStore } from '../repository/dispatch-store.js';
 
 export type CoordinatorDeps = {
   store: DispatchStore;
-  /** Populated by the chain registry (issue 07) — a claimed Dispatch naming an unregistered chain is a configuration bug, never a business-relevant outcome, so it's not surfaced as a DispatchError here. */
-  chainHandlers: Map<Chain, ChainHandler>;
+  /** Populated by the chain registry (issue 07, `ChainRegistry.handlers`) — a claimed Dispatch naming an unregistered chain is a configuration bug, never a business-relevant outcome, so it's not surfaced as a DispatchError here. */
+  chainHandlers: ReadonlyMap<Chain, ChainHandler>;
   /** Deployment config, one Sender wallet per chain (ADR-0016: Sender Pool is deferred — single-Sender ships first). */
   senderAddresses: Map<Chain, string>;
   /** The chain-aware ABANDONED timeout (ADR-0004) — how long a still-PENDING transaction may wait, with Retry Policy off, before the Coordinator stops watching it. */
@@ -27,7 +27,7 @@ export type CoordinatorDeps = {
  */
 export class Coordinator {
   private readonly store: DispatchStore;
-  private readonly chainHandlers: Map<Chain, ChainHandler>;
+  private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly now: () => Date;
