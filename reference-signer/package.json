@@ -1,0 +1,26 @@
+{
+  "name": "reference-signer",
+  "version": "0.1.0",
+  "description": "Reference/dev-only local-keyfile Signer implementing the engine's /sign contract (ADR-0002). A standalone service the engine never imports.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@10.18.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

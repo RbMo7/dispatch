@@ -1,0 +1,8 @@
+{
+  "secp256k1": {
+    "dev-sender": "b9d3c336085fc73b911075797bbbdb43d4e2490b75aaea8dc473231aadc200d9"
+  },
+  "ed25519": {
+    "dev-sender": "b644af1bcb235e3374939388f6fdf1ffaed9b0906f3b4387d1ac585649a338bd"
+  }
+}
