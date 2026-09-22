@@ -1,4 +1,4 @@
-import type { CallForChain } from '../domain/call.js';
+import type { CallForChain, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Result } from '../domain/result.js';
@@ -59,6 +59,17 @@ export type ChainStatus = 'PENDING' | 'CONFIRMED' | 'FAILED';
  */
 export interface ChainHandler<C extends Chain = Chain> {
   readonly chain: C;
+
+  /**
+   * Turns a Payment (ADR-0018's convenience shape) into this chain's Call —
+   * a native transfer or a known token-transfer encoding (CONTEXT.md's
+   * Payment entry). This is the one piece of real chain-specific knowledge
+   * the API layer (issue 08) needs but can't have itself, so it asks
+   * whichever Chain Handler is registered for the Dispatch's chain rather
+   * than encoding anything chain-shaped on its own (ADR-0028). Must never
+   * mutate `payment`.
+   */
+  paymentToCall(payment: Payment): Promise<Result<CallForChain<C>, DispatchError>>;
 
   /**
    * Cheap shape validation only (a malformed recipient/program id, wrong

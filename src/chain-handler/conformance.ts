@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CallForChain } from '../domain/call.js';
+import type { CallForChain, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { ChainHandler, SignedTransaction } from './chain-handler.js';
 
@@ -8,6 +8,8 @@ export type ChainHandlerConformanceFixtures<C extends Chain> = {
   senderAddress: string;
   /** An asset identifier `getBalance` can be queried with (native or token, chain-specific). */
   asset: string;
+  /** A structurally valid Payment `paymentToCall` can translate. */
+  validPayment: Payment;
   /** A structurally valid Call this suite can prepare/validate against. */
   validCall: CallForChain<C>;
   /** A Call `validateCall` is expected to reject (e.g. a malformed recipient). */
@@ -39,6 +41,19 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
   fixtures: ChainHandlerConformanceFixtures<C>,
 ): void {
   describe(`ChainHandler conformance: ${name}`, () => {
+    it('paymentToCall translates a valid Payment into a Call validateCall accepts, without mutating the Payment', async () => {
+      const handler = createHandler();
+      const before = structuredClone(fixtures.validPayment);
+
+      const result = await handler.paymentToCall(fixtures.validPayment);
+
+      expect(fixtures.validPayment).toEqual(before);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const validation = await handler.validateCall(result.value);
+      expect(validation.ok).toBe(true);
+    });
+
     it('validateCall rejects a malformed call', async () => {
       const handler = createHandler();
       const result = await handler.validateCall(fixtures.invalidCall);

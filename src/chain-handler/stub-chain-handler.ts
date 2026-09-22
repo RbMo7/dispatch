@@ -1,4 +1,4 @@
-import type { EvmCall } from '../domain/call.js';
+import type { EvmCall, Payment } from '../domain/call.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type {
@@ -24,6 +24,24 @@ export class StubChainHandler implements ChainHandler<'evm'> {
 
   private readonly broadcastHashes = new Set<string>();
   private nextHash = 0;
+
+  /**
+   * A real ChainHandler.paymentToCall does a real native/token-transfer
+   * encoding (ADR-0028) — this stub just wraps the Payment's own fields
+   * into a well-formed-looking EvmCall, only so validateCall and the
+   * conformance suite have something to exercise.
+   */
+  paymentToCall(payment: Payment): Promise<Result<EvmCall, DispatchError>> {
+    if (!payment.recipient.startsWith('0x')) {
+      return Promise.resolve(
+        err({
+          code: 'INVALID_RECIPIENT',
+          message: `not a well-formed address: ${payment.recipient}`,
+        }),
+      );
+    }
+    return Promise.resolve(ok({ to: payment.recipient, data: '0x', value: payment.amount }));
+  }
 
   validateCall(call: EvmCall): Promise<Result<void, DispatchError>> {
     if (!call.to.startsWith('0x')) {

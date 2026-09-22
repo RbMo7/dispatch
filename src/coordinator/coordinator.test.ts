@@ -8,7 +8,7 @@ import type {
   PreparedTransaction,
   SignedTransaction,
 } from '../chain-handler/chain-handler.js';
-import type { Call, SolanaCall } from '../domain/call.js';
+import type { Call, Payment, SolanaCall } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
@@ -29,6 +29,9 @@ const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ=
 class FakeChainHandler implements ChainHandler {
   readonly chain: Chain;
 
+  paymentToCall = vi.fn((_payment: Payment): Promise<Result<Call, DispatchError>> =>
+    Promise.resolve(ok({ programId: 'prog', accounts: [], data: 'ZGF0YQ==' })),
+  );
   validateCall = vi.fn((_call: Call): Promise<Result<void, DispatchError>> =>
     Promise.resolve(ok(undefined)),
   );
