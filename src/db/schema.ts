@@ -23,8 +23,8 @@ export const transactions = pgTable('transactions', {
     .references(() => dispatches.id),
   callIndex: integer('call_index').notNull(),
   chain: text('chain').notNull(),
-  signedBytes: text('signed_bytes').notNull(),
-  hash: text('hash').notNull(),
+  signedBytes: text('signed_bytes'),
+  hash: text('hash'),
   status: text('status').notNull().default('PENDING'),
   error: jsonb('error').$type<DispatchError | null>(),
 });

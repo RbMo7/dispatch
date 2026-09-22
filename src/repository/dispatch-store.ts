@@ -19,6 +19,14 @@ export type NewTransactionInput = {
   hash: string;
 };
 
+export type NewFailedCallInput = {
+  dispatchId: string;
+  /** Position of the Call within its Dispatch's items this Transaction executes. */
+  callIndex: number;
+  chain: Chain;
+  error: DispatchError;
+};
+
 /**
  * The Coordinator's — and the API's — only way to touch persistence
  * (ADR-0011): a small, domain-shaped seam so orchestration logic can be
@@ -34,6 +42,8 @@ export interface DispatchStore {
   claimQueued(limit: number): Promise<Dispatch[]>;
   /** Persists a Call's freshly-signed Transaction, once broadcast for the first time. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
+  /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
+  recordCallFailure(input: NewFailedCallInput): Promise<Transaction>;
   /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction. */
   recordBroadcast(transactionId: string, hash: string): Promise<void>;
   markAbandoned(transactionId: string): Promise<void>;

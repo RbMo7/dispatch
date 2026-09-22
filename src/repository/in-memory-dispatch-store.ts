@@ -4,7 +4,12 @@ import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
-import type { DispatchStore, NewDispatchInput, NewTransactionInput } from './dispatch-store.js';
+import type {
+  DispatchStore,
+  NewDispatchInput,
+  NewFailedCallInput,
+  NewTransactionInput,
+} from './dispatch-store.js';
 
 /**
  * The fake ADR-0011 calls for: same interface as PostgresDispatchStore, no
@@ -75,6 +80,23 @@ export class InMemoryDispatchStore implements DispatchStore {
       signedBytes: input.signedBytes,
       status: 'PENDING',
       error: null,
+    };
+    this.transactions.set(transaction.id, transaction);
+    this.attempts.set(transaction.id, []);
+
+    return Promise.resolve(transaction);
+  }
+
+  recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
+    const transaction: Transaction = {
+      id: randomUUID(),
+      dispatchId: input.dispatchId,
+      callIndex: input.callIndex,
+      chain: input.chain,
+      hash: null,
+      signedBytes: null,
+      status: 'FAILED',
+      error: input.error,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);

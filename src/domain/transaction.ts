@@ -23,8 +23,9 @@ export type Transaction = {
   /** Position of the Call within its Dispatch's items this Transaction executes. */
   callIndex: number;
   chain: Chain;
-  hash: string;
-  signedBytes: string;
+  /** Null exactly when the Call never reached a broadcast (e.g. failed validateCall/prepare/sign) — docs/api.md's own failed-item example shows `transactionHash: null` for this case. */
+  hash: string | null;
+  signedBytes: string | null;
   status: TransactionStatus;
   /** Structured reason (ADR-0010) once status is FAILED or ABANDONED; null otherwise. */
   error: DispatchError | null;

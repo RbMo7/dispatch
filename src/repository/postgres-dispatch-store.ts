@@ -6,7 +6,12 @@ import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
-import type { DispatchStore, NewDispatchInput, NewTransactionInput } from './dispatch-store.js';
+import type {
+  DispatchStore,
+  NewDispatchInput,
+  NewFailedCallInput,
+  NewTransactionInput,
+} from './dispatch-store.js';
 
 type DispatchRow = typeof dispatches.$inferSelect;
 type TransactionRow = typeof transactions.$inferSelect;
@@ -113,6 +118,25 @@ export class PostgresDispatchStore implements DispatchStore {
 
     if (!row) {
       throw new Error('Failed to create Transaction');
+    }
+
+    return toTransaction(row);
+  }
+
+  async recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
+    const [row] = await this.db
+      .insert(transactions)
+      .values({
+        dispatchId: input.dispatchId,
+        callIndex: input.callIndex,
+        chain: input.chain,
+        status: 'FAILED',
+        error: input.error,
+      })
+      .returning();
+
+    if (!row) {
+      throw new Error('Failed to record Call failure');
     }
 
     return toTransaction(row);

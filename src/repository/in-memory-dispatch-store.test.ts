@@ -231,6 +231,29 @@ describe('InMemoryDispatchStore', () => {
 
       await expect(store.recordBroadcast(transaction.id, 'sig-different')).rejects.toThrow();
     });
+
+    it('records a Call that failed before ever reaching a broadcast', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaCall],
+      });
+
+      const transaction = await store.recordCallFailure({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        error: { code: 'INVALID_RECIPIENT', message: 'malformed recipient' },
+      });
+
+      expect(transaction.status).toBe('FAILED');
+      expect(transaction.hash).toBeNull();
+      expect(transaction.signedBytes).toBeNull();
+      expect(transaction.error).toEqual({
+        code: 'INVALID_RECIPIENT',
+        message: 'malformed recipient',
+      });
+    });
   });
 
   describe('listTransactions', () => {
