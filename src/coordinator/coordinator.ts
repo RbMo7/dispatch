@@ -41,22 +41,114 @@ export class Coordinator {
   }
 
   /**
-   * Claims up to `limit` queued Dispatches and drives each Call through
-   * validate/prepare/sign/broadcast independently — one Call's failure
-   * never blocks another's (the default batching mode is one transaction
-   * per payment, ADR-0006). Every outcome is persisted either way.
+   * Claims up to `limit` queued Dispatches, runs the Funding Check
+   * (ADR-0024) across the whole claimed batch, then drives each remaining
+   * Call through validate/prepare/sign/broadcast independently — one Call's
+   * failure never blocks another's (the default batching mode is one
+   * transaction per payment, ADR-0006). Every outcome is persisted either
+   * way.
    */
   async processQueuedDispatches(limit: number): Promise<void> {
     const dispatches = await this.store.claimQueued(limit);
+    const fundingFailed = await this.runFundingCheck(dispatches);
 
     for (const dispatch of dispatches) {
       const handler = this.requireChainHandler(dispatch.chain);
       const senderAddress = this.requireSenderAddress(dispatch.chain);
 
       for (let callIndex = 0; callIndex < dispatch.items.length; callIndex++) {
+        if (fundingFailed.has(callKey(dispatch.id, callIndex))) continue;
         await this.processCall(dispatch, handler, senderAddress, callIndex);
       }
     }
+  }
+
+  /**
+   * Aggregates the required amount per (chain, asset) across the whole
+   * claimed batch — from each item's original Payment (ADR-0028's
+   * DispatchItem), never by trying to decode an opaque Call — and compares
+   * it against the Sender's real balance via getBalance, before any of
+   * those Calls are prepared/signed/broadcast (ADR-0024). A `call`-type
+   * item (no Payment) has no inferable funding requirement and is skipped
+   * entirely: the caller owns that data, not the engine (ADR-0018).
+   *
+   * A shortfall — or a getBalance failure itself, since an unverifiable
+   * balance is exactly the "discover it one Call at a time" outcome this
+   * check exists to prevent — fails every affected Call immediately via
+   * recordCallFailure. Returns which (dispatchId, callIndex) pairs were
+   * failed this way, so the caller skips them in the main processing loop.
+   */
+  private async runFundingCheck(dispatches: Dispatch[]): Promise<Set<string>> {
+    const failedKeys = new Set<string>();
+    const requirements = new Map<
+      string,
+      {
+        chain: Chain;
+        asset: string;
+        required: bigint;
+        items: { dispatch: Dispatch; callIndex: number }[];
+      }
+    >();
+
+    for (const dispatch of dispatches) {
+      dispatch.items.forEach((item, callIndex) => {
+        if (!item.payment) return;
+        const { asset, amount } = item.payment;
+        // A control character, not a real asset symbol, so an asset name can never collide with the delimiter.
+        const key = `${dispatch.chain}\u0000${asset}`;
+        const existing = requirements.get(key);
+        if (existing) {
+          existing.required += BigInt(amount);
+          existing.items.push({ dispatch, callIndex });
+        } else {
+          requirements.set(key, {
+            chain: dispatch.chain,
+            asset,
+            required: BigInt(amount),
+            items: [{ dispatch, callIndex }],
+          });
+        }
+      });
+    }
+
+    for (const { chain, asset, required, items } of requirements.values()) {
+      const handler = this.requireChainHandler(chain);
+      const senderAddress = this.requireSenderAddress(chain);
+
+      const balanceResult = await handler.getBalance(senderAddress, asset);
+      if (!balanceResult.ok) {
+        for (const { dispatch, callIndex } of items) {
+          await this.store.recordCallFailure({
+            dispatchId: dispatch.id,
+            callIndex,
+            chain: dispatch.chain,
+            error: balanceResult.error,
+          });
+          failedKeys.add(callKey(dispatch.id, callIndex));
+        }
+        continue;
+      }
+
+      const available = BigInt(balanceResult.value.amount);
+      if (available < required) {
+        const short = (required - available).toString();
+        for (const { dispatch, callIndex } of items) {
+          await this.store.recordCallFailure({
+            dispatchId: dispatch.id,
+            callIndex,
+            chain: dispatch.chain,
+            error: {
+              code: 'INSUFFICIENT_FUNDS',
+              message: `insufficient ${asset} balance`,
+              chainDetail: { asset, short },
+            },
+          });
+          failedKeys.add(callKey(dispatch.id, callIndex));
+        }
+      }
+    }
+
+    return failedKeys;
   }
 
   /**
@@ -84,8 +176,9 @@ export class Coordinator {
     senderAddress: string,
     callIndex: number,
   ): Promise<void> {
-    const call = dispatch.items[callIndex];
-    if (call === undefined) return;
+    const item = dispatch.items[callIndex];
+    if (item === undefined) return;
+    const call = item.call;
 
     const validation = await handler.validateCall(call);
     if (!validation.ok) {
@@ -223,4 +316,8 @@ export class Coordinator {
     }
     return senderAddress;
   }
+}
+
+function callKey(dispatchId: string, callIndex: number): string {
+  return `${dispatchId}:${callIndex}`;
 }

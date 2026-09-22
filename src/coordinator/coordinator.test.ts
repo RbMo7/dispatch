@@ -8,7 +8,7 @@ import type {
   PreparedTransaction,
   SignedTransaction,
 } from '../chain-handler/chain-handler.js';
-import type { Call, Payment, SolanaCall } from '../domain/call.js';
+import type { Call, DispatchItem, EvmCall, Payment, SolanaCall } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
@@ -16,6 +16,9 @@ import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js
 import { Coordinator } from './coordinator.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
+const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
+const evmCall: EvmCall = { to: '0xabc', data: '0x', value: '0' };
+const evmItem: DispatchItem<'evm'> = { call: evmCall, payment: null };
 
 /**
  * A fully configurable ChainHandler test double — deliberately not the
@@ -98,7 +101,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy: false,
     });
 
@@ -126,7 +129,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy: false,
     });
 
@@ -148,7 +151,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy: false,
     });
 
@@ -166,7 +169,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy: false,
     });
 
@@ -186,7 +189,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy: false,
     });
 
@@ -205,7 +208,7 @@ describe('Coordinator.processQueuedDispatches', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall, solanaCall],
+      items: [solanaItem, solanaItem],
       retryPolicy: false,
     });
 
@@ -220,13 +223,106 @@ describe('Coordinator.processQueuedDispatches', () => {
     await store.createDispatch({
       chain: 'evm',
       idempotencyKey: 'key-1',
-      items: [{ to: '0xabc', data: '0x', value: '0' }],
+      items: [evmItem],
       retryPolicy: false,
     });
 
     await expect(coordinator.processQueuedDispatches(10)).rejects.toThrow(
       /No ChainHandler registered/,
     );
+  });
+});
+
+function paymentItem(asset: string, amount: string): DispatchItem<'solana'> {
+  return { call: solanaCall, payment: { recipient: 'recipient', asset, amount } };
+}
+
+describe('Coordinator Funding Check', () => {
+  it('fails a Call with INSUFFICIENT_FUNDS when the required amount exceeds the Sender balance, without ever calling validateCall', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '40' }));
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [paymentItem('USDC', '100')],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.validateCall).not.toHaveBeenCalled();
+    const [transaction] = await store.listTransactions(dispatch.id);
+    expect(transaction?.status).toBe('FAILED');
+    expect(transaction?.error).toEqual({
+      code: 'INSUFFICIENT_FUNDS',
+      message: 'insufficient USDC balance',
+      chainDetail: { asset: 'USDC', short: '60' },
+    });
+  });
+
+  it('proceeds normally when the Sender balance covers the required amount', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '100' }));
+    await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [paymentItem('USDC', '100')],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.validateCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('aggregates the required amount across every payment-backed item sharing an asset before checking the balance', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '150' }));
+    await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [paymentItem('USDC', '80'), paymentItem('USDC', '80')],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.getBalance).toHaveBeenCalledTimes(1);
+    expect(handler.getBalance).toHaveBeenCalledWith('sender-address', 'USDC');
+    expect(handler.validateCall).not.toHaveBeenCalled();
+  });
+
+  it('never fund-checks a call-type item, since it has no Payment to derive a required amount from', async () => {
+    const { store, handler, coordinator } = setup();
+    await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.getBalance).not.toHaveBeenCalled();
+    expect(handler.validateCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the affected Calls when getBalance itself fails, rather than proceeding unverified', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.getBalance.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [paymentItem('USDC', '100')],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.validateCall).not.toHaveBeenCalled();
+    const [transaction] = await store.listTransactions(dispatch.id);
+    expect(transaction?.status).toBe('FAILED');
+    expect(transaction?.error).toEqual({ code: 'RPC_UNAVAILABLE', message: 'rpc down' });
   });
 });
 
@@ -238,7 +334,7 @@ describe('Coordinator.pollPendingTransactions', () => {
     const dispatch = await store.createDispatch({
       chain: 'solana',
       idempotencyKey: 'key-1',
-      items: [solanaCall],
+      items: [solanaItem],
       retryPolicy,
     });
     const transaction = await store.createTransaction({
