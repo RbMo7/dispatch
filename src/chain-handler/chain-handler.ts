@@ -4,22 +4,22 @@ import type { DispatchError } from '../domain/errors.js';
 import type { Result } from '../domain/result.js';
 
 /**
- * Opaque to everything outside the Chain Handler that produced it (issue
- * 05) — a serialized byte string (e.g. base64) whose internal structure
- * only that Chain Handler understands; the engine core never decodes or
- * assumes anything EVM- or Solana-shaped about it. Typed as `string`
- * rather than `unknown` because it has to actually travel somewhere
- * un-opaquely: `sign` hands it to the Signer client as `unsignedTxBytes`
- * (ADR-0002, itself string-typed end-to-end), so there's no unspecified
- * serialization step to hide behind a wider type.
+ * Opaque to everything outside the Chain Handler that produced it
+ * (ADR-0027) — a serialized byte string (e.g. base64) whose internal
+ * structure only that Chain Handler understands; the engine core never
+ * decodes or assumes anything EVM- or Solana-shaped about it. Typed as
+ * `string` rather than `unknown` because it has to actually travel
+ * somewhere un-opaquely: `sign` hands it to the Signer client as
+ * `unsignedTxBytes` (ADR-0002, itself string-typed end-to-end), so there's
+ * no unspecified serialization step to hide behind a wider type.
  */
 export type UnsignedTransaction = string;
 
 /**
- * Opaque in the same way as UnsignedTransaction. Also exactly what gets
- * persisted as Transaction.signedBytes — for every real chain, the bytes
- * `broadcast` sends are the same bytes worth keeping for the record, so
- * there's no separate serialization to invent here either.
+ * Opaque in the same way as UnsignedTransaction (ADR-0027). Also exactly
+ * what gets persisted as Transaction.signedBytes — for every real chain,
+ * the bytes `broadcast` sends are the same bytes worth keeping for the
+ * record, so there's no separate serialization to invent here either.
  */
 export type SignedTransaction = string;
 

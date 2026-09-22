@@ -62,7 +62,10 @@ export class Coordinator {
   /**
    * Advances up to `limit` still-PENDING Transactions: checks on-chain
    * status via the Chain Handler, and — with Retry Policy off — marks one
-   * ABANDONED once it's been PENDING longer than its chain's timeout.
+   * ABANDONED once it's been PENDING longer than its chain's timeout. That
+   * timeout applies even when the status check itself fails (e.g. RPC
+   * unavailable) — elapsed time is all ADR-0004 measures, so a chain having
+   * connectivity trouble must not silently suppress abandonment forever.
    * Retry Policy on suppresses abandonment entirely; this scaffold doesn't
    * implement an actual fee-bump retry (no real Chain Handler exists yet
    * to bump), just the opt-out from the default safety net.
@@ -153,17 +156,13 @@ export class Coordinator {
 
     const handler = this.requireChainHandler(transaction.chain);
     const statusResult = await handler.getStatus(transaction.hash);
-    if (!statusResult.ok) {
-      // Couldn't check status this cycle (e.g. RPC unavailable) — leave it PENDING and try again next poll.
-      return;
-    }
 
-    if (statusResult.value === 'CONFIRMED') {
+    if (statusResult.ok && statusResult.value === 'CONFIRMED') {
       await this.store.markConfirmed(transaction.id);
       return;
     }
 
-    if (statusResult.value === 'FAILED') {
+    if (statusResult.ok && statusResult.value === 'FAILED') {
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',
         message: `${transaction.chain} reported this transaction as failed`,
@@ -171,6 +170,13 @@ export class Coordinator {
       return;
     }
 
+    // Either still PENDING on-chain, or the status check itself failed (e.g.
+    // RPC unavailable) — either way, fall through to the ABANDONED timeout.
+    // That timeout is a pure elapsed-time decision (ADR-0004: "the engine
+    // stopped watching without a definitive outcome"), so it must not be
+    // gated behind a successful status check — a chain having connectivity
+    // trouble is exactly a case where the engine should eventually stop
+    // watching, not one where the timeout silently never fires.
     await this.maybeAbandon(transaction);
   }
 

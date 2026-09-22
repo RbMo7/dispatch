@@ -270,7 +270,7 @@ describe('Coordinator.pollPendingTransactions', () => {
     expect(transaction?.error?.code).toBe('CHAIN_REJECTED');
   });
 
-  it('leaves a still-PENDING Transaction alone once getStatus itself fails', async () => {
+  it('leaves a still-PENDING Transaction alone once getStatus itself fails, before its timeout elapses', async () => {
     const { store, handler, coordinator } = setup();
     const transactionId = await createPendingTransaction(store, false);
     handler.getStatus.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
@@ -278,6 +278,17 @@ describe('Coordinator.pollPendingTransactions', () => {
     await coordinator.pollPendingTransactions(10);
 
     expect(store.getTransaction(transactionId)?.status).toBe('PENDING');
+  });
+
+  it('still applies the ABANDONED timeout once it elapses even if getStatus keeps failing', async () => {
+    const { store, handler, coordinator, advance } = setup();
+    const transactionId = await createPendingTransaction(store, false);
+    advance(ABANDON_AFTER_MS);
+    handler.getStatus.mockResolvedValue(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
   });
 
   it('leaves a still-PENDING Transaction alone before its chain-aware ABANDONED timeout elapses', async () => {
