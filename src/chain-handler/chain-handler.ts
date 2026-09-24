@@ -100,6 +100,19 @@ export interface ChainHandler<C extends Chain = Chain> {
     senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>>;
 
+  /**
+   * Cheap shape/signature validation only (a real signature present and
+   * cryptographically valid, a fee payer set) — never an RPC round-trip,
+   * never semantic or simulation-based understanding of what the
+   * transaction does (ADR-0032). The receiving-side counterpart to
+   * `validateCall`: a Relay Dispatch transaction arrives already signed by
+   * someone else, so there's no Call to validate, only these opaque bytes.
+   * A structurally valid transaction that will fail on-chain for its own
+   * reasons still gets broadcast and fails there, exactly like a Managed
+   * Dispatch Call does. Must never mutate `signed`.
+   */
+  validateSignedTransaction(signed: SignedTransaction): Promise<Result<void, DispatchError>>;
+
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;
 

@@ -76,6 +76,18 @@ export class StubChainHandler implements ChainHandler<'evm'> {
     return Promise.resolve(ok(`${prepared.unsignedTransaction}:stub-signature`));
   }
 
+  validateSignedTransaction(signed: SignedTransaction): Promise<Result<void, DispatchError>> {
+    if (signed === 'force-failure') {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message: 'stub forced this signed transaction to be invalid',
+        }),
+      );
+    }
+    return Promise.resolve(ok(undefined));
+  }
+
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
     if (signed === 'force-failure') {
       return Promise.resolve(

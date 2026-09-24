@@ -1,4 +1,4 @@
-import { Keypair } from '@solana/web3.js';
+import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import { afterAll } from 'vitest';
 
 import { runChainHandlerConformanceSuite } from '../conformance.js';
@@ -29,6 +29,28 @@ const validCallResult = buildNativeTransferCall(
 );
 if (!validCallResult.ok) throw new Error('failed to build the conformance suite fixture Call');
 
+/**
+ * `validateSignedTransaction` is a pure local decode/crypto check
+ * (ADR-0032) — this fixture is signed entirely offline, no devnet RPC
+ * needed to produce it, only to exercise the rest of this suite.
+ */
+const validSignedTransactionTx = new Transaction({
+  feePayer: sender.publicKey,
+  blockhash: Keypair.generate().publicKey.toBase58(),
+  lastValidBlockHeight: 1,
+});
+validSignedTransactionTx.add(
+  SystemProgram.transfer({
+    fromPubkey: sender.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1_000,
+  }),
+);
+validSignedTransactionTx.sign(sender);
+const validSignedTransaction = validSignedTransactionTx
+  .serialize({ requireAllSignatures: true, verifySignatures: false })
+  .toString('base64');
+
 runChainHandlerConformanceSuite(
   'solana',
   () =>
@@ -51,6 +73,7 @@ runChainHandlerConformanceSuite(
       accounts: [{ pubkey: 'not-a-real-address', isSigner: true, isWritable: true }],
       data: validCallResult.value.data,
     },
+    validSignedTransaction,
     invalidSignedTransaction: 'not-real-signed-bytes',
   },
 );

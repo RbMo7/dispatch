@@ -38,6 +38,10 @@ class FakeChainHandler implements ChainHandler {
   validateCall = vi.fn((_call: Call): Promise<Result<void, DispatchError>> =>
     Promise.resolve(ok(undefined)),
   );
+  validateSignedTransaction = vi.fn(
+    (_signed: SignedTransaction): Promise<Result<void, DispatchError>> =>
+      Promise.resolve(ok(undefined)),
+  );
   prepare = vi.fn(
     (
       items: Call[],

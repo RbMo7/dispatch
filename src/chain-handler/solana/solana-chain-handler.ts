@@ -352,6 +352,43 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
+   * ADR-0032: decodes the opaque signed-transaction string (via the shared
+   * `decodeSignedTransaction` helper) and confirms it really is a signed
+   * transaction: a signature present, that signature cryptographically
+   * verifying, and a fee payer set. No RPC round-trip; a
+   * structurally valid transaction that will fail on-chain for its own
+   * reasons still gets broadcast and fails there, exactly like a Managed
+   * Dispatch Call does (relay-dispatch's `validateSignedTransaction` is the
+   * receiving-side counterpart to `validateCall`'s building-side check).
+   */
+  validateSignedTransaction(signed: SignedTransaction): Promise<Result<void, DispatchError>> {
+    const decodedResult = this.decodeSignedTransaction(Buffer.from(signed, 'base64'));
+    if (!decodedResult.ok) return Promise.resolve(decodedResult);
+    const tx = decodedResult.value;
+
+    if (!tx.feePayer) {
+      return Promise.resolve(
+        err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no fee payer' }),
+      );
+    }
+    if (tx.signatures.length === 0 || tx.signatures.every((sig) => sig.signature === null)) {
+      return Promise.resolve(
+        err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no signature' }),
+      );
+    }
+    if (!tx.verifySignatures()) {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message: 'signed transaction signature does not cryptographically verify',
+        }),
+      );
+    }
+
+    return Promise.resolve(ok(undefined));
+  }
+
+  /**
    * issues 05/06: submits the signed bytes via `sendTransaction` and waits
    * for confirmation against the exact blockhash `sign` used (tracked in
    * `blockhashByHash`, since the interface hands `broadcast` only the
@@ -470,18 +507,29 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
   }
 
-  /** issue 06: decodes the previously-signed bytes back to feePayer + instructions and re-signs them fresh, under a genuinely new blockhash. */
-  private async resignWithFreshBlockhash(raw: Buffer): Promise<Result<Buffer, DispatchError>> {
-    let decoded: Transaction;
+  /**
+   * Shared by `resignWithFreshBlockhash` and `validateSignedTransaction`
+   * (ADR-0032) — the one place this handler turns opaque signed bytes back
+   * into a decoded `Transaction`, or a structured `CHAIN_REJECTED` if they
+   * aren't one.
+   */
+  private decodeSignedTransaction(raw: Buffer): Result<Transaction, DispatchError> {
     try {
-      decoded = Transaction.from(raw);
+      return ok(Transaction.from(raw));
     } catch (cause) {
       return err({
         code: 'CHAIN_REJECTED',
-        message: 'cannot refresh: not a decodable Solana transaction',
+        message: 'not a decodable Solana transaction',
         chainDetail: extractMessage(cause),
       });
     }
+  }
+
+  /** issue 06: decodes the previously-signed bytes back to feePayer + instructions and re-signs them fresh, under a genuinely new blockhash. */
+  private async resignWithFreshBlockhash(raw: Buffer): Promise<Result<Buffer, DispatchError>> {
+    const decodedResult = this.decodeSignedTransaction(raw);
+    if (!decodedResult.ok) return decodedResult;
+    const decoded = decodedResult.value;
     if (!decoded.feePayer) {
       return err({
         code: 'CHAIN_REJECTED',

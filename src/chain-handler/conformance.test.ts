@@ -7,5 +7,6 @@ runChainHandlerConformanceSuite('stub', () => new StubChainHandler(), {
   validPayment: { recipient: '0xrecipient', asset: 'ETH', amount: '10' },
   validCall: { to: '0xrecipient', data: '0x', value: '0' },
   invalidCall: { to: 'not-an-address', data: '0x', value: '0' },
+  validSignedTransaction: 'stub-signed-transaction',
   invalidSignedTransaction: 'force-failure',
 });

@@ -14,6 +14,8 @@ export type ChainHandlerConformanceFixtures<C extends Chain> = {
   validCall: CallForChain<C>;
   /** A Call `validateCall` is expected to reject (e.g. a malformed recipient). */
   invalidCall: CallForChain<C>;
+  /** A SignedTransaction `validateSignedTransaction` is expected to accept — a genuinely, correctly signed transaction. */
+  validSignedTransaction: SignedTransaction;
   /**
    * A SignedTransaction `broadcast` is expected to reject with a structured
    * error, not a thrown exception. Free to be an implementation-specific
@@ -107,6 +109,26 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       const handler = createHandler();
       const result = await handler.getStatus('conformance-suite-never-broadcast');
       expect(result.ok && result.value).not.toBe('CONFIRMED');
+    });
+
+    it('validateSignedTransaction accepts a genuinely, correctly signed transaction', async () => {
+      const handler = createHandler();
+      const result = await handler.validateSignedTransaction(fixtures.validSignedTransaction);
+      expect(result.ok).toBe(true);
+    });
+
+    it('validateSignedTransaction rejects a malformed signed transaction with a structured error, never throwing', async () => {
+      const handler = createHandler();
+      const result = await handler.validateSignedTransaction(fixtures.invalidSignedTransaction);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toEqual(expect.any(String));
+    });
+
+    it('validateSignedTransaction never mutates the bytes it is given', async () => {
+      const handler = createHandler();
+      const before = fixtures.validSignedTransaction;
+      await handler.validateSignedTransaction(fixtures.validSignedTransaction);
+      expect(fixtures.validSignedTransaction).toBe(before);
     });
 
     it('a broadcast failure surfaces a structured DispatchError instead of throwing', async () => {
