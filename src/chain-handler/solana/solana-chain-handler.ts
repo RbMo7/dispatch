@@ -140,7 +140,15 @@ type BlockhashRecord = {
 
 export type SolanaChainHandlerDeps = {
   connection: Connection;
-  signerClient: SignerClient;
+  /**
+   * Only needed if this handler ever builds+signs a Managed Dispatch
+   * transaction (`sign`, and the resign-on-expiry path inside `broadcast`
+   * for a self-signed transaction). A Relay-Dispatch-only deployment never
+   * calls `sign` at all (the transaction always arrives already signed,
+   * ADR-0005) and can omit this entirely, rather than needing to wire up
+   * an unreachable placeholder just to satisfy the constructor.
+   */
+  signerClient?: SignerClient;
   /** Single-Sender-per-chain (ADR-0016) — the wallet paymentToCall encodes transfers from, before the Coordinator is ever involved. */
   senderAddress: string;
   /** Operator-configured symbol -> {mint, decimals} for SPL transfers (known-tokens.ts) — empty by default, never hardcoded. */
@@ -158,7 +166,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   readonly chain = 'solana';
 
   private readonly connection: Connection;
-  private readonly signerClient: SignerClient;
+  private readonly signerClient: SignerClient | undefined;
   private readonly senderAddress: string;
   private readonly knownTokens: SolanaTokenRegistry;
   private readonly blockhashByHash = new Map<string, BlockhashRecord>();
@@ -331,6 +339,15 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   ): Promise<Result<SignedTransaction, DispatchError>> {
     const senderAddress = feePayer.toBase58();
     const log = this.logger.child({ senderAddress });
+
+    if (!this.signerClient) {
+      log.warn('asked to sign but no Signer is configured for this ChainHandler');
+      return err({
+        code: 'SIGNER_UNREACHABLE',
+        message:
+          'no Signer configured for this ChainHandler — a Relay-Dispatch-only deployment never signs, so signerClient was never provided',
+      });
+    }
     log.debug({ instructionCount: instructions.length }, 'signing instructions');
 
     let blockhash: string;

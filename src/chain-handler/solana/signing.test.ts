@@ -1,4 +1,4 @@
-import { Keypair, Transaction } from '@solana/web3.js';
+import { Connection, Keypair, Transaction } from '@solana/web3.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../signer/client.js';
@@ -96,6 +96,36 @@ describe('SolanaChainHandler.sign', () => {
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
       signerClient: new SignerClient('http://127.0.0.1:1'), // nothing listens here
+      senderAddress: sender.publicKey.toBase58(),
+    });
+
+    const callResult = await handler.paymentToCall({
+      recipient: recipient.toBase58(),
+      asset: 'SOL',
+      amount: '1000',
+    });
+    expect(callResult.ok).toBe(true);
+    if (!callResult.ok) return;
+    const prepareResult = await handler.prepare([callResult.value], sender.publicKey.toBase58());
+    expect(prepareResult.ok).toBe(true);
+    if (!prepareResult.ok) return;
+    const prepared = prepareResult.value[0];
+    expect(prepared).toBeDefined();
+    if (!prepared) return;
+
+    const result = await handler.sign(prepared, sender.publicKey.toBase58());
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.code).toBe('SIGNER_UNREACHABLE');
+  });
+
+  it('surfaces SIGNER_UNREACHABLE when no Signer is configured at all, without ever touching the network — a Relay-Dispatch-only deployment never needs one', async () => {
+    const sender = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+
+    const handler = new SolanaChainHandler({
+      connection: new Connection('http://127.0.0.1:1'), // never called
+      // signerClient omitted entirely
       senderAddress: sender.publicKey.toBase58(),
     });
 
