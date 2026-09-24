@@ -140,12 +140,12 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * does not touch a blockhash at all (issue 04: fetched immediately before
    * signing, not here, or it goes stale under batch volume).
    */
-  async prepare(
+  prepare(
     items: SolanaCall[],
     senderAddress: string,
   ): Promise<Result<PreparedTransaction[], DispatchError>> {
     const feePayer = parsePublicKey(senderAddress);
-    if (!feePayer.ok) return feePayer;
+    if (!feePayer.ok) return Promise.resolve(feePayer);
 
     const prepared: PreparedTransaction[] = items.map((call, callIndex) => {
       const instructions = toTransactionInstructions(call, feePayer.value);
@@ -156,7 +156,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return { callIndex, unsignedTransaction: encodeUnsignedTransaction(encoded) };
     });
 
-    return ok(prepared);
+    return Promise.resolve(ok(prepared));
   }
 
   /**
