@@ -108,16 +108,22 @@ export function getTestMint(): Promise<PublicKey> {
       return new PublicKey(cached.mint);
     }
 
-    const mint = await createMint(
+    const mint = await createMint(connection, sender, sender.publicKey, null, TEST_MINT_DECIMALS);
+
+    const senderAta = await getOrCreateAssociatedTokenAccount(
       connection,
       sender,
+      mint,
       sender.publicKey,
-      null,
-      TEST_MINT_DECIMALS,
     );
-
-    const senderAta = await getOrCreateAssociatedTokenAccount(connection, sender, mint, sender.publicKey);
-    await mintTo(connection, sender, mint, senderAta.address, sender, 1_000_000_000 * 10 ** TEST_MINT_DECIMALS);
+    await mintTo(
+      connection,
+      sender,
+      mint,
+      senderAta.address,
+      sender,
+      1_000_000_000 * 10 ** TEST_MINT_DECIMALS,
+    );
 
     mkdirSync(path.dirname(MINT_PATH), { recursive: true });
     writeFileSync(MINT_PATH, JSON.stringify({ mint: mint.toBase58() } satisfies CachedMint));
@@ -182,16 +188,16 @@ export async function startTestSigner(keypairs: Keypair[]): Promise<TestSignerHa
           unsignedTxBytes?: string;
         };
         if (body.curve !== 'ed25519') {
-          res.writeHead(400, { 'content-type': 'application/json' }).end(
-            JSON.stringify({ error: `unsupported curve: ${String(body.curve)}` }),
-          );
+          res
+            .writeHead(400, { 'content-type': 'application/json' })
+            .end(JSON.stringify({ error: `unsupported curve: ${String(body.curve)}` }));
           return;
         }
         const seed = body.address ? seedsByAddress.get(body.address) : undefined;
         if (!seed || typeof body.unsignedTxBytes !== 'string') {
-          res.writeHead(404, { 'content-type': 'application/json' }).end(
-            JSON.stringify({ error: `no key for address ${String(body.address)}` }),
-          );
+          res
+            .writeHead(404, { 'content-type': 'application/json' })
+            .end(JSON.stringify({ error: `no key for address ${String(body.address)}` }));
           return;
         }
         const message = Buffer.from(body.unsignedTxBytes, 'base64');
@@ -215,6 +221,7 @@ export async function startTestSigner(keypairs: Keypair[]): Promise<TestSignerHa
 
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+    close: () =>
+      new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };
 }

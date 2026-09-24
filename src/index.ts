@@ -3,7 +3,11 @@ import { Connection } from '@solana/web3.js';
 import { buildApp } from './app.js';
 import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
 import { SolanaChainHandler } from './chain-handler/solana/solana-chain-handler.js';
-import { ChainRegistry, parseEnabledChains, type ChainHandlerLoader } from './chain-registry/chain-registry.js';
+import {
+  ChainRegistry,
+  parseEnabledChains,
+  type ChainHandlerLoader,
+} from './chain-registry/chain-registry.js';
 import { config } from './config.js';
 import { db } from './db/client.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';

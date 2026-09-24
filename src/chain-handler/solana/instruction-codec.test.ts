@@ -16,7 +16,11 @@ describe('fromTransactionInstruction / toTransactionInstruction', () => {
   it('round-trips an arbitrary instruction without loss', () => {
     const programId = Keypair.generate().publicKey;
     const a = Keypair.generate().publicKey;
-    const instruction = SystemProgram.transfer({ fromPubkey: a, toPubkey: programId, lamports: 42n });
+    const instruction = SystemProgram.transfer({
+      fromPubkey: a,
+      toPubkey: programId,
+      lamports: 42n,
+    });
 
     const call = fromTransactionInstruction(instruction);
     const back = toTransactionInstruction(call);
@@ -45,7 +49,13 @@ describe('toTransactionInstructions', () => {
     const sender = Keypair.generate().publicKey;
     const recipient = Keypair.generate().publicKey;
     const mint = Keypair.generate().publicKey;
-    const built = buildSplTransferCall(sender.toBase58(), recipient.toBase58(), mint.toBase58(), 6, 5n);
+    const built = buildSplTransferCall(
+      sender.toBase58(),
+      recipient.toBase58(),
+      mint.toBase58(),
+      6,
+      5n,
+    );
     expect(built.ok).toBe(true);
     if (!built.ok) return;
 
@@ -54,7 +64,9 @@ describe('toTransactionInstructions', () => {
     expect(instructions).toHaveLength(2);
     expect(instructions[0]!.programId.toBase58()).toBe(ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
     const recipientAta = deriveAssociatedTokenAddress(recipient, mint);
-    expect(instructions[0]!.keys.some((k) => k.pubkey.toBase58() === recipientAta.toBase58())).toBe(true);
+    expect(instructions[0]!.keys.some((k) => k.pubkey.toBase58() === recipientAta.toBase58())).toBe(
+      true,
+    );
 
     expect(instructions[1]!.programId.toBase58()).toBe(TOKEN_PROGRAM_ID.toBase58());
     expect(instructions[1]!.keys).toHaveLength(4); // the real on-chain minimum, bookkeeping account dropped
@@ -64,7 +76,13 @@ describe('toTransactionInstructions', () => {
     const sender = Keypair.generate().publicKey;
     const recipient = Keypair.generate().publicKey;
     const mint = Keypair.generate().publicKey;
-    const built = buildSplTransferCall(sender.toBase58(), recipient.toBase58(), mint.toBase58(), 6, 5n);
+    const built = buildSplTransferCall(
+      sender.toBase58(),
+      recipient.toBase58(),
+      mint.toBase58(),
+      6,
+      5n,
+    );
     expect(built.ok).toBe(true);
     if (!built.ok) return;
     const rawCallerCall = { ...built.value, accounts: built.value.accounts.slice(0, 4) };

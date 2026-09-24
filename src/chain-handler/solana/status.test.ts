@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../signer/client.js';
 import { SolanaChainHandler } from './solana-chain-handler.js';
-import { getDevnetConnection, getFundedSenderKeypair, startTestSigner } from './test-support/devnet-fixtures.js';
+import {
+  getDevnetConnection,
+  getFundedSenderKeypair,
+  startTestSigner,
+} from './test-support/devnet-fixtures.js';
 
 describe('SolanaChainHandler.getStatus', () => {
   it('reports PENDING for a hash that was never broadcast', async () => {
@@ -76,13 +80,21 @@ describe('SolanaChainHandler.getStatus', () => {
     // Fund poorSender with just enough to be rent-exempt plus a tx fee,
     // nowhere near enough to cover the transfer it's about to attempt.
     const fundingTx = new Transaction().add(
-      SystemProgram.transfer({ fromPubkey: funder.publicKey, toPubkey: poorSender.publicKey, lamports: 1_000_000 }),
+      SystemProgram.transfer({
+        fromPubkey: funder.publicKey,
+        toPubkey: poorSender.publicKey,
+        lamports: 1_000_000,
+      }),
     );
     await connection.sendTransaction(fundingTx, [funder], { skipPreflight: false });
     await new Promise((resolve) => setTimeout(resolve, 3_000));
 
     const doomedTx = new Transaction().add(
-      SystemProgram.transfer({ fromPubkey: poorSender.publicKey, toPubkey: recipient.publicKey, lamports: 5_000_000_000 }),
+      SystemProgram.transfer({
+        fromPubkey: poorSender.publicKey,
+        toPubkey: recipient.publicKey,
+        lamports: 5_000_000_000,
+      }),
     );
     let hash: string;
     try {

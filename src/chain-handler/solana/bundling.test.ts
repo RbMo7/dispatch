@@ -75,7 +75,9 @@ describe('SolanaChainHandler bundling', () => {
     expect(signCallCount).toBe(1); // the Signer was only ever asked once
 
     const broadcastResults = await Promise.all(
-      signedResults.map((r) => (r.ok ? handler.broadcast(r.value) : Promise.reject(new Error('unreachable')))),
+      signedResults.map((r) =>
+        r.ok ? handler.broadcast(r.value) : Promise.reject(new Error('unreachable')),
+      ),
     );
     expect(broadcastResults.every((r) => r.ok)).toBe(true);
     const hashes = new Set(broadcastResults.map((r) => (r.ok ? r.value.hash : undefined)));
@@ -84,7 +86,10 @@ describe('SolanaChainHandler bundling', () => {
     const [hash] = hashes;
     if (!hash) return;
     const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction({ signature: hash, ...latest }, 'confirmed');
+    const confirmation = await connection.confirmTransaction(
+      { signature: hash, ...latest },
+      'confirmed',
+    );
     expect(confirmation.value.err).toBeNull();
 
     for (const recipient of recipients) {

@@ -25,13 +25,11 @@ export function toTransactionInstruction(call: SolanaCall): TransactionInstructi
 export function fromTransactionInstruction(instruction: TransactionInstruction): SolanaCall {
   return {
     programId: instruction.programId.toBase58(),
-    accounts: instruction.keys.map(
-      (k): SolanaAccountMeta => ({
-        pubkey: k.pubkey.toBase58(),
-        isSigner: k.isSigner,
-        isWritable: k.isWritable,
-      }),
-    ),
+    accounts: instruction.keys.map((k): SolanaAccountMeta => ({
+      pubkey: k.pubkey.toBase58(),
+      isSigner: k.isSigner,
+      isWritable: k.isWritable,
+    })),
     data: instruction.data.toString('base64'),
   };
 }

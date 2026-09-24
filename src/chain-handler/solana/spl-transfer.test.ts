@@ -11,17 +11,35 @@ describe('buildSplTransferCall', () => {
     const recipient = Keypair.generate().publicKey;
     const mint = Keypair.generate().publicKey;
 
-    const result = buildSplTransferCall(sender.toBase58(), recipient.toBase58(), mint.toBase58(), 6, 10_000_000n);
+    const result = buildSplTransferCall(
+      sender.toBase58(),
+      recipient.toBase58(),
+      mint.toBase58(),
+      6,
+      10_000_000n,
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.programId).toBe(TOKEN_PROGRAM_ID.toBase58());
     expect(result.value.accounts).toHaveLength(5);
-    expect(result.value.accounts[0]!.pubkey).toBe(deriveAssociatedTokenAddress(sender, mint).toBase58());
+    expect(result.value.accounts[0]!.pubkey).toBe(
+      deriveAssociatedTokenAddress(sender, mint).toBase58(),
+    );
     expect(result.value.accounts[1]!.pubkey).toBe(mint.toBase58());
-    expect(result.value.accounts[2]!.pubkey).toBe(deriveAssociatedTokenAddress(recipient, mint).toBase58());
-    expect(result.value.accounts[3]).toEqual({ pubkey: sender.toBase58(), isSigner: true, isWritable: false });
-    expect(result.value.accounts[4]).toEqual({ pubkey: recipient.toBase58(), isSigner: false, isWritable: false });
+    expect(result.value.accounts[2]!.pubkey).toBe(
+      deriveAssociatedTokenAddress(recipient, mint).toBase58(),
+    );
+    expect(result.value.accounts[3]).toEqual({
+      pubkey: sender.toBase58(),
+      isSigner: true,
+      isWritable: false,
+    });
+    expect(result.value.accounts[4]).toEqual({
+      pubkey: recipient.toBase58(),
+      isSigner: false,
+      isWritable: false,
+    });
 
     const data = Buffer.from(result.value.data, 'base64');
     expect(data[0]).toBe(12); // TransferChecked discriminant

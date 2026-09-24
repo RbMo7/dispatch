@@ -26,9 +26,21 @@ import type {
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
 import { toTransactionInstructions } from './instruction-codec.js';
-import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type SolanaTokenRegistry } from './known-tokens.js';
-import { buildNativeTransferCall, parsePublicKey, validateNativeTransferCall } from './native-transfer.js';
-import { buildSplTransferCall, isSplTransferCall, validateSplTransferCall } from './spl-transfer.js';
+import {
+  NATIVE_ASSET_SYMBOL,
+  resolveKnownToken,
+  type SolanaTokenRegistry,
+} from './known-tokens.js';
+import {
+  buildNativeTransferCall,
+  parsePublicKey,
+  validateNativeTransferCall,
+} from './native-transfer.js';
+import {
+  buildSplTransferCall,
+  isSplTransferCall,
+  validateSplTransferCall,
+} from './spl-transfer.js';
 
 /**
  * The Coordinator's `abandonmentTimeoutMs` config value for `'solana'`
@@ -63,7 +75,11 @@ type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: 
  * byte-identical Calls prepared separately never accidentally collide in
  * `signedByChunk` below.
  */
-type EncodedTransaction = { chunkNonce: string; feePayer: string; instructions: EncodedInstruction[] };
+type EncodedTransaction = {
+  chunkNonce: string;
+  feePayer: string;
+  instructions: EncodedInstruction[];
+};
 
 function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
   return {
@@ -137,7 +153,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * concurrent callers for the same chunk both slip past the check before
    * either finishes, producing two real signatures for one bundle.
    */
-  private readonly signByChunk = new Map<string, Promise<Result<SignedTransaction, DispatchError>>>();
+  private readonly signByChunk = new Map<
+    string,
+    Promise<Result<SignedTransaction, DispatchError>>
+  >();
 
   constructor(deps: SolanaChainHandlerDeps) {
     this.connection = deps.connection;
@@ -314,7 +333,9 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const hash = bs58.encode(signatureBytes);
     this.blockhashByHash.set(hash, { blockhash, lastValidBlockHeight });
 
-    return ok(tx.serialize({ requireAllSignatures: true, verifySignatures: false }).toString('base64'));
+    return ok(
+      tx.serialize({ requireAllSignatures: true, verifySignatures: false }).toString('base64'),
+    );
   }
 
   /**
@@ -341,7 +362,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     for (let attempt = 0; ; attempt++) {
       let hash: string;
       try {
-        hash = await this.connection.sendRawTransaction(currentRaw, { skipPreflight: false, maxRetries: 0 });
+        hash = await this.connection.sendRawTransaction(currentRaw, {
+          skipPreflight: false,
+          maxRetries: 0,
+        });
       } catch (cause) {
         if (isBlockhashExpiryMessage(extractMessage(cause)) && attempt < maxRefreshes) {
           const refreshed = await this.resignWithFreshBlockhash(currentRaw);
@@ -357,7 +381,11 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
       try {
         const confirmation = await this.connection.confirmTransaction(
-          { signature: hash, blockhash: record.blockhash, lastValidBlockHeight: record.lastValidBlockHeight },
+          {
+            signature: hash,
+            blockhash: record.blockhash,
+            lastValidBlockHeight: record.lastValidBlockHeight,
+          },
           'confirmed',
         );
         if (confirmation.value.err) {
@@ -393,7 +421,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
     if (!decoded.feePayer) {
-      return err({ code: 'CHAIN_REJECTED', message: 'cannot refresh: decoded transaction has no feePayer' });
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'cannot refresh: decoded transaction has no feePayer',
+      });
     }
 
     const resigned = await this.signInstructions(decoded.feePayer, decoded.instructions);
@@ -440,7 +471,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       const status = value[0];
       if (status) {
         if (status.err) return ok('FAILED');
-        if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+        if (
+          status.confirmationStatus === 'confirmed' ||
+          status.confirmationStatus === 'finalized'
+        ) {
           return ok('CONFIRMED');
         }
         return ok('PENDING');

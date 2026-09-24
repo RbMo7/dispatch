@@ -19,7 +19,13 @@ import { err, ok, type Result } from '../../domain/result.js';
 
 /** Deterministic PDA derivation only — never touches the network, never throws for a well-formed owner/mint (both already validated by the time a Call reaches here). */
 export function deriveAssociatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
-  return getAssociatedTokenAddressSync(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  return getAssociatedTokenAddressSync(
+    mint,
+    owner,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
 }
 
 /**

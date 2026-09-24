@@ -5,7 +5,11 @@ import { runChainHandlerConformanceSuite } from '../conformance.js';
 import { SignerClient } from '../../signer/client.js';
 import { buildNativeTransferCall } from './native-transfer.js';
 import { SolanaChainHandler } from './solana-chain-handler.js';
-import { getDevnetConnection, getFundedSenderKeypair, startTestSigner } from './test-support/devnet-fixtures.js';
+import {
+  getDevnetConnection,
+  getFundedSenderKeypair,
+  startTestSigner,
+} from './test-support/devnet-fixtures.js';
 
 /**
  * issue 11 — the checkpoint proving the extendibility rule (ADR-0015)
@@ -18,16 +22,29 @@ const signer = await startTestSigner([sender]);
 const connection = getDevnetConnection();
 const senderAddress = sender.publicKey.toBase58();
 
-const validCallResult = buildNativeTransferCall(senderAddress, Keypair.generate().publicKey.toBase58(), 2_000_000n);
+const validCallResult = buildNativeTransferCall(
+  senderAddress,
+  Keypair.generate().publicKey.toBase58(),
+  2_000_000n,
+);
 if (!validCallResult.ok) throw new Error('failed to build the conformance suite fixture Call');
 
 runChainHandlerConformanceSuite(
   'solana',
-  () => new SolanaChainHandler({ connection, signerClient: new SignerClient(signer.url), senderAddress }),
+  () =>
+    new SolanaChainHandler({
+      connection,
+      signerClient: new SignerClient(signer.url),
+      senderAddress,
+    }),
   {
     senderAddress,
     asset: 'SOL',
-    validPayment: { recipient: Keypair.generate().publicKey.toBase58(), asset: 'SOL', amount: '2000000' },
+    validPayment: {
+      recipient: Keypair.generate().publicKey.toBase58(),
+      asset: 'SOL',
+      amount: '2000000',
+    },
     validCall: validCallResult.value,
     invalidCall: {
       programId: validCallResult.value.programId,

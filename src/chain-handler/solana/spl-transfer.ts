@@ -52,14 +52,20 @@ export function buildSplTransferCall(
 
   return ok({
     ...call,
-    accounts: [...call.accounts, { pubkey: recipientOwner.value.toBase58(), isSigner: false, isWritable: false }],
+    accounts: [
+      ...call.accounts,
+      { pubkey: recipientOwner.value.toBase58(), isSigner: false, isWritable: false },
+    ],
   });
 }
 
 /** Cheap shape validation only — a real amount/decimals/balance mismatch surfaces as CHAIN_REJECTED at broadcast (issue 09), never here. */
 export function validateSplTransferCall(call: SolanaCall): Result<void, DispatchError> {
   if (call.programId !== TOKEN_PROGRAM_ID.toBase58()) {
-    return err({ code: 'INVALID_RECIPIENT', message: `not an SPL Token program call: ${call.programId}` });
+    return err({
+      code: 'INVALID_RECIPIENT',
+      message: `not an SPL Token program call: ${call.programId}`,
+    });
   }
   if (call.accounts.length !== 4 && call.accounts.length !== 5) {
     return err({
@@ -72,7 +78,10 @@ export function validateSplTransferCall(call: SolanaCall): Result<void, Dispatch
     if (!parsed.ok) return parsed;
   }
   if (call.data.length === 0) {
-    return err({ code: 'INVALID_RECIPIENT', message: 'transferChecked call has no instruction data' });
+    return err({
+      code: 'INVALID_RECIPIENT',
+      message: 'transferChecked call has no instruction data',
+    });
   }
   return ok(undefined);
 }

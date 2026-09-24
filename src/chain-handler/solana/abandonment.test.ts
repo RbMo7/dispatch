@@ -28,60 +28,58 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
     signer = undefined;
   });
 
-  it(
-    'reports FAILED, never leaves it PENDING forever, once the signed blockhash is provably expired and nothing was ever broadcast',
-    async () => {
-      const sender = await getFundedSenderKeypair();
-      const recipient = Keypair.generate();
-      signer = await startTestSigner([sender]);
-      const connection = getDevnetConnection();
+  it('reports FAILED, never leaves it PENDING forever, once the signed blockhash is provably expired and nothing was ever broadcast', async () => {
+    const sender = await getFundedSenderKeypair();
+    const recipient = Keypair.generate();
+    signer = await startTestSigner([sender]);
+    const connection = getDevnetConnection();
 
-      const handler = new SolanaChainHandler({
-        connection,
-        signerClient: new SignerClient(signer.url),
-        senderAddress: sender.publicKey.toBase58(),
-      });
+    const handler = new SolanaChainHandler({
+      connection,
+      signerClient: new SignerClient(signer.url),
+      senderAddress: sender.publicKey.toBase58(),
+    });
 
-      const callResult = await handler.paymentToCall({
-        recipient: recipient.publicKey.toBase58(),
-        asset: 'SOL',
-        amount: '2000000',
-      });
-      expect(callResult.ok).toBe(true);
-      if (!callResult.ok) return;
-      const prepareResult = await handler.prepare([callResult.value], sender.publicKey.toBase58());
-      if (!prepareResult.ok) throw new Error('prepare failed');
-      const prepared = prepareResult.value[0];
-      if (!prepared) throw new Error('no prepared transaction');
+    const callResult = await handler.paymentToCall({
+      recipient: recipient.publicKey.toBase58(),
+      asset: 'SOL',
+      amount: '2000000',
+    });
+    expect(callResult.ok).toBe(true);
+    if (!callResult.ok) return;
+    const prepareResult = await handler.prepare([callResult.value], sender.publicKey.toBase58());
+    if (!prepareResult.ok) throw new Error('prepare failed');
+    const prepared = prepareResult.value[0];
+    if (!prepared) throw new Error('no prepared transaction');
 
-      const signResult = await handler.sign(prepared, sender.publicKey.toBase58());
-      if (!signResult.ok) throw new Error('sign failed');
+    const signResult = await handler.sign(prepared, sender.publicKey.toBase58());
+    if (!signResult.ok) throw new Error('sign failed');
 
-      const decoded = Transaction.from(Buffer.from(signResult.value, 'base64'));
-      const blockhash = decoded.recentBlockhash;
-      const hash = decoded.signature ? bs58.encode(decoded.signature) : undefined;
-      expect(blockhash).toBeTruthy();
-      expect(hash).toBeTruthy();
-      if (!blockhash || !hash) return;
+    const decoded = Transaction.from(Buffer.from(signResult.value, 'base64'));
+    const blockhash = decoded.recentBlockhash;
+    const hash = decoded.signature ? bs58.encode(decoded.signature) : undefined;
+    expect(blockhash).toBeTruthy();
+    expect(hash).toBeTruthy();
+    if (!blockhash || !hash) return;
 
-      const deadline = Date.now() + 150_000;
-      let stillValid = true;
-      while (Date.now() < deadline) {
-        ({ value: stillValid } = await connection.isBlockhashValid(blockhash, { commitment: 'confirmed' }));
-        if (!stillValid) break;
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-      }
-      expect(stillValid).toBe(false);
+    const deadline = Date.now() + 150_000;
+    let stillValid = true;
+    while (Date.now() < deadline) {
+      ({ value: stillValid } = await connection.isBlockhashValid(blockhash, {
+        commitment: 'confirmed',
+      }));
+      if (!stillValid) break;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    expect(stillValid).toBe(false);
 
-      // Never broadcast at all — getStatus must still resolve this to
-      // FAILED on its own, purely from the provable-expiry check.
-      const status = await handler.getStatus(hash);
+    // Never broadcast at all — getStatus must still resolve this to
+    // FAILED on its own, purely from the provable-expiry check.
+    const status = await handler.getStatus(hash);
 
-      expect(status.ok).toBe(true);
-      expect(status.ok && status.value).toBe('FAILED');
-    },
-    180_000,
-  );
+    expect(status.ok).toBe(true);
+    expect(status.ok && status.value).toBe('FAILED');
+  }, 180_000);
 
   it('leaves a hash it has no blockhash bookkeeping for as PENDING rather than guessing FAILED', async () => {
     const handler = new SolanaChainHandler({

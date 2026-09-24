@@ -43,7 +43,9 @@ export function parseSolanaKnownTokens(raw: string): SolanaTokenRegistry {
       );
     }
     if (symbol === NATIVE_ASSET_SYMBOL) {
-      throw new Error(`SOLANA_KNOWN_TOKENS cannot redefine the reserved "${NATIVE_ASSET_SYMBOL}" symbol.`);
+      throw new Error(
+        `SOLANA_KNOWN_TOKENS cannot redefine the reserved "${NATIVE_ASSET_SYMBOL}" symbol.`,
+      );
     }
     registry[symbol] = { mint, decimals };
   }

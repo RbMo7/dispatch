@@ -53,7 +53,9 @@ describe('validateNativeTransferCall', () => {
   it('rejects a call with the wrong number of accounts', () => {
     const result = validateNativeTransferCall({
       programId: SystemProgram.programId.toBase58(),
-      accounts: [{ pubkey: Keypair.generate().publicKey.toBase58(), isSigner: true, isWritable: true }],
+      accounts: [
+        { pubkey: Keypair.generate().publicKey.toBase58(), isSigner: true, isWritable: true },
+      ],
       data: '',
     });
     expect(result.ok).toBe(false);

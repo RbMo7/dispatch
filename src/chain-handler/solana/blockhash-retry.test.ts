@@ -28,71 +28,67 @@ describe('SolanaChainHandler.broadcast blockhash-refresh-and-resubmit', () => {
     signer = undefined;
   });
 
-  it(
-    'resubmits with a fresh blockhash and still lands, after the originally-signed blockhash expires',
-    async () => {
-      const sender = await getFundedSenderKeypair();
-      const recipient = Keypair.generate();
-      signer = await startTestSigner([sender]);
-      const connection = getDevnetConnection();
+  it('resubmits with a fresh blockhash and still lands, after the originally-signed blockhash expires', async () => {
+    const sender = await getFundedSenderKeypair();
+    const recipient = Keypair.generate();
+    signer = await startTestSigner([sender]);
+    const connection = getDevnetConnection();
 
-      const handler = new SolanaChainHandler({
-        connection,
-        signerClient: new SignerClient(signer.url),
-        senderAddress: sender.publicKey.toBase58(),
-      });
+    const handler = new SolanaChainHandler({
+      connection,
+      signerClient: new SignerClient(signer.url),
+      senderAddress: sender.publicKey.toBase58(),
+    });
 
-      const callResult = await handler.paymentToCall({
-        recipient: recipient.publicKey.toBase58(),
-        asset: 'SOL',
-        amount: '2000000',
-      });
-      expect(callResult.ok).toBe(true);
-      if (!callResult.ok) return;
-      const prepareResult = await handler.prepare([callResult.value], sender.publicKey.toBase58());
-      expect(prepareResult.ok).toBe(true);
-      if (!prepareResult.ok) return;
-      const prepared = prepareResult.value[0];
-      expect(prepared).toBeDefined();
-      if (!prepared) return;
+    const callResult = await handler.paymentToCall({
+      recipient: recipient.publicKey.toBase58(),
+      asset: 'SOL',
+      amount: '2000000',
+    });
+    expect(callResult.ok).toBe(true);
+    if (!callResult.ok) return;
+    const prepareResult = await handler.prepare([callResult.value], sender.publicKey.toBase58());
+    expect(prepareResult.ok).toBe(true);
+    if (!prepareResult.ok) return;
+    const prepared = prepareResult.value[0];
+    expect(prepared).toBeDefined();
+    if (!prepared) return;
 
-      const signResult = await handler.sign(prepared, sender.publicKey.toBase58());
-      expect(signResult.ok).toBe(true);
-      if (!signResult.ok) return;
+    const signResult = await handler.sign(prepared, sender.publicKey.toBase58());
+    expect(signResult.ok).toBe(true);
+    if (!signResult.ok) return;
 
-      const signedBytes = Buffer.from(signResult.value, 'base64');
-      const { Transaction } = await import('@solana/web3.js');
-      const decoded = Transaction.from(signedBytes);
-      const originalBlockhash = decoded.recentBlockhash;
-      expect(originalBlockhash).toBeTruthy();
-      if (!originalBlockhash) return;
+    const signedBytes = Buffer.from(signResult.value, 'base64');
+    const { Transaction } = await import('@solana/web3.js');
+    const decoded = Transaction.from(signedBytes);
+    const originalBlockhash = decoded.recentBlockhash;
+    expect(originalBlockhash).toBeTruthy();
+    if (!originalBlockhash) return;
 
-      const deadline = Date.now() + 150_000;
-      let stillValid = true;
-      while (Date.now() < deadline) {
-        ({ value: stillValid } = await connection.isBlockhashValid(originalBlockhash, {
-          commitment: 'confirmed',
-        }));
-        if (!stillValid) break;
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-      }
-      expect(stillValid).toBe(false); // sanity check the wait actually worked before trusting what follows
+    const deadline = Date.now() + 150_000;
+    let stillValid = true;
+    while (Date.now() < deadline) {
+      ({ value: stillValid } = await connection.isBlockhashValid(originalBlockhash, {
+        commitment: 'confirmed',
+      }));
+      if (!stillValid) break;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    expect(stillValid).toBe(false); // sanity check the wait actually worked before trusting what follows
 
-      const broadcastResult = await handler.broadcast(signResult.value);
+    const broadcastResult = await handler.broadcast(signResult.value);
 
-      expect(broadcastResult.ok).toBe(true);
-      if (!broadcastResult.ok) return;
+    expect(broadcastResult.ok).toBe(true);
+    if (!broadcastResult.ok) return;
 
-      const latest = await connection.getLatestBlockhash('confirmed');
-      const confirmation = await connection.confirmTransaction(
-        { signature: broadcastResult.value.hash, ...latest },
-        'confirmed',
-      );
-      expect(confirmation.value.err).toBeNull();
+    const latest = await connection.getLatestBlockhash('confirmed');
+    const confirmation = await connection.confirmTransaction(
+      { signature: broadcastResult.value.hash, ...latest },
+      'confirmed',
+    );
+    expect(confirmation.value.err).toBeNull();
 
-      const recipientBalance = await connection.getBalance(recipient.publicKey);
-      expect(recipientBalance).toBe(2_000_000);
-    },
-    180_000,
-  );
+    const recipientBalance = await connection.getBalance(recipient.publicKey);
+    expect(recipientBalance).toBe(2_000_000);
+  }, 180_000);
 });
