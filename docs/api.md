@@ -27,7 +27,7 @@ Body:
 }
 ```
 
-A `call` item's fields beyond `type` mirror the target chain's `Call` primitive exactly (CONTEXT.md, ADR-0018) — `{ programId, accounts, data }` for a `solana` Dispatch as shown above, `{ to, data, value }` for an `evm` one. `items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
+A `call` item's fields beyond `type` mirror the target chain's `Call` primitive exactly (CONTEXT.md, ADR-0018) — `{ programId, accounts, data }` for a `solana` Dispatch as shown above, `{ to, data, value }` for a `base` one. `items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
 
 `retryPolicy` (ADR-0003/0004) is optional; omitting it falls back to the operator's configured global default (itself off unless the operator opts in) — a Dispatch never silently costs more than what was explicitly authorized for it. Once resolved (request value or the global default) it's fixed for that Dispatch's whole lifetime.
 
@@ -78,4 +78,4 @@ One transaction, not a batch — this is the same per-item status vocabulary Man
 ## Not yet specced here
 
 - Webhooks (ADR-0023) — polling above is the required baseline for now.
-- EVM's own Relay Dispatch implementation — the wire format above is chain-agnostic, but only Solana implements it so far.
+- Base's own Relay Dispatch implementation — the wire format above is chain-agnostic, but only Solana implements it so far. (Ethereum L1 is a separate, undesigned future chain, not "the rest of evm" — ADR-0035.)
