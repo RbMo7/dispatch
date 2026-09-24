@@ -1,6 +1,12 @@
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  TransactionExpiredBlockheightExceededError,
+  TransactionInstruction,
+} from '@solana/web3.js';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
@@ -66,6 +72,17 @@ function decodeUnsignedTransaction(unsigned: UnsignedTransaction): EncodedTransa
  * doc comment on `getStatus`), never causes an incorrect answer.
  */
 type BlockhashRecord = { blockhash: string; lastValidBlockHeight: number };
+
+/** devnet's real rejection text for a genuinely expired/unknown blockhash at send time — not a mocked signal, this is the RPC's own wording. */
+function isBlockhashExpiryDetail(chainDetail: unknown): boolean {
+  const text =
+    chainDetail instanceof Error
+      ? chainDetail.message
+      : typeof chainDetail === 'string'
+        ? chainDetail
+        : '';
+  return /blockhash not found/i.test(text);
+}
 
 export type SolanaChainHandlerDeps = {
   connection: Connection;
@@ -171,8 +188,24 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
     const encoded = decodeUnsignedTransaction(prepared.unsignedTransaction);
-    const feePayer = new PublicKey(encoded.feePayer);
+    if (encoded.feePayer !== senderAddress) {
+      return err({
+        code: 'INVALID_RECIPIENT',
+        message: `PreparedTransaction was built for ${encoded.feePayer}, asked to sign as ${senderAddress}`,
+      });
+    }
+    return this.signInstructions(new PublicKey(senderAddress), encoded.instructions.map(decodeInstruction));
+  }
 
+  /**
+   * Shared by `sign` and, for issue 06, `resignWithFreshBlockhash` — always
+   * fetches its own fresh blockhash (never reuses a caller's), so a refresh
+   * really is a new signature over a new message, never a stale resubmit.
+   */
+  private async signInstructions(
+    feePayer: PublicKey,
+    instructions: TransactionInstruction[],
+  ): Promise<Result<SignedTransaction, DispatchError>> {
     let blockhash: string;
     let lastValidBlockHeight: number;
     try {
@@ -186,9 +219,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight });
-    tx.add(...encoded.instructions.map(decodeInstruction));
+    tx.add(...instructions);
 
     const message = tx.compileMessage().serialize();
+    const senderAddress = feePayer.toBase58();
     const signResult = await this.signerClient.requestSignature({
       chain: 'solana',
       curve: 'ed25519',
@@ -213,18 +247,74 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issue 05: submits the signed bytes via `sendTransaction` and returns the
-   * resulting signature. Happy path only — proves a correctly signed
-   * transaction reaches the network; issue 06 layers the retry-on-expiry
-   * behavior on top of this same method.
+   * issues 05/06: submits the signed bytes via `sendTransaction` and waits
+   * for confirmation against the exact blockhash `sign` used (tracked in
+   * `blockhashByHash`, since the interface hands `broadcast` only the
+   * opaque bytes). If that blockhash provably expires — at send time
+   * ("Blockhash not found", the reliably-reproducible case: this handler's
+   * own `sign` always fetches a genuinely fresh one, so this only fires for
+   * bytes held past their ~60-90s window) or while waiting for confirmation
+   * (`TransactionExpiredBlockheightExceededError`, the "sent but dropped"
+   * case ADR-0007 exists for — real but not reproducible on demand against
+   * a public devnet) — refreshes the blockhash and resubmits as a genuinely
+   * new Transaction (CONTEXT.md's Attempt-vs-Transaction distinction: the
+   * signed bytes changed), up to a bounded number of refreshes. Externally
+   * produced bytes this handler never signed (no bookkeeping to wait
+   * against — e.g. the conformance suite's `invalidSignedTransaction`
+   * fixture) get a single bare send, matching issue 05's original scope.
    */
   async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
-    const raw = Buffer.from(signed, 'base64');
+    let currentRaw: Buffer<ArrayBufferLike> = Buffer.from(signed, 'base64');
+    const maxRefreshes = 3;
+
+    for (let attempt = 0; ; attempt++) {
+      const sendResult = await this.sendOnce(currentRaw);
+
+      if (!sendResult.ok) {
+        if (isBlockhashExpiryDetail(sendResult.error.chainDetail) && attempt < maxRefreshes) {
+          const refreshed = await this.resignWithFreshBlockhash(currentRaw);
+          if (!refreshed.ok) return refreshed;
+          currentRaw = refreshed.value;
+          continue;
+        }
+        return sendResult;
+      }
+
+      const record = this.blockhashByHash.get(sendResult.value.hash);
+      if (!record) return sendResult; // no bookkeeping for these bytes — issue 05's original bare-send behavior
+
+      try {
+        const confirmation = await this.connection.confirmTransaction(
+          { signature: sendResult.value.hash, blockhash: record.blockhash, lastValidBlockHeight: record.lastValidBlockHeight },
+          'confirmed',
+        );
+        if (confirmation.value.err) {
+          return err({
+            code: 'CHAIN_REJECTED',
+            message: 'devnet reported this transaction as failed',
+            chainDetail: confirmation.value.err,
+          });
+        }
+        return sendResult;
+      } catch (cause) {
+        if (!(cause instanceof TransactionExpiredBlockheightExceededError)) {
+          return err({
+            code: 'RPC_UNAVAILABLE',
+            message: 'failed to confirm broadcast transaction',
+            chainDetail: cause instanceof Error ? cause.message : cause,
+          });
+        }
+        if (attempt >= maxRefreshes) return sendResult; // hand off to getStatus's own expiry check (issue 08)
+        const refreshed = await this.resignWithFreshBlockhash(currentRaw);
+        if (!refreshed.ok) return refreshed;
+        currentRaw = refreshed.value;
+      }
+    }
+  }
+
+  private async sendOnce(raw: Buffer): Promise<Result<BroadcastResult, DispatchError>> {
     try {
-      const hash = await this.connection.sendRawTransaction(raw, {
-        skipPreflight: false,
-        maxRetries: 0,
-      });
+      const hash = await this.connection.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 0 });
       return ok({ hash });
     } catch (cause) {
       return err({
@@ -233,6 +323,27 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         chainDetail: cause instanceof Error ? cause.message : cause,
       });
     }
+  }
+
+  /** issue 06: decodes the previously-signed bytes back to feePayer + instructions and re-signs them fresh, under a genuinely new blockhash. */
+  private async resignWithFreshBlockhash(raw: Buffer): Promise<Result<Buffer, DispatchError>> {
+    let decoded: Transaction;
+    try {
+      decoded = Transaction.from(raw);
+    } catch (cause) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'cannot refresh: not a decodable Solana transaction',
+        chainDetail: cause instanceof Error ? cause.message : cause,
+      });
+    }
+    if (!decoded.feePayer) {
+      return err({ code: 'CHAIN_REJECTED', message: 'cannot refresh: decoded transaction has no feePayer' });
+    }
+
+    const resigned = await this.signInstructions(decoded.feePayer, decoded.instructions);
+    if (!resigned.ok) return resigned;
+    return ok(Buffer.from(resigned.value, 'base64'));
   }
 
   /** issue 07: reads Solana's own commitment levels via getSignatureStatuses. */
