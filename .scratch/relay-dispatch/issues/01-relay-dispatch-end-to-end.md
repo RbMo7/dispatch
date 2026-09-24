@@ -1,13 +1,20 @@
 Status: ready-for-agent
 
-# RelayDispatch domain type and wire format
+# 01: Relay Dispatch end to end (Solana)
 
-A new, deliberately small domain type — `RelayDispatch { id, chain, idempotencyKey, signedTransaction, status, transactionId }` — not a variant of `Dispatch`/`DispatchItem`: a Relay Dispatch is always exactly one already-signed transaction (never a batch), and forcing it into `Dispatch.items[]` would mean every reader of that array handles a permanently-meaningless placeholder. `signedTransaction` is the same opaque `SignedTransaction` string type `ChainHandler.broadcast` already takes — the engine never decodes it itself (ADR-0027's opacity discipline extends here unchanged). Once broadcast, `transactionId` points at an ordinary `Transaction` row (`src/domain/transaction.ts`) — Relay Dispatch reuses that type completely unchanged, never inventing its own.
+**What to build:** A caller can sign a Solana transaction entirely outside the engine — their own wallet, their own key, the engine never sees it — submit it via `POST /v1/dispatch` with `mode: "relay"`, and later poll `GET /v1/dispatch/:id` to see it confirmed. Confirmation is independently verified against real devnet state, not just the engine's own bookkeeping. A malformed or garbage submission is rejected with `400` immediately and never persisted. Resubmitting the same `Idempotency-Key` returns the original result rather than creating a duplicate.
 
-Wire format (`POST /v1/dispatch`, same endpoint as Managed Dispatch — one integration surface, not two):
-- A new optional `mode` field, `"managed" | "relay"`, defaulting to `"managed"` when omitted so every existing caller keeps working unchanged.
-- `mode: "relay"` request body carries `{ chain, signedTransaction }` — no `items`, no `retryPolicy` (Retry Policy doesn't apply: ADR-0005, no key to fee-bump with), no Funding Check (nothing here is the engine's own money).
-- `Idempotency-Key` header still required, same as Managed Dispatch (ADR-0021) — protects against a caller resubmitting a genuinely different signed transaction under retry logic, which a transaction-hash-based dedup key alone wouldn't catch.
-- `GET /v1/dispatch/:id` for a Relay Dispatch returns an honestly distinct shape, not a fake one-item version of Managed Dispatch's `items` array: `{ dispatchId, mode: "relay", status, transactionHash, error }`. Include `mode` in every response (both shapes) so a caller can tell which they're looking at from the body alone.
+**Blocked by:** solana-chain-handler issue 14 (`SolanaChainHandler.validateSignedTransaction`) — this route's whole reason for calling into the Chain Handler at submission time is to use that method.
 
-Update `docs/api.md`'s "Not yet specced" list — Relay Dispatch's wire shape is exactly what this issue defines.
+**Status:** ready-for-agent
+
+- [ ] `POST /v1/dispatch` accepts an optional `mode` field (`"managed" | "relay"`), defaulting to `"managed"` — every existing Managed Dispatch request keeps working unchanged
+- [ ] A `mode: "relay"` request body is `{ chain, signedTransaction }` — no `items`, no `retryPolicy`
+- [ ] A new `RelayDispatch` domain type (`{id, chain, idempotencyKey, signedTransaction, status, transactionId}`) — never a `Dispatch`/`DispatchItem` variant
+- [ ] Repository methods for `RelayDispatch` (create, get, claim-queued) exist on both the in-memory fake and the real Postgres store
+- [ ] The route calls `validateSignedTransaction` before ever persisting a `RelayDispatch`; a failure returns `400` and nothing is queued
+- [ ] `Idempotency-Key` is required; resubmitting the same key returns the original `RelayDispatch`'s current state, never creates a second one
+- [ ] The Coordinator claims a queued `RelayDispatch` and broadcasts it exactly once (no `validateCall`/`prepare`/`sign` step — nothing to build, it already arrived signed)
+- [ ] Confirmation tracking reuses `Coordinator.pollPendingTransactions` completely unchanged — no Relay-Dispatch-specific branch inside it
+- [ ] `GET /v1/dispatch/:id` for a Relay Dispatch returns `{dispatchId, mode: "relay", status, transactionHash, error}` — an honestly distinct shape, not a fake one-item version of Managed Dispatch's `items` array
+- [ ] Proven against real devnet (ADR-0013): a transaction signed by a keypair entirely outside the engine is submitted through the real API, reaches a terminal state, and its effect (recipient balance, or on-chain logs for a non-transfer call) is independently checked against the chain itself

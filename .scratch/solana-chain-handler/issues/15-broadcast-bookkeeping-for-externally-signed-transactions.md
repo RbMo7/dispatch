@@ -1,9 +1,15 @@
-Status: ready-for-agent
+Status: blocked-by-relay-dispatch-01
 
-# Derive blockhash bookkeeping for a transaction this handler didn't itself sign
+# 15: Reliable delivery for externally-signed transactions
 
-`broadcast`'s retry-on-expiry (issue 06) and `getStatus`'s provable-expiry-to-FAILED decision (issue 08, ADR-0030) both depend on `blockhashByHash`, populated today only inside `sign`/`signInstructions` — meaning only for a transaction *this handler* signed. A Relay Dispatch transaction was never signed by us; as written, `broadcast` would silently fall back to its "no bookkeeping for these bytes" bare-send path (issue 05's original scope, intended for the conformance suite's synthetic fixtures, not real traffic) and `getStatus` would silently fall back to the generic Coordinator timeout instead of the clean provable `FAILED` — quietly giving a Relay Dispatch transaction worse reliability than a Managed Dispatch one, for a reason no caller could see.
+**What to build:** A Relay Dispatch transaction gets the same delivery reliability a Managed Dispatch transaction already has. A dropped send is retried automatically with the identical signed bytes. A transaction that's genuinely, provably dead (its blockhash has expired) resolves to a clean, definitive failure — the same guarantee Managed Dispatch already gives — instead of quietly degrading to "we're not sure" just because this handler never produced the signature itself.
 
-Fix: when `broadcast` receives signed bytes with no existing cache entry, decode them (`Transaction.from(raw)`) and populate `blockhashByHash` from the transaction's own embedded `recentBlockhash` before proceeding — the blockhash is public information in the signed bytes themselves; this handler never needed to have produced the signature to read it. `broadcast`'s and `getStatus`'s existing logic then applies completely unchanged.
+**Blocked by:** relay-dispatch issue 01 (needs the real end-to-end pipe to exist to demonstrate this against)
 
-Not blocked on anything — this is a pure internal fix to this handler's own bookkeeping, useful independently of relay-dispatch's other pieces landing first. Verify against real devnet (ADR-0013): sign a transaction with a throwaway keypair *outside* this handler entirely (simulating a real caller), broadcast it through `SolanaChainHandler.broadcast`, and confirm both retry-on-expiry and the provable-`FAILED` path work identically to how they already do for a self-signed transaction (issues 06/08's own tests, just with an externally-produced signature this time).
+**Status:** blocked-by-relay-dispatch-01
+
+- [ ] `broadcast` derives blockhash bookkeeping from a signed transaction's own embedded `recentBlockhash` when it wasn't signed by this handler (no RPC needed — the blockhash is already public information in the signed bytes)
+- [ ] `getStatus`'s provable-expiry-to-`FAILED` decision (ADR-0030) applies identically regardless of who signed the transaction
+- [ ] A transient send failure is retried a small, bounded number of times with the identical signed bytes — never a new blockhash, never a new signature
+- [ ] Each retry is recorded via the existing `DispatchStore.recordBroadcast` as a new Attempt of the same Transaction, never a new Transaction row
+- [ ] Proven against real devnet (ADR-0013): a transaction signed by a keypair entirely outside this handler is held until its blockhash genuinely expires, confirming it resolves to `FAILED` — matching issue 08's existing proof for self-signed transactions, now shown to hold for one this handler never signed
