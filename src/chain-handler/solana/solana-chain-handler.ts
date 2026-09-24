@@ -25,7 +25,8 @@ import type {
 } from '../chain-handler.js';
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
-import { toTransactionInstructions } from './instruction-codec.js';
+import { validateGenericCall } from './contract-call.js';
+import { isNativeTransferCall, toTransactionInstructions } from './instruction-codec.js';
 import {
   NATIVE_ASSET_SYMBOL,
   resolveKnownToken,
@@ -195,10 +196,24 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     );
   }
 
-  /** issues 02/03: cheap shape validation only, dispatched by which program the Call targets. Never an RPC round-trip. */
+  /**
+   * issues 02/03/(contract-call.ts): cheap shape validation only, dispatched
+   * by which program the Call targets. Never an RPC round-trip.
+   *
+   * Previously mis-dispatched: anything that wasn't an SPL Token call fell
+   * through to `validateNativeTransferCall`, which enforces an exact
+   * 2-account shape and never checks `programId` at all — so a real
+   * arbitrary contract call (CONTEXT.md's Call entry: "a beneficiary's own
+   * application-defined contract call ... the engine submits without
+   * needing to understand its semantics") with any other account count was
+   * wrongly rejected before ever reaching `prepare`, which already handled
+   * it correctly. Now dispatches on the actual program id, with a generic,
+   * semantics-free fallback for everything that isn't System or Token.
+   */
   validateCall(call: SolanaCall): Promise<Result<void, DispatchError>> {
     if (isSplTransferCall(call)) return Promise.resolve(validateSplTransferCall(call));
-    return Promise.resolve(validateNativeTransferCall(call));
+    if (isNativeTransferCall(call)) return Promise.resolve(validateNativeTransferCall(call));
+    return Promise.resolve(validateGenericCall(call));
   }
 
   /**
