@@ -25,5 +25,5 @@ Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domai
 
 - `old-docs/` is a frozen snapshot from the prior product this repo diverged from — reference only, never treat it as current.
 - `docs/api.md` pins the `/v1/dispatch` wire format.
-- Current work order: `.scratch/core-engine-scaffold/` (spec done, `Status: ready-for-agent`, issues `01`–`09`) before anything chain-specific; `.scratch/solana-chain-handler/` (spec done, issues `01`–`12`) is the first real chain, blocked on the scaffold; `.scratch/relay-dispatch/` has a spec but no issues yet (deliberately — see ADR-0026).
+- Current work order: `.scratch/core-engine-scaffold/` (spec done, issues `01`–`09` implemented, issue `13` — `ChainHandler.validateSignedTransaction` — ready-for-agent, `10`–`12` still needs-triage); `.scratch/solana-chain-handler/` (spec done, issues `01`–`12` implemented, `13` needs-triage, `14`–`16` ready once core-engine-scaffold issue `13` lands) is the first real chain; `.scratch/relay-dispatch/` (spec done, issues `01`–`04` ready-for-agent) is unblocked now that ADR-0026's precondition — Solana's broadcast/blockhash-retry/status-tracking — has landed.
 - Nothing has been implemented yet. The first ticket to pick up is `.scratch/core-engine-scaffold/issues/01-repo-scaffold.md`.
