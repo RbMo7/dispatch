@@ -1,9 +1,0 @@
-Status: blocked-by-01,02
-
-# Coordinator: claim and broadcast a queued RelayDispatch
-
-New methods on the existing `Coordinator` class (`src/coordinator/coordinator.ts`) — not a separate class: it already holds exactly the deps this needs (`store`, `chainHandlers`), and a second coordinator instance sharing identical config wherever the worker runs would be pure duplication. `processQueuedRelayDispatches(limit)`: claims queued `RelayDispatch` rows, calls `handler.broadcast(signedTransaction)` once per row, persists the resulting `Transaction`, and attaches its id back onto the `RelayDispatch`. No `validateCall`/`prepare`/`sign` step exists here at all — there is no Call to build, the transaction already arrived fully formed.
-
-For the "retry delivery of the same signed bytes on transient failure" behavior ADR-0005 already commits to (never a new blockhash, never a new signature — the same bytes, since the engine has no key to produce different ones): a small bounded retry (about 3 attempts with backoff) around the initial broadcast call, using the existing-but-currently-unused `DispatchStore.recordBroadcast` to record each resend as a new Attempt of the same Transaction (CONTEXT.md's own Attempt-vs-Transaction distinction), never a new Transaction row. Once sent successfully once, this method's job is done — everything from there (confirmed, provably failed, or abandoned-after-timeout) is `pollPendingTransactions`'s job.
-
-Also write the test that proves the actual point of this whole design: `Coordinator.pollPendingTransactions` needs zero changes to handle a `RelayDispatch`-originated `Transaction` correctly — it already only ever looks at `Transaction` rows and has no awareness of `Dispatch`, `Payment`, or `Call`. If this test needs you to change `pollPendingTransactions`, that's a signal the domain split in issue 01 was wrong, not something to patch around here.
