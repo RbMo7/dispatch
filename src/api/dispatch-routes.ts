@@ -179,12 +179,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
             .send({ error: 'a relay dispatch requires a string signedTransaction' });
         }
         if (items !== undefined || retryPolicy !== undefined) {
-          return reply
-            .code(400)
-            .send({
-              error:
-                'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy',
-            });
+          return reply.code(400).send({
+            error:
+              'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy',
+          });
         }
 
         // ADR-0032: cheap, RPC-free validation before ever persisting —

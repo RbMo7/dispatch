@@ -115,12 +115,26 @@ function decodeUnsignedTransaction(unsigned: UnsignedTransaction): EncodedTransa
 /**
  * `getStatus`'s only way to know whether a not-yet-confirmed transaction's
  * blockhash has provably expired (issue 08) — the interface hands it only a
- * hash, never the blockhash/lastValidBlockHeight that produced it, so
- * `sign`/`broadcast` record it here the moment they know it. Lost on
- * process restart, which only widens the fallback window (see issue 08's
- * doc comment on `getStatus`), never causes an incorrect answer.
+ * hash, never the blockhash that produced it, so `sign`/`broadcast` record
+ * it here the moment they know it. Lost on process restart, which only
+ * widens the fallback window (see issue 08's doc comment on `getStatus`),
+ * never causes an incorrect answer.
  */
-type BlockhashRecord = { blockhash: string; lastValidBlockHeight: number };
+type BlockhashRecord = {
+  blockhash: string;
+  /**
+   * issue 15 (ADR-0033): whether this handler's own key produced the
+   * signature over this blockhash. `true` for anything `signInstructions`
+   * itself signed — a fresh blockhash and a fresh Signer-produced
+   * signature can replace it on expiry (issue 06). `false` for a record
+   * `broadcast` derived from already-signed bytes it never itself
+   * produced (a Relay Dispatch transaction) — there is no key here to
+   * produce a replacement signature with (ADR-0005), so expiry for one of
+   * these must resolve to a clean FAILED instead of an attempted, always-
+   * doomed resign.
+   */
+  resignable: boolean;
+};
 
 export type SolanaChainHandlerDeps = {
   connection: Connection;
@@ -344,7 +358,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const hash = bs58.encode(signatureBytes);
-    this.blockhashByHash.set(hash, { blockhash, lastValidBlockHeight });
+    this.blockhashByHash.set(hash, { blockhash, resignable: true });
 
     return ok(
       tx.serialize({ requireAllSignatures: true, verifySignatures: false }).toString('base64'),
@@ -389,30 +403,40 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issues 05/06: submits the signed bytes via `sendTransaction` and waits
-   * for confirmation against the exact blockhash `sign` used (tracked in
-   * `blockhashByHash`, since the interface hands `broadcast` only the
+   * issues 05/06/15: submits the signed bytes via `sendTransaction` and
+   * waits for confirmation against the exact blockhash `sign` used (tracked
+   * in `blockhashByHash`, since the interface hands `broadcast` only the
    * opaque bytes) — via `pollUntilConfirmedOrExpired` below, plain HTTP
    * polling only, deliberately never `connection.confirmTransaction`
-   * (see that method's own doc comment for why). If that blockhash provably
+   * (see that method's own doc comment for why).
+   *
+   * issue 15/ADR-0033: bytes this handler never itself signed (a Relay
+   * Dispatch transaction) get the exact same bookkeeping treatment as
+   * self-signed ones — `ensureBlockhashRecord` derives it straight from the
+   * signed bytes' own embedded blockhash, no RPC needed — but are marked
+   * `resignable: false` (see `BlockhashRecord`), since there is no key here
+   * to produce a replacement signature with. If that blockhash provably
    * expires — at send time ("Blockhash not found", the reliably-
    * reproducible case: this handler's own `sign` always fetches a
    * genuinely fresh one, so this only fires for bytes held past their
    * ~60-90s window) or while waiting for confirmation (the "sent but
    * dropped" case ADR-0007 exists for — real but not reproducible on
-   * demand against a public devnet) — refreshes the blockhash and
-   * resubmits as a genuinely new Transaction (CONTEXT.md's
+   * demand against a public devnet) — a resignable record refreshes the
+   * blockhash and resubmits as a genuinely new Transaction (CONTEXT.md's
    * Attempt-vs-Transaction distinction: the signed bytes changed), up to a
-   * bounded number of refreshes. Externally produced bytes this handler
-   * never signed (no bookkeeping to wait against — e.g. the conformance
-   * suite's `invalidSignedTransaction` fixture) get a single bare send,
-   * matching issue 05's original scope.
+   * bounded number of refreshes; a non-resignable one never attempts that
+   * (it would only ever fail, since the Signer holds no key for this
+   * transaction's fee payer) and instead hands off to `getStatus`'s own
+   * provable-expiry check (issue 08), which now has the bookkeeping it
+   * needs to resolve a clean, definitive FAILED for these too.
    */
   async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
     let currentRaw: Buffer<ArrayBufferLike> = Buffer.from(signed, 'base64');
     const maxRefreshes = 3;
 
     for (let attempt = 0; ; attempt++) {
+      const record = this.ensureBlockhashRecord(currentRaw);
+
       let hash: string;
       try {
         hash = await this.connection.sendRawTransaction(currentRaw, {
@@ -420,7 +444,11 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
           maxRetries: 0,
         });
       } catch (cause) {
-        if (isBlockhashExpiryMessage(extractMessage(cause)) && attempt < maxRefreshes) {
+        if (
+          isBlockhashExpiryMessage(extractMessage(cause)) &&
+          attempt < maxRefreshes &&
+          record?.resignable !== false
+        ) {
           const refreshed = await this.resignWithFreshBlockhash(currentRaw);
           if (!refreshed.ok) return refreshed;
           currentRaw = refreshed.value;
@@ -429,10 +457,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         return err(mapSolanaFailure(cause));
       }
 
-      const record = this.blockhashByHash.get(hash);
-      if (!record) return ok({ hash }); // no bookkeeping for these bytes — issue 05's original bare-send behavior
+      const sentRecord = this.blockhashByHash.get(hash);
+      if (!sentRecord) return ok({ hash }); // defensive only — ensureBlockhashRecord above already covers any decodable transaction
 
-      const outcome = await this.pollUntilConfirmedOrExpired(hash, record);
+      const outcome = await this.pollUntilConfirmedOrExpired(hash, sentRecord);
       if (outcome.type === 'confirmed') return ok({ hash });
       if (outcome.type === 'failed') {
         return err({
@@ -444,7 +472,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       if (outcome.type === 'error') return err(outcome.error);
 
       // outcome.type === 'expired'
-      if (attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08)
+      if (!sentRecord.resignable || attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08/15)
       const refreshed = await this.resignWithFreshBlockhash(currentRaw);
       if (!refreshed.ok) return refreshed;
       currentRaw = refreshed.value;
@@ -525,6 +553,32 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
   }
 
+  /**
+   * issue 15/ADR-0033: `broadcast`'s only source of bookkeeping for signed
+   * bytes it never itself produced — a transaction's signature (its own
+   * hash) and its blockhash are both already public information embedded
+   * in the bytes themselves, so no RPC round-trip is needed to read them
+   * back out, only to decode. Never downgrades an existing record (e.g.
+   * one `signInstructions` already populated as `resignable: true`);
+   * returns `undefined` for bytes that don't decode or lack a signature/
+   * blockhash, leaving `broadcast`'s own pre-existing behavior for those
+   * unchanged.
+   */
+  private ensureBlockhashRecord(raw: Buffer): BlockhashRecord | undefined {
+    const decodedResult = this.decodeSignedTransaction(raw);
+    if (!decodedResult.ok) return undefined;
+    const tx = decodedResult.value;
+    if (!tx.signature || !tx.recentBlockhash) return undefined;
+
+    const hash = bs58.encode(tx.signature);
+    const existing = this.blockhashByHash.get(hash);
+    if (existing) return existing;
+
+    const record: BlockhashRecord = { blockhash: tx.recentBlockhash, resignable: false };
+    this.blockhashByHash.set(hash, record);
+    return record;
+  }
+
   /** issue 06: decodes the previously-signed bytes back to feePayer + instructions and re-signs them fresh, under a genuinely new blockhash. */
   private async resignWithFreshBlockhash(raw: Buffer): Promise<Result<Buffer, DispatchError>> {
     const decodedResult = this.decodeSignedTransaction(raw);
@@ -566,12 +620,17 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * honest `FAILED` (ADR-0030), not "the engine gave up watching without a
    * definitive outcome" (CONTEXT.md's own definition of ABANDONED). This
    * only works because `sign`/`broadcast` (this instance) already recorded
-   * that blockhash in `blockhashByHash` — a signature with no recorded
-   * blockhash (e.g. after a process restart, or bytes this handler never
-   * itself signed) falls back to plain PENDING, unresolved by `getStatus`
-   * itself; the Coordinator's own `abandonmentTimeoutMs` config for
-   * 'solana' is pinned generously past the blockhash window purely as that
-   * fallback's safety net, not the primary mechanism.
+   * that blockhash in `blockhashByHash` — as of issue 15/ADR-0033, that
+   * includes bytes this handler never itself signed too (`broadcast`'s
+   * `ensureBlockhashRecord` derives the record straight from the bytes), so
+   * a Relay Dispatch transaction gets the identical provable-FAILED
+   * resolution a Managed Dispatch one does. A signature with genuinely no
+   * recorded blockhash (only after a process restart, since every
+   * `broadcast` call now records one) falls back to plain PENDING,
+   * unresolved by `getStatus` itself; the Coordinator's own
+   * `abandonmentTimeoutMs` config for 'solana' is pinned generously past
+   * the blockhash window purely as that fallback's safety net, not the
+   * primary mechanism.
    */
   async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
     try {
