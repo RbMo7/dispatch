@@ -27,6 +27,16 @@ import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type SolanaTokenRegistry } from
 import { buildNativeTransferCall, parsePublicKey, validateNativeTransferCall } from './native-transfer.js';
 import { buildSplTransferCall, isSplTransferCall, validateSplTransferCall } from './spl-transfer.js';
 
+/**
+ * The Coordinator's `abandonmentTimeoutMs` config value for `'solana'`
+ * (ADR-0030) — a fallback safety net only, comfortably past a blockhash's
+ * ~60-90s validity window, for the one case `getStatus`'s own
+ * provable-expiry check can't cover (no `blockhashByHash` record for the
+ * hash, e.g. after a process restart). In ordinary operation `getStatus`
+ * itself resolves a stuck transaction to FAILED well before this fires.
+ */
+export const SOLANA_ABANDONMENT_TIMEOUT_MS = 120_000;
+
 /** The opaque `UnsignedTransaction` encoding this Chain Handler chooses (ADR-0027) — its shape is this file's own business, never assumed elsewhere. */
 type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: string };
 type EncodedTransaction = { feePayer: string; instructions: EncodedInstruction[] };
@@ -346,15 +356,42 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     return ok(Buffer.from(resigned.value, 'base64'));
   }
 
-  /** issue 07: reads Solana's own commitment levels via getSignatureStatuses. */
+  /**
+   * issue 07: reads Solana's own commitment levels via getSignatureStatuses.
+   *
+   * issue 08's decision: Solana never needs the Coordinator's generic
+   * ABANDONED timeout at all. Unlike EVM, a stuck Solana transaction's dead
+   * end is *provable*: once its blockhash's ~150-slot validity window has
+   * definitively passed with no signature status ever recorded, it
+   * mathematically cannot be included in any future block — a clean,
+   * honest `FAILED` (ADR-0030), not "the engine gave up watching without a
+   * definitive outcome" (CONTEXT.md's own definition of ABANDONED). This
+   * only works because `sign`/`broadcast` (this instance) already recorded
+   * that blockhash in `blockhashByHash` — a signature with no recorded
+   * blockhash (e.g. after a process restart, or bytes this handler never
+   * itself signed) falls back to plain PENDING, unresolved by `getStatus`
+   * itself; the Coordinator's own `abandonmentTimeoutMs` config for
+   * 'solana' is pinned generously past the blockhash window purely as that
+   * fallback's safety net, not the primary mechanism.
+   */
   async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
     try {
       const { value } = await this.connection.getSignatureStatuses([hash]);
       const status = value[0];
-      if (!status) return ok('PENDING');
-      if (status.err) return ok('FAILED');
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-        return ok('CONFIRMED');
+      if (status) {
+        if (status.err) return ok('FAILED');
+        if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+          return ok('CONFIRMED');
+        }
+        return ok('PENDING');
+      }
+
+      const record = this.blockhashByHash.get(hash);
+      if (record) {
+        const { value: stillValid } = await this.connection.isBlockhashValid(record.blockhash, {
+          commitment: 'confirmed',
+        });
+        if (!stillValid) return ok('FAILED');
       }
       return ok('PENDING');
     } catch (cause) {
