@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
 import {
@@ -38,9 +40,30 @@ import { buildSplTransferCall, isSplTransferCall, validateSplTransferCall } from
  */
 export const SOLANA_ABANDONMENT_TIMEOUT_MS = 120_000;
 
+/**
+ * issue 10: bundles multiple Calls into one transaction via Solana's native
+ * multi-instruction support (ADR-0006's Solana-specific answer to batching;
+ * no separate Bulk Call concept needed here). Measured directly against
+ * this codec's own worst case, one create-ATA plus transferChecked pair per
+ * payment, all distinct recipients/mints, one signer: 10 payments serialize
+ * to about 1204 bytes total, just inside the 1232-byte legacy transaction
+ * limit; 11 measures at about 1295 bytes and exceeds it. Shipping 8 rather
+ * than the measured ceiling of 10 leaves headroom this synthetic worst case
+ * doesn't account for. Re-measure if instruction-codec.ts ever changes
+ * what a Call expands into.
+ */
+const MAX_BUNDLE_SIZE = 8;
+
 /** The opaque `UnsignedTransaction` encoding this Chain Handler chooses (ADR-0027) — its shape is this file's own business, never assumed elsewhere. */
 type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: string };
-type EncodedTransaction = { feePayer: string; instructions: EncodedInstruction[] };
+/**
+ * `chunkNonce` ties every item bundled into the same transaction together
+ * (issue 10) — generated once per chunk in `prepare`, including for a
+ * solo, unbundled item (its own unique chunk of size 1), so two otherwise
+ * byte-identical Calls prepared separately never accidentally collide in
+ * `signedByChunk` below.
+ */
+type EncodedTransaction = { chunkNonce: string; feePayer: string; instructions: EncodedInstruction[] };
 
 function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
   return {
@@ -106,6 +129,15 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   private readonly senderAddress: string;
   private readonly knownTokens: SolanaTokenRegistry;
   private readonly blockhashByHash = new Map<string, BlockhashRecord>();
+  /**
+   * issue 10: one signature per bundle chunk, however many Calls share it —
+   * see `sign`. Caches the in-flight *promise*, not just its resolved
+   * value: the Coordinator signs one Call at a time so this never races in
+   * practice, but caching only the resolved value would still let two
+   * concurrent callers for the same chunk both slip past the check before
+   * either finishes, producing two real signatures for one bundle.
+   */
+  private readonly signByChunk = new Map<string, Promise<Result<SignedTransaction, DispatchError>>>();
 
   constructor(deps: SolanaChainHandlerDeps) {
     this.connection = deps.connection;
@@ -151,11 +183,18 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issues 02/03: builds the real instruction(s) for each Call — one for a
-   * plain transfer, [create-ATA, transferChecked] for an SPL transfer whose
-   * destination might not exist yet (instruction-codec.ts). Deliberately
-   * does not touch a blockhash at all (issue 04: fetched immediately before
-   * signing, not here, or it goes stale under batch volume).
+   * issues 02/03/10: builds the real instruction(s) for each Call — one for
+   * a plain transfer, [create-ATA, transferChecked] for an SPL transfer
+   * whose destination might not exist yet (instruction-codec.ts) — then
+   * bundles consecutive Calls into chunks of up to `MAX_BUNDLE_SIZE`,
+   * sharing one real transaction per chunk (issue 10). Still returns
+   * exactly one `PreparedTransaction` per input Call, in order (the
+   * conformance suite's own contract): items in the same chunk get
+   * byte-identical `unsignedTransaction` encodings, tied together by a
+   * `chunkNonce` so `sign` (below) only ever asks the Signer once per
+   * chunk. Deliberately does not touch a blockhash at all (issue 04:
+   * fetched immediately before signing, not here, or it goes stale under
+   * batch volume).
    */
   prepare(
     items: SolanaCall[],
@@ -164,14 +203,21 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const feePayer = parsePublicKey(senderAddress);
     if (!feePayer.ok) return Promise.resolve(feePayer);
 
-    const prepared: PreparedTransaction[] = items.map((call, callIndex) => {
-      const instructions = toTransactionInstructions(call, feePayer.value);
+    const prepared: PreparedTransaction[] = [];
+    for (let chunkStart = 0; chunkStart < items.length; chunkStart += MAX_BUNDLE_SIZE) {
+      const chunk = items.slice(chunkStart, chunkStart + MAX_BUNDLE_SIZE);
+      const chunkNonce = randomUUID();
+      const instructions = chunk.flatMap((call) => toTransactionInstructions(call, feePayer.value));
       const encoded: EncodedTransaction = {
+        chunkNonce,
         feePayer: senderAddress,
         instructions: instructions.map(encodeInstruction),
       };
-      return { callIndex, unsignedTransaction: encodeUnsignedTransaction(encoded) };
-    });
+      const unsignedTransaction = encodeUnsignedTransaction(encoded);
+      chunk.forEach((_call, offset) => {
+        prepared.push({ callIndex: chunkStart + offset, unsignedTransaction });
+      });
+    }
 
     return Promise.resolve(ok(prepared));
   }
@@ -182,6 +228,19 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * volume, per the reference implementation's own documented incident),
    * compiles the message, delegates to the Signer client for the `ed25519`
    * curve, and attaches the returned signature.
+   *
+   * issue 10: when `prepared` is one of several PreparedTransactions
+   * sharing a bundle (identical `unsignedTransaction`, tied together by
+   * `chunkNonce`), only the first call actually signs — the rest return the
+   * same cached signature rather than asking the Signer again for the
+   * identical transaction and, more importantly, rather than producing a
+   * *second, differently-blockhashed* signed transaction for the same
+   * bundle. That second signature would itself be safe to broadcast
+   * (Solana's own signature-based dedup makes resubmitting truly identical
+   * bytes a no-op), but it would still legitimately re-execute every
+   * instruction in the bundle a second time if it used a different
+   * blockhash — this cache is what keeps a bundle a single execution no
+   * matter how many of its Calls individually call `sign`.
    */
   async sign(
     prepared: PreparedTransaction,
@@ -194,7 +253,19 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         message: `PreparedTransaction was built for ${encoded.feePayer}, asked to sign as ${senderAddress}`,
       });
     }
-    return this.signInstructions(new PublicKey(senderAddress), encoded.instructions.map(decodeInstruction));
+
+    const inFlight = this.signByChunk.get(encoded.chunkNonce);
+    if (inFlight) return inFlight;
+
+    const promise = this.signInstructions(
+      new PublicKey(senderAddress),
+      encoded.instructions.map(decodeInstruction),
+    );
+    this.signByChunk.set(encoded.chunkNonce, promise);
+
+    const result = await promise;
+    if (!result.ok) this.signByChunk.delete(encoded.chunkNonce); // don't permanently cache a failure — a later legitimate retry should get a fresh attempt
+    return result;
   }
 
   /**
