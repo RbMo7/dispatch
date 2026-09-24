@@ -1,5 +1,5 @@
 import { createPrivateKey, sign as nodeSign } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -150,7 +150,7 @@ function signEd25519(seed: Buffer, message: Buffer): Buffer {
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req as AsyncIterable<Buffer>) chunks.push(chunk as Buffer);
+  for await (const chunk of req as AsyncIterable<Buffer>) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
 
