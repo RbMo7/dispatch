@@ -632,3 +632,88 @@ describe('Coordinator.pollPendingTransactions for a Relay Dispatch', () => {
     expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
   });
 });
+
+describe('Coordinator.rewatchAbandonedTransactions', () => {
+  async function createAbandonedTransaction(store: InMemoryDispatchStore): Promise<string> {
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: `key-${Math.random()}`,
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'signed-bytes',
+      hash: 'hash-1',
+    });
+    await store.markAbandoned(transaction.id);
+    return transaction.id;
+  }
+
+  it('confirms a previously-ABANDONED Transaction that turns out to have landed after all', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('CONFIRMED'));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('fails a previously-ABANDONED Transaction that the chain now reports as FAILED', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('FAILED'));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    const transaction = store.getTransaction(transactionId);
+    expect(transaction?.status).toBe('FAILED');
+    expect(transaction?.error?.code).toBe('CHAIN_REJECTED');
+  });
+
+  it('leaves a Transaction ABANDONED when the chain still reports it as PENDING', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('PENDING'));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
+  });
+
+  it('leaves a Transaction ABANDONED when getStatus itself fails', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
+  });
+
+  it('never re-checks a Transaction abandoned before the bounded re-watch window', async () => {
+    const { store, handler, coordinator, advance } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    advance(25 * 60 * 60 * 1000); // past the default 24h re-watch window
+    handler.getStatus.mockResolvedValueOnce(ok('CONFIRMED'));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(handler.getStatus).not.toHaveBeenCalled();
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
+  });
+
+  it('respects the limit parameter', async () => {
+    const { store, handler, coordinator } = setup();
+    await createAbandonedTransaction(store);
+    await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValue(ok('CONFIRMED'));
+
+    await coordinator.rewatchAbandonedTransactions(1);
+
+    expect(handler.getStatus).toHaveBeenCalledTimes(1);
+  });
+});

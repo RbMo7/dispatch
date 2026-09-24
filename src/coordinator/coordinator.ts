@@ -13,6 +13,18 @@ import type { DispatchStore } from '../repository/dispatch-store.js';
 const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
 const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
 
+/**
+ * issue 10 (ADR-0004/CONTEXT.md's ABANDONED entry): how long after being
+ * marked ABANDONED a Transaction is still worth a low-frequency re-check —
+ * "bounded window," not forever. A caller who resent a payment after
+ * seeing ABANDONED has, by this point, long since made their own decision;
+ * re-watching indefinitely would just be spending RPC calls confirming a
+ * fact nobody's still waiting to learn. 24 hours comfortably covers "the
+ * transaction was actually still in some mempool and eventually got
+ * included," the scenario ADR-0004 exists for, without watching forever.
+ */
+const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -37,6 +49,8 @@ export type CoordinatorDeps = {
   senderAddresses: Map<Chain, string>;
   /** The chain-aware ABANDONED timeout (ADR-0004) — how long a still-PENDING transaction may wait, with Retry Policy off, before the Coordinator stops watching it. */
   abandonmentTimeoutMs: Map<Chain, number>;
+  /** issue 10: how long after being marked ABANDONED a Transaction is still eligible for the low-frequency re-watch (see rewatchAbandonedTransactions). Defaults to DEFAULT_ABANDONED_REWATCH_WINDOW_MS. */
+  abandonedRewatchWindowMs?: number;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -59,6 +73,7 @@ export class Coordinator {
   private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
+  private readonly abandonedRewatchWindowMs: number;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
@@ -68,6 +83,7 @@ export class Coordinator {
     this.chainHandlers = deps.chainHandlers;
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
+    this.abandonedRewatchWindowMs = deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
@@ -299,6 +315,28 @@ export class Coordinator {
     }
   }
 
+  /**
+   * issue 10 (ADR-0004/CONTEXT.md): "the engine keeps a low-frequency
+   * background check running for [an ABANDONED transaction], for a
+   * bounded window, and reports if it does [confirm]." Deliberately a
+   * separate method from pollPendingTransactions, not a second branch
+   * inside it — the whole point is a genuinely different (much slower)
+   * cadence, which the caller controls simply by calling this less often,
+   * not by any state this method itself has to track. A transaction
+   * whose abandonedAt has aged out of the bounded window is silently
+   * excluded by the store query below and never looked at again — that's
+   * not a bug, it's "stopped watching" finally meaning it.
+   */
+  async rewatchAbandonedTransactions(limit: number): Promise<void> {
+    const notAbandonedBefore = new Date(this.now().getTime() - this.abandonedRewatchWindowMs);
+    const abandoned = await this.store.listAbandonedTransactions(limit, notAbandonedBefore);
+    this.logger.debug({ count: abandoned.length, limit }, 'rewatching abandoned transactions');
+
+    for (const transaction of abandoned) {
+      await this.resolveAbandonedTransaction(transaction);
+    }
+  }
+
   private async processCall(
     dispatch: Dispatch,
     handler: ChainHandler,
@@ -376,40 +414,9 @@ export class Coordinator {
   }
 
   private async resolvePendingTransaction(transaction: Transaction): Promise<void> {
-    if (!transaction.hash) {
-      throw new Error(
-        `Transaction ${transaction.id} is PENDING but has no hash — only a broadcast Transaction should ever be PENDING.`,
-      );
-    }
-    const log = this.logger.child({
-      transactionId: transaction.id,
-      hash: transaction.hash,
-      chain: transaction.chain,
-    });
-
-    const handler = this.requireChainHandler(transaction.chain);
-    const statusResult = await handler.getStatus(transaction.hash);
-
-    if (statusResult.ok && statusResult.value === 'CONFIRMED') {
-      log.info('transaction confirmed');
-      await this.store.markConfirmed(transaction.id);
-      return;
-    }
-
-    if (statusResult.ok && statusResult.value === 'FAILED') {
-      log.info('transaction failed');
-      await this.store.markFailed(transaction.id, {
-        code: 'CHAIN_REJECTED',
-        message: `${transaction.chain} reported this transaction as failed`,
-      });
-      return;
-    }
-
-    if (!statusResult.ok) {
-      log.warn({ error: statusResult.error }, 'getStatus failed, still pending');
-    } else {
-      log.debug('transaction still pending');
-    }
+    const log = this.transactionLogger(transaction);
+    const resolved = await this.tryResolveByStatus(transaction, log);
+    if (resolved) return;
 
     // Either still PENDING on-chain, or the status check itself failed (e.g.
     // RPC unavailable) — either way, fall through to the ABANDONED timeout.
@@ -419,6 +426,75 @@ export class Coordinator {
     // trouble is exactly a case where the engine should eventually stop
     // watching, not one where the timeout silently never fires.
     await this.maybeAbandon(transaction, log);
+  }
+
+  /**
+   * issue 10: the exact same CONFIRMED/FAILED resolution a still-PENDING
+   * Transaction gets, applied identically to an already-ABANDONED one
+   * being re-watched — "reports if it does [confirm]" (CONTEXT.md) means
+   * exactly this: update the Transaction's own status, so the next poll
+   * of GET /v1/dispatch/:id tells the truth. No new event/webhook concept
+   * needed (ADR-0023 defers those anyway); polling is already how every
+   * other status change gets reported. If it's neither, it simply stays
+   * ABANDONED — never re-abandoned, never re-timed-out — until either the
+   * next low-frequency check resolves it or the bounded window excludes
+   * it from being checked at all.
+   */
+  private async resolveAbandonedTransaction(transaction: Transaction): Promise<void> {
+    const log = this.transactionLogger(transaction).child({ rewatch: true });
+    const resolved = await this.tryResolveByStatus(transaction, log);
+    if (resolved) {
+      log.info('previously-ABANDONED transaction resolved after all');
+    }
+  }
+
+  private transactionLogger(transaction: Transaction): Logger {
+    return this.logger.child({
+      transactionId: transaction.id,
+      hash: transaction.hash,
+      chain: transaction.chain,
+    });
+  }
+
+  /**
+   * Shared by resolvePendingTransaction and resolveAbandonedTransaction:
+   * checks on-chain status and, if it's now definitive, persists it and
+   * returns true. Returns false for anything still unresolved (genuinely
+   * PENDING on-chain, or the status check itself failed) — each caller
+   * decides what "still unresolved" means for its own transaction (start
+   * the ABANDONED clock; or, for one already ABANDONED, nothing at all).
+   */
+  private async tryResolveByStatus(transaction: Transaction, log: Logger): Promise<boolean> {
+    if (!transaction.hash) {
+      throw new Error(
+        `Transaction ${transaction.id} has no hash — only a broadcast Transaction should ever reach status resolution.`,
+      );
+    }
+
+    const handler = this.requireChainHandler(transaction.chain);
+    const statusResult = await handler.getStatus(transaction.hash);
+
+    if (statusResult.ok && statusResult.value === 'CONFIRMED') {
+      log.info('transaction confirmed');
+      await this.store.markConfirmed(transaction.id);
+      return true;
+    }
+
+    if (statusResult.ok && statusResult.value === 'FAILED') {
+      log.info('transaction failed');
+      await this.store.markFailed(transaction.id, {
+        code: 'CHAIN_REJECTED',
+        message: `${transaction.chain} reported this transaction as failed`,
+      });
+      return true;
+    }
+
+    if (!statusResult.ok) {
+      log.warn({ error: statusResult.error }, 'getStatus failed, still unresolved');
+    } else {
+      log.debug('transaction still pending on-chain');
+    }
+    return false;
   }
 
   private async maybeAbandon(transaction: Transaction, log: Logger): Promise<void> {

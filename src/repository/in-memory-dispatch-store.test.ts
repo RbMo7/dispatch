@@ -219,7 +219,9 @@ describe('InMemoryDispatchStore', () => {
 
       await store.markAbandoned(transaction.id);
 
-      expect(store.getTransaction(transaction.id)?.status).toBe('ABANDONED');
+      const abandoned = store.getTransaction(transaction.id);
+      expect(abandoned?.status).toBe('ABANDONED');
+      expect(abandoned?.abandonedAt).toBeInstanceOf(Date);
     });
 
     it('records a re-broadcast without changing status', async () => {
@@ -323,6 +325,92 @@ describe('InMemoryDispatchStore', () => {
       });
 
       expect(await store.listTransactions(dispatch.id)).toEqual([]);
+    });
+  });
+
+  describe('listAbandonedTransactions', () => {
+    it('returns only ABANDONED transactions whose abandonedAt is no earlier than notAbandonedBefore', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const stillPending = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-pending',
+      });
+      const abandonedLongAgo = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-old',
+      });
+      await clock.markAbandoned(abandonedLongAgo.id);
+
+      currentTime = new Date('2024-01-02T00:00:00.000Z'); // 24h later
+      const abandonedRecently = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 2,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-recent',
+      });
+      await clock.markAbandoned(abandonedRecently.id);
+
+      // A window that only includes the last 1 hour — excludes the one
+      // abandoned 24h ago, excludes the still-PENDING one entirely (wrong
+      // status), includes only the one abandoned 24h into the timeline.
+      const notAbandonedBefore = new Date(currentTime.getTime() - 60 * 60 * 1000);
+      const result = await clock.listAbandonedTransactions(10, notAbandonedBefore);
+
+      expect(result.map((t) => t.id)).toEqual([abandonedRecently.id]);
+      expect(result.map((t) => t.id)).not.toContain(stillPending.id);
+      expect(result.map((t) => t.id)).not.toContain(abandonedLongAgo.id);
+    });
+
+    it('orders oldest-abandoned first and respects the limit', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+
+      const second = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-a',
+      });
+      currentTime = new Date('2024-01-01T01:00:00.000Z');
+      await clock.markAbandoned(second.id);
+
+      currentTime = new Date('2024-01-01T00:30:00.000Z'); // abandoned earlier than `second`, even though created after it
+      const first = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-b',
+      });
+      await clock.markAbandoned(first.id);
+
+      const all = await clock.listAbandonedTransactions(10, new Date(0));
+      expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
+
+      const limited = await clock.listAbandonedTransactions(1, new Date(0));
+      expect(limited.map((t) => t.id)).toEqual([first.id]);
     });
   });
 

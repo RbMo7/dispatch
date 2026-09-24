@@ -49,6 +49,8 @@ export const transactions = pgTable('transactions', {
   status: text('status').notNull().default('PENDING'),
   error: jsonb('error').$type<DispatchError | null>(),
   broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
+  /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
+  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
 });
 
 export const attempts = pgTable('attempts', {

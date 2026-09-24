@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
@@ -41,6 +41,7 @@ function toTransaction(row: TransactionRow): Transaction {
     status: row.status as TransactionStatus,
     error: row.error ?? null,
     broadcastAt: row.broadcastAt,
+    abandonedAt: row.abandonedAt,
   };
 }
 
@@ -143,6 +144,18 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(toTransaction);
   }
 
+  async listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: and(
+        eq(transactions.status, 'ABANDONED'),
+        gte(transactions.abandonedAt, notAbandonedBefore),
+      ),
+      orderBy: transactions.abandonedAt,
+      limit,
+    });
+    return rows.map(toTransaction);
+  }
+
   async createTransaction(input: NewTransactionInput): Promise<Transaction> {
     const [row] = await this.db
       .insert(transactions)
@@ -204,7 +217,7 @@ export class PostgresDispatchStore implements DispatchStore {
   async markAbandoned(transactionId: string): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'ABANDONED' })
+      .set({ status: 'ABANDONED', abandonedAt: new Date() })
       .where(eq(transactions.id, transactionId));
   }
 

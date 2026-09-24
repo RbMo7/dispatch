@@ -88,6 +88,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       status: 'PENDING',
       error: null,
       broadcastAt: this.now(),
+      abandonedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -106,6 +107,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       status: 'FAILED',
       error: input.error,
       broadcastAt: null,
+      abandonedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -120,6 +122,19 @@ export class InMemoryDispatchStore implements DispatchStore {
       .slice(0, limit);
 
     return Promise.resolve(pending);
+  }
+
+  listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
+    const abandoned = [...this.transactions.values()]
+      .filter(
+        (transaction) =>
+          transaction.status === 'ABANDONED' &&
+          (transaction.abandonedAt?.getTime() ?? 0) >= notAbandonedBefore.getTime(),
+      )
+      .sort((a, b) => (a.abandonedAt?.getTime() ?? 0) - (b.abandonedAt?.getTime() ?? 0))
+      .slice(0, limit);
+
+    return Promise.resolve(abandoned);
   }
 
   recordBroadcast(transactionId: string, hash: string): Promise<void> {
@@ -144,7 +159,11 @@ export class InMemoryDispatchStore implements DispatchStore {
   markAbandoned(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'ABANDONED' });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'ABANDONED',
+        abandonedAt: this.now(),
+      });
     });
   }
 

@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: ready-for-agent
 
 # Bounded low-frequency re-watch of ABANDONED transactions
 
@@ -13,3 +13,13 @@ Needs a design decision before implementation, not just a mechanical fix:
 - Whether this belongs in `Coordinator.pollPendingTransactions` itself (a second, slower branch) or as a wholly separate poll loop.
 
 Surfaced during issue 06's code review (2026-09-22) — not fixed there, since it's new scope requiring its own design decision, not a bug in what issue 06 already implements.
+
+## Comments
+
+Design decisions (2026-09-24), resolved before implementation:
+
+- **"Low frequency"/"bounded window"**: both. A separate, much slower poll cadence (`REWATCH_INTERVAL_MS` in `worker.ts`, independent of the main `POLL_INTERVAL_MS`) *and* a separate repository query, `DispatchStore.listAbandonedTransactions(limit, notAbandonedBefore)`, keyed on `status === 'ABANDONED'` and a new `abandonedAt` timestamp column/field. `notAbandonedBefore` is the bounded-window cutoff (default 24h, `DEFAULT_ABANDONED_REWATCH_WINDOW_MS` in `coordinator.ts`) — a Transaction abandoned before that cutoff is excluded permanently, matching "the engine has genuinely stopped watching it."
+- **Reporting mechanism**: status mutation in place, not a new event/webhook concept. A re-watched Transaction that turns out to have confirmed or failed goes through the exact same `markConfirmed`/`markFailed` path `pollPendingTransactions` already uses (shared via a new `tryResolveByStatus` helper), so callers see it via the existing `GET /v1/dispatch/:id` polling — no new caller-facing surface, consistent with ADR-0023's webhook deferral. This is not a double-pay risk under ADR-0004: the rewatch is the mitigation for double-pay (it's what lets a caller who already resent after seeing ABANDONED discover the original also landed), not a new source of it, and an ABANDONED→FAILED transition still only fires off a definitive `getStatus === 'FAILED'`, never a guess.
+- **Where it lives**: a wholly separate poll loop (`Coordinator.rewatchAbandonedTransactions` + `worker.ts`'s `rewatchLoop`), not a second branch inside `pollPendingTransactions` — keeps the two cadences independently tunable and neither loop has to know the other exists.
+
+Implemented and reviewed (Standards + Spec) 2026-09-24; both axes came back clean on the implementation itself.

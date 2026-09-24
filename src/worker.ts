@@ -11,6 +11,14 @@ import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
 const BATCH_LIMIT = 20;
 /** How long to wait after a tick before the next one. */
 const POLL_INTERVAL_MS = 2_000;
+/**
+ * issue 10: the ABANDONED re-watch's own, deliberately much slower cadence
+ * — "low frequency" (ADR-0004/CONTEXT.md) relative to the main poll loop
+ * above. A separate interval, not a modulo counter on the main loop's own
+ * tick count, so the two cadences stay independently tunable and neither
+ * loop needs to know the other exists.
+ */
+const REWATCH_INTERVAL_MS = 5 * 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,22 +34,6 @@ const coordinator = new Coordinator({
   abandonmentTimeoutMs,
 });
 
-/**
- * issue 12: claims new work (both dispatch modes) and advances whatever's
- * already broadcast, every tick. A failure here is caught and logged
- * rather than crashing the process — one bad tick (e.g. a transient RPC
- * outage) must not take the whole worker down; the next tick tries again.
- */
-async function tick(): Promise<void> {
-  try {
-    await coordinator.processQueuedDispatches(BATCH_LIMIT);
-    await coordinator.processQueuedRelayDispatches(BATCH_LIMIT);
-    await coordinator.pollPendingTransactions(BATCH_LIMIT);
-  } catch (cause) {
-    logger.error({ cause }, 'worker tick failed');
-  }
-}
-
 let running = true;
 
 function shutdown(signal: string): void {
@@ -52,16 +44,51 @@ function shutdown(signal: string): void {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+/**
+ * issue 12: claims new work (both dispatch modes) and advances whatever's
+ * already broadcast, every tick. A failure here is caught and logged
+ * rather than crashing the process — one bad tick (e.g. a transient RPC
+ * outage) must not take the whole worker down; the next tick tries again.
+ */
+async function mainLoop(): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.processQueuedDispatches(BATCH_LIMIT);
+      await coordinator.processQueuedRelayDispatches(BATCH_LIMIT);
+      await coordinator.pollPendingTransactions(BATCH_LIMIT);
+    } catch (cause) {
+      logger.error({ cause }, 'worker tick failed');
+    }
+    if (!running) break;
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * issue 10: the ABANDONED re-watch, on its own separate, much slower
+ * cadence — a wholly separate self-scheduling loop, not a branch inside
+ * mainLoop, so "low frequency" is simply "how rarely this loop's own
+ * sleep lets it run" rather than any state either loop has to track.
+ */
+async function rewatchLoop(): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.rewatchAbandonedTransactions(BATCH_LIMIT);
+    } catch (cause) {
+      logger.error({ cause }, 'worker rewatch tick failed');
+    }
+    if (!running) break;
+    await sleep(REWATCH_INTERVAL_MS);
+  }
+}
+
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// A self-scheduling loop, not setInterval: the next tick is only scheduled
-// once the current one (and everything it awaited) has actually finished,
-// so a slow tick can never overlap with the next one.
-while (running) {
-  await tick();
-  if (!running) break;
-  await sleep(POLL_INTERVAL_MS);
-}
+// Both are self-scheduling loops, not setInterval: each only schedules its
+// own next tick once its current one (and everything it awaited) has
+// actually finished, so a slow tick can never overlap the next one — and
+// the two loops run fully independently of each other.
+await Promise.all([mainLoop(), rewatchLoop()]);
 
 logger.info('worker stopped');
 process.exit(0);

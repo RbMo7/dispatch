@@ -31,6 +31,8 @@ export type Transaction = {
   error: DispatchError | null;
   /** When this Transaction was first broadcast — null exactly when hash/signedBytes are (never broadcast). What the ABANDONED timeout (ADR-0004) measures elapsed time against. */
   broadcastAt: Date | null;
+  /** When this Transaction was marked ABANDONED — null unless status is (or once was) ABANDONED. What the low-frequency re-watch's bounded window (issue 10, ADR-0004) measures elapsed time against; a CONFIRMED/FAILED transaction that was previously re-watched keeps this set, a harmless historical fact once it's no longer ABANDONED. */
+  abandonedAt: Date | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */
