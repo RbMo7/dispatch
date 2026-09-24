@@ -53,7 +53,29 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 
 Per-item `status` is `queued | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`); the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`.
 
+Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
+
+## Relay Dispatch (`mode: "relay"`)
+
+`.scratch/relay-dispatch/spec.md` and ADR-0031 record the design; this pins the shipped wire shape.
+
+`POST /v1/dispatch` gains an optional `mode: "managed" | "relay"` field, defaulting to `"managed"` when omitted — every existing Managed Dispatch request keeps working unchanged. A `mode: "relay"` body is `{ chain, signedTransaction }` — never `items`, never `retryPolicy` (there's no key for the engine to fee-bump with); sending either alongside `mode: "relay"` is a `400`, not a silently-ignored field. `signedTransaction` is a base64-encoded, already-signed transaction the caller produced entirely outside the engine — the same headers (`Authorization`, `Idempotency-Key`) apply, and the same create-once idempotency semantics (ADR-0021).
+
+Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "status": "queued" }`.
+
+`GET /v1/dispatch/:id` for a Relay Dispatch:
+```json
+{
+  "dispatchId": "<id>",
+  "mode": "relay",
+  "status": "queued | broadcasting | confirmed | failed | abandoned",
+  "transactionHash": "<hash>",
+  "error": null
+}
+```
+One transaction, not a batch — this is the same per-item status vocabulary Managed Dispatch's `items[]` entries use, applied directly at the top level rather than to a fake single-item array (ADR-0031).
+
 ## Not yet specced here
 
 - Webhooks (ADR-0023) — polling above is the required baseline for now.
-- Relay Dispatch's own endpoint shape — see `.scratch/relay-dispatch/spec.md`.
+- EVM's own Relay Dispatch implementation — the wire format above is chain-agnostic, but only Solana implements it so far.

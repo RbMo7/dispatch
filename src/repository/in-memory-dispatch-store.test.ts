@@ -325,4 +325,143 @@ describe('InMemoryDispatchStore', () => {
       expect(await store.listTransactions(dispatch.id)).toEqual([]);
     });
   });
+
+  describe('createRelayDispatch', () => {
+    it('persists a new RelayDispatch as queued, with no transactionId yet', async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      expect(relayDispatch.chain).toBe('solana');
+      expect(relayDispatch.idempotencyKey).toBe('relay-key-1');
+      expect(relayDispatch.signedTransaction).toBe('c2lnbmVk');
+      expect(relayDispatch.status).toBe('queued');
+      expect(relayDispatch.transactionId).toBeNull();
+      expect(relayDispatch.id).toBeTruthy();
+    });
+
+    it('is idempotent: resubmitting the same key returns the original RelayDispatch (ADR-0021)', async () => {
+      const first = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      const second = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'a-different-signed-transaction',
+      });
+
+      expect(second).toEqual(first);
+    });
+
+    it('creates a distinct RelayDispatch for a distinct key', async () => {
+      const first = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+      const second = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-2',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      expect(second.id).not.toBe(first.id);
+    });
+  });
+
+  describe('getRelayDispatch', () => {
+    it('returns null for an unknown id', async () => {
+      expect(await store.getRelayDispatch('missing')).toBeNull();
+    });
+
+    it('returns a previously created RelayDispatch', async () => {
+      const created = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      expect(await store.getRelayDispatch(created.id)).toEqual(created);
+    });
+  });
+
+  describe('claimQueuedRelayDispatches', () => {
+    it('claims queued RelayDispatches and moves them to broadcasting', async () => {
+      const created = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      const claimed = await store.claimQueuedRelayDispatches(10);
+
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.id).toBe(created.id);
+      expect(claimed[0]?.status).toBe('broadcasting');
+      expect((await store.getRelayDispatch(created.id))?.status).toBe('broadcasting');
+    });
+
+    it('never claims the same RelayDispatch twice', async () => {
+      await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      const first = await store.claimQueuedRelayDispatches(10);
+      const second = await store.claimQueuedRelayDispatches(10);
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(0);
+    });
+
+    it('respects the limit', async () => {
+      await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+      await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-2',
+        signedTransaction: 'c2lnbmVk',
+      });
+
+      const claimed = await store.claimQueuedRelayDispatches(1);
+
+      expect(claimed).toHaveLength(1);
+    });
+  });
+
+  describe('setRelayDispatchTransaction', () => {
+    it('records which Transaction a RelayDispatch broadcast to', async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'c2lnbmVk',
+      });
+      const transaction = await store.createTransaction({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-1',
+      });
+
+      await store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+
+      expect((await store.getRelayDispatch(relayDispatch.id))?.transactionId).toBe(transaction.id);
+    });
+
+    it('rejects setting a transactionId on an unknown RelayDispatch', async () => {
+      await expect(
+        store.setRelayDispatchTransaction('missing', 'some-transaction-id'),
+      ).rejects.toThrow();
+    });
+  });
 });

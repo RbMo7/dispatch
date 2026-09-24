@@ -11,8 +11,16 @@ type PostResponseBody = { dispatchId: string; status: string };
 type ErrorResponseBody = { error?: string; code?: string; message?: string };
 type GetResponseBody = {
   dispatchId: string;
+  mode: string;
   status: string;
   items: { status: string; transactionHash: string | null; error: unknown }[];
+};
+type RelayGetResponseBody = {
+  dispatchId: string;
+  mode: string;
+  status: string;
+  transactionHash: string | null;
+  error: unknown;
 };
 
 async function buildTestApp(options?: { defaultRetryPolicy?: boolean }) {
@@ -225,6 +233,128 @@ describe('POST /v1/dispatch', () => {
     const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
     expect(dispatch?.retryPolicy).toBe(false);
   });
+
+  describe('mode: relay', () => {
+    it('accepts a signed transaction and returns 202 with a queued RelayDispatch', async () => {
+      const { app, store } = await buildTestApp();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = response.json<PostResponseBody>();
+      expect(body.status).toBe('queued');
+
+      const relayDispatch = await store.getRelayDispatch(body.dispatchId);
+      expect(relayDispatch).toMatchObject({
+        chain: 'evm',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'externally-signed-bytes',
+        status: 'queued',
+        transactionId: null,
+      });
+    });
+
+    it('rejects a relay dispatch missing signedTransaction', async () => {
+      const { app } = await buildTestApp();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload: { chain: 'evm', mode: 'relay' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json<ErrorResponseBody>().error).toMatch(/signedTransaction/);
+    });
+
+    it('rejects a relay dispatch that also sends items or retryPolicy, rather than silently ignoring them', async () => {
+      const { app } = await buildTestApp();
+
+      const withItems = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload: {
+          chain: 'evm',
+          mode: 'relay',
+          signedTransaction: 'externally-signed-bytes',
+          items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }],
+        },
+      });
+      expect(withItems.statusCode).toBe(400);
+      expect(withItems.json<ErrorResponseBody>().error).toMatch(/no items, no retryPolicy/);
+
+      const withRetryPolicy = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-2' },
+        payload: {
+          chain: 'evm',
+          mode: 'relay',
+          signedTransaction: 'externally-signed-bytes',
+          retryPolicy: true,
+        },
+      });
+      expect(withRetryPolicy.statusCode).toBe(400);
+      expect(withRetryPolicy.json<ErrorResponseBody>().error).toMatch(/no items, no retryPolicy/);
+    });
+
+    it('rejects a malformed signed transaction with the structured DispatchError, and never persists it', async () => {
+      const { app } = await buildTestApp();
+
+      const rejected = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        // StubChainHandler.validateSignedTransaction rejects this exact sentinel.
+        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'force-failure' },
+      });
+
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json<ErrorResponseBody>().code).toBe('CHAIN_REJECTED');
+
+      // If the rejected attempt had persisted a RelayDispatch under this same
+      // idempotency key, this resubmission (now with a valid signed
+      // transaction) would idempotently return that same, still-broken row
+      // instead of actually succeeding.
+      const accepted = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(accepted.json<PostResponseBody>().status).toBe('queued');
+    });
+
+    it('resubmitting the same Idempotency-Key returns the original RelayDispatch, not a new one', async () => {
+      const { app } = await buildTestApp();
+      const payload = { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' };
+
+      const first = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload,
+      });
+      const second = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
+        payload,
+      });
+
+      expect(second.json<PostResponseBody>().dispatchId).toBe(
+        first.json<PostResponseBody>().dispatchId,
+      );
+    });
+  });
 });
 
 describe('GET /v1/dispatch/:id', () => {
@@ -265,6 +395,7 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
+      mode: 'managed',
       status: 'queued',
       items: [{ status: 'queued', transactionHash: null, error: null }],
     });
@@ -295,6 +426,7 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
+      mode: 'managed',
       status: 'confirmed',
       items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
     });
@@ -397,5 +529,119 @@ describe('GET /v1/dispatch/:id', () => {
     const body = response.json<GetResponseBody>();
     expect(body.items[0]?.status).toBe('abandoned');
     expect(body.status).toBe('failed');
+  });
+
+  describe('a Relay Dispatch', () => {
+    it('reports a freshly-created RelayDispatch as queued, with mode relay and no hash yet', async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'evm',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'externally-signed-bytes',
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${relayDispatch.id}`,
+        headers: AUTH_HEADERS,
+      });
+
+      expect(response.json<RelayGetResponseBody>()).toEqual({
+        dispatchId: relayDispatch.id,
+        mode: 'relay',
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      });
+    });
+
+    it("reports broadcasting while the RelayDispatch's Transaction is still PENDING", async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'evm',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'externally-signed-bytes',
+      });
+      await store.claimQueuedRelayDispatches(10);
+      const transaction = await store.createTransaction({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: 'evm',
+        signedBytes: 'externally-signed-bytes',
+        hash: 'relay-hash-1',
+      });
+      await store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${relayDispatch.id}`,
+        headers: AUTH_HEADERS,
+      });
+
+      expect(response.json<RelayGetResponseBody>()).toEqual({
+        dispatchId: relayDispatch.id,
+        mode: 'relay',
+        status: 'broadcasting',
+        transactionHash: 'relay-hash-1',
+        error: null,
+      });
+    });
+
+    it("reports confirmed once the RelayDispatch's Transaction confirms — one transaction, not a fake single-item array", async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'evm',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'externally-signed-bytes',
+      });
+      await store.claimQueuedRelayDispatches(10);
+      const transaction = await store.createTransaction({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: 'evm',
+        signedBytes: 'externally-signed-bytes',
+        hash: 'relay-hash-1',
+      });
+      await store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+      await store.markConfirmed(transaction.id);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${relayDispatch.id}`,
+        headers: AUTH_HEADERS,
+      });
+
+      const body = response.json<RelayGetResponseBody>();
+      expect(body.status).toBe('confirmed');
+      expect(body.transactionHash).toBe('relay-hash-1');
+      expect('items' in body).toBe(false);
+    });
+
+    it('reports failed with the structured error once broadcast never produced a Transaction hash', async () => {
+      const relayDispatch = await store.createRelayDispatch({
+        chain: 'evm',
+        idempotencyKey: 'relay-key-1',
+        signedTransaction: 'externally-signed-bytes',
+      });
+      await store.claimQueuedRelayDispatches(10);
+      const transaction = await store.recordCallFailure({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: 'evm',
+        error: { code: 'CHAIN_REJECTED', message: 'send failed' },
+      });
+      await store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${relayDispatch.id}`,
+        headers: AUTH_HEADERS,
+      });
+
+      expect(response.json<RelayGetResponseBody>()).toEqual({
+        dispatchId: relayDispatch.id,
+        mode: 'relay',
+        status: 'failed',
+        transactionHash: null,
+        error: { code: 'CHAIN_REJECTED', message: 'send failed' },
+      });
+    });
   });
 });

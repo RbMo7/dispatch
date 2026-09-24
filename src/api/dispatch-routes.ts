@@ -28,14 +28,15 @@ function invalidRequest(message: string): RouteError {
 const postDispatchSchema = {
   body: {
     type: 'object',
-    required: ['chain', 'items'],
+    required: ['chain'],
     additionalProperties: false,
     properties: {
       chain: { type: 'string', enum: ['evm', 'solana'] },
+      /** ADR-0031: defaults to 'managed' when omitted, so every existing caller keeps working unchanged. */
+      mode: { type: 'string', enum: ['managed', 'relay'] },
       retryPolicy: { type: 'boolean' },
       items: {
         type: 'array',
-        minItems: 1,
         items: {
           type: 'object',
           required: ['type'],
@@ -43,14 +44,17 @@ const postDispatchSchema = {
           additionalProperties: true,
         },
       },
+      signedTransaction: { type: 'string' },
     },
   },
 };
 
 type PostDispatchBody = {
   chain: Chain;
+  mode?: 'managed' | 'relay';
   retryPolicy?: boolean;
-  items: Record<string, unknown>[];
+  items?: Record<string, unknown>[];
+  signedTransaction?: string;
 };
 
 const INTEGER_STRING = /^\d+$/;
@@ -159,13 +163,51 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         return reply.code(400).send({ error: 'Idempotency-Key header is required' });
       }
 
-      const { chain, items, retryPolicy } = request.body;
+      const { chain, mode } = request.body;
 
       const registryResult = chainRegistry.get(chain);
       if (!registryResult.ok) {
         return reply.code(400).send(registryResult.error satisfies DispatchError);
       }
       const handler = registryResult.value;
+
+      if ((mode ?? 'managed') === 'relay') {
+        const { signedTransaction, items, retryPolicy } = request.body;
+        if (typeof signedTransaction !== 'string' || signedTransaction.length === 0) {
+          return reply
+            .code(400)
+            .send({ error: 'a relay dispatch requires a string signedTransaction' });
+        }
+        if (items !== undefined || retryPolicy !== undefined) {
+          return reply
+            .code(400)
+            .send({
+              error:
+                'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy',
+            });
+        }
+
+        // ADR-0032: cheap, RPC-free validation before ever persisting —
+        // a malformed submission gets 400 immediately, never a queued row
+        // that only fails later at broadcast.
+        const validation = await handler.validateSignedTransaction(signedTransaction);
+        if (!validation.ok) {
+          return reply.code(400).send(validation.error satisfies DispatchError);
+        }
+
+        const relayDispatch = await store.createRelayDispatch({
+          chain,
+          idempotencyKey,
+          signedTransaction,
+        });
+
+        return reply.code(202).send({ dispatchId: relayDispatch.id, status: relayDispatch.status });
+      }
+
+      const { items, retryPolicy } = request.body;
+      if (!Array.isArray(items) || items.length === 0) {
+        return reply.code(400).send({ error: 'items must be a non-empty array' });
+      }
 
       const translated: DispatchItem[] = [];
       for (let i = 0; i < items.length; i++) {
@@ -194,30 +236,57 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     { preHandler: auth },
     async (request, reply) => {
       const dispatch = await store.getDispatch(request.params.id);
-      if (!dispatch) {
-        return reply.code(404).send({ error: 'not found' });
+      if (dispatch) {
+        const transactions = await store.listTransactions(dispatch.id);
+        const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
+
+        const items = dispatch.items.map((_, index) => {
+          const transaction = transactionByCallIndex.get(index);
+          if (!transaction) {
+            return { status: 'queued', transactionHash: null, error: null };
+          }
+          return {
+            status: toWireItemStatus(transaction.status),
+            transactionHash: transaction.hash,
+            error: transaction.error,
+          };
+        });
+
+        return reply.send({
+          dispatchId: dispatch.id,
+          mode: 'managed',
+          status: deriveDispatchStatus(dispatch, transactions),
+          items,
+        });
       }
 
-      const transactions = await store.listTransactions(dispatch.id);
-      const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
-
-      const items = dispatch.items.map((_, index) => {
-        const transaction = transactionByCallIndex.get(index);
+      // ADR-0031: a Relay Dispatch is always exactly one already-signed
+      // transaction, never a batch — its response shape (dispatchId, mode,
+      // status, transactionHash, error) is honestly distinct from Managed
+      // Dispatch's items-array shape, not a fake single-item version of it.
+      const relayDispatch = await store.getRelayDispatch(request.params.id);
+      if (relayDispatch) {
+        const [transaction] = await store.listTransactions(relayDispatch.id);
         if (!transaction) {
-          return { status: 'queued', transactionHash: null, error: null };
+          return reply.send({
+            dispatchId: relayDispatch.id,
+            mode: 'relay',
+            status: 'queued',
+            transactionHash: null,
+            error: null,
+          });
         }
-        return {
+
+        return reply.send({
+          dispatchId: relayDispatch.id,
+          mode: 'relay',
           status: toWireItemStatus(transaction.status),
           transactionHash: transaction.hash,
           error: transaction.error,
-        };
-      });
+        });
+      }
 
-      return reply.send({
-        dispatchId: dispatch.id,
-        status: deriveDispatchStatus(dispatch, transactions),
-        items,
-      });
+      return reply.code(404).send({ error: 'not found' });
     },
   );
 

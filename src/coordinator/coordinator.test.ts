@@ -94,6 +94,7 @@ function setup() {
     senderAddresses: new Map([['solana', 'sender-address']]),
     abandonmentTimeoutMs: new Map([['solana', ABANDON_AFTER_MS]]),
     now: clock,
+    sleep: () => Promise.resolve(), // no real backoff delay in tests (relay-dispatch issue 01's bounded retry)
   });
 
   return { store, handler, coordinator, advance };
@@ -451,5 +452,183 @@ describe('Coordinator.pollPendingTransactions', () => {
     await coordinator.pollPendingTransactions(10);
 
     expect(store.getTransaction(transactionId)?.status).toBe('PENDING');
+  });
+
+  it('still throws for a Transaction whose dispatchId references neither a Dispatch nor a RelayDispatch — a genuine data-integrity bug, never silently treated as a harmless RelayDispatch', async () => {
+    const { store, handler, coordinator } = setup();
+    const transaction = await store.createTransaction({
+      dispatchId: 'orphaned-dispatch-id',
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'signed-bytes',
+      hash: 'hash-1',
+    });
+    handler.getStatus.mockResolvedValueOnce(ok('PENDING'));
+
+    await expect(coordinator.pollPendingTransactions(10)).rejects.toThrow(
+      /references unknown Dispatch/,
+    );
+    expect(store.getTransaction(transaction.id)?.status).toBe('PENDING'); // never silently abandoned
+  });
+});
+
+describe('Coordinator.processQueuedRelayDispatches', () => {
+  it('broadcasts a queued RelayDispatch exactly once — no validateCall/prepare/sign — and persists a PENDING Transaction', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'relay-hash-1' }));
+    const relayDispatch = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-1',
+      signedTransaction: 'externally-signed-bytes',
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    expect(handler.validateCall).not.toHaveBeenCalled();
+    expect(handler.prepare).not.toHaveBeenCalled();
+    expect(handler.sign).not.toHaveBeenCalled();
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).toHaveBeenCalledWith('externally-signed-bytes');
+
+    const [transaction] = await store.listTransactions(relayDispatch.id);
+    expect(transaction).toMatchObject({
+      dispatchId: relayDispatch.id,
+      callIndex: 0,
+      status: 'PENDING',
+      hash: 'relay-hash-1',
+      signedBytes: 'externally-signed-bytes',
+    });
+
+    const updated = await store.getRelayDispatch(relayDispatch.id);
+    expect(updated?.status).toBe('broadcasting');
+    expect(updated?.transactionId).toBe(transaction?.id);
+  });
+
+  it('retries an identical-bytes broadcast on a transient RPC_UNAVAILABLE failure, succeeding on a later attempt', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast
+      .mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'timeout' }))
+      .mockResolvedValueOnce(ok({ hash: 'relay-hash-2' }));
+    const relayDispatch = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-2',
+      signedTransaction: 'externally-signed-bytes',
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(2);
+    expect(handler.broadcast).toHaveBeenNthCalledWith(1, 'externally-signed-bytes');
+    expect(handler.broadcast).toHaveBeenNthCalledWith(2, 'externally-signed-bytes');
+    const [transaction] = await store.listTransactions(relayDispatch.id);
+    expect(transaction).toMatchObject({ status: 'PENDING', hash: 'relay-hash-2' });
+  });
+
+  it('never retries a non-transient broadcast failure (e.g. CHAIN_REJECTED), and records it as a failed Transaction with no hash', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'simulation failed' }),
+    );
+    const relayDispatch = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-3',
+      signedTransaction: 'externally-signed-bytes',
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    const [transaction] = await store.listTransactions(relayDispatch.id);
+    expect(transaction).toMatchObject({
+      status: 'FAILED',
+      hash: null,
+      signedBytes: null,
+      error: { code: 'CHAIN_REJECTED', message: 'simulation failed' },
+    });
+    const updated = await store.getRelayDispatch(relayDispatch.id);
+    expect(updated?.transactionId).toBe(transaction?.id);
+  });
+
+  it('records a failed Transaction once every bounded retry of a transient failure is exhausted', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast.mockResolvedValue(err({ code: 'RPC_UNAVAILABLE', message: 'still down' }));
+    const relayDispatch = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-4',
+      signedTransaction: 'externally-signed-bytes',
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(3); // RELAY_BROADCAST_MAX_ATTEMPTS
+    const [transaction] = await store.listTransactions(relayDispatch.id);
+    expect(transaction).toMatchObject({
+      status: 'FAILED',
+      hash: null,
+      error: { code: 'RPC_UNAVAILABLE', message: 'still down' },
+    });
+  });
+
+  it('processes each claimed RelayDispatch independently — one failing never blocks another', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast
+      .mockResolvedValueOnce(err({ code: 'CHAIN_REJECTED', message: 'rejected' }))
+      .mockResolvedValueOnce(ok({ hash: 'relay-hash-5' }));
+    const first = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-5a',
+      signedTransaction: 'bytes-a',
+    });
+    const second = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-key-5b',
+      signedTransaction: 'bytes-b',
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    const [firstTransaction] = await store.listTransactions(first.id);
+    const [secondTransaction] = await store.listTransactions(second.id);
+    expect(firstTransaction?.status).toBe('FAILED');
+    expect(secondTransaction?.status).toBe('PENDING');
+  });
+});
+
+describe('Coordinator.pollPendingTransactions for a Relay Dispatch', () => {
+  async function createPendingRelayTransaction(store: InMemoryDispatchStore): Promise<string> {
+    const relayDispatch = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: `relay-poll-${Math.random()}`,
+      signedTransaction: 'externally-signed-bytes',
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: relayDispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'externally-signed-bytes',
+      hash: 'relay-hash',
+    });
+    return transaction.id;
+  }
+
+  it('confirms a RelayDispatch-owned Transaction exactly like a Managed Dispatch one — pollPendingTransactions holds no Relay-Dispatch-specific branch', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createPendingRelayTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('CONFIRMED'));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('abandons a RelayDispatch-owned Transaction once its chain-aware timeout elapses — Relay Dispatch has no retryPolicy to opt out with', async () => {
+    const { store, handler, coordinator, advance } = setup();
+    const transactionId = await createPendingRelayTransaction(store);
+    advance(ABANDON_AFTER_MS);
+    handler.getStatus.mockResolvedValue(ok('PENDING'));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
   });
 });

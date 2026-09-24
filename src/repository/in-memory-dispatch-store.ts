@@ -3,11 +3,13 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type {
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
+  NewRelayDispatchInput,
   NewTransactionInput,
 } from './dispatch-store.js';
 
@@ -23,6 +25,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly dispatches = new Map<string, Dispatch>();
   private readonly transactions = new Map<string, Transaction>();
   private readonly attempts = new Map<string, Attempt[]>();
+  private readonly relayDispatches = new Map<string, RelayDispatch>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -156,6 +159,55 @@ export class InMemoryDispatchStore implements DispatchStore {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
       this.transactions.set(transactionId, { ...transaction, status: 'CONFIRMED' });
+    });
+  }
+
+  createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>> {
+    const existing = [...this.relayDispatches.values()].find(
+      (relayDispatch) => relayDispatch.idempotencyKey === input.idempotencyKey,
+    );
+    if (existing) {
+      return Promise.resolve(existing as RelayDispatch<C>);
+    }
+
+    const relayDispatch: RelayDispatch<C> = {
+      id: randomUUID(),
+      chain: input.chain,
+      idempotencyKey: input.idempotencyKey,
+      signedTransaction: input.signedTransaction,
+      status: 'queued',
+      transactionId: null,
+    };
+    this.relayDispatches.set(relayDispatch.id, relayDispatch);
+
+    return Promise.resolve(relayDispatch);
+  }
+
+  getRelayDispatch(id: string): Promise<RelayDispatch | null> {
+    return Promise.resolve(this.relayDispatches.get(id) ?? null);
+  }
+
+  claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]> {
+    const claimed: RelayDispatch[] = [];
+    for (const relayDispatch of this.relayDispatches.values()) {
+      if (claimed.length >= limit) break;
+      if (relayDispatch.status !== 'queued') continue;
+
+      const broadcasting: RelayDispatch = { ...relayDispatch, status: 'broadcasting' };
+      this.relayDispatches.set(relayDispatch.id, broadcasting);
+      claimed.push(broadcasting);
+    }
+
+    return Promise.resolve(claimed);
+  }
+
+  setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void> {
+    return this.settle(() => {
+      const relayDispatch = this.relayDispatches.get(relayDispatchId);
+      if (!relayDispatch) {
+        throw new Error(`Unknown relay dispatch: ${relayDispatchId}`);
+      }
+      this.relayDispatches.set(relayDispatchId, { ...relayDispatch, transactionId });
     });
   }
 

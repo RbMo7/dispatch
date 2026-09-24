@@ -48,3 +48,18 @@ export const attempts = pgTable('attempts', {
   broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
   error: jsonb('error').$type<DispatchError | null>(),
 });
+
+/** ADR-0031: Relay Dispatch's own table — never squeezed into `dispatches`, which has no meaningful `items`/`retryPolicy` for this shape. */
+export const relayDispatches = pgTable(
+  'relay_dispatches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    signedTransaction: text('signed_transaction').notNull(),
+    status: text('status').notNull().default('queued'),
+    transactionId: uuid('transaction_id').references(() => transactions.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey)],
+);

@@ -2,8 +2,22 @@ import type { ChainHandler } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction } from '../domain/transaction.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+
+/** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
+const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
+const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Only a send-layer hiccup is worth retrying with identical bytes — a genuine on-chain rejection (CHAIN_REJECTED) never becomes true by resending the exact same bytes again. */
+function isTransientBroadcastFailure(error: DispatchError): boolean {
+  return error.code === 'RPC_UNAVAILABLE';
+}
 
 type FundingRequirement = {
   chain: Chain;
@@ -22,6 +36,8 @@ export type CoordinatorDeps = {
   abandonmentTimeoutMs: Map<Chain, number>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
+  /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 /**
@@ -39,6 +55,7 @@ export class Coordinator {
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly now: () => Date;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(deps: CoordinatorDeps) {
     this.store = deps.store;
@@ -46,6 +63,7 @@ export class Coordinator {
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.now = deps.now ?? (() => new Date());
+    this.sleep = deps.sleep ?? sleep;
   }
 
   /**
@@ -154,6 +172,65 @@ export class Coordinator {
       });
       failedKeys.add(callKey(dispatch.id, callIndex));
     }
+  }
+
+  /**
+   * relay-dispatch issue 01: claims up to `limit` queued RelayDispatches and
+   * broadcasts each one's already-signed bytes exactly once — no
+   * validateCall/prepare/sign step, nothing to build or sign, it already
+   * arrived signed (ADR-0005/ADR-0031). No Funding Check either (nothing
+   * here is the engine's own money) and no senderAddress (broadcast doesn't
+   * need one). `pollPendingTransactions` below then tracks the resulting
+   * Transaction to a terminal state exactly like a Managed Dispatch one.
+   */
+  async processQueuedRelayDispatches(limit: number): Promise<void> {
+    const relayDispatches = await this.store.claimQueuedRelayDispatches(limit);
+
+    for (const relayDispatch of relayDispatches) {
+      await this.processRelayDispatch(relayDispatch);
+    }
+  }
+
+  private async processRelayDispatch(relayDispatch: RelayDispatch): Promise<void> {
+    const handler = this.requireChainHandler(relayDispatch.chain);
+
+    let broadcastResult: Awaited<ReturnType<ChainHandler['broadcast']>> | undefined;
+    for (let attempt = 0; attempt < RELAY_BROADCAST_MAX_ATTEMPTS; attempt++) {
+      broadcastResult = await handler.broadcast(relayDispatch.signedTransaction);
+      if (broadcastResult.ok) break;
+      if (
+        attempt === RELAY_BROADCAST_MAX_ATTEMPTS - 1 ||
+        !isTransientBroadcastFailure(broadcastResult.error)
+      ) {
+        break;
+      }
+      await this.sleep(RELAY_BROADCAST_RETRY_BASE_DELAY_MS * 2 ** attempt);
+    }
+
+    // A single item, always at callIndex 0 (RelayDispatch is never a batch,
+    // ADR-0031) — createTransaction/recordCallFailure are the exact same
+    // DispatchStore methods Managed Dispatch's processCall already uses, so
+    // Transaction/Attempt records are reused completely unchanged.
+    const transaction =
+      broadcastResult?.ok === true
+        ? await this.store.createTransaction({
+            dispatchId: relayDispatch.id,
+            callIndex: 0,
+            chain: relayDispatch.chain,
+            signedBytes: relayDispatch.signedTransaction,
+            hash: broadcastResult.value.hash,
+          })
+        : await this.store.recordCallFailure({
+            dispatchId: relayDispatch.id,
+            callIndex: 0,
+            chain: relayDispatch.chain,
+            error: broadcastResult?.error ?? {
+              code: 'RPC_UNAVAILABLE',
+              message: 'broadcast was never attempted',
+            },
+          });
+
+    await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
   }
 
   /**
@@ -280,12 +357,25 @@ export class Coordinator {
 
   private async maybeAbandon(transaction: Transaction): Promise<void> {
     const dispatch = await this.store.getDispatch(transaction.dispatchId);
-    if (!dispatch) {
-      throw new Error(
-        `Transaction ${transaction.id} references unknown Dispatch ${transaction.dispatchId}.`,
-      );
+    if (dispatch) {
+      if (dispatch.retryPolicy) return; // opted in: never auto-abandon (ADR-0003)
+    } else {
+      // relay-dispatch issue 01: a RelayDispatch's Transaction.dispatchId
+      // points at its own (non-Dispatch) row, so getDispatch legitimately
+      // finds nothing for it — confirm that's actually why before treating
+      // the miss as harmless, so a genuinely orphaned Managed Dispatch
+      // Transaction (a real data-integrity bug) still throws loudly instead
+      // of silently degrading into "abandon on timeout." RelayDispatch has
+      // no retryPolicy concept at all (nothing for the engine to fee-bump,
+      // ADR-0031), which is exactly the same as `retryPolicy: false` here:
+      // never suppress the default ABANDONED-after-timeout path.
+      const relayDispatch = await this.store.getRelayDispatch(transaction.dispatchId);
+      if (!relayDispatch) {
+        throw new Error(
+          `Transaction ${transaction.id} references unknown Dispatch ${transaction.dispatchId}.`,
+        );
+      }
     }
-    if (dispatch.retryPolicy) return; // opted in: never auto-abandon (ADR-0003)
 
     if (!transaction.broadcastAt) {
       throw new Error(

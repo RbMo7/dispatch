@@ -2,6 +2,7 @@ import type { Chain } from '../domain/chain.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction } from '../domain/transaction.js';
 
 export type NewDispatchInput<C extends Chain = Chain> = {
@@ -28,6 +29,12 @@ export type NewFailedCallInput = {
   error: DispatchError;
 };
 
+export type NewRelayDispatchInput<C extends Chain = Chain> = {
+  chain: C;
+  idempotencyKey: string;
+  signedTransaction: string;
+};
+
 /**
  * The Coordinator's — and the API's — only way to touch persistence
  * (ADR-0011): a small, domain-shaped seam so orchestration logic can be
@@ -52,4 +59,12 @@ export interface DispatchStore {
   markAbandoned(transactionId: string): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
   markConfirmed(transactionId: string): Promise<void>;
+
+  /** Idempotent create (ADR-0021), mirroring createDispatch — a Relay Dispatch's own table (ADR-0031), never squeezed into `dispatches`. */
+  createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;
+  getRelayDispatch(id: string): Promise<RelayDispatch | null>;
+  /** Atomically claims up to `limit` queued RelayDispatches for the worker to process, mirroring claimQueued. */
+  claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]>;
+  /** Records which Transaction a RelayDispatch's single broadcast attempt produced — success or failure alike (recordCallFailure and createTransaction both already produce a Transaction id). */
+  setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void>;
 }

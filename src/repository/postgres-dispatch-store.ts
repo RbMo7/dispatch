@@ -1,20 +1,23 @@
 import { eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
-import { attempts, dispatches, transactions } from '../db/schema.js';
+import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import type {
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
+  NewRelayDispatchInput,
   NewTransactionInput,
 } from './dispatch-store.js';
 
 type DispatchRow = typeof dispatches.$inferSelect;
 type TransactionRow = typeof transactions.$inferSelect;
+type RelayDispatchRow = typeof relayDispatches.$inferSelect;
 
 function toDispatch(row: DispatchRow): Dispatch {
   return {
@@ -38,6 +41,17 @@ function toTransaction(row: TransactionRow): Transaction {
     status: row.status as TransactionStatus,
     error: row.error ?? null,
     broadcastAt: row.broadcastAt,
+  };
+}
+
+function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
+  return {
+    id: row.id,
+    chain: row.chain as Chain,
+    idempotencyKey: row.idempotencyKey,
+    signedTransaction: row.signedTransaction,
+    status: row.status as RelayDispatchStatus,
+    transactionId: row.transactionId,
   };
 }
 
@@ -206,5 +220,74 @@ export class PostgresDispatchStore implements DispatchStore {
       .update(transactions)
       .set({ status: 'CONFIRMED' })
       .where(eq(transactions.id, transactionId));
+  }
+
+  async createRelayDispatch<C extends Chain>(
+    input: NewRelayDispatchInput<C>,
+  ): Promise<RelayDispatch<C>> {
+    const inserted = await this.db
+      .insert(relayDispatches)
+      .values({
+        chain: input.chain,
+        idempotencyKey: input.idempotencyKey,
+        signedTransaction: input.signedTransaction,
+      })
+      .onConflictDoNothing({ target: relayDispatches.idempotencyKey })
+      .returning();
+
+    const row =
+      inserted[0] ??
+      (await this.db.query.relayDispatches.findFirst({
+        where: eq(relayDispatches.idempotencyKey, input.idempotencyKey),
+      }));
+
+    if (!row) {
+      throw new Error(
+        `Failed to create or find RelayDispatch for idempotencyKey ${input.idempotencyKey}`,
+      );
+    }
+
+    return toRelayDispatch(row) as RelayDispatch<C>;
+  }
+
+  async getRelayDispatch(id: string): Promise<RelayDispatch | null> {
+    const row = await this.db.query.relayDispatches.findFirst({
+      where: eq(relayDispatches.id, id),
+    });
+    return row ? toRelayDispatch(row) : null;
+  }
+
+  async claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]> {
+    return this.db.transaction(async (tx) => {
+      const claimable = await tx
+        .select({ id: relayDispatches.id })
+        .from(relayDispatches)
+        .where(eq(relayDispatches.status, 'queued'))
+        .orderBy(relayDispatches.createdAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
+
+      if (claimable.length === 0) return [];
+
+      const rows = await tx
+        .update(relayDispatches)
+        .set({ status: 'broadcasting' })
+        .where(
+          inArray(
+            relayDispatches.id,
+            claimable.map((row) => row.id),
+          ),
+        )
+        .returning();
+
+      return rows.map(toRelayDispatch);
+    });
+  }
+
+  async setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void> {
+    await this.db
+      .update(relayDispatches)
+      .set({ transactionId })
+      .where(eq(relayDispatches.id, relayDispatchId));
   }
 }
