@@ -9,4 +9,12 @@ export const config = {
   authToken: process.env.AUTH_TOKEN ?? 'dev-secret',
   /** Global Retry Policy default (ADR-0003) when a Dispatch request omits its own — off unless the operator opts in. */
   defaultRetryPolicy: process.env.DEFAULT_RETRY_POLICY === 'true',
+  /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */
+  solana: {
+    rpcUrl: process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com',
+    /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. */
+    senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
+    /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
+    knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
+  },
 };
