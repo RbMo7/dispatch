@@ -511,7 +511,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         this.logger.warn({ hash, chainDetail: outcome.chainDetail }, 'transaction reported failed');
         return err({
           code: 'CHAIN_REJECTED',
-          message: 'devnet reported this transaction as failed',
+          message: `${this.chain} reported this transaction as failed`,
           chainDetail: outcome.chainDetail,
         });
       }
