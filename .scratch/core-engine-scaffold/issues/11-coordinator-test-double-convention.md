@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: resolved
 
 # Document the Coordinator's ChainHandler test-double convention
 
@@ -11,3 +11,7 @@ Resolve by either:
 - Or deciding `StubChainHandler` should itself grow configurability (setter methods / constructor options for each return value) so one Chain Handler double serves both roles — weigh this against issue 05's own framing of `StubChainHandler` as deliberately trivial/no-op, since making it configurable blurs that line.
 
 Low priority — this is a documentation/consistency gap, not a functional one; the current tests are correct and the reasoning is sound, just not written back into the process the repo asks for.
+
+## Comments
+
+Resolved 2026-09-24: took the first option. spec.md's Testing Decisions section now describes `FakeChainHandler` (configurable per-method double for orchestration branch coverage) as the Coordinator's own test double, distinct from `StubChainHandler` (kept deliberately trivial/no-op, conformance-suite-only). `StubChainHandler` was not made configurable — issue 05's framing of it as trivial stands.

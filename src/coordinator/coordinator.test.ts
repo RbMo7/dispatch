@@ -238,6 +238,122 @@ describe('Coordinator.processQueuedDispatches', () => {
   });
 });
 
+describe('Coordinator bundling (solana-chain-handler issue 13)', () => {
+  it('signs and broadcasts a bundle exactly once, then fans the one hash out to every contributing Call — even across separate Dispatches claimed in the same tick', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.prepare.mockImplementationOnce((items, _senderAddress) =>
+      Promise.resolve(
+        ok(items.map((_item, callIndex) => ({ callIndex, unsignedTransaction: 'bundle-1' }))),
+      ),
+    );
+    const dispatchA = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-a',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const dispatchB = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-b',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.prepare).toHaveBeenCalledTimes(1);
+    expect(handler.prepare).toHaveBeenCalledWith([solanaCall, solanaCall], 'sender-address');
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+
+    const [txA] = await store.listTransactions(dispatchA.id);
+    const [txB] = await store.listTransactions(dispatchB.id);
+    expect(txA).toMatchObject({ status: 'PENDING', hash: 'hash-1', signedBytes: 'signed-bytes' });
+    expect(txB).toMatchObject({ status: 'PENDING', hash: 'hash-1', signedBytes: 'signed-bytes' });
+  });
+
+  it('excludes an invalid Call from the bundle without blocking the rest — prepare only ever sees Calls that passed validateCall', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.validateCall.mockImplementation((call) =>
+      Promise.resolve(
+        (call as SolanaCall).programId === 'bad'
+          ? err({ code: 'INVALID_RECIPIENT', message: 'malformed recipient' })
+          : ok(undefined),
+      ),
+    );
+    handler.prepare.mockImplementationOnce((items, _senderAddress) =>
+      Promise.resolve(
+        ok(items.map((_item, callIndex) => ({ callIndex, unsignedTransaction: 'bundle-1' }))),
+      ),
+    );
+    const badItem: DispatchItem<'solana'> = {
+      call: { programId: 'bad', accounts: [], data: 'ZGF0YQ==' },
+      payment: null,
+    };
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [solanaItem, badItem, solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.prepare).toHaveBeenCalledWith([solanaCall, solanaCall], 'sender-address');
+    const transactions = await store.listTransactions(dispatch.id);
+    expect(transactions.map((t) => t.status)).toEqual(['PENDING', 'FAILED', 'PENDING']);
+  });
+
+  it('fails every Call sharing a bundle when sign fails for it, not just one', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.prepare.mockImplementationOnce((items, _senderAddress) =>
+      Promise.resolve(
+        ok(items.map((_item, callIndex) => ({ callIndex, unsignedTransaction: 'bundle-1' }))),
+      ),
+    );
+    handler.sign.mockResolvedValueOnce(err({ code: 'SIGNER_UNREACHABLE', message: 'no signer' }));
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [solanaItem, solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).not.toHaveBeenCalled();
+    const transactions = await store.listTransactions(dispatch.id);
+    expect(transactions.map((t) => t.status)).toEqual(['FAILED', 'FAILED']);
+    expect(transactions[0]?.error).toEqual({ code: 'SIGNER_UNREACHABLE', message: 'no signer' });
+  });
+
+  it('fails every still-valid Call in the claimed batch when prepare itself fails', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.prepare.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+    const dispatchA = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-a',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const dispatchB = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-b',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    const [txA] = await store.listTransactions(dispatchA.id);
+    const [txB] = await store.listTransactions(dispatchB.id);
+    expect(txA?.status).toBe('FAILED');
+    expect(txB?.status).toBe('FAILED');
+    expect(txA?.error).toEqual({ code: 'RPC_UNAVAILABLE', message: 'rpc down' });
+  });
+});
+
 function paymentItem(asset: string, amount: string): DispatchItem<'solana'> {
   return { call: solanaCall, payment: { recipient: 'recipient', asset, amount } };
 }

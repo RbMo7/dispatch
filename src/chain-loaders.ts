@@ -12,6 +12,7 @@ import {
 } from './chain-registry/chain-registry.js';
 import { config } from './config.js';
 import type { Chain } from './domain/chain.js';
+import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
 
 /**
@@ -29,8 +30,13 @@ const loaders: Partial<Record<'solana', ChainHandlerLoader>> = {
   solana: () =>
     Promise.resolve(
       new SolanaChainHandler({
-        connection: new Connection(config.solana.rpcUrl, 'confirmed'),
-        signerClient: new SignerClient(config.signerUrl),
+        connection: new Connection(config.solana.rpcUrl, {
+          commitment: 'confirmed',
+          // issue 15: every RPC call this Connection makes is aborted, not
+          // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
+          fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+        }),
+        signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
         senderAddress: config.solana.senderAddress,
         knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
       }),

@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: resolved
 
 # Wire bundling into the Coordinator's real call-processing loop
 
@@ -7,3 +7,20 @@ Issue 10 built bundling as a real, tested `SolanaChainHandler.prepare` capabilit
 This is a Coordinator-level orchestration change, not a Chain Handler one — `prepare`'s own contract (one `PreparedTransaction` per input Call, in order) doesn't need to change; the Coordinator would need to gather several of a claimed batch's remaining Calls before calling `prepare`/`sign`/`broadcast`, then fan the single resulting hash back out to each contributing Call's own `Transaction` row. That fan-out is itself new: today `Coordinator.processCall` calls `store.createTransaction` once per Call with its own `callIndex`; a bundle's several Calls sharing one broadcast hash would need each contributing `callIndex` to get its own `Transaction` row pointing at that same hash, which the current one-`createTransaction`-call-per-Call shape already happens to support (each call would just pass a repeated hash/signedBytes) — but the Coordinator's *decision* of which Calls to batch together (same chain, same Sender, what triggers a chunk boundary today vs. waiting for more) is undesigned.
 
 Chain-agnostic in principle (any chain could batch this way), but only Solana has a real bundling implementation to wire up yet — worth deciding here first, alongside `solana-chain-handler`'s own real usage, rather than as an abstract Coordinator redesign.
+
+## Comments
+
+Resolved 2026-09-24: the batching policy is **same-tick opportunistic, automatic** — never a caller-selectable mode. ADR-0006 already settled this: Solana needs no separate Bulk Call concept because a transaction's native multi-instruction support *is* its bulk mode, unlike EVM's opt-in aggregator-contract Bulk Call (that's opt-in specifically because it crosses a real trust boundary, a caller-supplied contract — Solana bundling has no such boundary, it's just the engine's own instructions in the engine's own transaction). "Same-tick opportunistic" means: only Calls already gathered by one `claimQueued` claim are ever grouped together; nothing waits across ticks hoping more arrive.
+
+`Coordinator.processQueuedDispatches` (`src/coordinator/coordinator.ts`) no longer calls `prepare([call], senderAddress)` one Call at a time. New shape:
+
+1. After the Funding Check, every still-eligible `(Dispatch, callIndex)` from the whole claimed batch is grouped by `chain` (which, per ADR-0016's single-Sender-per-chain, is also the Sender grouping — bundling can span multiple Dispatches claimed in the same tick, not just one Dispatch's own items).
+2. `processChainBatch` validates each Call individually first (an invalid Call never rides along with valid ones), then calls `handler.prepare(...)` **once** with every still-valid Call in the group — letting the Chain Handler's own `prepare()` decide how to chunk them (issue 10's `MAX_BUNDLE_SIZE` internal chunking, unchanged).
+3. `PreparedTransaction.unsignedTransaction` (already part of the public `ChainHandler` interface) is the grouping key for "which Calls ended up sharing one real transaction" — a Chain Handler that bundles ties several Calls to byte-identical `unsignedTransaction` bytes, so grouping by that opaque string (never decoding it, ADR-0027) recovers chunk membership generically, with no Solana-specific knowledge in the Coordinator.
+4. `processChunk` signs and broadcasts **exactly once per real transaction** (never once per contributing Call — `sign`'s own per-chunk caching would have made repeat calls redundant anyway, but broadcast has no such cache, so calling it once per Call would have meant real duplicate RPC calls), then fans the one resulting hash — or one shared failure — out to every contributing Call's own `createTransaction`/`recordCallFailure` row, exactly as the ticket described.
+
+A `prepare`/`sign`/`broadcast` failure now fails every Call sharing that one transaction together (they genuinely share one outcome); a `validateCall` failure still only ever fails its own Call. Documented on `processQueuedDispatches`'s own doc comment.
+
+Verified:
+- Unit: 4 new tests in `coordinator.test.ts` (bundling across separate Dispatches sharing one tick, an invalid Call excluded without blocking the bundle, a bundle-wide sign failure, a batch-wide prepare failure) plus all 34 pre-existing Coordinator tests still green (79 total across the affected files).
+- Real devnet, end to end: re-ran `dispatch-api-e2e.test.ts` (3 distinct Calls — a native SOL payment, an SPL payment, a raw contract call — in one Dispatch). Log confirms `"bundleSize":3"` and all three Calls' `Transaction` rows resolve to the same real devnet signature — genuine bundling through the real API → Coordinator → SolanaChainHandler path, not just a unit-test double. `relay-dispatch-api-e2e.test.ts` and `bundling.test.ts` (direct `SolanaChainHandler.prepare`, unaffected by this change) also still pass in isolation; a full concurrent run hit real devnet 429 rate-limiting unrelated to this change.

@@ -19,6 +19,13 @@ const POLL_INTERVAL_MS = 2_000;
  * loop needs to know the other exists.
  */
 const REWATCH_INTERVAL_MS = 5 * 60_000;
+/**
+ * issue 15: last-resort guard. Every outbound RPC/Signer call now carries
+ * its own deadline (rpc-timeout.ts), so an in-flight tick should always
+ * unwind well before this fires — this exists only in case some future
+ * call path is added without going through that shared timeout.
+ */
+const SHUTDOWN_FORCE_EXIT_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +46,13 @@ let running = true;
 function shutdown(signal: string): void {
   logger.info({ signal }, 'worker shutting down');
   running = false;
+  setTimeout(() => {
+    logger.error(
+      { signal, timeoutMs: SHUTDOWN_FORCE_EXIT_MS },
+      'graceful shutdown timed out, forcing exit',
+    );
+    process.exit(1);
+  }, SHUTDOWN_FORCE_EXIT_MS);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));

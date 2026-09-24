@@ -1,6 +1,11 @@
 import type { Logger } from 'pino';
 
-import type { ChainHandler } from '../chain-handler/chain-handler.js';
+import type {
+  ChainHandler,
+  PreparedTransaction,
+  UnsignedTransaction,
+} from '../chain-handler/chain-handler.js';
+import type { Call } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -34,11 +39,14 @@ function isTransientBroadcastFailure(error: DispatchError): boolean {
   return error.code === 'RPC_UNAVAILABLE';
 }
 
+/** A (Dispatch, callIndex) pointer to one Call — the Funding Check's own grouping unit, and issue 13's bundling grouping unit. */
+type CallRef = { dispatch: Dispatch; callIndex: number };
+
 type FundingRequirement = {
   chain: Chain;
   asset: string;
   required: bigint;
-  items: { dispatch: Dispatch; callIndex: number }[];
+  items: CallRef[];
 };
 
 export type CoordinatorDeps = {
@@ -92,10 +100,17 @@ export class Coordinator {
   /**
    * Claims up to `limit` queued Dispatches, runs the Funding Check
    * (ADR-0024) across the whole claimed batch, then drives each remaining
-   * Call through validate/prepare/sign/broadcast independently — one Call's
-   * failure never blocks another's (the default batching mode is one
-   * transaction per payment, ADR-0006). Every outcome is persisted either
-   * way.
+   * Call through validate/prepare/sign/broadcast — grouped by chain (and so,
+   * per ADR-0016's single-Sender-per-chain, by Sender too) and bundled
+   * wherever the Chain Handler's own `prepare()` chooses to bundle them
+   * (issue 10/ADR-0006). Bundling here is same-tick opportunistic only
+   * (solana-chain-handler issue 13): only Calls this one claim already
+   * gathered are ever grouped together — nothing waits across ticks hoping
+   * more arrive. A `validateCall` failure only ever fails its own Call; once
+   * several Calls share one real transaction, a `prepare`/`sign`/`broadcast`
+   * failure fails all of them together, since they genuinely share one
+   * broadcast outcome (see `processChainBatch`). Every outcome is persisted
+   * either way.
    */
   async processQueuedDispatches(limit: number): Promise<void> {
     const dispatches = await this.store.claimQueued(limit);
@@ -110,14 +125,158 @@ export class Coordinator {
 
     const fundingFailed = await this.runFundingCheck(dispatches);
 
+    const itemsByChain = new Map<Chain, CallRef[]>();
     for (const dispatch of dispatches) {
-      const handler = this.requireChainHandler(dispatch.chain);
-      const senderAddress = this.requireSenderAddress(dispatch.chain);
-
       for (let callIndex = 0; callIndex < dispatch.items.length; callIndex++) {
         if (fundingFailed.has(callKey(dispatch.id, callIndex))) continue;
-        await this.processCall(dispatch, handler, senderAddress, callIndex);
+        const group = itemsByChain.get(dispatch.chain);
+        const ref = { dispatch, callIndex };
+        if (group) group.push(ref);
+        else itemsByChain.set(dispatch.chain, [ref]);
       }
+    }
+
+    for (const [chain, items] of itemsByChain) {
+      const handler = this.requireChainHandler(chain);
+      const senderAddress = this.requireSenderAddress(chain);
+      await this.processChainBatch(handler, senderAddress, chain, items);
+    }
+  }
+
+  /**
+   * issue 13 (solana-chain-handler): validates every still-eligible Call
+   * individually first — an invalid Call never rides along in a bundle with
+   * valid ones — then hands every Call that passed to a single `prepare()`
+   * call together, letting the Chain Handler decide how (or whether) to
+   * chunk them into real transactions. `PreparedTransaction.unsignedTransaction`
+   * is this interface's own opaque grouping key (ADR-0027): a Chain Handler
+   * that bundles ties several Calls to byte-identical `unsignedTransaction`
+   * bytes for whatever shares one real transaction, so grouping by that
+   * value — without ever decoding it — is exactly how the Coordinator
+   * recovers which Calls ended up sharing one broadcast.
+   */
+  private async processChainBatch(
+    handler: ChainHandler,
+    senderAddress: string,
+    chain: Chain,
+    items: CallRef[],
+  ): Promise<void> {
+    const valid: (CallRef & { call: Call })[] = [];
+    for (const { dispatch, callIndex } of items) {
+      const item = dispatch.items[callIndex];
+      if (!item) continue;
+      const log = this.logger.child({ dispatchId: dispatch.id, callIndex, chain });
+
+      const validation = await handler.validateCall(item.call);
+      if (!validation.ok) {
+        log.warn({ stage: 'validateCall', error: validation.error }, 'call failed');
+        await this.store.recordCallFailure({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain,
+          error: validation.error,
+        });
+        continue;
+      }
+      valid.push({ dispatch, callIndex, call: item.call });
+    }
+    if (valid.length === 0) return;
+
+    const prepareResult = await handler.prepare(
+      valid.map((v) => v.call),
+      senderAddress,
+    );
+    if (!prepareResult.ok) {
+      this.logger.warn(
+        { chain, count: valid.length, error: prepareResult.error },
+        'prepare failed for a claimed batch of calls',
+      );
+      for (const { dispatch, callIndex } of valid) {
+        await this.store.recordCallFailure({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain,
+          error: prepareResult.error,
+        });
+      }
+      return;
+    }
+
+    const chunks = new Map<UnsignedTransaction, { prepared: PreparedTransaction; members: CallRef[] }>();
+    prepareResult.value.forEach((prepared, i) => {
+      const source = valid[i];
+      if (!source) {
+        throw new Error(
+          `prepare() returned a PreparedTransaction at index ${i} with no matching input Call for chain ${chain} — a ChainHandler must return exactly one PreparedTransaction per input Call, in order.`,
+        );
+      }
+      const chunk = chunks.get(prepared.unsignedTransaction);
+      if (chunk) chunk.members.push({ dispatch: source.dispatch, callIndex: source.callIndex });
+      else
+        chunks.set(prepared.unsignedTransaction, {
+          prepared,
+          members: [{ dispatch: source.dispatch, callIndex: source.callIndex }],
+        });
+    });
+
+    for (const { prepared, members } of chunks.values()) {
+      await this.processChunk(handler, senderAddress, chain, prepared, members);
+    }
+  }
+
+  /**
+   * Signs and broadcasts exactly once per real transaction — never once per
+   * contributing Call — then fans the single resulting hash (or failure)
+   * back out to every Call that shares it, giving each its own Transaction
+   * row (CONTEXT.md: an Attempt/Transaction is about signed bytes, not
+   * about which Calls happened to ride along in it).
+   */
+  private async processChunk(
+    handler: ChainHandler,
+    senderAddress: string,
+    chain: Chain,
+    prepared: PreparedTransaction,
+    members: CallRef[],
+  ): Promise<void> {
+    const log = this.logger.child({ chain, bundleSize: members.length });
+
+    const signResult = await handler.sign(prepared, senderAddress);
+    if (!signResult.ok) {
+      log.warn({ stage: 'sign', error: signResult.error }, 'call(s) failed');
+      for (const { dispatch, callIndex } of members) {
+        await this.store.recordCallFailure({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain,
+          error: signResult.error,
+        });
+      }
+      return;
+    }
+
+    const broadcastResult = await handler.broadcast(signResult.value);
+    if (!broadcastResult.ok) {
+      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
+      for (const { dispatch, callIndex } of members) {
+        await this.store.recordCallFailure({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain,
+          error: broadcastResult.error,
+        });
+      }
+      return;
+    }
+
+    log.info({ hash: broadcastResult.value.hash }, 'call(s) broadcast succeeded');
+    for (const { dispatch, callIndex } of members) {
+      await this.store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex,
+        chain,
+        signedBytes: signResult.value,
+        hash: broadcastResult.value.hash,
+      });
     }
   }
 
@@ -199,7 +358,7 @@ export class Coordinator {
 
   /** Records the same failure reason for every (dispatch, callIndex) a Funding Check requirement covers, and marks each skipped in the caller's main processing loop. */
   private async failFundingItems(
-    items: { dispatch: Dispatch; callIndex: number }[],
+    items: CallRef[],
     error: DispatchError,
     failedKeys: Set<string>,
   ): Promise<void> {
@@ -335,82 +494,6 @@ export class Coordinator {
     for (const transaction of abandoned) {
       await this.resolveAbandonedTransaction(transaction);
     }
-  }
-
-  private async processCall(
-    dispatch: Dispatch,
-    handler: ChainHandler,
-    senderAddress: string,
-    callIndex: number,
-  ): Promise<void> {
-    const item = dispatch.items[callIndex];
-    if (item === undefined) return;
-    const call = item.call;
-    const log = this.logger.child({ dispatchId: dispatch.id, callIndex, chain: dispatch.chain });
-
-    const validation = await handler.validateCall(call);
-    if (!validation.ok) {
-      log.warn({ stage: 'validateCall', error: validation.error }, 'call failed');
-      await this.store.recordCallFailure({
-        dispatchId: dispatch.id,
-        callIndex,
-        chain: dispatch.chain,
-        error: validation.error,
-      });
-      return;
-    }
-
-    const prepareResult = await handler.prepare([call], senderAddress);
-    if (!prepareResult.ok) {
-      log.warn({ stage: 'prepare', error: prepareResult.error }, 'call failed');
-      await this.store.recordCallFailure({
-        dispatchId: dispatch.id,
-        callIndex,
-        chain: dispatch.chain,
-        error: prepareResult.error,
-      });
-      return;
-    }
-
-    const prepared = prepareResult.value[0];
-    if (!prepared) {
-      throw new Error(
-        `prepare() returned no PreparedTransaction for callIndex ${callIndex} of dispatch ${dispatch.id} — a ChainHandler must return one PreparedTransaction per input Call.`,
-      );
-    }
-
-    const signResult = await handler.sign(prepared, senderAddress);
-    if (!signResult.ok) {
-      log.warn({ stage: 'sign', error: signResult.error }, 'call failed');
-      await this.store.recordCallFailure({
-        dispatchId: dispatch.id,
-        callIndex,
-        chain: dispatch.chain,
-        error: signResult.error,
-      });
-      return;
-    }
-
-    const broadcastResult = await handler.broadcast(signResult.value);
-    if (!broadcastResult.ok) {
-      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call failed');
-      await this.store.recordCallFailure({
-        dispatchId: dispatch.id,
-        callIndex,
-        chain: dispatch.chain,
-        error: broadcastResult.error,
-      });
-      return;
-    }
-
-    log.info({ hash: broadcastResult.value.hash }, 'call broadcast succeeded');
-    await this.store.createTransaction({
-      dispatchId: dispatch.id,
-      callIndex,
-      chain: dispatch.chain,
-      signedBytes: signResult.value,
-      hash: broadcastResult.value.hash,
-    });
   }
 
   private async resolvePendingTransaction(transaction: Transaction): Promise<void> {

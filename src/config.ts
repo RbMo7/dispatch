@@ -1,5 +1,9 @@
+import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
+
 export const config = {
   port: Number(process.env.PORT ?? 8420),
+  /** issue 15: per-call deadline for outbound RPC/Signer network calls (rpc-timeout.ts) — never how long broadcast()'s own confirmation polling loop may run in total. */
+  rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS ?? DEFAULT_RPC_TIMEOUT_MS),
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://dispatch:dispatch@localhost:5432/dispatch',
   /** Base URL of the operator-configured Signer (ADR-0002) — swap this to point at a production Signer. */
   signerUrl: process.env.SIGNER_URL ?? 'http://localhost:8421',
