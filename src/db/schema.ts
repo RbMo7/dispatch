@@ -28,9 +28,20 @@ export const dispatches = pgTable(
 
 export const transactions = pgTable('transactions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  dispatchId: uuid('dispatch_id')
-    .notNull()
-    .references(() => dispatches.id),
+  /**
+   * Deliberately NOT a foreign key: this points at either `dispatches.id`
+   * (a Managed Dispatch's Call) or `relay_dispatches.id` (ADR-0031's
+   * RelayDispatch, always exactly one Transaction) — a single-table FK
+   * can't express "one of two tables." This is the intentional
+   * replacement for that referential-integrity check, not a gap left
+   * open: `Coordinator.maybeAbandon` already resolves which owner a
+   * Transaction belongs to (tries getDispatch, falls back to
+   * getRelayDispatch, throws if neither matches — a genuinely orphaned
+   * row still surfaces loudly). Nothing in this repo ever deletes a
+   * Dispatch/RelayDispatch row, so there's no live risk the dropped FK's
+   * old ON DELETE behavior was actually guarding against.
+   */
+  dispatchId: uuid('dispatch_id').notNull(),
   callIndex: integer('call_index').notNull(),
   chain: text('chain').notNull(),
   signedBytes: text('signed_bytes'),
