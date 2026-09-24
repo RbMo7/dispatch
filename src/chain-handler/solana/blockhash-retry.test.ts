@@ -81,13 +81,7 @@ describe('SolanaChainHandler.broadcast blockhash-refresh-and-resubmit', () => {
     expect(broadcastResult.ok).toBe(true);
     if (!broadcastResult.ok) return;
 
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: broadcastResult.value.hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
-
+    // broadcast() already polled to confirmation itself (HTTP-only) before returning ok.
     const recipientBalance = await connection.getBalance(recipient.publicKey);
     expect(recipientBalance).toBe(2_000_000);
   }, 180_000);

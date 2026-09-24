@@ -80,13 +80,7 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
       throw new Error(`broadcast failed: ${JSON.stringify(broadcastResult)}`);
     }
 
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: broadcastResult.value.hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
-
+    // broadcast() already polled to confirmation itself (HTTP-only) before returning ok.
     const recipientAta = deriveAssociatedTokenAddress(recipient.publicKey, mint);
     const account = await getAccount(connection, recipientAta);
     expect(account.amount).toBe(TRANSFER_AMOUNT);
@@ -151,13 +145,7 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
       throw new Error(`broadcast failed: ${JSON.stringify(broadcastResult)}`);
     }
 
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: broadcastResult.value.hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
-
+    // broadcast() already polled to confirmation itself (HTTP-only) before returning ok.
     const recipientAta = deriveAssociatedTokenAddress(recipient.publicKey, mint);
     const account = await getAccount(connection, recipientAta);
     expect(account.amount).toBe(TRANSFER_AMOUNT);

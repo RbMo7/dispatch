@@ -65,8 +65,24 @@ export function getFundedSenderKeypair(): Promise<Keypair> {
       attempts++;
       try {
         const signature = await connection.requestAirdrop(keypair.publicKey, 2 * LAMPORTS_PER_SOL);
-        const latest = await connection.getLatestBlockhash();
-        await connection.confirmTransaction({ signature, ...latest }, 'confirmed');
+        // Plain HTTP polling, not connection.confirmTransaction — that
+        // defaults to a WebSocket subscription some RPC providers don't
+        // support, and hangs rather than falling back (see
+        // solana-chain-handler.ts's pollUntilConfirmedOrExpired).
+        const deadline = Date.now() + 30_000;
+        let confirmed = false;
+        while (Date.now() < deadline && !confirmed) {
+          const { value } = await connection.getSignatureStatuses([signature]);
+          const status = value[0];
+          if (
+            status &&
+            (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
+          ) {
+            confirmed = true;
+          } else {
+            await sleep(1000);
+          }
+        }
       } catch {
         // devnet's faucet is frequently rate-limited or briefly unavailable;
         // back off and re-check the real balance rather than failing fast.

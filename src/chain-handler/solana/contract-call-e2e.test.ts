@@ -70,12 +70,7 @@ describe('SolanaChainHandler arbitrary contract call (real devnet)', () => {
       throw new Error(`broadcast failed: ${JSON.stringify(broadcastResult)}`);
     }
 
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: broadcastResult.value.hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
+    // broadcast() already polled to confirmation itself (HTTP-only) before returning ok.
 
     // Proof this actually ran as a real Memo program call, not just that
     // *some* transaction landed: the memo text is in the on-chain logs.

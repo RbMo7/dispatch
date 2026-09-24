@@ -85,12 +85,7 @@ describe('SolanaChainHandler bundling', () => {
 
     const [hash] = hashes;
     if (!hash) return;
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
+    // broadcast() already polled to confirmation itself (HTTP-only) before returning ok.
 
     for (const recipient of recipients) {
       const balance = await connection.getBalance(recipient.publicKey);

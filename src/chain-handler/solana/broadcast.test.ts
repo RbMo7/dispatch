@@ -58,13 +58,10 @@ describe('SolanaChainHandler.broadcast', () => {
     expect(typeof broadcastResult.value.hash).toBe('string');
     expect(broadcastResult.value.hash.length).toBeGreaterThan(0);
 
-    const latest = await connection.getLatestBlockhash('confirmed');
-    const confirmation = await connection.confirmTransaction(
-      { signature: broadcastResult.value.hash, ...latest },
-      'confirmed',
-    );
-    expect(confirmation.value.err).toBeNull();
-
+    // broadcast() itself already polled to confirmation before returning ok
+    // (pollUntilConfirmedOrExpired, HTTP-only) — no need to re-confirm here,
+    // and connection.confirmTransaction would default to a WebSocket
+    // subscription this test's RPC provider may not support anyway.
     const recipientBalance = await connection.getBalance(recipient.publicKey);
     expect(recipientBalance).toBe(2_000_000);
   }, 30_000);

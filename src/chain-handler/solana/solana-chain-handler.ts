@@ -2,13 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  TransactionExpiredBlockheightExceededError,
-  TransactionInstruction,
-} from '@solana/web3.js';
+import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
@@ -42,6 +36,10 @@ import {
   isSplTransferCall,
   validateSplTransferCall,
 } from './spl-transfer.js';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * The Coordinator's `abandonmentTimeoutMs` config value for `'solana'`
@@ -357,18 +355,21 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * issues 05/06: submits the signed bytes via `sendTransaction` and waits
    * for confirmation against the exact blockhash `sign` used (tracked in
    * `blockhashByHash`, since the interface hands `broadcast` only the
-   * opaque bytes). If that blockhash provably expires — at send time
-   * ("Blockhash not found", the reliably-reproducible case: this handler's
-   * own `sign` always fetches a genuinely fresh one, so this only fires for
-   * bytes held past their ~60-90s window) or while waiting for confirmation
-   * (`TransactionExpiredBlockheightExceededError`, the "sent but dropped"
-   * case ADR-0007 exists for — real but not reproducible on demand against
-   * a public devnet) — refreshes the blockhash and resubmits as a genuinely
-   * new Transaction (CONTEXT.md's Attempt-vs-Transaction distinction: the
-   * signed bytes changed), up to a bounded number of refreshes. Externally
-   * produced bytes this handler never signed (no bookkeeping to wait
-   * against — e.g. the conformance suite's `invalidSignedTransaction`
-   * fixture) get a single bare send, matching issue 05's original scope.
+   * opaque bytes) — via `pollUntilConfirmedOrExpired` below, plain HTTP
+   * polling only, deliberately never `connection.confirmTransaction`
+   * (see that method's own doc comment for why). If that blockhash provably
+   * expires — at send time ("Blockhash not found", the reliably-
+   * reproducible case: this handler's own `sign` always fetches a
+   * genuinely fresh one, so this only fires for bytes held past their
+   * ~60-90s window) or while waiting for confirmation (the "sent but
+   * dropped" case ADR-0007 exists for — real but not reproducible on
+   * demand against a public devnet) — refreshes the blockhash and
+   * resubmits as a genuinely new Transaction (CONTEXT.md's
+   * Attempt-vs-Transaction distinction: the signed bytes changed), up to a
+   * bounded number of refreshes. Externally produced bytes this handler
+   * never signed (no bookkeeping to wait against — e.g. the conformance
+   * suite's `invalidSignedTransaction` fixture) get a single bare send,
+   * matching issue 05's original scope.
    */
   async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
     let currentRaw: Buffer<ArrayBufferLike> = Buffer.from(signed, 'base64');
@@ -394,32 +395,78 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       const record = this.blockhashByHash.get(hash);
       if (!record) return ok({ hash }); // no bookkeeping for these bytes — issue 05's original bare-send behavior
 
-      try {
-        const confirmation = await this.connection.confirmTransaction(
-          {
-            signature: hash,
-            blockhash: record.blockhash,
-            lastValidBlockHeight: record.lastValidBlockHeight,
-          },
-          'confirmed',
-        );
-        if (confirmation.value.err) {
-          return err({
-            code: 'CHAIN_REJECTED',
-            message: 'devnet reported this transaction as failed',
-            chainDetail: confirmation.value.err,
-          });
-        }
-        return ok({ hash });
-      } catch (cause) {
-        if (!(cause instanceof TransactionExpiredBlockheightExceededError)) {
-          return err(mapSolanaFailure(cause));
-        }
-        if (attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08)
-        const refreshed = await this.resignWithFreshBlockhash(currentRaw);
-        if (!refreshed.ok) return refreshed;
-        currentRaw = refreshed.value;
+      const outcome = await this.pollUntilConfirmedOrExpired(hash, record);
+      if (outcome.type === 'confirmed') return ok({ hash });
+      if (outcome.type === 'failed') {
+        return err({
+          code: 'CHAIN_REJECTED',
+          message: 'devnet reported this transaction as failed',
+          chainDetail: outcome.chainDetail,
+        });
       }
+      if (outcome.type === 'error') return err(outcome.error);
+
+      // outcome.type === 'expired'
+      if (attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08)
+      const refreshed = await this.resignWithFreshBlockhash(currentRaw);
+      if (!refreshed.ok) return refreshed;
+      currentRaw = refreshed.value;
+    }
+  }
+
+  /**
+   * Polls plain HTTP JSON-RPC only — deliberately never
+   * `connection.confirmTransaction`, which defaults to a WebSocket
+   * `signatureSubscribe` subscription. Found the hard way (testing against
+   * a real alternative RPC provider that doesn't expose that method):
+   * `confirmTransaction` doesn't fall back to polling when the subscription
+   * itself fails — it retries the broken subscribe call forever and never
+   * resolves, hanging `broadcast` indefinitely on any RPC provider without
+   * WebSocket support. `getSignatureStatuses` (already `getStatus`'s own
+   * mechanism, issue 07) and `isBlockhashValid` (issue 08) are both plain
+   * HTTP and work everywhere.
+   */
+  private async pollUntilConfirmedOrExpired(
+    hash: string,
+    record: BlockhashRecord,
+  ): Promise<
+    | { type: 'confirmed' }
+    | { type: 'failed'; chainDetail: unknown }
+    | { type: 'expired' }
+    | { type: 'error'; error: DispatchError }
+  > {
+    const pollIntervalMs = 1_000;
+    for (;;) {
+      let statuses: Awaited<ReturnType<Connection['getSignatureStatuses']>>;
+      try {
+        statuses = await this.connection.getSignatureStatuses([hash], {
+          searchTransactionHistory: true,
+        });
+      } catch (cause) {
+        return { type: 'error', error: mapSolanaFailure(cause) };
+      }
+      const status = statuses.value[0];
+      if (status) {
+        if (status.err) return { type: 'failed', chainDetail: status.err };
+        if (
+          status.confirmationStatus === 'confirmed' ||
+          status.confirmationStatus === 'finalized'
+        ) {
+          return { type: 'confirmed' };
+        }
+      }
+
+      let stillValid: boolean;
+      try {
+        ({ value: stillValid } = await this.connection.isBlockhashValid(record.blockhash, {
+          commitment: 'confirmed',
+        }));
+      } catch (cause) {
+        return { type: 'error', error: mapSolanaFailure(cause) };
+      }
+      if (!stillValid) return { type: 'expired' };
+
+      await sleep(pollIntervalMs);
     }
   }
 
