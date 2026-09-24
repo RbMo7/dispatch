@@ -22,6 +22,7 @@ import type {
   UnsignedTransaction,
 } from '../chain-handler.js';
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
+import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
 import { toTransactionInstructions } from './instruction-codec.js';
 import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type SolanaTokenRegistry } from './known-tokens.js';
 import { buildNativeTransferCall, parsePublicKey, validateNativeTransferCall } from './native-transfer.js';
@@ -82,17 +83,6 @@ function decodeUnsignedTransaction(unsigned: UnsignedTransaction): EncodedTransa
  * doc comment on `getStatus`), never causes an incorrect answer.
  */
 type BlockhashRecord = { blockhash: string; lastValidBlockHeight: number };
-
-/** devnet's real rejection text for a genuinely expired/unknown blockhash at send time — not a mocked signal, this is the RPC's own wording. */
-function isBlockhashExpiryDetail(chainDetail: unknown): boolean {
-  const text =
-    chainDetail instanceof Error
-      ? chainDetail.message
-      : typeof chainDetail === 'string'
-        ? chainDetail
-        : '';
-  return /blockhash not found/i.test(text);
-}
 
 export type SolanaChainHandlerDeps = {
   connection: Connection;
@@ -224,7 +214,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return err({
         code: 'RPC_UNAVAILABLE',
         message: 'failed to fetch a recent blockhash before signing',
-        chainDetail: cause instanceof Error ? cause.message : cause,
+        chainDetail: extractMessage(cause),
       });
     }
 
@@ -278,24 +268,25 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const maxRefreshes = 3;
 
     for (let attempt = 0; ; attempt++) {
-      const sendResult = await this.sendOnce(currentRaw);
-
-      if (!sendResult.ok) {
-        if (isBlockhashExpiryDetail(sendResult.error.chainDetail) && attempt < maxRefreshes) {
+      let hash: string;
+      try {
+        hash = await this.connection.sendRawTransaction(currentRaw, { skipPreflight: false, maxRetries: 0 });
+      } catch (cause) {
+        if (isBlockhashExpiryMessage(extractMessage(cause)) && attempt < maxRefreshes) {
           const refreshed = await this.resignWithFreshBlockhash(currentRaw);
           if (!refreshed.ok) return refreshed;
           currentRaw = refreshed.value;
           continue;
         }
-        return sendResult;
+        return err(mapSolanaFailure(cause));
       }
 
-      const record = this.blockhashByHash.get(sendResult.value.hash);
-      if (!record) return sendResult; // no bookkeeping for these bytes — issue 05's original bare-send behavior
+      const record = this.blockhashByHash.get(hash);
+      if (!record) return ok({ hash }); // no bookkeeping for these bytes — issue 05's original bare-send behavior
 
       try {
         const confirmation = await this.connection.confirmTransaction(
-          { signature: sendResult.value.hash, blockhash: record.blockhash, lastValidBlockHeight: record.lastValidBlockHeight },
+          { signature: hash, blockhash: record.blockhash, lastValidBlockHeight: record.lastValidBlockHeight },
           'confirmed',
         );
         if (confirmation.value.err) {
@@ -305,33 +296,16 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
             chainDetail: confirmation.value.err,
           });
         }
-        return sendResult;
+        return ok({ hash });
       } catch (cause) {
         if (!(cause instanceof TransactionExpiredBlockheightExceededError)) {
-          return err({
-            code: 'RPC_UNAVAILABLE',
-            message: 'failed to confirm broadcast transaction',
-            chainDetail: cause instanceof Error ? cause.message : cause,
-          });
+          return err(mapSolanaFailure(cause));
         }
-        if (attempt >= maxRefreshes) return sendResult; // hand off to getStatus's own expiry check (issue 08)
+        if (attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08)
         const refreshed = await this.resignWithFreshBlockhash(currentRaw);
         if (!refreshed.ok) return refreshed;
         currentRaw = refreshed.value;
       }
-    }
-  }
-
-  private async sendOnce(raw: Buffer): Promise<Result<BroadcastResult, DispatchError>> {
-    try {
-      const hash = await this.connection.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 0 });
-      return ok({ hash });
-    } catch (cause) {
-      return err({
-        code: 'CHAIN_REJECTED',
-        message: 'devnet rejected this transaction',
-        chainDetail: cause instanceof Error ? cause.message : cause,
-      });
     }
   }
 
@@ -344,7 +318,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return err({
         code: 'CHAIN_REJECTED',
         message: 'cannot refresh: not a decodable Solana transaction',
-        chainDetail: cause instanceof Error ? cause.message : cause,
+        chainDetail: extractMessage(cause),
       });
     }
     if (!decoded.feePayer) {
@@ -398,7 +372,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return err({
         code: 'RPC_UNAVAILABLE',
         message: `failed to check status for ${hash}`,
-        chainDetail: cause instanceof Error ? cause.message : cause,
+        chainDetail: extractMessage(cause),
       });
     }
   }
@@ -435,7 +409,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return err({
         code: 'RPC_UNAVAILABLE',
         message: `failed to fetch balance for ${address} (${asset})`,
-        chainDetail: cause instanceof Error ? cause.message : cause,
+        chainDetail: extractMessage(cause),
       });
     }
   }
