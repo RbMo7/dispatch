@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Auto-provisioned devnet test wallet/mint (solana-chain-handler tests, ADR-0013)
+# — regenerated and re-funded per machine, never committed.
+.devnet-fixtures/
