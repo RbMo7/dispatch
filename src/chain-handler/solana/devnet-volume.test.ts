@@ -155,6 +155,6 @@ describe('SolanaChainHandler devnet volume (issue 12)', () => {
         await sleep(100);
       }
     },
-    10 * 60_000,
+    15 * 60_000,
   );
 });

@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
 import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import type { Logger } from 'pino';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
 import { err, ok, type Result } from '../../domain/result.js';
+import { logger as defaultLogger } from '../../logger.js';
 import { SignerClient } from '../../signer/client.js';
 import type {
   Balance,
@@ -143,6 +145,8 @@ export type SolanaChainHandlerDeps = {
   senderAddress: string;
   /** Operator-configured symbol -> {mint, decimals} for SPL transfers (known-tokens.ts) — empty by default, never hardcoded. */
   knownTokens?: SolanaTokenRegistry;
+  /** Defaults to the shared app logger (src/logger.ts) under a `component: 'solana-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
+  logger?: Logger;
 };
 
 /**
@@ -170,12 +174,14 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     string,
     Promise<Result<SignedTransaction, DispatchError>>
   >();
+  private readonly logger: Logger;
 
   constructor(deps: SolanaChainHandlerDeps) {
     this.connection = deps.connection;
     this.signerClient = deps.signerClient;
     this.senderAddress = deps.senderAddress;
     this.knownTokens = deps.knownTokens ?? {};
+    this.logger = (deps.logger ?? defaultLogger).child({ component: 'solana-chain-handler' });
   }
 
   /** issues 02/03: encodes a plain transfer (native or a known SPL token) as a SolanaCall. No RPC (ADR-0028). */
@@ -323,11 +329,19 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     feePayer: PublicKey,
     instructions: TransactionInstruction[],
   ): Promise<Result<SignedTransaction, DispatchError>> {
+    const senderAddress = feePayer.toBase58();
+    const log = this.logger.child({ senderAddress });
+    log.debug({ instructionCount: instructions.length }, 'signing instructions');
+
     let blockhash: string;
     let lastValidBlockHeight: number;
     try {
       ({ blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed'));
     } catch (cause) {
+      log.warn(
+        { error: extractMessage(cause) },
+        'failed to fetch a recent blockhash before signing',
+      );
       return err({
         code: 'RPC_UNAVAILABLE',
         message: 'failed to fetch a recent blockhash before signing',
@@ -339,18 +353,21 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     tx.add(...instructions);
 
     const message = tx.compileMessage().serialize();
-    const senderAddress = feePayer.toBase58();
     const signResult = await this.signerClient.requestSignature({
       chain: 'solana',
       curve: 'ed25519',
       address: senderAddress,
       unsignedTxBytes: message.toString('base64'),
     });
-    if (!signResult.ok) return signResult;
+    if (!signResult.ok) {
+      log.warn({ error: signResult.error }, 'signer request failed');
+      return signResult;
+    }
 
     const signatureBytes = Buffer.from(signResult.value.signature, 'base64');
     tx.addSignature(feePayer, signatureBytes);
     if (!tx.verifySignatures()) {
+      log.warn('signer returned a signature that does not verify');
       return err({
         code: 'SIGNER_UNREACHABLE',
         message: `signer returned a signature that does not verify for address ${senderAddress}`,
@@ -359,6 +376,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
     const hash = bs58.encode(signatureBytes);
     this.blockhashByHash.set(hash, { blockhash, resignable: true });
+    log.debug({ hash }, 'signed transaction');
 
     return ok(
       tx.serialize({ requireAllSignatures: true, verifySignatures: false }).toString('base64'),
@@ -436,6 +454,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
     for (let attempt = 0; ; attempt++) {
       const record = this.ensureBlockhashRecord(currentRaw);
+      this.logger.debug({ attempt, resignable: record?.resignable }, 'broadcasting transaction');
 
       let hash: string;
       try {
@@ -449,30 +468,63 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
           attempt < maxRefreshes &&
           record?.resignable !== false
         ) {
+          this.logger.warn(
+            { attempt },
+            'blockhash expired before send, refreshing and resubmitting',
+          );
           const refreshed = await this.resignWithFreshBlockhash(currentRaw);
           if (!refreshed.ok) return refreshed;
           currentRaw = refreshed.value;
           continue;
         }
+        this.logger.warn({ attempt, error: extractMessage(cause) }, 'sendRawTransaction failed');
         return err(mapSolanaFailure(cause));
       }
+      this.logger.debug({ hash }, 'sendRawTransaction accepted');
 
       const sentRecord = this.blockhashByHash.get(hash);
       if (!sentRecord) return ok({ hash }); // defensive only — ensureBlockhashRecord above already covers any decodable transaction
 
       const outcome = await this.pollUntilConfirmedOrExpired(hash, sentRecord);
-      if (outcome.type === 'confirmed') return ok({ hash });
+      if (outcome.type === 'confirmed') {
+        this.logger.info({ hash }, 'transaction confirmed');
+        return ok({ hash });
+      }
       if (outcome.type === 'failed') {
+        this.logger.warn({ hash, chainDetail: outcome.chainDetail }, 'transaction reported failed');
         return err({
           code: 'CHAIN_REJECTED',
           message: 'devnet reported this transaction as failed',
           chainDetail: outcome.chainDetail,
         });
       }
-      if (outcome.type === 'error') return err(outcome.error);
+      if (outcome.type === 'error') {
+        this.logger.warn(
+          { hash, error: outcome.error },
+          'status check failed while awaiting confirmation',
+        );
+        return err(outcome.error);
+      }
 
       // outcome.type === 'expired'
-      if (!sentRecord.resignable || attempt >= maxRefreshes) return ok({ hash }); // hand off to getStatus's own expiry check (issue 08/15)
+      if (!sentRecord.resignable) {
+        this.logger.warn(
+          { hash },
+          'blockhash expired while awaiting confirmation, no key to resign — handing off to getStatus',
+        );
+        return ok({ hash }); // hand off to getStatus's own expiry check (issue 08/15)
+      }
+      if (attempt >= maxRefreshes) {
+        this.logger.warn(
+          { hash, attempt },
+          'blockhash expired while awaiting confirmation, out of refreshes — handing off to getStatus',
+        );
+        return ok({ hash });
+      }
+      this.logger.warn(
+        { hash, attempt },
+        'blockhash expired while awaiting confirmation, refreshing and resubmitting',
+      );
       const refreshed = await this.resignWithFreshBlockhash(currentRaw);
       if (!refreshed.ok) return refreshed;
       currentRaw = refreshed.value;
@@ -591,6 +643,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
 
+    this.logger.debug(
+      { senderAddress: decoded.feePayer.toBase58() },
+      'resigning with a fresh blockhash',
+    );
     const resigned = await this.signInstructions(decoded.feePayer, decoded.instructions);
     if (!resigned.ok) return resigned;
     return ok(Buffer.from(resigned.value, 'base64'));
@@ -639,11 +695,15 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
       const status = value[0];
       if (status) {
-        if (status.err) return ok('FAILED');
+        if (status.err) {
+          this.logger.debug({ hash, chainDetail: status.err }, 'getStatus: FAILED');
+          return ok('FAILED');
+        }
         if (
           status.confirmationStatus === 'confirmed' ||
           status.confirmationStatus === 'finalized'
         ) {
+          this.logger.debug({ hash }, 'getStatus: CONFIRMED');
           return ok('CONFIRMED');
         }
         return ok('PENDING');
@@ -654,10 +714,14 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         const { value: stillValid } = await this.connection.isBlockhashValid(record.blockhash, {
           commitment: 'confirmed',
         });
-        if (!stillValid) return ok('FAILED');
+        if (!stillValid) {
+          this.logger.debug({ hash }, 'getStatus: FAILED (blockhash provably expired)');
+          return ok('FAILED');
+        }
       }
       return ok('PENDING');
     } catch (cause) {
+      this.logger.warn({ hash, error: extractMessage(cause) }, 'getStatus failed');
       return err({
         code: 'RPC_UNAVAILABLE',
         message: `failed to check status for ${hash}`,
