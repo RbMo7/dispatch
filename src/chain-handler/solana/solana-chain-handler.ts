@@ -404,10 +404,23 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   /**
    * issue 07: reads Solana's own commitment levels via getSignatureStatuses.
    *
+   * `searchTransactionHistory: true` is load-bearing, not cosmetic — found
+   * only at issue 12's real volume, never at the small scale of issues
+   * 02-11's own tests: getSignatureStatuses's default *recent-status cache*
+   * (a few minutes) evicts a signature long before the current polling
+   * cadence gets back around to it under real congestion, so a
+   * long-since-CONFIRMED transaction reads back as "not found" — which,
+   * combined with its now-also-expired blockhash, this method used to
+   * misread as issue 08's provable-expiry FAILED for a transaction that had
+   * actually succeeded. Searching full history removes that ambiguity: "not
+   * found" now means "genuinely never landed," which is what the
+   * provable-expiry check below is actually allowed to assume.
+   *
    * issue 08's decision: Solana never needs the Coordinator's generic
    * ABANDONED timeout at all. Unlike EVM, a stuck Solana transaction's dead
    * end is *provable*: once its blockhash's ~150-slot validity window has
-   * definitively passed with no signature status ever recorded, it
+   * definitively passed with no signature status ever recorded (now
+   * correctly checked against full history, not just the recent cache), it
    * mathematically cannot be included in any future block — a clean,
    * honest `FAILED` (ADR-0030), not "the engine gave up watching without a
    * definitive outcome" (CONTEXT.md's own definition of ABANDONED). This
@@ -421,7 +434,9 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    */
   async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
     try {
-      const { value } = await this.connection.getSignatureStatuses([hash]);
+      const { value } = await this.connection.getSignatureStatuses([hash], {
+        searchTransactionHistory: true,
+      });
       const status = value[0];
       if (status) {
         if (status.err) return ok('FAILED');
