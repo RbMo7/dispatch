@@ -1,0 +1,11 @@
+.anchor
+.DS_Store
+target
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+
+# Never commit key material, even a throwaway devnet demo recipient's —
+# scripts/init-assets.ts generates owner-b-keypair.json fresh on first run.
+*-keypair.json

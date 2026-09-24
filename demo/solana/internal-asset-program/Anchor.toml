@@ -1,0 +1,24 @@
+[toolchain]
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+internal_asset = "EcqsVLKPa1uuNG1Rs6tj2t8aGj1bAYgEwJszGHmpbo7x"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+# Public devnet by default — override with your own RPC (e.g. a paid
+# provider, to avoid the public endpoint's rate limits) via the standard
+# Anchor env vars instead of editing this file:
+#   ANCHOR_PROVIDER_URL=https://your-provider/... anchor deploy
+#   ANCHOR_WALLET=/path/to/your/keypair.json anchor deploy
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""

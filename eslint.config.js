@@ -25,6 +25,9 @@ export default tseslint.config(
   },
   eslintConfigPrettier,
   {
-    ignores: ['dist/**', 'drizzle/**', 'node_modules/**'],
+    // demo/solana/internal-asset-program is its own self-contained Anchor
+    // project (own package.json/tsconfig/dependency graph) — a reference
+    // artifact, never linted as part of this repo's own codebase.
+    ignores: ['dist/**', 'drizzle/**', 'node_modules/**', 'demo/solana/internal-asset-program/**'],
   },
 );

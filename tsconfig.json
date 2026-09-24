@@ -15,5 +15,10 @@
     "noEmit": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "drizzle.config.ts", "vitest.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "demo/solana/demo-internal-asset-relay.ts",
+    "drizzle.config.ts",
+    "vitest.config.ts"
+  ]
 }

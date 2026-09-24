@@ -5,3 +5,4 @@ pnpm-lock.yaml
 old-docs
 docs
 *.md
+demo/solana/internal-asset-program
