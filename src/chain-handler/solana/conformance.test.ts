@@ -1,4 +1,5 @@
 import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { afterAll } from 'vitest';
 
 import { runChainHandlerConformanceSuite } from '../conformance.js';
@@ -75,6 +76,8 @@ runChainHandlerConformanceSuite(
     },
     validSignedTransaction,
     invalidSignedTransaction: 'not-real-signed-bytes',
+    // A real signature over bytes that were never sent anywhere.
+    neverBroadcastHash: bs58.encode(validSignedTransactionTx.signature!),
   },
 );
 

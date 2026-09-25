@@ -25,6 +25,8 @@ export type ChainHandlerConformanceFixtures<C extends Chain> = {
    * failure.
    */
   invalidSignedTransaction: SignedTransaction;
+  /** A well-formed transaction hash/signature for this chain that was never broadcast — so `getStatus` is asked a real question, not answered with a malformed-input error (#14). */
+  neverBroadcastHash: string;
 };
 
 /**
@@ -105,10 +107,10 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       expect(signResult.ok).toBe(true);
     });
 
-    it('getStatus never reports CONFIRMED for a transaction that was never broadcast', async () => {
+    it('getStatus reports PENDING — never CONFIRMED — for a well-formed transaction that was never broadcast', async () => {
       const handler = createHandler();
-      const result = await handler.getStatus('conformance-suite-never-broadcast');
-      expect(result.ok && result.value).not.toBe('CONFIRMED');
+      const result = await handler.getStatus(fixtures.neverBroadcastHash);
+      expect(result).toEqual({ ok: true, value: 'PENDING' });
     });
 
     it('validateSignedTransaction accepts a genuinely, correctly signed transaction', async () => {
