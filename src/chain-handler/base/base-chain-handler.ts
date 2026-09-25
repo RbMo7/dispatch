@@ -30,7 +30,7 @@ import type {
 } from '../chain-handler.js';
 import { validateEvmCall } from './call-validation.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
-import { extractMessage, mapBaseFailure } from './error-mapping.js';
+import { extractMessage, isRpcOutage, mapBaseFailure } from './error-mapping.js';
 import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
 import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
@@ -109,6 +109,9 @@ function requireAddressResult(value: string): Result<Address, DispatchError> {
   }
   return ok(value);
 }
+
+/** EIP-2's upper bound for a signature's s value: half the secp256k1 curve order. */
+const SECP256K1_HALF_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n / 2n;
 
 function isSameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
@@ -201,6 +204,18 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    * restarted). Never called on the happy path — `nonceCounter.assignNext`
    * is.
    */
+  /** #10: moves the counter forward to the chain's confirmed nonce, never back (NonceCounter.advanceTo). */
+  private async catchUpNonce(): Promise<void> {
+    const latest = await this.client.getTransactionCount({
+      address: this.senderAddress,
+      blockTag: 'latest',
+    });
+    if (latest > this.nonceCounter.peek()) {
+      this.logger.warn({ previousNextNonce: this.nonceCounter.peek(), advancedTo: latest }, 'advancing nonce counter to the chain');
+    }
+    this.nonceCounter.advanceTo(latest);
+  }
+
   private async resyncNonce(): Promise<void> {
     const latest = await this.client.getTransactionCount({
       address: this.senderAddress,
@@ -289,8 +304,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         // #10: an outage (rate limit, timeout — which can start mid-batch,
         // after getBlock succeeded) is not a simulated revert: surfaced,
         // never papered over with a guessed gas limit (ADR-0010).
-        const mapped = mapBaseFailure(cause);
-        if (mapped.code === 'RPC_UNAVAILABLE') return err(mapped);
+        if (isRpcOutage(cause)) return err(mapBaseFailure(cause));
         // issue 05: `eth_estimateGas` simulates the call and throws if it
         // would revert — but this handler never interprets a Call's
         // semantics, including whether it succeeds (ADR-0018/0027), so a
@@ -527,6 +541,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     if (decoded.nonce === undefined || decoded.r === undefined || decoded.s === undefined) {
       return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is missing its nonce or signature' });
     }
+    // EIP-2: a high-s signature still recovers, but every node refuses it.
+    if (BigInt(decoded.s) > SECP256K1_HALF_N) {
+      return err({ code: 'CHAIN_REJECTED', message: 'signature has a high s value (EIP-2) — nodes refuse it' });
+    }
     return ok({ hex, tx: { ...decoded, nonce: decoded.nonce } });
   }
 
@@ -544,7 +562,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const { hex } = decoded.value;
     const { nonce } = decoded.value.tx;
     // #13: whoever signed it — this Sender for a Managed Dispatch, the
-    // caller's own wallet for a Relay Dispatch. Recovered from the bytes,
+    // Relay Dispatch caller's own signing address otherwise. Recovered from the bytes,
     // no RPC (ADR-0033 precedent).
     const sender = await recoverSender(hex);
     if (!sender.ok) return sender;
@@ -555,11 +573,13 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     } catch (cause) {
       this.logger.warn({ error: extractMessage(cause) }, 'sendRawTransaction failed');
       const error = mapBaseFailure(cause);
-      // #10: our own counter handed out a nonce the chain already used —
-      // re-read it, or every later Managed send fails the same way.
+      // #10: the chain is ahead of our counter (e.g. something else sent
+      // from this Sender) — catch up, or every later Managed send fails
+      // the same way. Forward only: also expected after a fee-bump race,
+      // when later nonces may already be in flight.
       if (error.code === 'NONCE_ALREADY_USED' && isSameAddress(sender.value, this.senderAddress)) {
-        await this.resyncNonce().catch((resyncCause: unknown) =>
-          this.logger.error({ error: extractMessage(resyncCause) }, 'nonce resync failed'),
+        await this.catchUpNonce().catch((catchUpCause: unknown) =>
+          this.logger.error({ error: extractMessage(catchUpCause) }, 'nonce catch-up failed'),
         );
       }
       return err(error);
@@ -655,7 +675,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     return this.nonceCounter.assignNext();
   }
 
-  /** Test-only — not part of ChainHandler. Exercises issue 02's resync path directly, since no other code calls it yet. */
+  /** Test-only — not part of ChainHandler. Exercises issue 02's full resync path directly (no production caller: broadcast only ever catches up, via catchUpNonce). */
   testOnlyResyncNonce(): Promise<void> {
     return this.resyncNonce();
   }

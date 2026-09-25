@@ -8,6 +8,7 @@ import { SignerClient } from '../../signer/client.js';
 import { BASE_ABANDONMENT_TIMEOUT_MS, BaseChainHandler } from './base-chain-handler.js';
 import {
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   getDevSenderAccount,
@@ -48,7 +49,7 @@ describe('BaseChainHandler fee-bump (real Base Sepolia)', () => {
       signerClient: new SignerClient(testSigner.url),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
     });
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     try {

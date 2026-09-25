@@ -1,4 +1,11 @@
-import { createPublicClient, http, type Hex, type TransactionSerializable } from 'viem';
+import {
+  createPublicClient,
+  http,
+  parseTransaction,
+  serializeTransaction,
+  type Hex,
+  type TransactionSerializable,
+} from 'viem';
 import { generatePrivateKey, privateKeyToAccount, privateKeyToAddress } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -10,6 +17,7 @@ import { InMemoryNonceHistoryStore } from '../../repository/in-memory-nonce-hist
 import { BASE_ABANDONMENT_TIMEOUT_MS, BaseChainHandler } from './base-chain-handler.js';
 import {
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   getDevSenderAccount,
@@ -55,7 +63,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       senderAddress: privateKeyToAddress(generatePrivateKey()), // not the relayed transactions' signer
       nonceHistoryStore,
     });
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await releaseDevSenderLock?.();
@@ -123,9 +131,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
     ] as const)(
       'rejects %s with a structured CHAIN_REJECTED',
       async (_label, override) => {
-        const result = await handler.validateSignedTransaction(
-          await externallySigned(override),
-        );
+        const result = await handler.validateSignedTransaction(await externallySigned(override));
 
         expect(result.ok).toBe(false);
         expect(!result.ok && result.error.code).toBe('CHAIN_REJECTED');
@@ -144,6 +150,22 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       expect(!result.ok && result.error.code).toBe('CHAIN_REJECTED');
     }, 60_000);
   });
+
+  it('rejects a high-s (EIP-2 malleable) signature the node would refuse, even though it recovers', async () => {
+    const hex = `0x${Buffer.from(await externallySigned(), 'base64').toString('hex')}` as Hex;
+    const tx = parseTransaction(hex);
+    const n = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const highS = serializeTransaction(tx as TransactionSerializable, {
+      r: tx.r!,
+      s: `0x${(n - BigInt(tx.s!)).toString(16).padStart(64, '0')}`,
+      yParity: tx.yParity === 0 ? 1 : 0,
+    });
+
+    const result = await handler.validateSignedTransaction(highS);
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.code).toBe('CHAIN_REJECTED');
+  }, 60_000);
 
   it('rejects a malformed or wrong-chain submission with 400 via the API and never persists it', async () => {
     const store = new InMemoryDispatchStore();

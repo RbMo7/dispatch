@@ -27,6 +27,17 @@ export class NonceCounter {
     this.nextNonce = latestFromChain;
   }
 
+  /**
+   * The chain says a nonce we used was already consumed, so it is ahead of
+   * what we thought. Moves forward only: the confirmed count can lag
+   * transactions still in flight at higher nonces, and moving back onto
+   * one of those would build a second transaction at an in-flight nonce,
+   * silently replacing a different Call's transaction.
+   */
+  advanceTo(confirmedFromChain: number): void {
+    this.nextNonce = Math.max(this.nextNonce, confirmedFromChain);
+  }
+
   /** The next value `assignNext` would hand out — read-only inspection, never itself an assignment. */
   peek(): number {
     return this.nextNonce;

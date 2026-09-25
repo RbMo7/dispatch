@@ -6,6 +6,7 @@ import { SignerClient } from '../../signer/client.js';
 import { BaseChainHandler } from './base-chain-handler.js';
 import {
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   getDevSenderAccount,
@@ -28,7 +29,7 @@ describe('BaseChainHandler never throws on its sign/broadcast paths (#10, real B
   beforeAll(async () => {
     releaseDevSenderLock = await acquireDevSenderLock();
     testSigner = await startTestSigner([sender]);
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await testSigner?.close();

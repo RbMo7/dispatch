@@ -130,9 +130,18 @@ async function waitForNonceConsistency(address: string): Promise<void> {
  * BaseChainHandler) and `await` the returned release function in
  * `afterAll`, holding it for their whole file's real-broadcast lifetime.
  */
+/**
+ * How long a file waits its turn for the dev-sender lock. Every live
+ * broadcasting file queues behind the others (ten, as of #13), so this is
+ * sized for the whole queue, not one holder.
+ */
+export const DEV_SENDER_LOCK_WAIT_MS = 10 * 60_000;
+/** The `beforeAll` timeout for a hook that takes the lock: its wait plus room for its own setup. */
+export const DEV_SENDER_LOCK_HOOK_TIMEOUT_MS = DEV_SENDER_LOCK_WAIT_MS + 2 * 60_000;
+
 export async function acquireDevSenderLock(): Promise<() => Promise<void>> {
   mkdirSync(FIXTURES_DIR, { recursive: true });
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + DEV_SENDER_LOCK_WAIT_MS;
   for (;;) {
     try {
       closeSync(openSync(DEV_SENDER_LOCK_PATH, 'wx'));

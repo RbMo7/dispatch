@@ -10,6 +10,7 @@ import {
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   getDevSenderAccount,
   getOrDeployTestToken,
   startTestSigner,
@@ -65,7 +66,7 @@ describe('BaseChainHandler ERC-20 token transfer (real Base Sepolia)', () => {
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
       knownTokens: { TEST: { contractAddress: token.address, decimals: token.decimals } },
     });
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await testSigner?.close();

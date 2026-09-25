@@ -44,8 +44,7 @@ export function mapBaseFailure(cause: unknown): DispatchError {
     chainDetail.httpStatus = httpError.status;
   }
 
-  const transport = !bodyError && isTransportFailure(cause);
-  return { code: classify(nodeText, rpcCode, transport), message: nodeText, chainDetail };
+  return { code: classify(nodeText, rpcCode, isRpcOutage(cause)), message: nodeText, chainDetail };
 }
 
 function classify(
@@ -64,12 +63,21 @@ function classify(
 /** EIP-1474's "limit exceeded" — how many providers answer a rate limit on HTTP 200. */
 const LIMIT_EXCEEDED_RPC_CODE = -32005;
 
-/** The request never got a JSON-RPC answer from the node at all. */
-function isTransportFailure(cause: unknown): boolean {
-  return (
-    cause instanceof BaseError &&
-    cause.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError) !== null
-  );
+/**
+ * The node itself couldn't answer: a timeout, no HTTP response at all, or
+ * an HTTP 429/5xx — whatever the body says, since providers phrase rate
+ * limits every which way. Any other HTTP status with a JSON-RPC error body
+ * is a node rejection sent with an error status, classified by its text.
+ * Exported so `prepare` can tell an outage from a simulated revert.
+ */
+export function isRpcOutage(cause: unknown): boolean {
+  if (!(cause instanceof BaseError)) return false;
+  if (cause.walk((e) => e instanceof TimeoutError) instanceof TimeoutError) return true;
+  const http = cause.walk((e) => e instanceof HttpRequestError);
+  if (!(http instanceof HttpRequestError)) return false;
+  const status = http.status;
+  if (status === undefined || status === 429 || status >= 500) return true;
+  return parseJsonRpcError(http.details) === undefined;
 }
 
 function parseJsonRpcError(

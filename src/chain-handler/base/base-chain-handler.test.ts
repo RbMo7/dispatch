@@ -6,6 +6,7 @@ import {
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   getDevSenderAccount,
 } from './test-support/base-fixtures.js';
 
@@ -62,7 +63,7 @@ describe('BaseChainHandler nonce authority (real Base Sepolia)', () => {
   let releaseDevSenderLock: () => Promise<void>;
   beforeAll(async () => {
     releaseDevSenderLock = await acquireDevSenderLock();
-  }, 60_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
   afterAll(async () => {
     await releaseDevSenderLock();
   });

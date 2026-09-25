@@ -9,6 +9,7 @@ import {
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   getDevSenderAccount,
   getOrDeployTestToken,
   startTestSigner,
@@ -41,7 +42,7 @@ describe('BaseChainHandler.getStatus (real Base Sepolia)', () => {
       signerClient: new SignerClient(testSigner.url),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
     });
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await testSigner?.close();

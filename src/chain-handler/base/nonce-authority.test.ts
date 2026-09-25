@@ -30,4 +30,16 @@ describe('NonceCounter', () => {
     expect(counter.peek()).toBe(0);
     expect(counter.assignNext()).toBe(0);
   });
+
+  it('advanceTo only ever moves forward — never back onto nonces already handed out (review of #13)', () => {
+    const counter = new NonceCounter(10);
+    counter.assignNext(); // 10 in flight
+    counter.assignNext(); // 11 in flight
+
+    counter.advanceTo(8); // chain's confirmed count lags what's in flight
+    expect(counter.peek()).toBe(12);
+
+    counter.advanceTo(15); // chain is genuinely ahead
+    expect(counter.peek()).toBe(15);
+  });
 });

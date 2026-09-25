@@ -9,7 +9,8 @@ export type NonceHistoryRecord = {
 
 /**
  * base-chain-handler issue 02 (ADR-0011): a small, domain-shaped seam for a
- * per-(chain, Sender) nonce->hash history, kept separate from DispatchStore
+ * per-(chain, signing address) nonce->hash history — the Sender's own, plus
+ * any Relay Dispatch signer's, recovered from its bytes (#13) — kept separate from DispatchStore
  * since it's Chain-Handler-internal bookkeeping, not Dispatch/Transaction
  * orchestration state the Coordinator itself needs. Populated by
  * BaseChainHandler.broadcast (issue 03) on every successful broadcast —

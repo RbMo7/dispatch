@@ -118,6 +118,20 @@ describe('mapBaseFailure (#10) — real Base Sepolia failure shapes', () => {
     expect(mapBaseFailure(cause).code).toBe('NONCE_ALREADY_USED');
   });
 
+  it('keeps an HTTP 429 or 5xx a transport failure even when its body is a JSON-RPC error (review of #13)', () => {
+    for (const status of [429, 503]) {
+      const cause = new HttpRequestError({
+        url,
+        status,
+        details: JSON.stringify({
+          code: 429,
+          message: 'Your app has exceeded its compute units per second capacity',
+        }),
+      });
+      expect(mapBaseFailure(cause).code).toBe('RPC_UNAVAILABLE');
+    }
+  });
+
   it("reports the node's own text as the message, not viem's generic wrapper wording", () => {
     const mapped = mapBaseFailure(nodeRejection(InvalidInputRpcError, -32000, 'invalid chain ID'));
 

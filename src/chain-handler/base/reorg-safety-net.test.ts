@@ -9,6 +9,7 @@ import {
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_RPC_URL,
   acquireDevSenderLock,
+  DEV_SENDER_LOCK_HOOK_TIMEOUT_MS,
   getDevSenderAccount,
   startTestSigner,
   type TestSignerHandle,
@@ -51,7 +52,7 @@ describe('Base reorg safety net (issue 07, real Base Sepolia getStatus, syntheti
       signerClient: new SignerClient(testSigner.url),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
     });
-  }, 120_000);
+  }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await testSigner?.close();
