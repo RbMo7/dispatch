@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   decodeUnsignedTransaction,
+  signedTransactionHex,
   encodeUnsignedTransaction,
   toViemTransaction,
   type EncodedEvmTransaction,
@@ -41,5 +42,22 @@ describe('toViemTransaction', () => {
       maxFeePerGas: 10000000n,
       maxPriorityFeePerGas: 1000000n,
     });
+  });
+});
+
+describe('signedTransactionHex (#13)', () => {
+  it("passes 0x-hex through unchanged (what this handler's own sign produces)", () => {
+    expect(signedTransactionHex('0x02f86a')).toBe('0x02f86a');
+  });
+
+  it("decodes base64 raw bytes (docs/api.md's Relay Dispatch wire format) to 0x-hex", () => {
+    expect(signedTransactionHex(Buffer.from([0x02, 0xf8, 0x6a]).toString('base64'))).toBe(
+      '0x02f86a',
+    );
+  });
+
+  it('answers null for a string that is neither', () => {
+    expect(signedTransactionHex('not-real-signed-bytes')).toBeNull();
+    expect(signedTransactionHex('')).toBeNull();
   });
 });

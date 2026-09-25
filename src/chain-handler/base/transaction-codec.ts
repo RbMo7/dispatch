@@ -48,3 +48,19 @@ export function encodeUnsignedTransaction(encoded: EncodedEvmTransaction): strin
 export function decodeUnsignedTransaction(unsignedTransaction: string): EncodedEvmTransaction {
   return JSON.parse(Buffer.from(unsignedTransaction, 'base64').toString('utf8')) as EncodedEvmTransaction;
 }
+
+/**
+ * #13: a SignedTransaction as 0x-hex. This handler's own `sign` produces
+ * 0x-hex; a Relay Dispatch caller sends the raw signed bytes as base64
+ * (docs/api.md's chain-agnostic wire format), so both are accepted. Null
+ * for anything that is neither.
+ */
+export function signedTransactionHex(signed: string): `0x${string}` | null {
+  if (/^0x([0-9a-fA-F]{2})+$/.test(signed)) return signed as `0x${string}`;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signed)) return null;
+  const bytes = Buffer.from(signed, 'base64');
+  if (bytes.length === 0 || bytes.toString('base64').replace(/=+$/, '') !== signed.replace(/=+$/, '')) {
+    return null;
+  }
+  return `0x${bytes.toString('hex')}`;
+}

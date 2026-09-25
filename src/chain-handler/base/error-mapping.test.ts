@@ -2,6 +2,7 @@ import {
   HttpRequestError,
   InvalidInputRpcError,
   InvalidParamsRpcError,
+  LimitExceededRpcError,
   RpcRequestError,
   TimeoutError,
   TransactionRejectedRpcError,
@@ -85,6 +86,37 @@ describe('mapBaseFailure (#10) — real Base Sepolia failure shapes', () => {
       expect(mapBaseFailure(nodeRejection(Wrapper, rpcCode, text)).code).toBe(expected);
     },
   );
+
+  it('never reads "429" out of the request body — a real rejection whose signed hex contains 429 stays a rejection (review of #10)', () => {
+    const cause = new InvalidInputRpcError(
+      new RpcRequestError({
+        body: { method: 'eth_sendRawTransaction', params: ['0x02f8a1429aff'] },
+        error: { code: -32000, message: 'intrinsic gas too low' },
+        url,
+      }),
+    );
+    expect(mapBaseFailure(cause).code).toBe('CHAIN_REJECTED');
+  });
+
+  it('maps a JSON-RPC -32005 limit-exceeded answer (a rate limit on HTTP 200) to RPC_UNAVAILABLE (review of #10)', () => {
+    const cause = new LimitExceededRpcError(
+      new RpcRequestError({
+        body: {},
+        error: { code: -32005, message: 'request rate exceeded' },
+        url,
+      }),
+    );
+    expect(mapBaseFailure(cause).code).toBe('RPC_UNAVAILABLE');
+  });
+
+  it('classifies a node rejection sent with an HTTP error status by its JSON-RPC text, not as a transport failure (review of #10)', () => {
+    const cause = new HttpRequestError({
+      url,
+      status: 400,
+      details: JSON.stringify({ code: -32000, message: 'nonce too low: next nonce 5, tx nonce 1' }),
+    });
+    expect(mapBaseFailure(cause).code).toBe('NONCE_ALREADY_USED');
+  });
 
   it("reports the node's own text as the message, not viem's generic wrapper wording", () => {
     const mapped = mapBaseFailure(nodeRejection(InvalidInputRpcError, -32000, 'invalid chain ID'));

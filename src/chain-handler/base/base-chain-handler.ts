@@ -5,9 +5,12 @@ import {
   isAddress,
   keccak256,
   parseTransaction,
+  recoverTransactionAddress,
   serializeTransaction,
   type Address,
   type PublicClient,
+  type TransactionSerializableEIP1559,
+  type TransactionSerializedEIP1559,
 } from 'viem';
 import type { Logger } from 'pino';
 
@@ -35,6 +38,7 @@ import { NonceCounter } from './nonce-authority.js';
 import {
   decodeUnsignedTransaction,
   encodeUnsignedTransaction,
+  signedTransactionHex,
   toViemTransaction,
   type EncodedEvmTransaction,
 } from './transaction-codec.js';
@@ -106,18 +110,21 @@ function requireAddressResult(value: string): Result<Address, DispatchError> {
   return ok(value);
 }
 
-/**
- * `base` isn't reachable via `ENABLED_CHAINS` until every issue lands
- * (ADR-0019), so nothing should call one of these stubs for real — this
- * throws rather than returning a `DispatchError` because "this method has
- * no logic yet" is a build-time bug, not a business outcome a caller
- * should branch on (ADR-0010's own distinction), unlike a real
- * `CHAIN_REJECTED`.
- */
-function notImplemented(method: string, issueNumber: number): Error {
-  return new Error(
-    `BaseChainHandler.${method} is not implemented yet — see base-chain-handler issue ${issueNumber}.`,
-  );
+function isSameAddress(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** #13: the address a signed transaction's signature recovers to — pure secp256k1, no RPC. */
+async function recoverSender(hex: `0x${string}`): Promise<Result<Address, DispatchError>> {
+  try {
+    return ok(await recoverTransactionAddress({ serializedTransaction: hex as TransactionSerializedEIP1559 }));
+  } catch (cause) {
+    return err({
+      code: 'CHAIN_REJECTED',
+      message: 'signature does not recover to any sender',
+      chainDetail: { error: extractMessage(cause) },
+    });
+  }
 }
 
 /**
@@ -279,6 +286,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
           value: BigInt(call.value),
         });
       } catch (cause) {
+        // #10: an outage (rate limit, timeout — which can start mid-batch,
+        // after getBlock succeeded) is not a simulated revert: surfaced,
+        // never papered over with a guessed gas limit (ADR-0010).
+        const mapped = mapBaseFailure(cause);
+        if (mapped.code === 'RPC_UNAVAILABLE') return err(mapped);
         // issue 05: `eth_estimateGas` simulates the call and throws if it
         // would revert — but this handler never interprets a Call's
         // semantics, including whether it succeeds (ADR-0018/0027), so a
@@ -286,9 +298,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         // other. Falls back to a generous fixed gas limit (comfortably
         // under Base's block gas limit) so the real on-chain outcome —
         // success or revert — is what actually gets reported, not a
-        // pre-emptive guess made here. By this point `getBlock()` above
-        // already proved the RPC itself is reachable, so a failure here
-        // is a simulated revert, not a connectivity problem.
+        // pre-emptive guess made here.
         this.logger.warn(
           { error: extractMessage(cause) },
           'estimateGas failed (likely a simulated revert) — falling back to a fixed gas limit so the real on-chain outcome is what gets reported',
@@ -397,29 +407,15 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const sender = requireAddressResult(senderAddress);
     if (!sender.ok) return sender;
 
-    let decoded: ReturnType<typeof parseTransaction>;
-    try {
-      decoded = parseTransaction(signed as `0x${string}`);
-    } catch (cause) {
-      return err({
-        code: 'CHAIN_REJECTED',
-        message: 'not a decodable EIP-1559 signed transaction',
-        chainDetail: extractMessage(cause),
-      });
-    }
+    const decodedSigned = this.decodeSigned(signed);
+    if (!decodedSigned.ok) return decodedSigned;
+    const decoded = decodedSigned.value.tx;
     const { nonce, to, gas, maxFeePerGas, maxPriorityFeePerGas } = decoded;
-    if (
-      decoded.type !== 'eip1559' ||
-      decoded.chainId !== this.chainId ||
-      nonce === undefined ||
-      !to ||
-      gas === undefined ||
-      maxFeePerGas === undefined ||
-      maxPriorityFeePerGas === undefined
-    ) {
+    if (!to || gas === undefined || maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
       return err({
         code: 'CHAIN_REJECTED',
-        message: `cannot replace: not a complete EIP-1559 transaction for chain ID ${this.chainId}`,
+        message: 'cannot replace: not a complete EIP-1559 transaction',
+        chainDetail: { nonce, to, gas: gas?.toString() },
       });
     }
 
@@ -433,6 +429,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return err({
         code: 'NONCE_ALREADY_USED',
         message: `nonce ${nonce} already consumed on-chain (confirmed nonce is ${confirmedNonce})`,
+        chainDetail: { nonce, confirmedNonce },
       });
     }
 
@@ -478,8 +475,59 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
   }
 
-  validateSignedTransaction(_signed: SignedTransaction): Promise<Result<void, DispatchError>> {
-    throw notImplemented('validateSignedTransaction', 13);
+  /**
+   * #13 (ADR-0032): RPC-free proof that a Relay Dispatch submission really
+   * is a Base transaction this network will consider — an EIP-1559 (type
+   * 0x02) transaction for this handler's chain ID, carrying a signature a
+   * sender address actually recovers from. Never judges what it does.
+   */
+  async validateSignedTransaction(signed: SignedTransaction): Promise<Result<void, DispatchError>> {
+    const decoded = this.decodeSigned(signed);
+    if (!decoded.ok) return decoded;
+    const sender = await recoverSender(decoded.value.hex);
+    return sender.ok ? ok(undefined) : sender;
+  }
+
+  /**
+   * #13: decodes signed bytes of either origin — this handler's own `sign`
+   * (0x-hex) or a Relay Dispatch caller (base64) — into a complete
+   * EIP-1559 transaction for this handler's chain ID, or a structured error.
+   */
+  private decodeSigned(
+    signed: SignedTransaction,
+  ): Result<{ hex: `0x${string}`; tx: TransactionSerializableEIP1559 & { nonce: number } }, DispatchError> {
+    const hex = signedTransactionHex(signed);
+    if (!hex) {
+      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is neither 0x-hex nor base64 bytes' });
+    }
+    let decoded: ReturnType<typeof parseTransaction>;
+    try {
+      decoded = parseTransaction(hex);
+    } catch (cause) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'not a decodable signed transaction',
+        chainDetail: { error: extractMessage(cause) },
+      });
+    }
+    if (decoded.type !== 'eip1559') {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `only EIP-1559 (type 0x02) transactions are accepted, got ${decoded.type}`,
+        chainDetail: { type: decoded.type },
+      });
+    }
+    if (decoded.chainId !== this.chainId) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `signed for chain ID ${decoded.chainId}, this network is ${this.chainId}`,
+        chainDetail: { chainId: decoded.chainId, expectedChainId: this.chainId },
+      });
+    }
+    if (decoded.nonce === undefined || decoded.r === undefined || decoded.s === undefined) {
+      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is missing its nonce or signature' });
+    }
+    return ok({ hex, tx: { ...decoded, nonce: decoded.nonce } });
   }
 
   /**
@@ -491,27 +539,30 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    * 13) will reuse for externally-signed bytes (ADR-0033 precedent).
    */
   async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
-    let nonce: number;
-    try {
-      const decoded = parseTransaction(signed as `0x${string}`);
-      if (decoded.nonce === undefined) {
-        return err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no nonce' });
-      }
-      nonce = decoded.nonce;
-    } catch (cause) {
-      return err({
-        code: 'CHAIN_REJECTED',
-        message: 'not a decodable EIP-1559 signed transaction',
-        chainDetail: extractMessage(cause),
-      });
-    }
+    const decoded = this.decodeSigned(signed);
+    if (!decoded.ok) return decoded;
+    const { hex } = decoded.value;
+    const { nonce } = decoded.value.tx;
+    // #13: whoever signed it — this Sender for a Managed Dispatch, the
+    // caller's own wallet for a Relay Dispatch. Recovered from the bytes,
+    // no RPC (ADR-0033 precedent).
+    const sender = await recoverSender(hex);
+    if (!sender.ok) return sender;
 
     let hash: string;
     try {
-      hash = await this.client.sendRawTransaction({ serializedTransaction: signed as `0x${string}` });
+      hash = await this.client.sendRawTransaction({ serializedTransaction: hex });
     } catch (cause) {
       this.logger.warn({ error: extractMessage(cause) }, 'sendRawTransaction failed');
-      return err(mapBaseFailure(cause));
+      const error = mapBaseFailure(cause);
+      // #10: our own counter handed out a nonce the chain already used —
+      // re-read it, or every later Managed send fails the same way.
+      if (error.code === 'NONCE_ALREADY_USED' && isSameAddress(sender.value, this.senderAddress)) {
+        await this.resyncNonce().catch((resyncCause: unknown) =>
+          this.logger.error({ error: extractMessage(resyncCause) }, 'nonce resync failed'),
+        );
+      }
+      return err(error);
     }
 
     // #10: the transaction is already on-chain at this point — a failed
@@ -521,7 +572,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     try {
       await this.nonceHistoryStore.recordNonce({
         chain: 'base',
-        senderAddress: this.senderAddress,
+        senderAddress: sender.value,
         nonce,
         hash,
       });

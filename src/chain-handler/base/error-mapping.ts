@@ -25,29 +25,44 @@ import type { DispatchError, DispatchErrorCode } from '../../domain/errors.js';
  */
 export function mapBaseFailure(cause: unknown): DispatchError {
   const message = extractMessage(cause);
-  const details = cause instanceof BaseError ? cause.details || undefined : undefined;
-  const nodeText = details ?? summarize(message);
+  const viemError = cause instanceof BaseError ? cause : undefined;
+  const details = viemError?.details || undefined;
+  const rpcError = viemError?.walk((e) => e instanceof RpcError);
+  const httpError = viemError?.walk((e) => e instanceof HttpRequestError);
+  // A provider may answer a node rejection with an HTTP error status: viem
+  // then raises HttpRequestError with the JSON-RPC error as its details.
+  const bodyError = parseJsonRpcError(details);
+  const rpcCode = rpcError instanceof RpcError ? (rpcError.code as number) : bodyError?.code;
+  // Classify from the node's own words only — never viem's full message,
+  // which embeds the request body (the signed transaction's hex).
+  const nodeText = bodyError?.message ?? details ?? summarize(message);
 
-  const rpcError =
-    cause instanceof BaseError ? cause.walk((e) => e instanceof RpcError) : undefined;
-  const httpError =
-    cause instanceof BaseError ? cause.walk((e) => e instanceof HttpRequestError) : undefined;
   const chainDetail: Record<string, unknown> = { message };
-  if (rpcError instanceof RpcError) chainDetail.rpcCode = rpcError.code;
+  if (rpcCode !== undefined) chainDetail.rpcCode = rpcCode;
   if (details) chainDetail.details = details;
   if (httpError instanceof HttpRequestError && httpError.status !== undefined) {
     chainDetail.httpStatus = httpError.status;
   }
 
-  return { code: classify(cause, `${nodeText}\n${message}`), message: nodeText, chainDetail };
+  const transport = !bodyError && isTransportFailure(cause);
+  return { code: classify(nodeText, rpcCode, transport), message: nodeText, chainDetail };
 }
 
-function classify(cause: unknown, text: string): DispatchErrorCode {
-  if (isTransportFailure(cause) || isRateLimitOrTimeout(text)) return 'RPC_UNAVAILABLE';
-  if (isInsufficientFunds(text)) return 'INSUFFICIENT_FUNDS';
-  if (isNonceTooLow(text)) return 'NONCE_ALREADY_USED';
+function classify(
+  nodeText: string,
+  rpcCode: number | undefined,
+  transport: boolean,
+): DispatchErrorCode {
+  if (isInsufficientFunds(nodeText)) return 'INSUFFICIENT_FUNDS';
+  if (isNonceTooLow(nodeText)) return 'NONCE_ALREADY_USED';
+  if (transport || rpcCode === LIMIT_EXCEEDED_RPC_CODE || isRateLimitOrTimeout(nodeText)) {
+    return 'RPC_UNAVAILABLE';
+  }
   return 'CHAIN_REJECTED';
 }
+
+/** EIP-1474's "limit exceeded" — how many providers answer a rate limit on HTTP 200. */
+const LIMIT_EXCEEDED_RPC_CODE = -32005;
 
 /** The request never got a JSON-RPC answer from the node at all. */
 function isTransportFailure(cause: unknown): boolean {
@@ -57,10 +72,24 @@ function isTransportFailure(cause: unknown): boolean {
   );
 }
 
-/** Fallback for a non-viem error, and for a node that answers a rate limit as a JSON-RPC error rather than an HTTP 429. */
-function isRateLimitOrTimeout(message: string): boolean {
-  return /429|too many requests|rate.?limit|timed? ?out|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
-    message,
+function parseJsonRpcError(
+  details: string | undefined,
+): { code: number; message: string } | undefined {
+  if (!details) return undefined;
+  try {
+    const parsed = JSON.parse(details) as { code?: unknown; message?: unknown };
+    return typeof parsed.code === 'number' && typeof parsed.message === 'string'
+      ? { code: parsed.code, message: parsed.message }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Fallback for a non-viem error, and for a node that words a rate limit or timeout in its own text. Deliberately no bare "429": an HTTP 429 is already a transport failure by class. */
+function isRateLimitOrTimeout(text: string): boolean {
+  return /too many requests|rate.?limit|rate exceeded|timed? ?out|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
+    text,
   );
 }
 
