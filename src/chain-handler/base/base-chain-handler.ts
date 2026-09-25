@@ -326,7 +326,19 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     prepared: PreparedTransaction,
     senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
-    const encoded = decodeUnsignedTransaction(prepared.unsignedTransaction);
+    // #10: decoding, and viem's own serialization checks (e.g. a tip above
+    // the fee cap), throw on bad input — answered as a structured error,
+    // before any Signer is ever asked.
+    let encoded: EncodedEvmTransaction;
+    let tx: ReturnType<typeof toViemTransaction>;
+    let signingHash: `0x${string}`;
+    try {
+      encoded = decodeUnsignedTransaction(prepared.unsignedTransaction);
+      tx = toViemTransaction(encoded);
+      signingHash = keccak256(serializeTransaction(tx));
+    } catch (cause) {
+      return err({ ...mapBaseFailure(cause), code: 'CHAIN_REJECTED' });
+    }
     if (encoded.senderAddress.toLowerCase() !== senderAddress.toLowerCase()) {
       return err({
         code: 'INVALID_RECIPIENT',
@@ -342,10 +354,6 @@ export class BaseChainHandler implements ChainHandler<'base'> {
           'no Signer configured for this ChainHandler — a Relay-Dispatch-only deployment never signs, so signerClient was never provided',
       });
     }
-
-    const tx = toViemTransaction(encoded);
-    const unsignedSerialized = serializeTransaction(tx);
-    const signingHash = keccak256(unsignedSerialized);
 
     const signResult = await this.signerClient.requestSignature({
       chain: 'base',
@@ -506,12 +514,23 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return err(mapBaseFailure(cause));
     }
 
-    await this.nonceHistoryStore.recordNonce({
-      chain: 'base',
-      senderAddress: this.senderAddress,
-      nonce,
-      hash,
-    });
+    // #10: the transaction is already on-chain at this point — a failed
+    // history write must never turn that into an error, or the Coordinator
+    // would lose the hash of a transaction that may land. Logged loudly
+    // instead (ADR-0010: surfaced, not swallowed).
+    try {
+      await this.nonceHistoryStore.recordNonce({
+        chain: 'base',
+        senderAddress: this.senderAddress,
+        nonce,
+        hash,
+      });
+    } catch (cause) {
+      this.logger.error(
+        { hash, nonce, error: extractMessage(cause) },
+        'broadcast succeeded but recording its nonce history failed',
+      );
+    }
     this.logger.info({ hash, nonce }, 'transaction broadcast');
     return ok({ hash });
   }
