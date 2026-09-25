@@ -16,6 +16,7 @@ export function mapBaseFailure(cause: unknown): DispatchError {
 function classify(message: string): DispatchErrorCode {
   if (isRateLimitOrTimeout(message)) return 'RPC_UNAVAILABLE';
   if (isInsufficientFunds(message)) return 'INSUFFICIENT_FUNDS';
+  if (isNonceTooLow(message)) return 'NONCE_ALREADY_USED';
   return 'CHAIN_REJECTED';
 }
 
@@ -27,6 +28,11 @@ function isRateLimitOrTimeout(message: string): boolean {
 
 function isInsufficientFunds(message: string): boolean {
   return /insufficient funds/i.test(message);
+}
+
+/** #9: the nonce was already consumed on-chain — geth/op-geth's own "nonce too low" text. */
+function isNonceTooLow(message: string): boolean {
+  return /nonce too low/i.test(message);
 }
 
 function summarize(message: string): string {

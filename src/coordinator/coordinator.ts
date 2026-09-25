@@ -49,7 +49,7 @@ type FundingRequirement = {
   items: CallRef[];
 };
 
-export type FeeBumpConfig = { stuckAfterMs: number; maxFeeBumps: number };
+export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
 
 export type CoordinatorDeps = {
   store: DispatchStore;
@@ -80,7 +80,7 @@ export type CoordinatorDeps = {
    * otherwise rebroadcast as identical bytes. A chain absent here (e.g.
    * 'solana') is never touched. Defaults to an empty map.
    */
-  feeBump?: Map<Chain, FeeBumpConfig>;
+  stuckHandling?: Map<Chain, StuckHandlingConfig>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -105,7 +105,7 @@ export class Coordinator {
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
   private readonly reorgRecheckWindowMs: Map<Chain, number>;
-  private readonly feeBump: Map<Chain, FeeBumpConfig>;
+  private readonly stuckHandling: Map<Chain, StuckHandlingConfig>;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
@@ -117,7 +117,7 @@ export class Coordinator {
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs = deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
     this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
-    this.feeBump = deps.feeBump ?? new Map<Chain, FeeBumpConfig>();
+    this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
@@ -487,7 +487,7 @@ export class Coordinator {
    * timeout applies even when the status check itself fails (e.g. RPC
    * unavailable) — elapsed time is all ADR-0004 measures, so a chain having
    * connectivity trouble must not silently suppress abandonment forever.
-   * #9 (ADR-0037): on a chain opted into `feeBump`, a transaction pending
+   * #9 (ADR-0037): on a chain opted into `stuckHandling`, a transaction pending
    * past `stuckAfterMs` is fee-bumped or rebroadcast first (see
    * handleIfStuck), and Retry Policy on suppresses abandonment only while
    * it can still be bumped.
@@ -620,7 +620,7 @@ export class Coordinator {
 
   /**
    * #9 (ADR-0037): acts on a transaction still PENDING `stuckAfterMs` after
-   * its latest broadcast, on a chain opted into `feeBump`. Bumps it when it
+   * its latest broadcast, on a chain opted into `stuckHandling`. Bumps it when it
    * can still be bumped; otherwise (Retry Policy off, a Relay Dispatch, the
    * cap reached, or a bump attempt that just failed) rebroadcasts its
    * identical bytes — free, and a no-op for the chain if it already has
@@ -631,7 +631,7 @@ export class Coordinator {
     transaction: Transaction,
     log: Logger,
   ): Promise<'none' | 'bumped' | 'handled'> {
-    const config = this.feeBump.get(transaction.chain);
+    const config = this.stuckHandling.get(transaction.chain);
     const lastSentAt = transaction.lastBroadcastAt ?? transaction.broadcastAt;
     if (!config || !lastSentAt) return 'none';
     if (this.now().getTime() - lastSentAt.getTime() < config.stuckAfterMs) return 'none';
@@ -646,7 +646,7 @@ export class Coordinator {
 
   /** Whether this transaction's chain can bump it and its Call hasn't used up its bump attempts — Retry Policy aside. */
   private canStillBump(transaction: Transaction): boolean {
-    const config = this.feeBump.get(transaction.chain);
+    const config = this.stuckHandling.get(transaction.chain);
     return (
       config !== undefined &&
       this.requireChainHandler(transaction.chain).prepareReplacement !== undefined &&
@@ -656,7 +656,7 @@ export class Coordinator {
 
   private async bump(
     transaction: Transaction,
-    config: FeeBumpConfig,
+    config: StuckHandlingConfig,
     log: Logger,
   ): Promise<'bumped' | 'handled' | 'failed'> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
@@ -668,13 +668,16 @@ export class Coordinator {
     };
 
     const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
-    if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
-      log.info({ error: prepared.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
+    const broadcast = signed.ok ? await handler.broadcast(signed.value) : signed;
+    if (!broadcast.ok && broadcast.error.code === 'NONCE_ALREADY_USED') {
+      // Some version landed — whether seen by prepareReplacement's own check
+      // or only by the replacement's broadcast. Exhausting the cap is what
+      // stops further bumps; resolution will find the landed version.
+      log.info({ error: broadcast.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
       await recordAttempts(config.maxFeeBumps);
       return 'handled';
     }
-    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
-    const broadcast = signed.ok ? await handler.broadcast(signed.value) : signed;
     if (!signed.ok || !broadcast.ok) {
       const error = broadcast.ok ? undefined : broadcast.error;
       log.warn({ error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
@@ -695,15 +698,19 @@ export class Coordinator {
   private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const result = await this.requireChainHandler(transaction.chain).broadcast(signedBytes);
-    if (!result.ok) {
-      // e.g. "already known", or "nonce too low" once some version landed —
-      // never evidence against the transaction; resolution/timeout decide.
-      log.info({ error: result.error }, 'rebroadcast not accepted — still pending');
-      return;
-    }
-    log.debug('rebroadcast identical bytes');
+    // A refused resend — e.g. "already known", or "nonce too low" once some
+    // version landed — is never evidence against the transaction
+    // (resolution/timeout decide), but it's still recorded as an Attempt:
+    // that's what restarts the stuck clock, so a stuck transaction is
+    // resent once per stuckAfterMs, never once per tick.
+    if (result.ok) log.debug('rebroadcast identical bytes');
+    else log.info({ error: result.error }, 'rebroadcast not accepted — still pending');
     for (const member of await this.pendingMembersOf(hash)) {
-      await this.store.recordBroadcast(member.id, result.value.hash);
+      await this.store.recordBroadcast(
+        member.id,
+        result.ok ? result.value.hash : hash,
+        result.ok ? undefined : result.error,
+      );
     }
   }
 

@@ -148,7 +148,7 @@ describe('BaseChainHandler fee-bump (real Base Sepolia)', () => {
       chainHandlers: new Map([['base', handler]]),
       senderAddresses: new Map([['base', sender.address]]),
       abandonmentTimeoutMs: new Map([['base', BASE_ABANDONMENT_TIMEOUT_MS]]),
-      feeBump: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: 5 }]]),
+      stuckHandling: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: 5 }]]),
       now: () => currentTime,
     });
     const dispatch = await store.createDispatch({

@@ -287,7 +287,7 @@ export class PostgresDispatchStore implements DispatchStore {
     return toTransaction(row);
   }
 
-  async recordBroadcast(transactionId: string, hash: string): Promise<void> {
+  async recordBroadcast(transactionId: string, hash: string, error?: DispatchError): Promise<void> {
     await this.db.transaction(async (tx) => {
       const row = await tx.query.transactions.findFirst({
         where: eq(transactions.id, transactionId),
@@ -302,7 +302,7 @@ export class PostgresDispatchStore implements DispatchStore {
             `bytes are a new Transaction, not a new Attempt of this one.`,
         );
       }
-      await tx.insert(attempts).values({ transactionId });
+      await tx.insert(attempts).values({ transactionId, error: error ?? null });
       await tx
         .update(transactions)
         .set({ lastBroadcastAt: new Date() })

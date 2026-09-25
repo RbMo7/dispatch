@@ -172,7 +172,7 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(confirmed);
   }
 
-  recordBroadcast(transactionId: string, hash: string): Promise<void> {
+  recordBroadcast(transactionId: string, hash: string, error?: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
       if (transaction.hash !== hash) {
@@ -186,7 +186,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         id: randomUUID(),
         transactionId,
         broadcastAt: new Date(),
-        error: null,
+        error: error ?? null,
       });
       this.transactions.set(transactionId, { ...transaction, lastBroadcastAt: this.now() });
     });

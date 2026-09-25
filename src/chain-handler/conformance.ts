@@ -131,6 +131,20 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       expect(fixtures.validSignedTransaction).toBe(before);
     });
 
+    // #9 (ADR-0037): optional — only a handler that can fee-bump implements it.
+    it('prepareReplacement, where implemented, answers malformed bytes with a structured error, never throwing, and never mutates its input', async (context) => {
+      const handler = createHandler();
+      if (!handler.prepareReplacement) return context.skip(); // optional — only a chain that can fee-bump has it
+      const before = fixtures.invalidSignedTransaction;
+      const result = await handler.prepareReplacement(
+        fixtures.invalidSignedTransaction,
+        fixtures.senderAddress,
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toEqual(expect.any(String));
+      expect(fixtures.invalidSignedTransaction).toBe(before);
+    });
+
     it('a broadcast failure surfaces a structured DispatchError instead of throwing', async () => {
       const handler = createHandler();
       const result = await handler.broadcast(fixtures.invalidSignedTransaction);

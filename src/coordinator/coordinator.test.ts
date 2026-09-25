@@ -139,7 +139,7 @@ const STUCK_AFTER_MS = 60_000;
 const MAX_FEE_BUMPS = 2;
 
 /** 'base' opted into fee-bump handling (#9, ADR-0037); `canBump: false` models an opted-in chain whose handler has no prepareReplacement. */
-function setupWithFeeBump({ canBump = true }: { canBump?: boolean } = {}) {
+function setupWithStuckHandling({ canBump = true }: { canBump?: boolean } = {}) {
   let currentTime = new Date('2024-01-01T00:00:00.000Z');
   const clock = () => currentTime;
   const advance = (ms: number) => {
@@ -153,7 +153,9 @@ function setupWithFeeBump({ canBump = true }: { canBump?: boolean } = {}) {
     chainHandlers: new Map([['base', handler]]),
     senderAddresses: new Map([['base', 'sender-address']]),
     abandonmentTimeoutMs: new Map([['base', ABANDON_AFTER_MS]]),
-    feeBump: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: MAX_FEE_BUMPS }]]),
+    stuckHandling: new Map([
+      ['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: MAX_FEE_BUMPS }],
+    ]),
     now: clock,
     sleep: () => Promise.resolve(),
   });
@@ -684,7 +686,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   }
 
   it('leaves a transaction alone until it has been pending for stuckAfterMs', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS - 1);
 
@@ -695,7 +697,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('fee-bumps a stuck Managed Retry-Policy-on transaction into a new Transaction at the same nonce', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS);
     handler.sign.mockResolvedValueOnce(ok('bumped-signed'));
@@ -715,7 +717,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('rebroadcasts the identical bytes as a new Attempt when Retry Policy is off', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch, transactions } = await createStuckCandidate(store, false);
     advance(STUCK_AFTER_MS);
 
@@ -732,7 +734,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('rebroadcasts (never bumps) on an opted-in chain whose handler has no prepareReplacement', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump({ canBump: false });
+    const { store, handler, coordinator, advance } = setupWithStuckHandling({ canBump: false });
     await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS);
 
@@ -742,7 +744,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('treats a failed rebroadcast (e.g. "already known") as harmless — still PENDING, polled again', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { transactions } = await createStuckCandidate(store, false);
     advance(STUCK_AFTER_MS);
     handler.broadcast.mockResolvedValueOnce(
@@ -754,8 +756,55 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
     expect(store.getTransaction(transactions[0]!.id)?.status).toBe('PENDING');
   });
 
+  it('restarts the stuck clock even when the rebroadcast is refused — never resends every tick (review of #9)', async () => {
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
+    await createStuckCandidate(store, false);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValue(err({ code: 'CHAIN_REJECTED', message: 'already known' }));
+
+    await coordinator.pollPendingTransactions(10);
+    advance(2_000);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits a full stuckAfterMs after a failed bump, even when the fallback rebroadcast is refused (review of #9)', async () => {
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
+    const { dispatch } = await createStuckCandidate(store, true);
+    (handler as BumpingFakeChainHandler).prepareReplacement.mockResolvedValue(
+      err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient funds for gas * price + value' }),
+    );
+    handler.broadcast.mockResolvedValue(err({ code: 'CHAIN_REJECTED', message: 'already known' }));
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+    advance(2_000);
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).toHaveBeenCalledTimes(1);
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: 1 },
+    ]);
+  });
+
+  it('stops bumping when the replacement broadcast itself finds the nonce already used (review of #9)', async () => {
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
+    const { dispatch } = await createStuckCandidate(store, true);
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'NONCE_ALREADY_USED', message: 'nonce too low' }),
+    );
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
+    ]);
+  });
+
   it('settles the Call on the original when it lands after being replaced — the replacement is DROPPED', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS);
     handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
@@ -774,7 +823,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('settles the Call on the replacement when it lands — the original is DROPPED', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS);
     handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
@@ -793,7 +842,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('stops bumping at maxFeeBumps, then rebroadcasts and abandons on the normal timeout', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     // Each bump signs distinct bytes; broadcasting given bytes always yields
     // that same hash, as on a real chain — so a rebroadcast keeps its hash.
@@ -822,7 +871,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('stops bumping for good once the nonce is already used, without creating a replacement', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     (handler as BumpingFakeChainHandler).prepareReplacement.mockResolvedValueOnce(
       err({ code: 'NONCE_ALREADY_USED', message: 'nonce 7 already consumed' }),
@@ -840,7 +889,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('counts a failed bump (e.g. insufficient funds) against the cap, rebroadcasts meanwhile, and tries again next time it is stuck', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
     (handler as BumpingFakeChainHandler).prepareReplacement.mockResolvedValueOnce(
       err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient funds for gas * price + value' }),
@@ -866,7 +915,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('bumps a bundled broadcast once, fanning the replacement out to every member Call', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true, [evmItem, evmItem]);
     advance(STUCK_AFTER_MS);
     handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
@@ -887,7 +936,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   });
 
   it('resolves an ABANDONED fee-bumped Call through a REPLACED ancestor landing later', async () => {
-    const { store, handler, coordinator, advance } = setupWithFeeBump({ canBump: true });
+    const { store, handler, coordinator, advance } = setupWithStuckHandling({ canBump: true });
     const { dispatch } = await createStuckCandidate(store, true);
     advance(STUCK_AFTER_MS);
     handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));

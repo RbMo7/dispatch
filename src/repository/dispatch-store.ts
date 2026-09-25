@@ -58,8 +58,8 @@ export interface DispatchStore {
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
   recordCallFailure(input: NewFailedCallInput): Promise<Transaction>;
-  /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction. Updates `lastBroadcastAt`. */
-  recordBroadcast(transactionId: string, hash: string): Promise<void>;
+  /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction, with the send's `error` if the chain refused it (e.g. "already known"). Updates `lastBroadcastAt` either way: a refused send is still a send, for the stuck timer. */
+  recordBroadcast(transactionId: string, hash: string, error?: DispatchError): Promise<void>;
   /** #9 (ADR-0037): atomically persists a fee-bump replacement of `predecessorId` — a new PENDING Transaction for the same Call (same dispatchId/callIndex/chain), `replacesTransactionId` set, `feeBumpAttempts` one more than the predecessor's — and marks the predecessor REPLACED. */
   createReplacementTransaction(
     predecessorId: string,
