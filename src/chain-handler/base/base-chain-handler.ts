@@ -1,9 +1,18 @@
-import { createPublicClient, http, isAddress, type Address, type PublicClient } from 'viem';
+import {
+  createPublicClient,
+  http,
+  isAddress,
+  keccak256,
+  parseTransaction,
+  serializeTransaction,
+  type Address,
+  type PublicClient,
+} from 'viem';
 import type { Logger } from 'pino';
 
 import type { CallForChain, EvmCall, Payment } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
-import type { Result } from '../../domain/result.js';
+import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
 import type { NonceHistoryStore } from '../../repository/nonce-history-store.js';
 import { SignerClient } from '../../signer/client.js';
@@ -15,8 +24,25 @@ import type {
   PreparedTransaction,
   SignedTransaction,
 } from '../chain-handler.js';
-import type { BaseTokenRegistry } from './known-tokens.js';
+import { validateEvmCall } from './call-validation.js';
+import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
+import { extractMessage, mapBaseFailure } from './error-mapping.js';
+import { estimateFeeFields } from './fee-estimation.js';
+import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
+import { buildNativeTransferCall } from './native-transfer.js';
 import { NonceCounter } from './nonce-authority.js';
+import {
+  decodeUnsignedTransaction,
+  encodeUnsignedTransaction,
+  toViemTransaction,
+  type EncodedEvmTransaction,
+} from './transaction-codec.js';
+
+/** A plain native-ETH transfer's gas cost is a protocol-fixed constant — no `eth_estimateGas` round trip needed or more correct than one for this exact case. */
+const NATIVE_TRANSFER_GAS = 21_000n;
+
+/** issue 05: what `prepare` falls back to when `eth_estimateGas` fails (a simulated revert) — generous enough for any call this handler realistically submits, comfortably under Base's block gas limit. */
+const FALLBACK_GAS_LIMIT = 500_000n;
 
 export type BaseChainHandlerDeps = {
   rpcUrl: string;
@@ -60,6 +86,14 @@ function requireAddress(value: string): Address {
     throw new Error(`not a well-formed EVM address: ${value}`);
   }
   return value;
+}
+
+/** The `Result`-returning counterpart to `requireAddress` — for a request-shaped (not construction-time) malformed-address check, which must answer INVALID_RECIPIENT rather than throw. */
+function requireAddressResult(value: string): Result<Address, DispatchError> {
+  if (!isAddress(value)) {
+    return err({ code: 'INVALID_RECIPIENT', message: `not a well-formed EVM address: ${value}` });
+  }
+  return ok(value);
 }
 
 /**
@@ -162,42 +196,260 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     this.nonceCounter.resyncTo(latest);
   }
 
-  paymentToCall(_payment: Payment): Promise<Result<CallForChain<'base'>, DispatchError>> {
-    throw notImplemented('paymentToCall', 3);
+  /** issues 03/04: encodes a plain transfer (native or a known ERC-20 token) as an EvmCall. No RPC (ADR-0028). */
+  paymentToCall(payment: Payment): Promise<Result<CallForChain<'base'>, DispatchError>> {
+    if (payment.asset === NATIVE_ASSET_SYMBOL) {
+      return Promise.resolve(buildNativeTransferCall(payment.recipient, payment.amount));
+    }
+
+    const token = resolveKnownToken(this.knownTokens, payment.asset);
+    if (!token) {
+      return Promise.resolve(
+        err({
+          code: 'UNKNOWN_ASSET',
+          message: `no known token configured for asset "${payment.asset}"`,
+          chainDetail: { asset: payment.asset },
+        }),
+      );
+    }
+
+    return Promise.resolve(
+      buildErc20TransferCall(token.contractAddress, payment.recipient, BigInt(payment.amount)),
+    );
   }
 
-  validateCall(_call: EvmCall): Promise<Result<void, DispatchError>> {
-    throw notImplemented('validateCall', 3);
+  /** issues 03/05: cheap shape validation only, the same for every EvmCall regardless of where it came from (call-validation.ts). Never an RPC round-trip. */
+  validateCall(call: EvmCall): Promise<Result<void, DispatchError>> {
+    return Promise.resolve(validateEvmCall(call));
   }
 
-  prepare(
-    _items: EvmCall[],
-    _senderAddress: string,
+  /**
+   * issue 03: builds one unsigned EIP-1559 transaction per input Call, in
+   * order — chain ID and a freshly assigned nonce (nonce-authority.ts)
+   * baked into each, fee fields from the fixed-multiplier heuristic
+   * (fee-estimation.ts), which reads `baseFeePerGas` once for the whole
+   * batch, not once per item. issue 05: a raw caller-supplied EvmCall gets
+   * no special-casing — its `data` travels through exactly as opaque bytes
+   * (ADR-0018/0027), so this method never distinguishes a transfer from an
+   * arbitrary contract call.
+   */
+  async prepare(
+    items: EvmCall[],
+    senderAddress: string,
   ): Promise<Result<PreparedTransaction[], DispatchError>> {
-    throw notImplemented('prepare', 3);
+    const sender = requireAddressResult(senderAddress);
+    if (!sender.ok) return sender;
+
+    let baseFeePerGas: bigint;
+    try {
+      const block = await this.client.getBlock();
+      if (block.baseFeePerGas === null) {
+        return err({
+          code: 'RPC_UNAVAILABLE',
+          message: 'latest Base block has no baseFeePerGas — pre-EIP-1559 RPC response?',
+        });
+      }
+      baseFeePerGas = block.baseFeePerGas;
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+    const { maxFeePerGas, maxPriorityFeePerGas } = estimateFeeFields(baseFeePerGas);
+
+    const prepared: PreparedTransaction[] = [];
+    for (let callIndex = 0; callIndex < items.length; callIndex++) {
+      const call = items[callIndex];
+      if (!call) continue;
+
+      const to = requireAddressResult(call.to);
+      if (!to.ok) return to;
+
+      let gas: bigint;
+      if (call.data === '0x') {
+        gas = NATIVE_TRANSFER_GAS;
+      } else {
+        try {
+          gas = await this.client.estimateGas({
+            account: sender.value,
+            to: to.value,
+            data: call.data as `0x${string}`,
+            value: BigInt(call.value),
+          });
+        } catch (cause) {
+          // issue 05: `eth_estimateGas` simulates the call and throws if it
+          // would revert — but this handler never interprets a Call's
+          // semantics, including whether it succeeds (ADR-0018/0027), so a
+          // call that would revert is still submitted, exactly like any
+          // other. Falls back to a generous fixed gas limit (comfortably
+          // under Base's block gas limit) so the real on-chain outcome —
+          // success or revert — is what actually gets reported, not a
+          // pre-emptive guess made here. By this point `getBlock()` above
+          // already proved the RPC itself is reachable, so a failure here
+          // is a simulated revert, not a connectivity problem.
+          this.logger.warn(
+            { error: extractMessage(cause) },
+            'estimateGas failed (likely a simulated revert) — falling back to a fixed gas limit so the real on-chain outcome is what gets reported',
+          );
+          gas = FALLBACK_GAS_LIMIT;
+        }
+      }
+
+      const encoded: EncodedEvmTransaction = {
+        senderAddress: sender.value,
+        chainId: this.chainId,
+        nonce: this.nonceCounter.assignNext(),
+        to: to.value,
+        value: call.value,
+        data: call.data as EncodedEvmTransaction['data'],
+        gas: gas.toString(),
+        maxFeePerGas: maxFeePerGas.toString(),
+        maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+      };
+      prepared.push({ callIndex, unsignedTransaction: encodeUnsignedTransaction(encoded) });
+    }
+
+    return ok(prepared);
   }
 
-  sign(
-    _prepared: PreparedTransaction,
-    _senderAddress: string,
+  /**
+   * issue 03: rebuilds the exact unsigned transaction `prepare` encoded,
+   * re-derives its signing hash (`keccak256` of the unsigned serialized
+   * bytes — EIP-1559's own signing-hash definition), and delegates to the
+   * Signer client (ADR-0002) for a raw recoverable signature over that
+   * exact digest (reference-signer's own `r||s||recovery` contract — see
+   * its `sign.ts` doc comment). Folds the returned signature back into a
+   * fully signed transaction via viem.
+   */
+  async sign(
+    prepared: PreparedTransaction,
+    senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
-    throw notImplemented('sign', 3);
+    const encoded = decodeUnsignedTransaction(prepared.unsignedTransaction);
+    if (encoded.senderAddress.toLowerCase() !== senderAddress.toLowerCase()) {
+      return err({
+        code: 'INVALID_RECIPIENT',
+        message: `PreparedTransaction was built for ${encoded.senderAddress}, asked to sign as ${senderAddress}`,
+      });
+    }
+
+    if (!this.signerClient) {
+      this.logger.warn({ senderAddress }, 'asked to sign but no Signer is configured for this ChainHandler');
+      return err({
+        code: 'SIGNER_UNREACHABLE',
+        message:
+          'no Signer configured for this ChainHandler — a Relay-Dispatch-only deployment never signs, so signerClient was never provided',
+      });
+    }
+
+    const tx = toViemTransaction(encoded);
+    const unsignedSerialized = serializeTransaction(tx);
+    const signingHash = keccak256(unsignedSerialized);
+
+    const signResult = await this.signerClient.requestSignature({
+      chain: 'base',
+      curve: 'secp256k1',
+      address: senderAddress,
+      unsignedTxBytes: Buffer.from(signingHash.slice(2), 'hex').toString('base64'),
+    });
+    if (!signResult.ok) {
+      this.logger.warn({ error: signResult.error }, 'signer request failed');
+      return signResult;
+    }
+
+    const signatureBytes = Buffer.from(signResult.value.signature, 'base64');
+    if (signatureBytes.length !== 65) {
+      return err({
+        code: 'SIGNER_UNREACHABLE',
+        message: `signer returned a ${signatureBytes.length}-byte signature, expected 65 (r||s||recovery)`,
+      });
+    }
+    const r = `0x${signatureBytes.subarray(0, 32).toString('hex')}` as const;
+    const s = `0x${signatureBytes.subarray(32, 64).toString('hex')}` as const;
+    const yParity = signatureBytes[64];
+
+    const signed = serializeTransaction(tx, { r, s, yParity: yParity ?? 0 });
+    return ok(signed);
   }
 
   validateSignedTransaction(_signed: SignedTransaction): Promise<Result<void, DispatchError>> {
     throw notImplemented('validateSignedTransaction', 13);
   }
 
-  broadcast(_signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
-    throw notImplemented('broadcast', 3);
+  /**
+   * issue 03: broadcasts via `eth_sendRawTransaction` and records the
+   * (nonce, hash) pair into issue 02's persisted history on success. The
+   * nonce/chainId are decoded straight from the signed bytes rather than
+   * re-derived from whatever this handler happens to have in memory — the
+   * same no-RPC decode `validateSignedTransaction`/Relay Dispatch (issue
+   * 13) will reuse for externally-signed bytes (ADR-0033 precedent).
+   */
+  async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
+    let nonce: number;
+    try {
+      const decoded = parseTransaction(signed as `0x${string}`);
+      if (decoded.nonce === undefined) {
+        return err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no nonce' });
+      }
+      nonce = decoded.nonce;
+    } catch (cause) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'not a decodable EIP-1559 signed transaction',
+        chainDetail: extractMessage(cause),
+      });
+    }
+
+    let hash: string;
+    try {
+      hash = await this.client.sendRawTransaction({ serializedTransaction: signed as `0x${string}` });
+    } catch (cause) {
+      this.logger.warn({ error: extractMessage(cause) }, 'sendRawTransaction failed');
+      return err(mapBaseFailure(cause));
+    }
+
+    await this.nonceHistoryStore.recordNonce({
+      chain: 'base',
+      senderAddress: this.senderAddress,
+      nonce,
+      hash,
+    });
+    this.logger.info({ hash, nonce }, 'transaction broadcast');
+    return ok({ hash });
   }
 
   getStatus(_hash: string): Promise<Result<ChainStatus, DispatchError>> {
     throw notImplemented('getStatus', 6);
   }
 
-  getBalance(_address: string, _asset: string): Promise<Result<Balance, DispatchError>> {
-    throw notImplemented('getBalance', 3);
+  /** issue 04: native ETH via eth_getBalance; a known ERC-20 token via a balanceOf eth_call — feeds the Funding Check (ADR-0024) unchanged. */
+  async getBalance(address: string, asset: string): Promise<Result<Balance, DispatchError>> {
+    const owner = requireAddressResult(address);
+    if (!owner.ok) return owner;
+
+    try {
+      if (asset === NATIVE_ASSET_SYMBOL) {
+        const wei = await this.client.getBalance({ address: owner.value });
+        return ok({ asset, amount: wei.toString() });
+      }
+
+      const token = resolveKnownToken(this.knownTokens, asset);
+      if (!token) {
+        return err({
+          code: 'UNKNOWN_ASSET',
+          message: `no known token configured for asset "${asset}"`,
+          chainDetail: { asset },
+        });
+      }
+
+      const balance = await this.client.readContract({
+        address: requireAddress(token.contractAddress),
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [owner.value],
+      });
+      return ok({ asset, amount: balance.toString() });
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
   }
 
   /** Test-only inspection — not part of ChainHandler. The value `prepare` (issue 03) will assign next. */

@@ -7,3 +7,8 @@ dist/
 # Auto-provisioned devnet test wallet/mint (solana-chain-handler tests, ADR-0013)
 # — regenerated and re-funded per machine, never committed.
 .devnet-fixtures/
+
+# Auto-deployed Base Sepolia test-token address (base-chain-handler tests, ADR-0013)
+# — persists on-chain forever once deployed, cached here so re-running the
+# suite doesn't redeploy (and re-spend real Base Sepolia ETH) every time.
+.base-fixtures/
