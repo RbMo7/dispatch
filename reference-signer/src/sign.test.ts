@@ -17,7 +17,7 @@ describe('sign', () => {
     expect(nodeVerify(null, message, publicKey, signature)).toBe(true);
   });
 
-  it('signs a secp256k1 digest directly (no re-hashing) and returns a recoverable signature', () => {
+  it('signs a secp256k1 digest directly (no re-hashing) and returns an r||s||recovery signature', () => {
     const scalar = randomBytes(32);
     const publicKey = secp256k1.getPublicKey(scalar, true);
     // A stand-in for a real EIP-1559 signing hash — any 32-byte digest works, since
@@ -27,10 +27,18 @@ describe('sign', () => {
     const signature = sign('secp256k1', scalar.toString('hex'), digest);
 
     expect(signature).toHaveLength(65);
-    const recoveredPublicKey = secp256k1.recoverPublicKey(signature, digest, { prehash: false });
+    // Decoded from our own documented r||s||recovery layout (never noble's
+    // own 'recovered' byte order, which puts recovery first) — proves the
+    // wire contract, not just that noble's internals are self-consistent.
+    const r = BigInt('0x' + signature.subarray(0, 32).toString('hex'));
+    const s = BigInt('0x' + signature.subarray(32, 64).toString('hex'));
+    const recovery = signature[64];
+    const parsedSignature = new secp256k1.Signature(r, s, recovery);
+
+    const recoveredPublicKey = parsedSignature.recoverPublicKey(digest).toBytes(true);
     expect(Buffer.from(recoveredPublicKey).equals(Buffer.from(publicKey))).toBe(true);
     expect(
-      secp256k1.verify(signature, digest, publicKey, { prehash: false, format: 'recovered' }),
+      secp256k1.verify(parsedSignature.toBytes('compact'), digest, publicKey, { prehash: false }),
     ).toBe(true);
   });
 
