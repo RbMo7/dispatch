@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 
 import type { CallForChain, EvmCall, Payment } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
-import { err, type Result } from '../../domain/result.js';
+import type { Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
 import type { NonceHistoryStore } from '../../repository/nonce-history-store.js';
 import { SignerClient } from '../../signer/client.js';
@@ -60,6 +60,20 @@ function requireAddress(value: string): Address {
     throw new Error(`not a well-formed EVM address: ${value}`);
   }
   return value;
+}
+
+/**
+ * `base` isn't reachable via `ENABLED_CHAINS` until every issue lands
+ * (ADR-0019), so nothing should call one of these stubs for real — this
+ * throws rather than returning a `DispatchError` because "this method has
+ * no logic yet" is a build-time bug, not a business outcome a caller
+ * should branch on (ADR-0010's own distinction), unlike a real
+ * `CHAIN_REJECTED`.
+ */
+function notImplemented(method: string, issueNumber: number): Error {
+  return new Error(
+    `BaseChainHandler.${method} is not implemented yet — see base-chain-handler issue ${issueNumber}.`,
+  );
 }
 
 /**
@@ -149,60 +163,41 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   }
 
   paymentToCall(_payment: Payment): Promise<Result<CallForChain<'base'>, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.paymentToCall not implemented yet' }),
-    );
+    throw notImplemented('paymentToCall', 3);
   }
 
   validateCall(_call: EvmCall): Promise<Result<void, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.validateCall not implemented yet' }),
-    );
+    throw notImplemented('validateCall', 3);
   }
 
   prepare(
     _items: EvmCall[],
     _senderAddress: string,
   ): Promise<Result<PreparedTransaction[], DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.prepare not implemented yet' }),
-    );
+    throw notImplemented('prepare', 3);
   }
 
   sign(
     _prepared: PreparedTransaction,
     _senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.sign not implemented yet' }),
-    );
+    throw notImplemented('sign', 3);
   }
 
   validateSignedTransaction(_signed: SignedTransaction): Promise<Result<void, DispatchError>> {
-    return Promise.resolve(
-      err({
-        code: 'CHAIN_REJECTED',
-        message: 'BaseChainHandler.validateSignedTransaction not implemented yet',
-      }),
-    );
+    throw notImplemented('validateSignedTransaction', 13);
   }
 
   broadcast(_signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.broadcast not implemented yet' }),
-    );
+    throw notImplemented('broadcast', 3);
   }
 
   getStatus(_hash: string): Promise<Result<ChainStatus, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.getStatus not implemented yet' }),
-    );
+    throw notImplemented('getStatus', 6);
   }
 
   getBalance(_address: string, _asset: string): Promise<Result<Balance, DispatchError>> {
-    return Promise.resolve(
-      err({ code: 'CHAIN_REJECTED', message: 'BaseChainHandler.getBalance not implemented yet' }),
-    );
+    throw notImplemented('getBalance', 3);
   }
 
   /** Test-only inspection — not part of ChainHandler. The value `prepare` (issue 03) will assign next. */
