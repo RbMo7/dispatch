@@ -85,6 +85,21 @@ const reorgRecheckWindowMsByChain: Partial<Record<Chain, number>> = {
   base: BASE_REORG_RECHECK_WINDOW_MS,
 };
 
+/**
+ * issue 07: the worker's reorg-recheck loop cadence. Lives here, beside the
+ * windows it has to fit inside: a window no longer than one interval gets
+ * roughly a single re-check, possibly before the block is even 'safe' —
+ * the safety net would silently do nothing (ADR-0036). Checked at load.
+ */
+export const REORG_RECHECK_INTERVAL_MS = 60_000;
+for (const [chain, windowMs] of Object.entries(reorgRecheckWindowMsByChain)) {
+  if (windowMs < 3 * REORG_RECHECK_INTERVAL_MS) {
+    throw new Error(
+      `reorg recheck window for ${chain} (${windowMs}ms) must span at least 3 recheck intervals (${REORG_RECHECK_INTERVAL_MS}ms each)`,
+    );
+  }
+}
+
 export async function loadChainRegistry(): Promise<ChainRegistry> {
   return ChainRegistry.load(parseEnabledChains(config.enabledChains), loaders);
 }

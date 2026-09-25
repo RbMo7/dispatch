@@ -82,13 +82,14 @@ export const BASE_ABANDONMENT_TIMEOUT_MS = 15 * 60_000;
 /**
  * issue 07: the Coordinator's `reorgRecheckWindowMs` config value for
  * 'base' — how long after being marked CONFIRMED a transaction stays
- * eligible for the reorg safety net's background re-check. A fixed,
- * chain-agnostic-Coordinator-friendly proxy for "past OP Stack 'safe'"
- * (research-base.md §4: ~2 minutes), not a dynamic safe-head query —
- * comfortably longer than that so the window's own imprecision never
- * matters in practice.
+ * eligible for the reorg safety net's background re-check. A fixed time
+ * window standing in for "past OP Stack 'safe'" (research-base.md §4:
+ * ~2 minutes), not a dynamic safe-head query (ADR-0036). Several times
+ * that lag, so a transaction gets several re-checks after its block has
+ * actually reached 'safe' — chain-loaders.ts enforces it spans at least
+ * three re-check intervals.
  */
-export const BASE_REORG_RECHECK_WINDOW_MS = 5 * 60_000;
+export const BASE_REORG_RECHECK_WINDOW_MS = 10 * 60_000;
 
 function requireAddress(value: string): Address {
   if (!isAddress(value)) {

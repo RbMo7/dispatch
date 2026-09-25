@@ -158,11 +158,13 @@ export class PostgresDispatchStore implements DispatchStore {
   }
 
   async listRecentlyConfirmedTransactions(
+    chain: Chain,
     limit: number,
     notConfirmedBefore: Date,
   ): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
       where: and(
+        eq(transactions.chain, chain),
         eq(transactions.status, 'CONFIRMED'),
         gte(transactions.confirmedAt, notConfirmedBefore),
       ),

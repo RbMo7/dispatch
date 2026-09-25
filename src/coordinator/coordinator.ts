@@ -523,21 +523,14 @@ export class Coordinator {
    * discipline as `rewatchAbandonedTransactions`.
    */
   async recheckRecentlyConfirmedTransactions(limit: number): Promise<void> {
-    if (this.reorgRecheckWindowMs.size === 0) return;
+    for (const [chain, windowMs] of this.reorgRecheckWindowMs) {
+      const notConfirmedBefore = new Date(this.now().getTime() - windowMs);
+      const confirmed = await this.store.listRecentlyConfirmedTransactions(chain, limit, notConfirmedBefore);
+      this.logger.debug({ chain, count: confirmed.length, limit }, 'rechecking recently confirmed transactions');
 
-    const maxWindowMs = Math.max(...this.reorgRecheckWindowMs.values());
-    const notConfirmedBefore = new Date(this.now().getTime() - maxWindowMs);
-    const confirmed = await this.store.listRecentlyConfirmedTransactions(limit, notConfirmedBefore);
-    this.logger.debug({ count: confirmed.length, limit }, 'rechecking recently confirmed transactions');
-
-    for (const transaction of confirmed) {
-      const windowMs = this.reorgRecheckWindowMs.get(transaction.chain);
-      if (windowMs === undefined) continue; // this chain never opted into reorg re-checking
-
-      const elapsedMs = this.now().getTime() - (transaction.confirmedAt?.getTime() ?? 0);
-      if (elapsedMs > windowMs) continue; // aged out of this chain's own window
-
-      await this.recheckConfirmedTransaction(transaction);
+      for (const transaction of confirmed) {
+        await this.recheckConfirmedTransaction(transaction);
+      }
     }
   }
 

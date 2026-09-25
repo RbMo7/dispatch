@@ -1,0 +1,7 @@
+# The reorg safety net uses a time window, not a "safe" head query
+
+The Base spec (#7) says to re-check a `CONFIRMED` transaction until its block reaches the OP Stack "safe" head. Doing that literally means the Coordinator (or the Chain Handler interface) has to learn a finality concept — a new method or a new `ChainStatus` — for one chain, which ADR-0015 treats as a sign the interface is wrong. Instead, the Coordinator stays chain-agnostic: each opted-in chain gives a fixed window after `confirmedAt`, and every re-check inside that window is just `getStatus` again. Base's window is 10 minutes against a ~2 minute safe lag (research-base.md §4), with a 1 minute re-check cadence, so a transaction gets several re-checks after its block is actually safe. `chain-loaders.ts` refuses to load if any window spans fewer than three re-check intervals — the earlier 5-minute-window/5-minute-interval pairing gave roughly one re-check, often before "safe", which made the safety net a no-op.
+
+## Consequences
+
+Re-checks don't stop the moment a block is safe; they run until the window ends, a handful of cheap `eth_getTransactionReceipt` calls per transaction. If Base's safe lag ever stretches past the window (e.g. a prolonged batcher outage), a reorg in that gap goes unnoticed. The upgrade path is a Chain Handler finality signal (e.g. an optional `isFinal(hash)`), taken up only when a second chain needs one too or the window proves too blunt.

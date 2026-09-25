@@ -139,10 +139,15 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(abandoned);
   }
 
-  listRecentlyConfirmedTransactions(limit: number, notConfirmedBefore: Date): Promise<Transaction[]> {
+  listRecentlyConfirmedTransactions(
+    chain: Chain,
+    limit: number,
+    notConfirmedBefore: Date,
+  ): Promise<Transaction[]> {
     const confirmed = [...this.transactions.values()]
       .filter(
         (transaction) =>
+          transaction.chain === chain &&
           transaction.status === 'CONFIRMED' &&
           (transaction.confirmedAt?.getTime() ?? 0) >= notConfirmedBefore.getTime(),
       )

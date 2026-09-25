@@ -1,4 +1,8 @@
-import { loadChainRegistry, coordinatorConfigFor } from './chain-loaders.js';
+import {
+  loadChainRegistry,
+  coordinatorConfigFor,
+  REORG_RECHECK_INTERVAL_MS,
+} from './chain-loaders.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
 import { logger } from './logger.js';
@@ -19,13 +23,6 @@ const POLL_INTERVAL_MS = 2_000;
  * loop needs to know the other exists.
  */
 const REWATCH_INTERVAL_MS = 5 * 60_000;
-/**
- * base-chain-handler issue 07: the reorg safety net's own cadence — no
- * particular reason to match REWATCH_INTERVAL_MS, just similarly
- * low-frequency relative to the main poll loop. A chain with nothing in
- * `reorgRecheckWindowMs` (today, only 'base' is) makes this loop a no-op.
- */
-const REORG_RECHECK_INTERVAL_MS = 5 * 60_000;
 /**
  * issue 15: last-resort guard. Every outbound RPC/Signer call now carries
  * its own deadline (rpc-timeout.ts), so an in-flight tick should always

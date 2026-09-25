@@ -477,7 +477,11 @@ describe('InMemoryDispatchStore', () => {
       await clock.markConfirmed(confirmedRecently.id);
 
       const notConfirmedBefore = new Date(currentTime.getTime() - 60 * 60 * 1000);
-      const result = await clock.listRecentlyConfirmedTransactions(10, notConfirmedBefore);
+      const result = await clock.listRecentlyConfirmedTransactions(
+        'solana',
+        10,
+        notConfirmedBefore,
+      );
 
       expect(result.map((t) => t.id)).toEqual([confirmedRecently.id]);
       expect(result.map((t) => t.id)).not.toContain(stillPending.id);
@@ -514,11 +518,40 @@ describe('InMemoryDispatchStore', () => {
       });
       await clock.markConfirmed(first.id);
 
-      const all = await clock.listRecentlyConfirmedTransactions(10, new Date(0));
+      const all = await clock.listRecentlyConfirmedTransactions('solana', 10, new Date(0));
       expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
 
-      const limited = await clock.listRecentlyConfirmedTransactions(1, new Date(0));
+      const limited = await clock.listRecentlyConfirmedTransactions('solana', 1, new Date(0));
       expect(limited.map((t) => t.id)).toEqual([first.id]);
+    });
+
+    it("returns only the requested chain's rows, so another chain's volume can't use up the limit", async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const solanaTransaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-solana',
+      });
+      await store.markConfirmed(solanaTransaction.id);
+      const baseTransaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'base',
+        signedBytes: 'c2lnbmVk',
+        hash: '0xbase',
+      });
+      await store.markConfirmed(baseTransaction.id);
+
+      const result = await store.listRecentlyConfirmedTransactions('base', 1, new Date(0));
+
+      expect(result.map((t) => t.id)).toEqual([baseTransaction.id]);
     });
   });
 

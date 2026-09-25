@@ -311,7 +311,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       });
       await store.markConfirmed(confirmed.id);
 
-      const result = await store.listRecentlyConfirmedTransactions(10, new Date(0));
+      const result = await store.listRecentlyConfirmedTransactions('solana', 10, new Date(0));
 
       expect(result.map((t) => t.id)).toContain(confirmed.id);
       expect(result.map((t) => t.id)).not.toContain(pending.id);

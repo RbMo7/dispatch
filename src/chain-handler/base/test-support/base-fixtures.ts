@@ -83,7 +83,10 @@ async function fetchTransactionCount(address: string): Promise<number> {
       params: [address, 'latest'],
     }),
   });
-  const body = (await response.json()) as { result: string };
+  const body = (await response.json()) as { result?: string; error?: unknown };
+  if (!response.ok || body.result === undefined) {
+    throw new Error(`eth_getTransactionCount failed (HTTP ${response.status}): ${JSON.stringify(body.error)}`);
+  }
   return Number.parseInt(body.result, 16);
 }
 
@@ -108,6 +111,7 @@ async function waitForNonceConsistency(address: string): Promise<void> {
     previous = current;
     await sleepMs(1_000);
   }
+  throw new Error(`dev-sender nonce for ${address} never read the same twice within 20s — RPC nodes still disagreeing`);
 }
 
 /**
