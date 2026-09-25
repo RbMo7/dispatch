@@ -31,7 +31,7 @@ const postDispatchSchema = {
     required: ['chain'],
     additionalProperties: false,
     properties: {
-      chain: { type: 'string', enum: ['evm', 'solana'] },
+      chain: { type: 'string', enum: ['base', 'solana'] },
       /** ADR-0031: defaults to 'managed' when omitted, so every existing caller keeps working unchanged. */
       mode: { type: 'string', enum: ['managed', 'relay'] },
       retryPolicy: { type: 'boolean' },

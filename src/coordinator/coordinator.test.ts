@@ -18,7 +18,7 @@ import { Coordinator } from './coordinator.js';
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 const evmCall: EvmCall = { to: '0xabc', data: '0x', value: '0' };
-const evmItem: DispatchItem<'evm'> = { call: evmCall, payment: null };
+const evmItem: DispatchItem<'base'> = { call: evmCall, payment: null };
 
 /**
  * A fully configurable ChainHandler test double — deliberately not the
@@ -226,7 +226,7 @@ describe('Coordinator.processQueuedDispatches', () => {
   it('throws when a claimed Dispatch names a chain with no registered ChainHandler', async () => {
     const { store, coordinator } = setup();
     await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [evmItem],
       retryPolicy: false,

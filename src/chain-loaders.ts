@@ -1,5 +1,10 @@
 import { Connection } from '@solana/web3.js';
 
+import {
+  BASE_ABANDONMENT_TIMEOUT_MS,
+  BaseChainHandler,
+} from './chain-handler/base/base-chain-handler.js';
+import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
 import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
@@ -12,6 +17,8 @@ import {
 } from './chain-registry/chain-registry.js';
 import { config } from './config.js';
 import type { Chain } from './domain/chain.js';
+import { PostgresNonceHistoryStore } from './repository/postgres-nonce-history-store.js';
+import { db } from './db/client.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
 
@@ -21,12 +28,11 @@ import { SignerClient } from './signer/client.js';
  * single-Sender-per-chain address, ADR-0004's ABANDONED timeout) — are
  * registered together (ADR-0019). Shared by the API server (index.ts) and
  * the worker (worker.ts, issue 12) so both processes see the exact same
- * set of enabled chains and config: an EVM loader belongs here once EVM's
- * own Chain Handler feature exists, and naming 'evm' in ENABLED_CHAINS
- * before that fails loudly at startup (ChainRegistry.load), not silently,
- * for either process.
+ * set of enabled chains and config: naming an unregistered chain in
+ * ENABLED_CHAINS fails loudly at startup (ChainRegistry.load), not
+ * silently, for either process.
  */
-const loaders: Partial<Record<'solana', ChainHandlerLoader>> = {
+const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
   solana: () =>
     Promise.resolve(
       new SolanaChainHandler({
@@ -41,14 +47,30 @@ const loaders: Partial<Record<'solana', ChainHandlerLoader>> = {
         knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
       }),
     ),
+  base: () =>
+    BaseChainHandler.create({
+      rpcUrl: config.base.rpcUrl,
+      chainId: config.base.chainId,
+      senderAddress: config.base.senderAddress,
+      signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
+      knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+      nonceHistoryStore: new PostgresNonceHistoryStore(db),
+      feeBumpPercent: config.base.feeBumpPercent,
+      bulkCallMaxBatchSize: config.base.bulkCallMaxBatchSize,
+      // issue 15: every RPC call this client makes is aborted, not just
+      // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
+      fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+    }),
 };
 
 const senderAddressByChain: Partial<Record<Chain, string>> = {
   solana: config.solana.senderAddress,
+  base: config.base.senderAddress,
 };
 
 const abandonmentTimeoutMsByChain: Partial<Record<Chain, number>> = {
   solana: SOLANA_ABANDONMENT_TIMEOUT_MS,
+  base: BASE_ABANDONMENT_TIMEOUT_MS,
 };
 
 export async function loadChainRegistry(): Promise<ChainRegistry> {

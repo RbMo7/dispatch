@@ -29,7 +29,7 @@ export type SolanaCall = {
 export type Call = EvmCall | SolanaCall;
 
 /** Which Call shape a given chain family uses — distributes over a Chain union. */
-export type CallForChain<C extends Chain> = C extends 'evm' ? EvmCall : SolanaCall;
+export type CallForChain<C extends Chain> = C extends 'base' ? EvmCall : SolanaCall;
 
 export type Payment = {
   recipient: string;

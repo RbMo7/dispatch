@@ -11,16 +11,17 @@ import type {
 } from './chain-handler.js';
 
 /**
- * A trivial, no-op `ChainHandler<'evm'>` that never touches a real chain —
+ * A trivial, no-op `ChainHandler<'base'>` that never touches a real chain —
  * it exists solely to prove the conformance suite itself runs and catches
  * what it's supposed to (issue 05: mutated input, a swallowed error,
  * premature CONFIRMED). It is not evidence a real Chain Handler behaves
- * correctly; that's solana-chain-handler's own conformance run, under
- * ADR-0013's real-RPC discipline. `evm` is an arbitrary choice here — this
- * stub asserts nothing about EVM's actual transaction shape.
+ * correctly; that's solana-chain-handler's (and now base-chain-handler's)
+ * own conformance run, under ADR-0013's real-RPC discipline. `base` is an
+ * arbitrary choice here — this stub asserts nothing about EVM's actual
+ * transaction shape.
  */
-export class StubChainHandler implements ChainHandler<'evm'> {
-  readonly chain = 'evm';
+export class StubChainHandler implements ChainHandler<'base'> {
+  readonly chain = 'base';
 
   private readonly broadcastHashes = new Set<string>();
   private nextHash = 0;

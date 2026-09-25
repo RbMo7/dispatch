@@ -42,7 +42,7 @@ describe('SignerClient', () => {
 
     const client = new SignerClient('http://signer.local');
     const result = await client.requestSignature({
-      chain: 'evm',
+      chain: 'base',
       curve: 'secp256k1',
       address: 'addr-1',
       unsignedTxBytes: 'dW5zaWduZWQ=',
@@ -61,7 +61,7 @@ describe('SignerClient', () => {
 
     const client = new SignerClient('http://signer.local');
     const result = await client.requestSignature({
-      chain: 'evm',
+      chain: 'base',
       curve: 'secp256k1',
       address: 'addr-1',
       unsignedTxBytes: 'dW5zaWduZWQ=',
@@ -76,7 +76,7 @@ describe('SignerClient', () => {
 
     const client = new SignerClient('http://signer.local');
     const result = await client.requestSignature({
-      chain: 'evm',
+      chain: 'base',
       curve: 'secp256k1',
       address: 'addr-1',
       unsignedTxBytes: 'dW5zaWduZWQ=',
