@@ -64,6 +64,13 @@
       "when": 1790351746895,
       "tag": "0008_warm_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790351995502,
+      "tag": "0009_wakeful_annihilus",
+      "breakpoints": true
     }
   ]
 }

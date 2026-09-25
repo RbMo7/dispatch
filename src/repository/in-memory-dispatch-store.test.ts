@@ -439,6 +439,72 @@ describe('InMemoryDispatchStore', () => {
     });
   });
 
+  describe('fee-bump bookkeeping (#9)', () => {
+    async function createOriginal() {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem],
+        retryPolicy: true,
+      });
+      return store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'b3JpZ2luYWw=',
+        hash: 'sig-original',
+      });
+    }
+
+    it('creates a replacement for the same Call and marks the predecessor REPLACED', async () => {
+      const original = await createOriginal();
+
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'YnVtcGVk',
+        hash: 'sig-bumped',
+      });
+
+      expect(replacement).toMatchObject({
+        dispatchId: original.dispatchId,
+        callIndex: 0,
+        chain: 'solana',
+        status: 'PENDING',
+        hash: 'sig-bumped',
+        replacesTransactionId: original.id,
+        feeBumpAttempts: 1,
+      });
+      expect(replacement.lastBroadcastAt).not.toBeNull();
+      const all = await store.listTransactions(original.dispatchId);
+      expect(all.find((t) => t.id === original.id)?.status).toBe('REPLACED');
+    });
+
+    it('lists every Transaction sharing a hash', async () => {
+      const original = await createOriginal();
+      const byHash = await store.listTransactionsByHash('sig-original');
+      expect(byHash.map((t) => t.id)).toEqual([original.id]);
+    });
+
+    it('records fee-bump attempts and drops a version', async () => {
+      const original = await createOriginal();
+      await store.setFeeBumpAttempts(original.id, 3);
+      await store.markDropped(original.id);
+
+      const [row] = await store.listTransactionsByHash('sig-original');
+      expect(row?.feeBumpAttempts).toBe(3);
+      expect(row?.status).toBe('DROPPED');
+    });
+
+    it('stamps lastBroadcastAt on first broadcast and again on a rebroadcast Attempt', async () => {
+      const original = await createOriginal();
+      expect(original.lastBroadcastAt).not.toBeNull();
+      await store.recordBroadcast(original.id, 'sig-original');
+      const [row] = await store.listTransactionsByHash('sig-original');
+      expect(row!.lastBroadcastAt!.getTime()).toBeGreaterThanOrEqual(
+        original.lastBroadcastAt!.getTime(),
+      );
+    });
+  });
+
   describe('listPendingTransactions', () => {
     it('rotates through every pending row, so long-pending rows never starve newer ones (#21)', async () => {
       let currentTime = new Date('2024-01-01T00:00:00.000Z');

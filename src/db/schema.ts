@@ -55,6 +55,12 @@ export const transactions = pgTable('transactions', {
   confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
   /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
+  lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+  /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
+  replacesTransactionId: uuid('replaces_transaction_id'),
+  /** #9: fee-bump attempts made for this Call so far, failed ones included. */
+  feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
 });
 
 export const attempts = pgTable('attempts', {

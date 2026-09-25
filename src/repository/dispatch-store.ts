@@ -58,8 +58,19 @@ export interface DispatchStore {
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
   recordCallFailure(input: NewFailedCallInput): Promise<Transaction>;
-  /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction. */
+  /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction. Updates `lastBroadcastAt`. */
   recordBroadcast(transactionId: string, hash: string): Promise<void>;
+  /** #9 (ADR-0037): atomically persists a fee-bump replacement of `predecessorId` — a new PENDING Transaction for the same Call (same dispatchId/callIndex/chain), `replacesTransactionId` set, `feeBumpAttempts` one more than the predecessor's — and marks the predecessor REPLACED. */
+  createReplacementTransaction(
+    predecessorId: string,
+    replacement: { signedBytes: string; hash: string },
+  ): Promise<Transaction>;
+  /** #9: every Transaction carrying `hash` — more than one when a bundled broadcast covered several Calls. */
+  listTransactionsByHash(hash: string): Promise<Transaction[]>;
+  /** #9: records a failed (or exhausted) fee-bump attempt against the cap without creating a replacement. */
+  setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void>;
+  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
+  markDropped(transactionId: string): Promise<void>;
   markAbandoned(transactionId: string): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
   markConfirmed(transactionId: string): Promise<void>;

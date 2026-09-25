@@ -44,6 +44,9 @@ function toTransaction(row: TransactionRow): Transaction {
     abandonedAt: row.abandonedAt,
     confirmedAt: row.confirmedAt,
     lastCheckedAt: row.lastCheckedAt,
+    lastBroadcastAt: row.lastBroadcastAt,
+    replacesTransactionId: row.replacesTransactionId,
+    feeBumpAttempts: row.feeBumpAttempts,
   };
 }
 
@@ -188,6 +191,7 @@ export class PostgresDispatchStore implements DispatchStore {
   }
 
   async createTransaction(input: NewTransactionInput): Promise<Transaction> {
+    const now = new Date();
     const [row] = await this.db
       .insert(transactions)
       .values({
@@ -196,7 +200,8 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         signedBytes: input.signedBytes,
         hash: input.hash,
-        broadcastAt: new Date(),
+        broadcastAt: now,
+        lastBroadcastAt: now,
       })
       .returning();
 
@@ -205,6 +210,62 @@ export class PostgresDispatchStore implements DispatchStore {
     }
 
     return toTransaction(row);
+  }
+
+  async createReplacementTransaction(
+    predecessorId: string,
+    replacement: { signedBytes: string; hash: string },
+  ): Promise<Transaction> {
+    return this.db.transaction(async (tx) => {
+      const predecessor = await tx.query.transactions.findFirst({
+        where: eq(transactions.id, predecessorId),
+      });
+      if (!predecessor) {
+        throw new Error(`Unknown transaction: ${predecessorId}`);
+      }
+      const now = new Date();
+      const [row] = await tx
+        .insert(transactions)
+        .values({
+          dispatchId: predecessor.dispatchId,
+          callIndex: predecessor.callIndex,
+          chain: predecessor.chain,
+          signedBytes: replacement.signedBytes,
+          hash: replacement.hash,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+          replacesTransactionId: predecessor.id,
+          feeBumpAttempts: predecessor.feeBumpAttempts + 1,
+        })
+        .returning();
+      if (!row) {
+        throw new Error('Failed to create replacement Transaction');
+      }
+      await tx
+        .update(transactions)
+        .set({ status: 'REPLACED' })
+        .where(eq(transactions.id, predecessorId));
+      return toTransaction(row);
+    });
+  }
+
+  async listTransactionsByHash(hash: string): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({ where: eq(transactions.hash, hash) });
+    return rows.map(toTransaction);
+  }
+
+  async setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ feeBumpAttempts })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async markDropped(transactionId: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ status: 'DROPPED' })
+      .where(eq(transactions.id, transactionId));
   }
 
   async recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
@@ -242,6 +303,10 @@ export class PostgresDispatchStore implements DispatchStore {
         );
       }
       await tx.insert(attempts).values({ transactionId });
+      await tx
+        .update(transactions)
+        .set({ lastBroadcastAt: new Date() })
+        .where(eq(transactions.id, transactionId));
     });
   }
 

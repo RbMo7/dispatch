@@ -9,7 +9,15 @@ import type { DispatchError } from './errors.js';
  * this isn't a wire literal pinned anywhere yet, so it isn't required to
  * match the API's casing.
  */
-export type TransactionStatus = 'PENDING' | 'CONFIRMED' | 'FAILED' | 'ABANDONED';
+export type TransactionStatus =
+  | 'PENDING'
+  | 'CONFIRMED'
+  | 'FAILED'
+  | 'ABANDONED'
+  /** #9 (ADR-0037): a newer fee-bump replacement exists at the same nonce. Still watched — this version may be the one that lands — but never a Call's reported status. */
+  | 'REPLACED'
+  /** #9 (ADR-0037): another version at the same nonce settled the Call, so this one can never land. Terminal, never a Call's reported status. */
+  | 'DROPPED';
 
 /**
  * One broadcastable, chain-native unit with its own hash/signature
@@ -43,6 +51,12 @@ export type Transaction = {
   confirmedAt: Date | null;
   /** #21: when the pending poll last picked this Transaction up — null until its first poll. What `listPendingTransactions` rotates on, so rows that stay PENDING can't starve newer ones. */
   lastCheckedAt: Date | null;
+  /** #9: when these exact signed bytes were last sent — first broadcast or a later rebroadcast Attempt. What the stuck timer (ADR-0037) measures against. */
+  lastBroadcastAt: Date | null;
+  /** #9: the fee-bumped predecessor this Transaction replaced, at the same nonce — null for an original. */
+  replacesTransactionId: string | null;
+  /** #9: fee-bump attempts made for this Call so far, failed ones included — carried onto each replacement; bumping stops at the chain's cap. */
+  feeBumpAttempts: number;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */

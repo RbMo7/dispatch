@@ -432,6 +432,59 @@ describe('GET /v1/dispatch/:id', () => {
     });
   });
 
+  describe('a fee-bumped item (#9)', () => {
+    async function bumpedDispatch() {
+      const dispatch = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: 'key-1',
+        items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+        retryPolicy: true,
+      });
+      await store.claimQueued(10);
+      const original = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'base',
+        signedBytes: 'bytes',
+        hash: 'hash-original',
+      });
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'bumped',
+        hash: 'hash-bumped',
+      });
+      return { dispatch, original, replacement };
+    }
+
+    async function get(dispatchId: string) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${dispatchId}`,
+        headers: AUTH_HEADERS,
+      });
+      return response.json<GetResponseBody>();
+    }
+
+    it('reports the latest version while it is still pending', async () => {
+      const { dispatch } = await bumpedDispatch();
+
+      expect(await get(dispatch.id)).toMatchObject({
+        status: 'broadcasting',
+        items: [{ status: 'broadcasting', transactionHash: 'hash-bumped', error: null }],
+      });
+    });
+
+    it('reports the version that landed, even when it is the original', async () => {
+      const { dispatch, original, replacement } = await bumpedDispatch();
+      await store.markConfirmed(original.id);
+      await store.markDropped(replacement.id);
+
+      expect(await get(dispatch.id)).toMatchObject({
+        status: 'confirmed',
+        items: [{ status: 'confirmed', transactionHash: 'hash-original', error: null }],
+      });
+    });
+  });
+
   it('reports partial when some items confirm and others fail or are abandoned', async () => {
     const dispatch = await store.createDispatch({
       chain: 'base',

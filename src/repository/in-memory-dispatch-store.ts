@@ -91,6 +91,9 @@ export class InMemoryDispatchStore implements DispatchStore {
       abandonedAt: null,
       confirmedAt: null,
       lastCheckedAt: null,
+      lastBroadcastAt: this.now(),
+      replacesTransactionId: null,
+      feeBumpAttempts: 0,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -112,6 +115,9 @@ export class InMemoryDispatchStore implements DispatchStore {
       abandonedAt: null,
       confirmedAt: null,
       lastCheckedAt: null,
+      lastBroadcastAt: null,
+      replacesTransactionId: null,
+      feeBumpAttempts: 0,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -182,6 +188,54 @@ export class InMemoryDispatchStore implements DispatchStore {
         broadcastAt: new Date(),
         error: null,
       });
+      this.transactions.set(transactionId, { ...transaction, lastBroadcastAt: this.now() });
+    });
+  }
+
+  createReplacementTransaction(
+    predecessorId: string,
+    replacement: { signedBytes: string; hash: string },
+  ): Promise<Transaction> {
+    const predecessor = this.transactions.get(predecessorId);
+    if (!predecessor) return Promise.reject(new Error(`Unknown transaction: ${predecessorId}`));
+
+    const now = this.now();
+    const transaction: Transaction = {
+      ...predecessor,
+      id: randomUUID(),
+      signedBytes: replacement.signedBytes,
+      hash: replacement.hash,
+      status: 'PENDING',
+      error: null,
+      broadcastAt: now,
+      abandonedAt: null,
+      confirmedAt: null,
+      lastCheckedAt: null,
+      lastBroadcastAt: now,
+      replacesTransactionId: predecessor.id,
+      feeBumpAttempts: predecessor.feeBumpAttempts + 1,
+    };
+    this.transactions.set(transaction.id, transaction);
+    this.attempts.set(transaction.id, []);
+    this.transactions.set(predecessorId, { ...predecessor, status: 'REPLACED' });
+    return Promise.resolve(transaction);
+  }
+
+  listTransactionsByHash(hash: string): Promise<Transaction[]> {
+    return Promise.resolve([...this.transactions.values()].filter((t) => t.hash === hash));
+  }
+
+  setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void> {
+    return this.settle(() => {
+      const transaction = this.requireTransaction(transactionId);
+      this.transactions.set(transactionId, { ...transaction, feeBumpAttempts });
+    });
+  }
+
+  markDropped(transactionId: string): Promise<void> {
+    return this.settle(() => {
+      const transaction = this.requireTransaction(transactionId);
+      this.transactions.set(transactionId, { ...transaction, status: 'DROPPED' });
     });
   }
 
@@ -273,6 +327,11 @@ export class InMemoryDispatchStore implements DispatchStore {
   /** Test-only inspection — not part of DispatchStore. */
   getTransaction(transactionId: string): Transaction | null {
     return this.transactions.get(transactionId) ?? null;
+  }
+
+  /** Test-only inspection — not part of DispatchStore. Creation order. */
+  listAllTransactions(): Transaction[] {
+    return [...this.transactions.values()];
   }
 
   /** Test-only inspection — not part of DispatchStore. */

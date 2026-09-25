@@ -119,6 +119,19 @@ export interface ChainHandler<C extends Chain = Chain> {
   /** Never reports CONFIRMED for a hash that hasn't actually confirmed on-chain, including one never broadcast. */
   getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>>;
 
+  /**
+   * #9 (ADR-0037), optional: only a chain that can fee-bump implements it.
+   * Given the latest signed bytes of a stuck transaction, returns an
+   * unsigned replacement at the same nonce with raised fees, for the
+   * Coordinator to `sign` and `broadcast` like any other. A structured
+   * `NONCE_ALREADY_USED` when that nonce has already been consumed on-chain.
+   * Must never mutate `signed`.
+   */
+  prepareReplacement?(
+    signed: SignedTransaction,
+    senderAddress: string,
+  ): Promise<Result<PreparedTransaction, DispatchError>>;
+
   /** What the Coordinator's Funding Check (ADR-0024) compares a claimed batch's required amount against. */
   getBalance(address: string, asset: string): Promise<Result<Balance, DispatchError>>;
 }

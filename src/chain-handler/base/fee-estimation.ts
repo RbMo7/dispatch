@@ -34,3 +34,20 @@ export function estimateFeeFields(baseFeePerGas: bigint): FeeFields {
     maxPriorityFeePerGas: DEFAULT_PRIORITY_FEE_WEI,
   };
 }
+
+/**
+ * #9 (ADR-0037): a replacement's fee fields — each at least `percent`
+ * above the previous transaction's (rounded up: op-geth rejects a
+ * replacement even 1 wei short of its minimum bump), and never below a
+ * fresh estimate, so a bump after a base-fee spike catches up rather than
+ * burning one of the capped attempts on a still-underpriced replacement.
+ * The tip is clamped to the fee cap, which EIP-1559 requires.
+ */
+export function bumpFeeFields(previous: FeeFields, fresh: FeeFields, percent: number): FeeFields {
+  const multiplier = BigInt(100 + Math.ceil(percent));
+  const bump = (value: bigint) => (value * multiplier + 99n) / 100n;
+  const max = (a: bigint, b: bigint) => (a > b ? a : b);
+  const maxFeePerGas = max(bump(previous.maxFeePerGas), fresh.maxFeePerGas);
+  const maxPriorityFeePerGas = max(bump(previous.maxPriorityFeePerGas), fresh.maxPriorityFeePerGas);
+  return { maxFeePerGas: max(maxFeePerGas, maxPriorityFeePerGas), maxPriorityFeePerGas };
+}

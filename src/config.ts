@@ -32,6 +32,10 @@ export const config = {
     knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
     /** Minimum percentage both maxFeePerGas and maxPriorityFeePerGas must be bumped by on a Retry Policy fee-bump replacement (issue 09) — go-ethereum/op-geth's own inherited PriceBump floor is 10%; a documented default with margin above that, not a verified Base-sequencer guarantee. */
     feeBumpPercent: Number(process.env.BASE_FEE_BUMP_PERCENT ?? 15),
+    /** #9 (ADR-0037): how long a transaction may stay pending after its latest broadcast before it counts as stuck — fee-bumped (Retry Policy on) or else rebroadcast. */
+    stuckAfterMs: Number(process.env.BASE_STUCK_AFTER_MS ?? 60_000),
+    /** #9 (ADR-0037): the most fee-bump attempts (failed ones included) a Call gets before its latest version just waits out the ABANDONED timeout. */
+    maxFeeBumps: Number(process.env.BASE_MAX_FEE_BUMPS ?? 5),
     /** Max items per Bulk Call transaction (issue 11) before the engine splits a request across multiple aggregate3Value transactions. */
     bulkCallMaxBatchSize: Number(process.env.BASE_BULK_CALL_MAX_BATCH_SIZE ?? 50),
   },

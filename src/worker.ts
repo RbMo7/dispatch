@@ -36,7 +36,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 const chainRegistry = await loadChainRegistry();
-const { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs } =
+const { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs, feeBump } =
   coordinatorConfigFor(chainRegistry);
 
 const coordinator = new Coordinator({
@@ -45,6 +45,7 @@ const coordinator = new Coordinator({
   senderAddresses,
   abandonmentTimeoutMs,
   reorgRecheckWindowMs,
+  feeBump,
 });
 
 let running = true;

@@ -17,6 +17,7 @@ import {
   type ChainHandlerLoader,
 } from './chain-registry/chain-registry.js';
 import { config } from './config.js';
+import type { FeeBumpConfig } from './coordinator/coordinator.js';
 import type { Chain } from './domain/chain.js';
 import { PostgresNonceHistoryStore } from './repository/postgres-nonce-history-store.js';
 import { db } from './db/client.js';
@@ -100,6 +101,15 @@ for (const [chain, windowMs] of Object.entries(reorgRecheckWindowMsByChain)) {
   }
 }
 
+/**
+ * #9 (ADR-0037): which chains opt into stuck-transaction handling (fee-bump
+ * or rebroadcast) — a chain absent here (e.g. 'solana', whose blockhash
+ * expiry already resolves a stuck transaction, ADR-0030) is never touched.
+ */
+const feeBumpByChain: Partial<Record<Chain, FeeBumpConfig>> = {
+  base: { stuckAfterMs: config.base.stuckAfterMs, maxFeeBumps: config.base.maxFeeBumps },
+};
+
 export async function loadChainRegistry(): Promise<ChainRegistry> {
   return ChainRegistry.load(parseEnabledChains(config.enabledChains), loaders);
 }
@@ -115,10 +125,12 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
   senderAddresses: Map<Chain, string>;
   abandonmentTimeoutMs: Map<Chain, number>;
   reorgRecheckWindowMs: Map<Chain, number>;
+  feeBump: Map<Chain, FeeBumpConfig>;
 } {
   const senderAddresses = new Map<Chain, string>();
   const abandonmentTimeoutMs = new Map<Chain, number>();
   const reorgRecheckWindowMs = new Map<Chain, number>();
+  const feeBump = new Map<Chain, FeeBumpConfig>();
 
   for (const chain of registry.handlers.keys()) {
     const senderAddress = senderAddressByChain[chain];
@@ -133,7 +145,10 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
 
     const recheckWindowMs = reorgRecheckWindowMsByChain[chain];
     if (recheckWindowMs !== undefined) reorgRecheckWindowMs.set(chain, recheckWindowMs);
+
+    const feeBumpConfig = feeBumpByChain[chain];
+    if (feeBumpConfig !== undefined) feeBump.set(chain, feeBumpConfig);
   }
 
-  return { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs };
+  return { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs, feeBump };
 }

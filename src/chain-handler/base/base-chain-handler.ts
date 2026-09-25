@@ -28,7 +28,7 @@ import type {
 import { validateEvmCall } from './call-validation.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
 import { extractMessage, mapBaseFailure } from './error-mapping.js';
-import { estimateFeeFields } from './fee-estimation.js';
+import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
 import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
 import { NonceCounter } from './nonce-authority.js';
@@ -250,20 +250,9 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const sender = requireAddressResult(senderAddress);
     if (!sender.ok) return sender;
 
-    let baseFeePerGas: bigint;
-    try {
-      const block = await this.client.getBlock();
-      if (block.baseFeePerGas === null) {
-        return err({
-          code: 'RPC_UNAVAILABLE',
-          message: 'latest Base block has no baseFeePerGas — pre-EIP-1559 RPC response?',
-        });
-      }
-      baseFeePerGas = block.baseFeePerGas;
-    } catch (cause) {
-      return err(mapBaseFailure(cause));
-    }
-    const { maxFeePerGas, maxPriorityFeePerGas } = estimateFeeFields(baseFeePerGas);
+    const baseFee = await this.latestBaseFeePerGas();
+    if (!baseFee.ok) return baseFee;
+    const { maxFeePerGas, maxPriorityFeePerGas } = estimateFeeFields(baseFee.value);
 
     const prepared: PreparedTransaction[] = [];
     for (let callIndex = 0; callIndex < items.length; callIndex++) {
@@ -382,6 +371,103 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
     const signed = serializeTransaction(tx, { r, s, yParity: yParity ?? 0 });
     return ok(signed);
+  }
+
+  /**
+   * #9 (ADR-0037): an unsigned replacement for a stuck transaction — the
+   * same nonce, recipient, value, data and gas, decoded straight from its
+   * signed bytes, with both fee fields raised per `bumpFeeFields`
+   * (fee-estimation.ts): at least `feeBumpPercent` above the old values,
+   * never below a fresh estimate. `NONCE_ALREADY_USED` when the Sender's
+   * confirmed nonce has already moved past it — some version landed, and
+   * a replacement could only ever be rejected.
+   */
+  async prepareReplacement(
+    signed: SignedTransaction,
+    senderAddress: string,
+  ): Promise<Result<PreparedTransaction, DispatchError>> {
+    const sender = requireAddressResult(senderAddress);
+    if (!sender.ok) return sender;
+
+    let decoded: ReturnType<typeof parseTransaction>;
+    try {
+      decoded = parseTransaction(signed as `0x${string}`);
+    } catch (cause) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'not a decodable EIP-1559 signed transaction',
+        chainDetail: extractMessage(cause),
+      });
+    }
+    const { nonce, to, gas, maxFeePerGas, maxPriorityFeePerGas } = decoded;
+    if (
+      decoded.type !== 'eip1559' ||
+      decoded.chainId !== this.chainId ||
+      nonce === undefined ||
+      !to ||
+      gas === undefined ||
+      maxFeePerGas === undefined ||
+      maxPriorityFeePerGas === undefined
+    ) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `cannot replace: not a complete EIP-1559 transaction for chain ID ${this.chainId}`,
+      });
+    }
+
+    let confirmedNonce: number;
+    try {
+      confirmedNonce = await this.client.getTransactionCount({ address: sender.value, blockTag: 'latest' });
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+    if (confirmedNonce > nonce) {
+      return err({
+        code: 'NONCE_ALREADY_USED',
+        message: `nonce ${nonce} already consumed on-chain (confirmed nonce is ${confirmedNonce})`,
+      });
+    }
+
+    const baseFee = await this.latestBaseFeePerGas();
+    if (!baseFee.ok) return baseFee;
+    const fees = bumpFeeFields(
+      { maxFeePerGas, maxPriorityFeePerGas },
+      estimateFeeFields(baseFee.value),
+      this.feeBumpPercent,
+    );
+    this.logger.info(
+      { nonce, from: { maxFeePerGas, maxPriorityFeePerGas }, to: fees },
+      'prepared fee-bump replacement',
+    );
+
+    const encoded: EncodedEvmTransaction = {
+      senderAddress: sender.value,
+      chainId: this.chainId,
+      nonce,
+      to,
+      value: (decoded.value ?? 0n).toString(),
+      data: decoded.data ?? '0x',
+      gas: gas.toString(),
+      maxFeePerGas: fees.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+    };
+    return ok({ callIndex: 0, unsignedTransaction: encodeUnsignedTransaction(encoded) });
+  }
+
+  /** The latest block's `baseFeePerGas` — what both `prepare` and `prepareReplacement` estimate fees from. */
+  private async latestBaseFeePerGas(): Promise<Result<bigint, DispatchError>> {
+    try {
+      const block = await this.client.getBlock();
+      if (block.baseFeePerGas === null) {
+        return err({
+          code: 'RPC_UNAVAILABLE',
+          message: 'latest Base block has no baseFeePerGas — pre-EIP-1559 RPC response?',
+        });
+      }
+      return ok(block.baseFeePerGas);
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
   }
 
   validateSignedTransaction(_signed: SignedTransaction): Promise<Result<void, DispatchError>> {

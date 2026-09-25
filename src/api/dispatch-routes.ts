@@ -115,7 +115,15 @@ function toWireItemStatus(status: TransactionStatus): string {
       return 'failed';
     case 'ABANDONED':
       return 'abandoned';
+    case 'REPLACED':
+    case 'DROPPED':
+      throw new Error(`a ${status} Transaction is never a Call's reported version (ADR-0037)`);
   }
+}
+
+/** #9 (ADR-0037): a fee-bumped Call has several Transactions at one nonce — only the current one (latest while pending, or the one that settled it) is its reported version. */
+function isCurrentVersion(transaction: Transaction): boolean {
+  return transaction.status !== 'REPLACED' && transaction.status !== 'DROPPED';
 }
 
 /**
@@ -235,7 +243,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       const dispatch = await store.getDispatch(request.params.id);
       if (dispatch) {
-        const transactions = await store.listTransactions(dispatch.id);
+        const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
         const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
 
         const items = dispatch.items.map((_, index) => {

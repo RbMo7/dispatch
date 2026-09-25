@@ -124,6 +124,43 @@ function setupWithReorgRecheck() {
   return { store, handler, coordinator, advance };
 }
 
+/** A FakeChainHandler for a chain that can fee-bump (#9) — the optional `prepareReplacement` present. */
+class BumpingFakeChainHandler extends FakeChainHandler {
+  prepareReplacement = vi.fn(
+    (
+      _signed: SignedTransaction,
+      _senderAddress: string,
+    ): Promise<Result<PreparedTransaction, DispatchError>> =>
+      Promise.resolve(ok({ callIndex: 0, unsignedTransaction: 'bumped-unsigned' })),
+  );
+}
+
+const STUCK_AFTER_MS = 60_000;
+const MAX_FEE_BUMPS = 2;
+
+/** 'base' opted into fee-bump handling (#9, ADR-0037); `canBump: false` models an opted-in chain whose handler has no prepareReplacement. */
+function setupWithFeeBump({ canBump = true }: { canBump?: boolean } = {}) {
+  let currentTime = new Date('2024-01-01T00:00:00.000Z');
+  const clock = () => currentTime;
+  const advance = (ms: number) => {
+    currentTime = new Date(currentTime.getTime() + ms);
+  };
+
+  const store = new InMemoryDispatchStore(clock);
+  const handler = canBump ? new BumpingFakeChainHandler('base') : new FakeChainHandler('base');
+  const coordinator = new Coordinator({
+    store,
+    chainHandlers: new Map([['base', handler]]),
+    senderAddresses: new Map([['base', 'sender-address']]),
+    abandonmentTimeoutMs: new Map([['base', ABANDON_AFTER_MS]]),
+    feeBump: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: MAX_FEE_BUMPS }]]),
+    now: clock,
+    sleep: () => Promise.resolve(),
+  });
+
+  return { store, handler, coordinator, advance };
+}
+
 describe('Coordinator.processQueuedDispatches', () => {
   it('drives a Call through validate/prepare/sign/broadcast and persists a PENDING Transaction', async () => {
     const { store, handler, coordinator } = setup();
@@ -583,15 +620,15 @@ describe('Coordinator.pollPendingTransactions', () => {
     expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
   });
 
-  it('never abandons a still-PENDING Transaction once Retry Policy is on, no matter how long it has waited', async () => {
+  it('abandons a still-PENDING Retry-Policy-on Transaction on a chain that cannot fee-bump, exactly as with Retry Policy off (#9)', async () => {
     const { store, handler, coordinator, advance } = setup();
     const transactionId = await createPendingTransaction(store, true);
-    advance(ABANDON_AFTER_MS * 10);
+    advance(ABANDON_AFTER_MS);
     handler.getStatus.mockResolvedValue(ok('PENDING'));
 
     await coordinator.pollPendingTransactions(10);
 
-    expect(store.getTransaction(transactionId)?.status).toBe('PENDING');
+    expect(store.getTransaction(transactionId)?.status).toBe('ABANDONED');
   });
 
   it('still throws for a Transaction whose dispatchId references neither a Dispatch nor a RelayDispatch — a genuine data-integrity bug, never silently treated as a harmless RelayDispatch', async () => {
@@ -609,6 +646,264 @@ describe('Coordinator.pollPendingTransactions', () => {
       /references unknown Dispatch/,
     );
     expect(store.getTransaction(transaction.id)?.status).toBe('PENDING'); // never silently abandoned
+  });
+});
+
+describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-0037)', () => {
+  async function createStuckCandidate(
+    store: InMemoryDispatchStore,
+    retryPolicy: boolean,
+    items: DispatchItem<'base'>[] = [evmItem],
+  ) {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: `key-${Math.random()}`,
+      items,
+      retryPolicy,
+    });
+    const transactions = [];
+    for (let callIndex = 0; callIndex < items.length; callIndex++) {
+      transactions.push(
+        await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: 'base',
+          signedBytes: 'signed-bytes',
+          hash: 'hash-1',
+        }),
+      );
+    }
+    return { dispatch, transactions };
+  }
+
+  function currentVersions(store: InMemoryDispatchStore, dispatchId: string) {
+    return store
+      .listAllTransactions()
+      .filter((t) => t.dispatchId === dispatchId)
+      .map((t) => ({ hash: t.hash, status: t.status, feeBumpAttempts: t.feeBumpAttempts }));
+  }
+
+  it('leaves a transaction alone until it has been pending for stuckAfterMs', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS - 1);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).not.toHaveBeenCalled();
+    expect(handler.broadcast).not.toHaveBeenCalled();
+  });
+
+  it('fee-bumps a stuck Managed Retry-Policy-on transaction into a new Transaction at the same nonce', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS);
+    handler.sign.mockResolvedValueOnce(ok('bumped-signed'));
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).toHaveBeenCalledWith(
+      'signed-bytes',
+      'sender-address',
+    );
+    expect(handler.broadcast).toHaveBeenCalledWith('bumped-signed');
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'REPLACED', feeBumpAttempts: 0 },
+      { hash: 'hash-2', status: 'PENDING', feeBumpAttempts: 1 },
+    ]);
+  });
+
+  it('rebroadcasts the identical bytes as a new Attempt when Retry Policy is off', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch, transactions } = await createStuckCandidate(store, false);
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).not.toHaveBeenCalled();
+    expect(handler.broadcast).toHaveBeenCalledWith('signed-bytes');
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: 0 },
+    ]);
+    expect(store.getTransaction(transactions[0]!.id)?.lastBroadcastAt).toEqual(
+      new Date('2024-01-01T00:01:00.000Z'),
+    );
+  });
+
+  it('rebroadcasts (never bumps) on an opted-in chain whose handler has no prepareReplacement', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump({ canBump: false });
+    await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.broadcast).toHaveBeenCalledWith('signed-bytes');
+  });
+
+  it('treats a failed rebroadcast (e.g. "already known") as harmless — still PENDING, polled again', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { transactions } = await createStuckCandidate(store, false);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'already known' }),
+    );
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transactions[0]!.id)?.status).toBe('PENDING');
+  });
+
+  it('settles the Call on the original when it lands after being replaced — the replacement is DROPPED', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+    await coordinator.pollPendingTransactions(10);
+
+    handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash === 'hash-1' ? 'CONFIRMED' : 'PENDING')),
+    );
+    advance(1_000);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(currentVersions(store, dispatch.id).map((v) => [v.hash, v.status])).toEqual([
+      ['hash-1', 'CONFIRMED'],
+      ['hash-2', 'DROPPED'],
+    ]);
+  });
+
+  it('settles the Call on the replacement when it lands — the original is DROPPED', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+    await coordinator.pollPendingTransactions(10);
+
+    handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash === 'hash-2' ? 'CONFIRMED' : 'PENDING')),
+    );
+    advance(1_000);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(currentVersions(store, dispatch.id).map((v) => [v.hash, v.status])).toEqual([
+      ['hash-1', 'DROPPED'],
+      ['hash-2', 'CONFIRMED'],
+    ]);
+  });
+
+  it('stops bumping at maxFeeBumps, then rebroadcasts and abandons on the normal timeout', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    // Each bump signs distinct bytes; broadcasting given bytes always yields
+    // that same hash, as on a real chain — so a rebroadcast keeps its hash.
+    let nextSigned = 2;
+    handler.sign.mockImplementation(() => Promise.resolve(ok(`signed-${nextSigned++}`)));
+    handler.broadcast.mockImplementation((signed) =>
+      Promise.resolve(
+        ok({ hash: signed === 'signed-bytes' ? 'hash-1' : signed.replace('signed', 'hash') }),
+      ),
+    );
+
+    for (let tick = 0; tick < MAX_FEE_BUMPS + 1; tick++) {
+      advance(STUCK_AFTER_MS);
+      await coordinator.pollPendingTransactions(10);
+    }
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).toHaveBeenCalledTimes(
+      MAX_FEE_BUMPS,
+    );
+
+    advance(ABANDON_AFTER_MS);
+    await coordinator.pollPendingTransactions(10);
+
+    const versions = currentVersions(store, dispatch.id);
+    expect(versions).toHaveLength(MAX_FEE_BUMPS + 1);
+    expect(versions.at(-1)?.status).toBe('ABANDONED');
+  });
+
+  it('stops bumping for good once the nonce is already used, without creating a replacement', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    (handler as BumpingFakeChainHandler).prepareReplacement.mockResolvedValueOnce(
+      err({ code: 'NONCE_ALREADY_USED', message: 'nonce 7 already consumed' }),
+    );
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+    advance(STUCK_AFTER_MS);
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).toHaveBeenCalledTimes(1);
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
+    ]);
+  });
+
+  it('counts a failed bump (e.g. insufficient funds) against the cap, rebroadcasts meanwhile, and tries again next time it is stuck', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true);
+    (handler as BumpingFakeChainHandler).prepareReplacement.mockResolvedValueOnce(
+      err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient funds for gas * price + value' }),
+    );
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.broadcast).toHaveBeenCalledWith('signed-bytes');
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: 1 },
+    ]);
+
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+    advance(STUCK_AFTER_MS);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(currentVersions(store, dispatch.id).at(-1)).toEqual({
+      hash: 'hash-2',
+      status: 'PENDING',
+      feeBumpAttempts: 2,
+    });
+  });
+
+  it('bumps a bundled broadcast once, fanning the replacement out to every member Call', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump();
+    const { dispatch } = await createStuckCandidate(store, true, [evmItem, evmItem]);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect((handler as BumpingFakeChainHandler).prepareReplacement).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    expect(
+      store
+        .listAllTransactions()
+        .filter((t) => t.dispatchId === dispatch.id && t.status === 'PENDING')
+        .map((t) => [t.callIndex, t.hash]),
+    ).toEqual([
+      [0, 'hash-2'],
+      [1, 'hash-2'],
+    ]);
+  });
+
+  it('resolves an ABANDONED fee-bumped Call through a REPLACED ancestor landing later', async () => {
+    const { store, handler, coordinator, advance } = setupWithFeeBump({ canBump: true });
+    const { dispatch } = await createStuckCandidate(store, true);
+    advance(STUCK_AFTER_MS);
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'hash-2' }));
+    await coordinator.pollPendingTransactions(10);
+    const [, replacement] = store.listAllTransactions().filter((t) => t.dispatchId === dispatch.id);
+    await store.markAbandoned(replacement!.id);
+
+    handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash === 'hash-1' ? 'CONFIRMED' : 'PENDING')),
+    );
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(currentVersions(store, dispatch.id).map((v) => [v.hash, v.status])).toEqual([
+      ['hash-1', 'CONFIRMED'],
+      ['hash-2', 'DROPPED'],
+    ]);
   });
 });
 
