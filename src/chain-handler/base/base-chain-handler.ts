@@ -1,4 +1,5 @@
 import {
+  TransactionReceiptNotFoundError,
   createPublicClient,
   http,
   isAddress,
@@ -77,6 +78,17 @@ export type BaseChainHandlerDeps = {
  * `getStatus` resolves most stuck transactions before this ever fires.
  */
 export const BASE_ABANDONMENT_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * issue 07: the Coordinator's `reorgRecheckWindowMs` config value for
+ * 'base' — how long after being marked CONFIRMED a transaction stays
+ * eligible for the reorg safety net's background re-check. A fixed,
+ * chain-agnostic-Coordinator-friendly proxy for "past OP Stack 'safe'"
+ * (research-base.md §4: ~2 minutes), not a dynamic safe-head query —
+ * comfortably longer than that so the window's own imprecision never
+ * matters in practice.
+ */
+export const BASE_REORG_RECHECK_WINDOW_MS = 5 * 60_000;
 
 function requireAddress(value: string): Address {
   if (!isAddress(value)) {
@@ -417,8 +429,31 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     return ok({ hash });
   }
 
-  getStatus(_hash: string): Promise<Result<ChainStatus, DispatchError>> {
-    throw notImplemented('getStatus', 6);
+  /**
+   * issue 06: `eth_getTransactionReceipt` — `status: 1` -> `CONFIRMED`,
+   * reported as soon as the transaction's block is included (~2s),
+   * deliberately not waiting for OP Stack "safe" head (issue 07's own
+   * background safety net covers the rare reorg risk this trades away,
+   * without ever delaying this report — that's the whole point of Base's
+   * speed). `status: 0` -> `FAILED`. No receipt yet (viem throws
+   * `TransactionReceiptNotFoundError` rather than returning `null`) ->
+   * `PENDING`, until the Coordinator's existing generic abandonment
+   * timeout (ADR-0004) resolves it to `ABANDONED` (issue 08) — no EVM-
+   * specific timeout logic added here or anywhere in this handler.
+   */
+  async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
+    try {
+      const receipt = await this.client.getTransactionReceipt({ hash: hash as `0x${string}` });
+      const status: ChainStatus = receipt.status === 'success' ? 'CONFIRMED' : 'FAILED';
+      this.logger.debug({ hash, status }, 'getStatus');
+      return ok(status);
+    } catch (cause) {
+      if (cause instanceof TransactionReceiptNotFoundError) {
+        this.logger.debug({ hash }, 'getStatus: PENDING (no receipt yet)');
+        return ok('PENDING');
+      }
+      return err(mapBaseFailure(cause));
+    }
   }
 
   /** issue 04: native ETH via eth_getBalance; a known ERC-20 token via a balanceOf eth_call — feeds the Funding Check (ADR-0024) unchanged. */
