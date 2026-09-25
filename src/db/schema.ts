@@ -10,6 +10,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import type { DispatchItem } from '../domain/call.js';
+import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 
 export const dispatches = pgTable(
@@ -21,6 +22,8 @@ export const dispatches = pgTable(
     items: jsonb('items').notNull().$type<DispatchItem[]>(),
     status: text('status').notNull().default('queued'),
     retryPolicy: boolean('retry_policy').notNull().default(false),
+    /** #11 (ADR-0038): the Bulk Call opt-in, null for the default mode. */
+    bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],

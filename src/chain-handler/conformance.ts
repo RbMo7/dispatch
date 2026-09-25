@@ -147,6 +147,14 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       expect(fixtures.invalidSignedTransaction).toBe(before);
     });
 
+    it('getBundleStatus, where implemented, answers a never-broadcast hash with a structured Result, never throwing and never CONFIRMED', async (context) => {
+      const handler = createHandler();
+      if (!handler.getBundleStatus) return context.skip(); // optional — only a chain with Bulk Call has it
+      const result = await handler.getBundleStatus(fixtures.neverBroadcastHash);
+      expect(typeof result.ok).toBe('boolean');
+      if (result.ok) expect(result.value.every((slot) => slot.status !== 'CONFIRMED')).toBe(true);
+    });
+
     it('a broadcast failure surfaces a structured DispatchError instead of throwing', async () => {
       const handler = createHandler();
       const result = await handler.broadcast(fixtures.invalidSignedTransaction);

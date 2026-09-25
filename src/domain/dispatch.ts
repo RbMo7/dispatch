@@ -29,4 +29,12 @@ export type Dispatch<C extends Chain = Chain> = {
    * reads it.
    */
   retryPolicy: boolean;
+  /** #11 (ADR-0038): opted into Bulk Call — items go out as `aggregate3Value` chunks through this caller-named aggregator. Null for the default one-transaction-per-item mode. */
+  bulkCall: BulkCall | null;
+};
+
+/** #11 (ADR-0038): a request's Bulk Call opt-in, as resolved at the API edge (`maxBatchSize` already defaulted and bounded). */
+export type BulkCall = {
+  aggregator: string;
+  maxBatchSize: number;
 };

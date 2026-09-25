@@ -64,6 +64,7 @@ const BASE_SEPOLIA: Chain = {
 
 const FIXTURES_DIR = path.resolve(process.cwd(), '.base-fixtures');
 const TEST_TOKEN_CACHE_PATH = path.join(FIXTURES_DIR, 'test-token.json');
+const TEST_AGGREGATOR_CACHE_PATH = path.join(FIXTURES_DIR, 'test-aggregator.json');
 const DEV_SENDER_LOCK_PATH = path.join(FIXTURES_DIR, 'dev-sender.lock');
 /** A held lock older than this is assumed abandoned by a crashed process, not a real hold — steal it rather than deadlock every future run. */
 const LOCK_STALE_AFTER_MS = 2 * 60_000;
@@ -219,22 +220,28 @@ const TEST_TOKEN_INITIAL_SUPPLY = 1_000_000n * 10n ** BigInt(TEST_TOKEN_DECIMALS
 /** `solc` ships no types of its own — this is the one call this file makes into it. */
 const solcCompile = solc.compile as (input: string) => string;
 
-function compileTestToken(): { abi: Abi; bytecode: `0x${string}` } {
+function compileContract(name: string, source: string): { abi: Abi; bytecode: `0x${string}` } {
+  const file = `${name}.sol`;
   const input = {
     language: 'Solidity',
-    sources: { 'TestToken.sol': { content: TEST_TOKEN_SOURCE } },
+    sources: { [file]: { content: source } },
     settings: { outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } } },
   };
   const output = JSON.parse(solcCompile(JSON.stringify(input))) as {
     errors?: { severity: string; formattedMessage: string }[];
-    contracts: { 'TestToken.sol': { TestToken: { abi: Abi; evm: { bytecode: { object: string } } } } };
+    contracts: Record<string, Record<string, { abi: Abi; evm: { bytecode: { object: string } } }>>;
   };
   const fatal = output.errors?.filter((e) => e.severity === 'error');
   if (fatal && fatal.length > 0) {
-    throw new Error(`TestToken.sol failed to compile: ${fatal.map((e) => e.formattedMessage).join('\n')}`);
+    throw new Error(`${file} failed to compile: ${fatal.map((e) => e.formattedMessage).join('\n')}`);
   }
-  const contract = output.contracts['TestToken.sol'].TestToken;
+  const contract = output.contracts[file]?.[name];
+  if (!contract) throw new Error(`${file} produced no ${name} contract`);
   return { abi: contract.abi, bytecode: `0x${contract.evm.bytecode.object}` };
+}
+
+function compileTestToken(): { abi: Abi; bytecode: `0x${string}` } {
+  return compileContract('TestToken', TEST_TOKEN_SOURCE);
 }
 
 export type TestTokenInfo = {
@@ -297,6 +304,84 @@ export function getOrDeployTestToken(): Promise<TestTokenInfo> {
     return { address: receipt.contractAddress, decimals: TEST_TOKEN_DECIMALS, abi };
   })();
   return testTokenPromise;
+}
+
+/**
+ * #11 (ADR-0038): a Multicall3-shaped `aggregate3Value` that only its
+ * owner (the dev-sender) may call — the restricted, caller-owned
+ * aggregator shape Bulk Call's ERC-20 items need. Test support only: the
+ * engine itself never deploys or owns an aggregator (ADR-0006).
+ */
+const TEST_AGGREGATOR_SOURCE = `
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract TestAggregator {
+    struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }
+    struct Result { bool success; bytes returnData; }
+
+    address public immutable owner;
+
+    constructor() { owner = msg.sender; }
+
+    function aggregate3Value(Call3Value[] calldata calls) external payable returns (Result[] memory returnData) {
+        require(msg.sender == owner, "not owner");
+        uint256 valueTotal;
+        returnData = new Result[](calls.length);
+        for (uint256 i = 0; i < calls.length; i++) {
+            Call3Value calldata c = calls[i];
+            valueTotal += c.value;
+            (bool success, bytes memory ret) = c.target.call{value: c.value}(c.callData);
+            require(success || c.allowFailure, "call failed");
+            returnData[i] = Result(success, ret);
+        }
+        require(msg.value == valueTotal, "value mismatch");
+    }
+}
+`;
+
+/** Test tokens the aggregator is funded with on first deploy — what Bulk Call ERC-20 items spend. */
+export const TEST_AGGREGATOR_TOKEN_FUNDING = 1_000n * 10n ** BigInt(TEST_TOKEN_DECIMALS);
+
+let testAggregatorPromise: Promise<`0x${string}`> | undefined;
+
+/**
+ * Deploys (or reuses the disk-cached) TestAggregator, owned by the
+ * dev-sender, and funds it with TestToken once. Caller must hold the
+ * dev-sender lock: this sends transactions from it on a fresh deploy.
+ */
+export function getOrDeployTestAggregator(): Promise<`0x${string}`> {
+  testAggregatorPromise ??= (async () => {
+    if (existsSync(TEST_AGGREGATOR_CACHE_PATH)) {
+      const cached = JSON.parse(readFileSync(TEST_AGGREGATOR_CACHE_PATH, 'utf8')) as { address: `0x${string}` };
+      return cached.address;
+    }
+    const token = await getOrDeployTestToken();
+    const { abi, bytecode } = compileContract('TestAggregator', TEST_AGGREGATOR_SOURCE);
+    const account = privateKeyToAccount(`0x${getDevSenderAccount().privateKeyHex}`);
+    const walletClient = createWalletClient({ account, chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
+    const publicClient = createPublicClient({ chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
+
+    const deployHash = await walletClient.deployContract({ abi, bytecode });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
+    if (!receipt.contractAddress) {
+      throw new Error(`TestAggregator deployment (tx ${deployHash}) did not report a contract address`);
+    }
+    await waitForNonceConsistency(account.address);
+    const fundHash = await walletClient.writeContract({
+      address: token.address,
+      abi: token.abi,
+      functionName: 'transfer',
+      args: [receipt.contractAddress, TEST_AGGREGATOR_TOKEN_FUNDING],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: fundHash });
+    await waitForNonceConsistency(account.address);
+
+    mkdirSync(FIXTURES_DIR, { recursive: true });
+    writeFileSync(TEST_AGGREGATOR_CACHE_PATH, JSON.stringify({ address: receipt.contractAddress }));
+    return receipt.contractAddress;
+  })();
+  return testAggregatorPromise;
 }
 
 // --- In-process reference-signer-style Signer (ADR-0002's `/sign` contract) ---

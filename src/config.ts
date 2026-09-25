@@ -38,5 +38,7 @@ export const config = {
     maxFeeBumps: Number(process.env.BASE_MAX_FEE_BUMPS ?? 5),
     /** Max items per Bulk Call transaction (issue 11) before the engine splits a request across multiple aggregate3Value transactions. */
     bulkCallMaxBatchSize: Number(process.env.BASE_BULK_CALL_MAX_BATCH_SIZE ?? 50),
+    /** #11 (ADR-0038): a tracing-capable RPC (`debug_traceTransaction`) — Bulk Call's per-item outcomes are only visible in a trace. Bulk Call is off without one. */
+    traceRpcUrl: process.env.BASE_TRACE_RPC_URL ?? '',
   },
 };

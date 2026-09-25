@@ -1,4 +1,5 @@
 import type { Chain } from '../domain/chain.js';
+import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -10,6 +11,8 @@ export type NewDispatchInput<C extends Chain = Chain> = {
   idempotencyKey: string;
   items: DispatchItem<C>[];
   retryPolicy: boolean;
+  /** #11: omitted (or null) for the default one-transaction-per-item mode. */
+  bulkCall?: BulkCall | null;
 };
 
 export type NewTransactionInput = {

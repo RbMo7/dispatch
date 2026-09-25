@@ -1,6 +1,7 @@
 import {
   TransactionReceiptNotFoundError,
   createPublicClient,
+  decodeFunctionData,
   http,
   isAddress,
   keccak256,
@@ -14,7 +15,8 @@ import {
 } from 'viem';
 import type { Logger } from 'pino';
 
-import type { CallForChain, EvmCall, Payment } from '../../domain/call.js';
+import type { CallForChain, DispatchItem, EvmCall, Payment } from '../../domain/call.js';
+import type { BulkCall } from '../../domain/dispatch.js';
 import type { DispatchError } from '../../domain/errors.js';
 import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
@@ -26,8 +28,20 @@ import type {
   ChainHandler,
   ChainStatus,
   PreparedTransaction,
+  PrepareOptions,
   SignedTransaction,
+  BulkCallPlan,
+  BulkCallRequest,
+  BundleSlotStatus,
 } from '../chain-handler.js';
+import {
+  AGGREGATE3_VALUE_ABI,
+  CANONICAL_MULTICALL3,
+  chunk,
+  encodeAggregate3Value,
+  slotsFromTrace,
+  type CallTrace,
+} from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
 import { extractMessage, isRpcOutage, mapBaseFailure } from './error-mapping.js';
@@ -67,6 +81,8 @@ export type BaseChainHandlerDeps = {
   feeBumpPercent?: number;
   /** issue 11: max items per Bulk Call transaction before the engine splits a request across multiple. */
   bulkCallMaxBatchSize?: number;
+  /** #11 (ADR-0038): a tracing-capable RPC for Bulk Call's per-item outcomes. Without it Bulk Call is off: validateBulkCall rejects, and getBundleStatus isn't there. */
+  traceRpcUrl?: string;
   /** Injectable for the RPC client's transport (issue 15's shared per-call deadline, and test doubles). Defaults to the global fetch. */
   fetch?: typeof fetch;
   /** Defaults to the shared app logger under a `component: 'base-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
@@ -149,7 +165,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   private readonly nonceHistoryStore: NonceHistoryStore;
   private readonly feeBumpPercent: number;
   private readonly bulkCallMaxBatchSize: number;
+  private readonly traceClient: PublicClient | undefined;
   private readonly logger: Logger;
+
+  /** #11: present only with a tracing RPC — the Coordinator reads its presence as "per-item outcomes are available". */
+  readonly getBundleStatus?: (hash: string) => Promise<Result<BundleSlotStatus[], DispatchError>>;
 
   /** issue 02: the single next-nonce authority for `senderAddress` (nonce-authority.ts) — assigned in-process, never via a per-request `eth_getTransactionCount("pending")` read, so concurrent Managed Dispatch submissions can't collide or skip (ADR-0002's single-nonce-authority requirement). */
   private readonly nonceCounter: NonceCounter;
@@ -166,6 +186,13 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     this.nonceHistoryStore = deps.nonceHistoryStore;
     this.feeBumpPercent = deps.feeBumpPercent ?? 15;
     this.bulkCallMaxBatchSize = deps.bulkCallMaxBatchSize ?? 50;
+    this.traceClient = deps.traceRpcUrl
+      ? createPublicClient({ transport: http(deps.traceRpcUrl, { fetchFn: deps.fetch ?? fetch }) })
+      : undefined;
+    if (this.traceClient) {
+      const traceClient = this.traceClient;
+      this.getBundleStatus = (hash) => this.readBundleStatus(traceClient, hash);
+    }
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'base-chain-handler' });
     this.nonceCounter = new NonceCounter(initialNonce);
   }
@@ -268,9 +295,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   async prepare(
     items: EvmCall[],
     senderAddress: string,
+    options?: PrepareOptions,
   ): Promise<Result<PreparedTransaction[], DispatchError>> {
     const sender = requireAddressResult(senderAddress);
     if (!sender.ok) return sender;
+    if (options?.bulkCall) return this.prepareBulk(items, sender.value, options.bulkCall);
 
     const baseFee = await this.latestBaseFeePerGas();
     if (!baseFee.ok) return baseFee;
@@ -484,6 +513,134 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         });
       }
       return ok(block.baseFeePerGas);
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+  }
+
+  /**
+   * #11 (ADR-0038): a Bulk Call request checked against its items before
+   * anything is persisted. ERC-20 payments are funded by the aggregator
+   * itself (inside aggregate3Value, msg.sender is the aggregator) — and so
+   * refused outright for the canonical, permissionless Multicall3, where no
+   * balance or approval of the caller's could ever be safe.
+   */
+  validateBulkCall(
+    request: BulkCallRequest,
+    items: DispatchItem<'base'>[],
+  ): Promise<Result<BulkCallPlan, DispatchError>> {
+    if (!this.traceClient) {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message: 'Bulk Call needs a tracing RPC (BASE_TRACE_RPC_URL) to read per-item outcomes',
+        }),
+      );
+    }
+    const aggregator = requireAddressResult(request.aggregator);
+    if (!aggregator.ok) return Promise.resolve(aggregator);
+    const maxBatchSize = request.maxBatchSize ?? this.bulkCallMaxBatchSize;
+    if (!Number.isInteger(maxBatchSize) || maxBatchSize < 1 || maxBatchSize > this.bulkCallMaxBatchSize) {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message: `maxBatchSize must be 1..${this.bulkCallMaxBatchSize}`,
+          chainDetail: { maxBatchSize },
+        }),
+      );
+    }
+    const fundedBy = items.map((item) =>
+      item.payment && item.payment.asset !== NATIVE_ASSET_SYMBOL ? aggregator.value : null,
+    );
+    if (isSameAddress(aggregator.value, CANONICAL_MULTICALL3) && fundedBy.some((f) => f !== null)) {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message:
+            'ERC-20 items cannot go through the canonical Multicall3: it is permissionless, so any token balance or approval it holds can be taken by anyone — name your own aggregator',
+          chainDetail: { aggregator: aggregator.value },
+        }),
+      );
+    }
+    return Promise.resolve(ok({ bulkCall: { aggregator: aggregator.value, maxBatchSize }, fundedBy }));
+  }
+
+  /**
+   * #11: one `aggregate3Value` transaction per chunk of `maxBatchSize`
+   * items, each chunk at its own nonce, sending the aggregator the chunk's
+   * total native value to forward. Every item in a chunk gets the chunk's
+   * identical unsignedTransaction, which is what makes the Coordinator
+   * broadcast it once, with one row per item.
+   */
+  private async prepareBulk(
+    items: EvmCall[],
+    sender: Address,
+    bulkCall: BulkCall,
+  ): Promise<Result<PreparedTransaction[], DispatchError>> {
+    const aggregator = requireAddressResult(bulkCall.aggregator);
+    if (!aggregator.ok) return aggregator;
+    const baseFee = await this.latestBaseFeePerGas();
+    if (!baseFee.ok) return baseFee;
+    const { maxFeePerGas, maxPriorityFeePerGas } = estimateFeeFields(baseFee.value);
+
+    const prepared: PreparedTransaction[] = [];
+    let callIndex = 0;
+    for (const calls of chunk(items, bulkCall.maxBatchSize)) {
+      const { data, value } = encodeAggregate3Value(calls);
+      let gas: bigint;
+      try {
+        gas = await this.client.estimateGas({ account: sender, to: aggregator.value, data, value });
+      } catch (cause) {
+        if (isRpcOutage(cause)) return err(mapBaseFailure(cause));
+        // allowFailure keeps a bad item from reverting the bundle, so a
+        // failed estimate is the whole call reverting (e.g. an aggregator
+        // that refuses this Sender) — still sent, so the chain answers.
+        this.logger.warn({ error: extractMessage(cause) }, 'bulk estimateGas failed — using the fallback gas limit');
+        gas = FALLBACK_GAS_LIMIT;
+      }
+      const unsignedTransaction = encodeUnsignedTransaction({
+        senderAddress: sender,
+        chainId: this.chainId,
+        nonce: this.nonceCounter.assignNext(),
+        to: aggregator.value,
+        value: value.toString(),
+        data,
+        gas: gas.toString(),
+        maxFeePerGas: maxFeePerGas.toString(),
+        maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+      });
+      for (let i = 0; i < calls.length; i++) prepared.push({ callIndex: callIndex++, unsignedTransaction });
+    }
+    return ok(prepared);
+  }
+
+  /**
+   * #11: each bundled item's outcome, from the trace. PENDING until mined;
+   * a reverted bundle fails every slot; otherwise each slot is its own
+   * sub-call's outcome (bulk-call.ts). The slot count comes from the
+   * transaction's own calldata.
+   */
+  private async readBundleStatus(
+    traceClient: PublicClient,
+    hash: string,
+  ): Promise<Result<BundleSlotStatus[], DispatchError>> {
+    try {
+      const tx = await this.client.getTransaction({ hash: hash as `0x${string}` });
+      const { args } = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data: tx.input });
+      const itemCount = args[0].length;
+      const status = await this.getStatus(hash);
+      if (!status.ok) return status;
+      if (status.value === 'PENDING') return ok(Array.from({ length: itemCount }, () => ({ status: 'PENDING' as const })));
+      // debug_* isn't in viem's typed method list, hence the untyped request.
+      const request = traceClient.request as (args: {
+        method: string;
+        params: unknown[];
+      }) => Promise<unknown>;
+      const trace = (await request({
+        method: 'debug_traceTransaction',
+        params: [hash, { tracer: 'callTracer' }],
+      })) as CallTrace;
+      return slotsFromTrace(trace, itemCount);
     } catch (cause) {
       return err(mapBaseFailure(cause));
     }

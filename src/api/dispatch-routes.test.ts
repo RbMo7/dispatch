@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
+import type { BulkCallPlan, BulkCallRequest } from '../chain-handler/chain-handler.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
+import type { DispatchItem } from '../domain/call.js';
+import type { DispatchError } from '../domain/errors.js';
+import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
@@ -23,10 +27,13 @@ type RelayGetResponseBody = {
   error: unknown;
 };
 
-async function buildTestApp(options?: { defaultRetryPolicy?: boolean }) {
+async function buildTestApp(options?: {
+  defaultRetryPolicy?: boolean;
+  handler?: StubChainHandler;
+}) {
   const store = new InMemoryDispatchStore();
   const chainRegistry = await ChainRegistry.load(['base'], {
-    base: () => Promise.resolve(new StubChainHandler()),
+    base: () => Promise.resolve(options?.handler ?? new StubChainHandler()),
   });
   const app = buildApp({
     store,
@@ -335,7 +342,11 @@ describe('POST /v1/dispatch', () => {
 
     it('resubmitting the same Idempotency-Key returns the original RelayDispatch, not a new one', async () => {
       const { app } = await buildTestApp();
-      const payload = { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' };
+      const payload = {
+        chain: 'base',
+        mode: 'relay',
+        signedTransaction: 'externally-signed-bytes',
+      };
 
       const first = await app.inject({
         method: 'POST',
@@ -354,6 +365,89 @@ describe('POST /v1/dispatch', () => {
         first.json<PostResponseBody>().dispatchId,
       );
     });
+  });
+});
+
+/** A stub for a chain with Bulk Call (#11): funds the second item from the aggregator, rejects the aggregator "0xbad". */
+class BulkCapableStub extends StubChainHandler {
+  validateBulkCall(
+    request: BulkCallRequest,
+    items: DispatchItem[],
+  ): Promise<Result<BulkCallPlan, DispatchError>> {
+    if (request.aggregator === '0xbad') {
+      return Promise.resolve(err({ code: 'CHAIN_REJECTED', message: 'bad aggregator' }));
+    }
+    return Promise.resolve(
+      ok({
+        bulkCall: { aggregator: request.aggregator, maxBatchSize: request.maxBatchSize ?? 50 },
+        fundedBy: items.map((_, i) => (i === 1 ? request.aggregator : null)),
+      }),
+    );
+  }
+}
+
+describe('POST /v1/dispatch with bulkCall (#11)', () => {
+  const items = [
+    { type: 'call', to: '0xa', data: '0x', value: '1' },
+    { type: 'call', to: '0xb', data: '0x', value: '0' },
+  ];
+
+  async function post(app: Awaited<ReturnType<typeof buildTestApp>>['app'], payload: object) {
+    return app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': `bulk-${Math.random()}` },
+      payload,
+    });
+  }
+
+  it("persists the resolved bulkCall and each item's fundedBy from the Chain Handler's plan", async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xagg' } });
+
+    expect(response.statusCode).toBe(202);
+    const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
+    expect(dispatch?.bulkCall).toEqual({ aggregator: '0xagg', maxBatchSize: 50 });
+    expect(dispatch?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xagg']);
+  });
+
+  it('rejects bulkCall with 400 on a chain whose handler has no Bulk Call', async () => {
+    const { app } = await buildTestApp();
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xagg' } });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("answers the Chain Handler's own rejection with 400 and persists nothing", async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xbad' } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorResponseBody>().message).toBe('bad aggregator');
+    expect(await store.claimQueued(10)).toEqual([]);
+  });
+
+  it('rejects bulkCall on a relay dispatch with 400', async () => {
+    const { app } = await buildTestApp({ handler: new BulkCapableStub() });
+    const response = await post(app, {
+      chain: 'base',
+      mode: 'relay',
+      signedTransaction: 'stub-signed-transaction',
+      bulkCall: { aggregator: '0xagg' },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('rejects a malformed bulkCall shape with 400', async () => {
+    const { app } = await buildTestApp({ handler: new BulkCapableStub() });
+    for (const bulkCall of [
+      {},
+      { aggregator: '' },
+      { aggregator: '0xagg', maxBatchSize: 0 },
+      { aggregator: '0xagg', maxBatchSize: 'many' },
+    ]) {
+      const response = await post(app, { chain: 'base', items, bulkCall });
+      expect(response.statusCode).toBe(400);
+    }
   });
 });
 

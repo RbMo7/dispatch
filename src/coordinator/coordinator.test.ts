@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   Balance,
   BroadcastResult,
+  BundleSlotStatus,
   ChainHandler,
   ChainStatus,
   PreparedTransaction,
@@ -953,6 +954,138 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
       ['hash-1', 'CONFIRMED'],
       ['hash-2', 'DROPPED'],
     ]);
+  });
+});
+
+/** A FakeChainHandler for a chain with Bulk Call (#11): per-slot outcomes from getBundleStatus. */
+class BulkFakeChainHandler extends FakeChainHandler {
+  getBundleStatus = vi.fn((_hash: string): Promise<Result<BundleSlotStatus[], DispatchError>> =>
+    Promise.resolve(ok([])),
+  );
+}
+
+describe('Coordinator Bulk Call (#11, ADR-0038)', () => {
+  function setupBulk() {
+    const store = new InMemoryDispatchStore();
+    const handler = new BulkFakeChainHandler('base');
+    const coordinator = new Coordinator({
+      store,
+      chainHandlers: new Map([['base', handler]]),
+      senderAddresses: new Map([['base', 'sender-address']]),
+      abandonmentTimeoutMs: new Map([['base', ABANDON_AFTER_MS]]),
+      sleep: () => Promise.resolve(),
+    });
+    return { store, handler, coordinator };
+  }
+  const bulkCall = { aggregator: '0xaggregator', maxBatchSize: 50 };
+
+  it('prepares a Bulk Dispatch on its own with its bulkCall, apart from default-mode Dispatches in the same claim', async () => {
+    const { store, handler, coordinator } = setupBulk();
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'plain',
+      items: [evmItem],
+      retryPolicy: false,
+    });
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'bulk',
+      items: [evmItem, evmItem],
+      retryPolicy: false,
+      bulkCall,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.prepare).toHaveBeenCalledTimes(2);
+    expect(handler.prepare).toHaveBeenCalledWith([evmCall], 'sender-address');
+    expect(handler.prepare).toHaveBeenCalledWith([evmCall, evmCall], 'sender-address', {
+      bulkCall,
+    });
+  });
+
+  it("checks an item funded by the aggregator against the aggregator's balance, not the Sender's", async () => {
+    const { store, handler, coordinator } = setupBulk();
+    handler.getBalance.mockImplementation((address, asset) =>
+      Promise.resolve(ok({ asset, amount: address === '0xaggregator' ? '5' : '1000' })),
+    );
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'bulk-funding',
+      items: [
+        {
+          call: evmCall,
+          payment: { recipient: '0xr', asset: 'USDC', amount: '10' },
+          fundedBy: '0xaggregator',
+        },
+      ],
+      retryPolicy: false,
+      bulkCall,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.getBalance).toHaveBeenCalledWith('0xaggregator', 'USDC');
+    const [transaction] = await store.listTransactions(dispatch.id);
+    expect(transaction?.error).toMatchObject({
+      code: 'INSUFFICIENT_FUNDS',
+      chainDetail: { asset: 'USDC', short: '5', fundedBy: '0xaggregator' },
+    });
+  });
+
+  async function bundledPair(store: InMemoryDispatchStore) {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: `bundle-${Math.random()}`,
+      items: [evmItem, evmItem],
+      retryPolicy: false,
+      bulkCall,
+    });
+    const rows = [];
+    for (const callIndex of [0, 1]) {
+      rows.push(
+        await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: 'base',
+          signedBytes: 'bundle-bytes',
+          hash: 'bundle-hash',
+        }),
+      );
+    }
+    return rows;
+  }
+
+  it('settles each bundled member from its own slot, so one failed item leaves its batch-mates confirmed', async () => {
+    const { store, handler, coordinator } = setupBulk();
+    const [first, second] = await bundledPair(store);
+    handler.getBundleStatus.mockResolvedValue(
+      ok([{ status: 'CONFIRMED' }, { status: 'FAILED', detail: { revert: '0x08c379a0' } }]),
+    );
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(first!.id)?.status).toBe('CONFIRMED');
+    const failed = store.getTransaction(second!.id);
+    expect(failed?.status).toBe('FAILED');
+    expect(failed?.error?.chainDetail).toMatchObject({ slot: 1, revert: '0x08c379a0' });
+    expect(handler.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("leaves bundled members PENDING while the bundle is unresolved or its status can't be read", async () => {
+    const { store, handler, coordinator } = setupBulk();
+    const [first, second] = await bundledPair(store);
+    handler.getBundleStatus.mockResolvedValueOnce(
+      ok([{ status: 'PENDING' }, { status: 'PENDING' }]),
+    );
+    handler.getBundleStatus.mockResolvedValueOnce(
+      err({ code: 'RPC_UNAVAILABLE', message: 'trace rpc down' }),
+    );
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(first!.id)?.status).toBe('PENDING');
+    expect(store.getTransaction(second!.id)?.status).toBe('PENDING');
   });
 });
 

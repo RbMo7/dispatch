@@ -1,0 +1,1 @@
+ALTER TABLE "dispatches" ADD COLUMN "bulk_call" jsonb;

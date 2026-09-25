@@ -57,6 +57,29 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
 
+## Bulk Call (`bulkCall`, Base)
+
+A Managed Dispatch on Base can opt into Bulk Call (ADR-0006, ADR-0038). Its items are then sent as `aggregate3Value` transactions through an aggregator contract **you** name. The engine never deploys or owns one.
+
+```json
+{
+  "chain": "base",
+  "bulkCall": { "aggregator": "0x…", "maxBatchSize": 50 },
+  "items": [ … ]
+}
+```
+
+- **`maxBatchSize`** is optional. It defaults to, and can't exceed, the operator's `BASE_BULK_CALL_MAX_BATCH_SIZE`. A request with more items is split into several transactions, never truncated.
+- **Items are independent.** Every item is sent with `allowFailure: true`, so one failing item is reported `failed` on its own while its batch-mates confirm. The response shape is unchanged.
+- **ERC-20 items spend the aggregator's own token balance.** Inside `aggregate3Value`, the calls come *from the aggregator*, so fund your aggregator with the tokens. Native ETH items are paid by the Sender, which sends the total along with the call. The Funding Check checks each against its real payer.
+- **Returns `400`:**
+  - `mode: "relay"`;
+  - a chain without Bulk Call;
+  - a malformed aggregator;
+  - an out-of-range `maxBatchSize`;
+  - no tracing RPC configured (`BASE_TRACE_RPC_URL`), because per-item outcomes are only visible in a trace;
+  - **any ERC-20 item with the canonical Multicall3 (`0xcA11bde05977b3631167028862bE2a173976CA11`) as aggregator.** It's permissionless, so any balance or approval it holds can be taken by anyone.
+
 ## Relay Dispatch (`mode: "relay"`)
 
 `.scratch/relay-dispatch/spec.md` and ADR-0031 record the design; this pins the shipped wire shape.

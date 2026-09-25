@@ -152,10 +152,10 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
   });
 
   it('rejects a high-s (EIP-2 malleable) signature the node would refuse, even though it recovers', async () => {
-    const hex = `0x${Buffer.from(await externallySigned(), 'base64').toString('hex')}` as Hex;
+    const hex: Hex = `0x${Buffer.from(await externallySigned(), 'base64').toString('hex')}`;
     const tx = parseTransaction(hex);
     const n = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-    const highS = serializeTransaction(tx as TransactionSerializable, {
+    const highS = serializeTransaction(tx, {
       r: tx.r!,
       s: `0x${(n - BigInt(tx.s!)).toString(16).padStart(64, '0')}`,
       yParity: tx.yParity === 0 ? 1 : 0,

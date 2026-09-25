@@ -59,6 +59,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       nonceHistoryStore: new PostgresNonceHistoryStore(db),
       feeBumpPercent: config.base.feeBumpPercent,
       bulkCallMaxBatchSize: config.base.bulkCallMaxBatchSize,
+      ...(config.base.traceRpcUrl ? { traceRpcUrl: config.base.traceRpcUrl } : {}),
       // issue 15: every RPC call this client makes is aborted, not just
       // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),

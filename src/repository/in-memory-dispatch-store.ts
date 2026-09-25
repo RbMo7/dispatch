@@ -45,6 +45,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       items: input.items,
       status: 'queued',
       retryPolicy: input.retryPolicy,
+      bulkCall: input.bulkCall ?? null,
     };
     this.dispatches.set(dispatch.id, dispatch);
 

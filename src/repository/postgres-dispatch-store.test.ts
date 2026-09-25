@@ -354,6 +354,36 @@ describe('PostgresDispatchStore (real Postgres)', () => {
     });
   });
 
+  describe('bulkCall (#11)', () => {
+    it('round-trips a Dispatch\'s bulkCall and each item\'s fundedBy', async () => {
+      const created = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID(),
+        items: [
+          { call: { to: '0xabc', data: '0x', value: '1' }, payment: null },
+          { call: { to: '0xtoken', data: '0xa9059cbb', value: '0' }, payment: null, fundedBy: '0xaggregator' },
+        ],
+        retryPolicy: false,
+        bulkCall: { aggregator: '0xaggregator', maxBatchSize: 2 },
+      });
+
+      const read = await store.getDispatch(created.id);
+
+      expect(read?.bulkCall).toEqual({ aggregator: '0xaggregator', maxBatchSize: 2 });
+      expect(read?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xaggregator']);
+    });
+
+    it('defaults bulkCall to null', async () => {
+      const created = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID() + '-plain',
+        items: [{ call: { to: '0xabc', data: '0x', value: '1' }, payment: null }],
+        retryPolicy: false,
+      });
+      expect((await store.getDispatch(created.id))?.bulkCall).toBeNull();
+    });
+  });
+
   describe('listPendingTransactions', () => {
     it('rotates through every pending row, so long-pending rows never starve newer ones (#21)', async () => {
       const dispatch = await store.createDispatch({

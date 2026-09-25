@@ -33,6 +33,9 @@ const handler = await BaseChainHandler.create({
   senderAddress: sender.address,
   signerClient: new SignerClient(signer.url),
   nonceHistoryStore: new InMemoryNonceHistoryStore(),
+  // Enables Bulk Call so its conformance case runs here too; a
+  // never-broadcast hash is answered before any trace is attempted.
+  traceRpcUrl: BASE_SEPOLIA_RPC_URL,
 });
 
 /** Signed outside the engine (Relay Dispatch's shape), never broadcast. */

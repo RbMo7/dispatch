@@ -71,6 +71,13 @@
       "when": 1790351995502,
       "tag": "0009_wakeful_annihilus",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790357679652,
+      "tag": "0010_yellow_nekra",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 
 import type {
+  BundleSlotStatus,
   ChainHandler,
   PreparedTransaction,
   UnsignedTransaction,
@@ -10,6 +11,7 @@ import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
@@ -44,6 +46,8 @@ type CallRef = { dispatch: Dispatch; callIndex: number };
 
 type FundingRequirement = {
   chain: Chain;
+  /** Who holds the funds, when not the Sender (#11). */
+  fundedBy: string | null;
   asset: string;
   required: bigint;
   items: CallRef[];
@@ -109,6 +113,8 @@ export class Coordinator {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
+  /** #11: one bundle trace per hash per poll tick — cleared at the start of every tick. */
+  private bundleStatusCache = new Map<string, Promise<Result<BundleSlotStatus[], DispatchError>>>();
 
   constructor(deps: CoordinatorDeps) {
     this.store = deps.store;
@@ -208,10 +214,30 @@ export class Coordinator {
     }
     if (valid.length === 0) return;
 
-    const prepareResult = await handler.prepare(
-      valid.map((v) => v.call),
-      senderAddress,
-    );
+    // #11 (ADR-0038): a Bulk Dispatch is prepared on its own, with its
+    // bulkCall — its chunks must never mix with other requests' items.
+    // Everything else is prepared together, as before.
+    const groups = new Map<string, (CallRef & { call: Call })[]>();
+    for (const v of valid) {
+      const key = v.dispatch.bulkCall ? v.dispatch.id : '';
+      groups.set(key, [...(groups.get(key) ?? []), v]);
+    }
+    for (const group of groups.values()) {
+      await this.prepareAndSend(handler, senderAddress, chain, group);
+    }
+  }
+
+  private async prepareAndSend(
+    handler: ChainHandler,
+    senderAddress: string,
+    chain: Chain,
+    valid: (CallRef & { call: Call })[],
+  ): Promise<void> {
+    const bulkCall = valid[0]?.dispatch.bulkCall;
+    const calls = valid.map((v) => v.call);
+    const prepareResult = bulkCall
+      ? await handler.prepare(calls, senderAddress, { bulkCall })
+      : await handler.prepare(calls, senderAddress);
     if (!prepareResult.ok) {
       this.logger.warn(
         { chain, count: valid.length, error: prepareResult.error },
@@ -329,8 +355,10 @@ export class Coordinator {
       dispatch.items.forEach((item, callIndex) => {
         if (!item.payment) return;
         const { asset, amount } = item.payment;
+        // #11: a Bulk Call ERC-20 item spends its aggregator's balance, not the Sender's.
+        const fundedBy = item.fundedBy ?? null;
         // A control character, not a real asset symbol, so an asset name can never collide with the delimiter.
-        const key = `${dispatch.chain}\u0000${asset}`;
+        const key = `${dispatch.chain}\u0000${fundedBy ?? ''}\u0000${asset}`;
         const existing = requirements.get(key);
         if (existing) {
           existing.required += BigInt(amount);
@@ -338,6 +366,7 @@ export class Coordinator {
         } else {
           requirements.set(key, {
             chain: dispatch.chain,
+            fundedBy,
             asset,
             required: BigInt(amount),
             items: [{ dispatch, callIndex }],
@@ -346,11 +375,11 @@ export class Coordinator {
       });
     }
 
-    for (const { chain, asset, required, items } of requirements.values()) {
+    for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
 
-      const balanceResult = await handler.getBalance(senderAddress, asset);
+      const balanceResult = await handler.getBalance(fundedBy ?? senderAddress, asset);
       if (!balanceResult.ok) {
         this.logger.warn(
           { chain, asset, error: balanceResult.error },
@@ -372,7 +401,7 @@ export class Coordinator {
           {
             code: 'INSUFFICIENT_FUNDS',
             message: `insufficient ${asset} balance`,
-            chainDetail: { asset, short },
+            chainDetail: fundedBy ? { asset, short, fundedBy } : { asset, short },
           },
           failedKeys,
         );
@@ -493,6 +522,7 @@ export class Coordinator {
    * it can still be bumped.
    */
   async pollPendingTransactions(limit: number): Promise<void> {
+    this.bundleStatusCache.clear();
     const pending = await this.store.listPendingTransactions(limit);
     this.logger.debug({ count: pending.length, limit }, 'polling pending transactions');
 
@@ -521,6 +551,7 @@ export class Coordinator {
    */
   async rewatchAbandonedTransactions(limit: number): Promise<void> {
     const notAbandonedBefore = new Date(this.now().getTime() - this.abandonedRewatchWindowMs);
+    this.bundleStatusCache.clear();
     const abandoned = await this.store.listAbandonedTransactions(limit, notAbandonedBefore);
     this.logger.debug({ count: abandoned.length, limit }, 'rewatching abandoned transactions');
 
@@ -796,7 +827,22 @@ export class Coordinator {
     }
 
     const handler = this.requireChainHandler(transaction.chain);
-    const statusResult = await handler.getStatus(transaction.hash);
+    const bundled = await this.bundleSlotStatus(handler, transaction, transaction.hash);
+    if (bundled?.ok && bundled.value.slotStatus.status === 'FAILED') {
+      const { slot, slotStatus } = bundled.value;
+      log.info({ settledHash: transaction.hash, slot }, 'bundled item failed');
+      await this.store.markFailed(transaction.id, {
+        code: 'CHAIN_REJECTED',
+        message: `${transaction.chain} reported bundled item ${slot} as failed`,
+        chainDetail: { slot, ...(slotStatus.detail as object | undefined) },
+      });
+      return true;
+    }
+    const statusResult = bundled
+      ? bundled.ok
+        ? ok(bundled.value.slotStatus.status)
+        : bundled
+      : await handler.getStatus(transaction.hash);
 
     if (statusResult.ok && statusResult.value === 'CONFIRMED') {
       log.info({ settledHash: transaction.hash }, 'transaction confirmed');
@@ -819,6 +865,45 @@ export class Coordinator {
       log.debug('transaction still pending on-chain');
     }
     return false;
+  }
+
+  /**
+   * #11 (ADR-0038): a Bulk Dispatch member's own outcome — its slot in the
+   * bundle is its rank by callIndex among the rows sharing the chunk's hash
+   * (chunks never span Dispatches, and prepare keeps order). Undefined for
+   * anything that isn't a bundled member. Traces are cached for the poll
+   * tick: every member of a chunk asks about the same hash.
+   */
+  private async bundleSlotStatus(
+    handler: ChainHandler,
+    transaction: Transaction,
+    hash: string,
+  ): Promise<Result<{ slot: number; slotStatus: BundleSlotStatus }, DispatchError> | undefined> {
+    if (!handler.getBundleStatus) return undefined;
+    const dispatch = await this.store.getDispatch(transaction.dispatchId);
+    if (!dispatch?.bulkCall) return undefined;
+
+    const members = (await this.store.listTransactionsByHash(hash))
+      .filter((t) => t.dispatchId === transaction.dispatchId)
+      .sort((a, b) => a.callIndex - b.callIndex);
+    const slot = members.findIndex((t) => t.callIndex === transaction.callIndex);
+
+    let pending = this.bundleStatusCache.get(hash);
+    if (!pending) {
+      pending = handler.getBundleStatus(hash);
+      this.bundleStatusCache.set(hash, pending);
+    }
+    const result = await pending;
+    if (!result.ok) return result;
+    const slotStatus = result.value[slot];
+    if (!slotStatus) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `bundle ${hash} has no slot ${slot}`,
+        chainDetail: { slots: result.value.length },
+      });
+    }
+    return ok({ slot, slotStatus });
   }
 
   /**

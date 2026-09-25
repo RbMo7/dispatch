@@ -27,6 +27,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     items: row.items,
     status: row.status as DispatchStatus,
     retryPolicy: row.retryPolicy,
+    bulkCall: row.bulkCall ?? null,
   };
 }
 
@@ -76,6 +77,7 @@ export class PostgresDispatchStore implements DispatchStore {
         idempotencyKey: input.idempotencyKey,
         items: input.items,
         retryPolicy: input.retryPolicy,
+        bulkCall: input.bulkCall ?? null,
       })
       .onConflictDoNothing({ target: dispatches.idempotencyKey })
       .returning();
