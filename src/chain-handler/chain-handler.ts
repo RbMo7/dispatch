@@ -163,7 +163,8 @@ export interface ChainHandler<C extends Chain = Chain> {
   /**
    * #11 (ADR-0038), optional: each bundled item's own outcome, in slot
    * order, for a transaction `prepare` built with a `bulkCall`. PENDING for
-   * every slot until the transaction itself resolves.
+   * every slot until the transaction itself resolves — or an empty array
+   * while the chain doesn't know the transaction at all yet.
    */
   getBundleStatus?(hash: string): Promise<Result<BundleSlotStatus[], DispatchError>>;
 

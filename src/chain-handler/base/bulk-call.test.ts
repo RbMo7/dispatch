@@ -1,4 +1,4 @@
-import { decodeFunctionData } from 'viem';
+import { decodeFunctionData, encodeFunctionResult } from 'viem';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,7 +6,6 @@ import {
   chunk,
   encodeAggregate3Value,
   slotsFromTrace,
-  type CallTrace,
 } from './bulk-call.js';
 
 const target = '0x000000000000000000000000000000000000dEaD';
@@ -35,16 +34,25 @@ describe('chunk (#11)', () => {
   });
 });
 
-describe('slotsFromTrace (#11)', () => {
-  const call = (error?: string): CallTrace => ({
-    type: 'CALL',
-    to: target,
-    ...(error ? { error, output: '0x08c379a0' } : {}),
-  });
+describe('slotsFromTrace (#11, review: decode the Result[] output, not sub-call frames)', () => {
+  const output = (results: { success: boolean; returnData: `0x${string}` }[]) =>
+    encodeFunctionResult({
+      abi: AGGREGATE3_VALUE_ABI,
+      functionName: 'aggregate3Value',
+      result: results,
+    });
 
-  it("reads each slot's own outcome from the aggregator's direct sub-calls", () => {
+  it("reads each slot's own outcome from the aggregator's Result[] return data", () => {
     const slots = slotsFromTrace(
-      { type: 'CALL', to: target, calls: [call(), call('execution reverted'), call()] },
+      {
+        type: 'CALL',
+        to: target,
+        output: output([
+          { success: true, returnData: '0x' },
+          { success: false, returnData: '0x08c379a0' },
+          { success: true, returnData: '0x01' },
+        ]),
+      },
       3,
     );
 
@@ -52,24 +60,41 @@ describe('slotsFromTrace (#11)', () => {
       ok: true,
       value: [
         { status: 'CONFIRMED' },
-        { status: 'FAILED', detail: { error: 'execution reverted', revert: '0x08c379a0' } },
+        { status: 'FAILED', detail: { revert: '0x08c379a0' } },
         { status: 'CONFIRMED' },
       ],
     });
   });
 
-  it('fails every slot when the aggregator call itself reverted', () => {
+  it('is unaffected by extra or proxied frames under the aggregator (e.g. a DELEGATECALL to an implementation)', () => {
     const slots = slotsFromTrace(
-      { type: 'CALL', to: target, error: 'execution reverted', calls: [call()] },
-      2,
+      {
+        type: 'CALL',
+        to: target,
+        output: output([{ success: true, returnData: '0x' }]),
+        calls: [
+          { type: 'DELEGATECALL', to: target, calls: [{ type: 'STATICCALL' }, { type: 'CALL' }] },
+        ],
+      },
+      1,
     );
+
+    expect(slots.ok && slots.value).toEqual([{ status: 'CONFIRMED' }]);
+  });
+
+  it('fails every slot when the aggregator call itself reverted', () => {
+    const slots = slotsFromTrace({ type: 'CALL', to: target, error: 'execution reverted' }, 2);
 
     expect(slots.ok && slots.value.map((s) => s.status)).toEqual(['FAILED', 'FAILED']);
   });
 
-  it('answers a structured error when the trace has a different number of sub-calls than the bundle has items', () => {
-    const slots = slotsFromTrace({ type: 'CALL', to: target, calls: [call()] }, 2);
-
-    expect(slots.ok).toBe(false);
+  it('answers a structured error for output that is not a Result[] of the expected length', () => {
+    expect(slotsFromTrace({ type: 'CALL', to: target, output: '0x' }, 1).ok).toBe(false);
+    expect(
+      slotsFromTrace(
+        { type: 'CALL', to: target, output: output([{ success: true, returnData: '0x' }]) },
+        2,
+      ).ok,
+    ).toBe(false);
   });
 });

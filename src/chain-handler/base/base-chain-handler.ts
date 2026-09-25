@@ -1,7 +1,9 @@
 import {
+  TransactionNotFoundError,
   TransactionReceiptNotFoundError,
   createPublicClient,
   decodeFunctionData,
+  getAddress,
   http,
   isAddress,
   keccak256,
@@ -525,44 +527,53 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    * refused outright for the canonical, permissionless Multicall3, where no
    * balance or approval of the caller's could ever be safe.
    */
-  validateBulkCall(
+  async validateBulkCall(
     request: BulkCallRequest,
     items: DispatchItem<'base'>[],
   ): Promise<Result<BulkCallPlan, DispatchError>> {
     if (!this.traceClient) {
-      return Promise.resolve(
-        err({
-          code: 'CHAIN_REJECTED',
-          message: 'Bulk Call needs a tracing RPC (BASE_TRACE_RPC_URL) to read per-item outcomes',
-        }),
-      );
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'Bulk Call needs a tracing RPC (BASE_TRACE_RPC_URL) to read per-item outcomes',
+      });
     }
-    const aggregator = requireAddressResult(request.aggregator);
-    if (!aggregator.ok) return Promise.resolve(aggregator);
+    const checked = requireAddressResult(request.aggregator);
+    if (!checked.ok) return checked;
+    // Checksummed, so the same aggregator in any letter case is one payer to the Funding Check.
+    const aggregator = getAddress(checked.value);
+    // An EOA "aggregator" would take the whole native total and run nothing.
+    try {
+      const code = await this.client.getCode({ address: aggregator });
+      if (!code || code === '0x') {
+        return err({
+          code: 'INVALID_RECIPIENT',
+          message: `aggregator ${aggregator} has no contract code on this network`,
+          chainDetail: { aggregator: aggregator },
+        });
+      }
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
     const maxBatchSize = request.maxBatchSize ?? this.bulkCallMaxBatchSize;
     if (!Number.isInteger(maxBatchSize) || maxBatchSize < 1 || maxBatchSize > this.bulkCallMaxBatchSize) {
-      return Promise.resolve(
-        err({
-          code: 'CHAIN_REJECTED',
-          message: `maxBatchSize must be 1..${this.bulkCallMaxBatchSize}`,
-          chainDetail: { maxBatchSize },
-        }),
-      );
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `maxBatchSize must be 1..${this.bulkCallMaxBatchSize}`,
+        chainDetail: { maxBatchSize },
+      });
     }
     const fundedBy = items.map((item) =>
-      item.payment && item.payment.asset !== NATIVE_ASSET_SYMBOL ? aggregator.value : null,
+      item.payment && item.payment.asset !== NATIVE_ASSET_SYMBOL ? aggregator : null,
     );
-    if (isSameAddress(aggregator.value, CANONICAL_MULTICALL3) && fundedBy.some((f) => f !== null)) {
-      return Promise.resolve(
-        err({
-          code: 'CHAIN_REJECTED',
-          message:
-            'ERC-20 items cannot go through the canonical Multicall3: it is permissionless, so any token balance or approval it holds can be taken by anyone — name your own aggregator',
-          chainDetail: { aggregator: aggregator.value },
-        }),
-      );
+    if (isSameAddress(aggregator, CANONICAL_MULTICALL3) && fundedBy.some((f) => f !== null)) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message:
+          'ERC-20 items cannot go through the canonical Multicall3: it is permissionless, so any token balance or approval it holds can be taken by anyone — name your own aggregator',
+        chainDetail: { aggregator: aggregator },
+      });
     }
-    return Promise.resolve(ok({ bulkCall: { aggregator: aggregator.value, maxBatchSize }, fundedBy }));
+    return ok({ bulkCall: { aggregator: aggregator, maxBatchSize }, fundedBy });
   }
 
   /**
@@ -624,13 +635,23 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     traceClient: PublicClient,
     hash: string,
   ): Promise<Result<BundleSlotStatus[], DispatchError>> {
+    const status = await this.getStatus(hash);
+    if (!status.ok) return status;
     try {
-      const tx = await this.client.getTransaction({ hash: hash as `0x${string}` });
-      const { args } = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data: tx.input });
-      const itemCount = args[0].length;
-      const status = await this.getStatus(hash);
-      if (!status.ok) return status;
-      if (status.value === 'PENDING') return ok(Array.from({ length: itemCount }, () => ({ status: 'PENDING' as const })));
+      let input: `0x${string}`;
+      try {
+        input = (await this.client.getTransaction({ hash: hash as `0x${string}` })).input;
+      } catch (cause) {
+        // Not known to this node yet (just sent, or a fee-bump version that
+        // never landed): nothing to report — every slot is still pending.
+        if (cause instanceof TransactionNotFoundError && status.value === 'PENDING') return ok([]);
+        throw cause;
+      }
+      const itemCount = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data: input }).args[0].length;
+      const every = (slot: BundleSlotStatus) => Array.from({ length: itemCount }, () => slot);
+      if (status.value === 'PENDING') return ok(every({ status: 'PENDING' }));
+      // A reverted bundle fails every slot — the receipt alone proves it, no trace needed.
+      if (status.value === 'FAILED') return ok(every({ status: 'FAILED', detail: { error: 'bundle reverted' } }));
       // debug_* isn't in viem's typed method list, hence the untyped request.
       const request = traceClient.request as (args: {
         method: string;
@@ -645,6 +666,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return err(mapBaseFailure(cause));
     }
   }
+
 
   /**
    * #13 (ADR-0032): RPC-free proof that a Relay Dispatch submission really

@@ -88,6 +88,34 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
     expect(response.json<{ message?: string }>().message).toMatch(/canonical Multicall3/);
   }, 60_000);
 
+  it('refuses an aggregator with no contract code (an EOA would just take the native total) with 400', async () => {
+    const handler = await BaseChainHandler.create({
+      rpcUrl: BASE_SEPOLIA_RPC_URL,
+      chainId: BASE_SEPOLIA_CHAIN_ID,
+      senderAddress: sender.address,
+      nonceHistoryStore: new InMemoryNonceHistoryStore(),
+      traceRpcUrl: BASE_SEPOLIA_RPC_URL, // only enables Bulk Call for this check
+    });
+    const { app } = await appWith(handler);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        'idempotency-key': `bulk-eoa-${Date.now()}`,
+      },
+      payload: {
+        chain: 'base',
+        bulkCall: { aggregator: privateKeyToAddress(generatePrivateKey()) },
+        items: [{ type: 'payment', recipient: sender.address, asset: 'ETH', amount: '1' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ code?: string }>().code).toBe('INVALID_RECIPIENT');
+  }, 60_000);
+
   describe('through a caller-owned aggregator', () => {
     let testSigner: TestSignerHandle;
     let releaseDevSenderLock: () => Promise<void>;

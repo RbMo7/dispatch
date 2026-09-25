@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Address, type Hex } from 'viem';
+import { decodeFunctionResult, encodeFunctionData, type Address, type Hex } from 'viem';
 
 import type { EvmCall } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
@@ -75,9 +75,11 @@ export type CallTrace = {
 };
 
 /**
- * Each slot's outcome from a mined bundle's trace. `aggregate3Value` makes
- * exactly one direct sub-call per item, in order, so the aggregator frame's
- * `calls[i]` is item i. A reverted aggregator frame fails every slot.
+ * Each slot's outcome from a mined bundle's trace: the aggregator frame's
+ * own return data, decoded as `aggregate3Value`'s `Result[]` — what the
+ * contract itself reports, so proxies or extra internal calls under the
+ * aggregator can't shift which slot is which. A reverted aggregator frame
+ * fails every slot.
  */
 export function slotsFromTrace(
   trace: CallTrace,
@@ -91,19 +93,33 @@ export function slotsFromTrace(
       })),
     );
   }
-  const subCalls = trace.calls ?? [];
-  if (subCalls.length !== itemCount) {
+  let results: readonly { success: boolean; returnData: Hex }[];
+  try {
+    results = decodeFunctionResult({
+      abi: AGGREGATE3_VALUE_ABI,
+      functionName: 'aggregate3Value',
+      data: (trace.output ?? '0x') as Hex,
+    });
+  } catch {
     return err({
       code: 'CHAIN_REJECTED',
-      message: `bundle trace has ${subCalls.length} sub-calls, expected ${itemCount} — not an aggregate3Value bundle?`,
-      chainDetail: { subCalls: subCalls.length, itemCount },
+      message:
+        'bundle return data is not an aggregate3Value Result[] — not a Multicall3-shaped aggregator?',
+      chainDetail: { output: trace.output },
+    });
+  }
+  if (results.length !== itemCount) {
+    return err({
+      code: 'CHAIN_REJECTED',
+      message: `bundle returned ${results.length} results, expected ${itemCount}`,
+      chainDetail: { results: results.length, itemCount },
     });
   }
   return ok(
-    subCalls.map((sub) =>
-      sub.error
-        ? { status: 'FAILED' as const, detail: { error: sub.error, revert: sub.output } }
-        : { status: 'CONFIRMED' as const },
+    results.map((r) =>
+      r.success
+        ? { status: 'CONFIRMED' as const }
+        : { status: 'FAILED' as const, detail: { revert: r.returnData } },
     ),
   );
 }

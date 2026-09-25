@@ -220,7 +220,9 @@ export class Coordinator {
     const groups = new Map<string, (CallRef & { call: Call })[]>();
     for (const v of valid) {
       const key = v.dispatch.bulkCall ? v.dispatch.id : '';
-      groups.set(key, [...(groups.get(key) ?? []), v]);
+      const group = groups.get(key);
+      if (group) group.push(v);
+      else groups.set(key, [v]);
     }
     for (const group of groups.values()) {
       await this.prepareAndSend(handler, senderAddress, chain, group);
@@ -895,6 +897,8 @@ export class Coordinator {
     }
     const result = await pending;
     if (!result.ok) return result;
+    // Empty: the chain doesn't know the transaction yet — still pending.
+    if (result.value.length === 0) return ok({ slot, slotStatus: { status: 'PENDING' } });
     const slotStatus = result.value[slot];
     if (!slotStatus) {
       return err({
