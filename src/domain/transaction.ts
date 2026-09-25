@@ -33,6 +33,14 @@ export type Transaction = {
   broadcastAt: Date | null;
   /** When this Transaction was marked ABANDONED — null unless status is (or once was) ABANDONED. What the low-frequency re-watch's bounded window (issue 10, ADR-0004) measures elapsed time against; a CONFIRMED/FAILED transaction that was previously re-watched keeps this set, a harmless historical fact once it's no longer ABANDONED. */
   abandonedAt: Date | null;
+  /**
+   * base-chain-handler issue 07: when this Transaction was last marked
+   * CONFIRMED — null unless status is (or once was) CONFIRMED. What the
+   * reorg safety net's bounded re-check window measures elapsed time
+   * against, mirroring `abandonedAt`'s own shape; cleared by `reopenTransaction`
+   * (a re-check that found the receipt gone), set again if it later re-confirms.
+   */
+  confirmedAt: Date | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */

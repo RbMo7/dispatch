@@ -42,6 +42,7 @@ function toTransaction(row: TransactionRow): Transaction {
     error: row.error ?? null,
     broadcastAt: row.broadcastAt,
     abandonedAt: row.abandonedAt,
+    confirmedAt: row.confirmedAt,
   };
 }
 
@@ -156,6 +157,21 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(toTransaction);
   }
 
+  async listRecentlyConfirmedTransactions(
+    limit: number,
+    notConfirmedBefore: Date,
+  ): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: and(
+        eq(transactions.status, 'CONFIRMED'),
+        gte(transactions.confirmedAt, notConfirmedBefore),
+      ),
+      orderBy: transactions.confirmedAt,
+      limit,
+    });
+    return rows.map(toTransaction);
+  }
+
   async createTransaction(input: NewTransactionInput): Promise<Transaction> {
     const [row] = await this.db
       .insert(transactions)
@@ -231,7 +247,14 @@ export class PostgresDispatchStore implements DispatchStore {
   async markConfirmed(transactionId: string): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'CONFIRMED' })
+      .set({ status: 'CONFIRMED', confirmedAt: new Date() })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async reopenTransaction(transactionId: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ status: 'PENDING', confirmedAt: null })
       .where(eq(transactions.id, transactionId));
   }
 

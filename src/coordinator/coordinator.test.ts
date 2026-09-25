@@ -78,6 +78,7 @@ class FakeChainHandler implements ChainHandler {
 }
 
 const ABANDON_AFTER_MS = 10 * 60 * 1000;
+const RECHECK_WINDOW_MS = 10 * 60 * 1000;
 
 function setup() {
   let currentTime = new Date('2024-01-01T00:00:00.000Z');
@@ -95,6 +96,29 @@ function setup() {
     abandonmentTimeoutMs: new Map([['solana', ABANDON_AFTER_MS]]),
     now: clock,
     sleep: () => Promise.resolve(), // no real backoff delay in tests (relay-dispatch issue 01's bounded retry)
+  });
+
+  return { store, handler, coordinator, advance };
+}
+
+/** Like setup(), but with the reorg safety net (issue 07) opted in for 'solana' — the Coordinator's own logic is chain-agnostic, so which chain name is used to exercise it doesn't matter. */
+function setupWithReorgRecheck() {
+  let currentTime = new Date('2024-01-01T00:00:00.000Z');
+  const clock = () => currentTime;
+  const advance = (ms: number) => {
+    currentTime = new Date(currentTime.getTime() + ms);
+  };
+
+  const store = new InMemoryDispatchStore(clock);
+  const handler = new FakeChainHandler('solana');
+  const coordinator = new Coordinator({
+    store,
+    chainHandlers: new Map([['solana', handler]]),
+    senderAddresses: new Map([['solana', 'sender-address']]),
+    abandonmentTimeoutMs: new Map([['solana', ABANDON_AFTER_MS]]),
+    reorgRecheckWindowMs: new Map([['solana', RECHECK_WINDOW_MS]]),
+    now: clock,
+    sleep: () => Promise.resolve(),
   });
 
   return { store, handler, coordinator, advance };
@@ -830,6 +854,161 @@ describe('Coordinator.rewatchAbandonedTransactions', () => {
 
     await coordinator.rewatchAbandonedTransactions(1);
 
+    expect(handler.getStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Coordinator.recheckRecentlyConfirmedTransactions (base-chain-handler issue 07)', () => {
+  async function createConfirmedTransaction(store: InMemoryDispatchStore): Promise<string> {
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: `key-${Math.random()}`,
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'signed-bytes',
+      hash: 'hash-1',
+    });
+    await store.markConfirmed(transaction.id);
+    return transaction.id;
+  }
+
+  it('does nothing when no chain has opted into reorgRecheckWindowMs', async () => {
+    const { store, handler, coordinator } = setup(); // plain setup(): no reorgRecheckWindowMs at all
+    const transactionId = await createConfirmedTransaction(store);
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect(handler.getStatus).not.toHaveBeenCalled();
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('leaves a Transaction CONFIRMED when the chain still reports it as CONFIRMED', async () => {
+    const { store, handler, coordinator } = setupWithReorgRecheck();
+    const transactionId = await createConfirmedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('CONFIRMED'));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('reopens a Transaction back to PENDING when the chain no longer finds its receipt (a reorg)', async () => {
+    const { store, handler, coordinator } = setupWithReorgRecheck();
+    const transactionId = await createConfirmedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('PENDING'));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    const transaction = store.getTransaction(transactionId);
+    expect(transaction?.status).toBe('PENDING');
+    expect(transaction?.confirmedAt).toBeNull();
+  });
+
+  it('marks a Transaction FAILED when the chain reports it failed on re-check', async () => {
+    const { store, handler, coordinator } = setupWithReorgRecheck();
+    const transactionId = await createConfirmedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('FAILED'));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    const transaction = store.getTransaction(transactionId);
+    expect(transaction?.status).toBe('FAILED');
+    expect(transaction?.error?.code).toBe('CHAIN_REJECTED');
+  });
+
+  it('leaves a Transaction CONFIRMED when the re-check status call itself fails', async () => {
+    const { store, handler, coordinator } = setupWithReorgRecheck();
+    const transactionId = await createConfirmedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('never re-checks a Transaction confirmed before the bounded re-check window', async () => {
+    const { store, handler, coordinator, advance } = setupWithReorgRecheck();
+    const transactionId = await createConfirmedTransaction(store);
+    advance(RECHECK_WINDOW_MS + 60_000); // past the configured window
+    handler.getStatus.mockResolvedValueOnce(ok('PENDING'));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect(handler.getStatus).not.toHaveBeenCalled();
+    expect(store.getTransaction(transactionId)?.status).toBe('CONFIRMED');
+  });
+
+  it('never touches a chain absent from reorgRecheckWindowMs, even with other chains configured', async () => {
+    const currentTime = new Date('2024-01-01T00:00:00.000Z');
+    const clock = () => currentTime;
+    const store = new InMemoryDispatchStore(clock);
+    const solanaHandler = new FakeChainHandler('solana');
+    const baseHandler = new FakeChainHandler('base');
+    const coordinator = new Coordinator({
+      store,
+      chainHandlers: new Map([
+        ['solana', solanaHandler],
+        ['base', baseHandler],
+      ]),
+      senderAddresses: new Map([
+        ['solana', 'sender-address'],
+        ['base', 'sender-address'],
+      ]),
+      abandonmentTimeoutMs: new Map([
+        ['solana', ABANDON_AFTER_MS],
+        ['base', ABANDON_AFTER_MS],
+      ]),
+      reorgRecheckWindowMs: new Map([['base', RECHECK_WINDOW_MS]]), // solana opts out
+      now: clock,
+    });
+
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'solana-not-opted-in',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'signed-bytes',
+      hash: 'hash-1',
+    });
+    await store.markConfirmed(transaction.id);
+
+    await coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect(solanaHandler.getStatus).not.toHaveBeenCalled();
+    expect(store.getTransaction(transaction.id)?.status).toBe('CONFIRMED');
+  });
+
+  it('never delays or gates the initial CONFIRMED report — markConfirmed happens directly in the main poll path, with no dependency on this method at all', async () => {
+    const { store, handler, coordinator } = setupWithReorgRecheck();
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'initial-confirm',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'signed-bytes',
+      hash: 'hash-1',
+    });
+    handler.getStatus.mockResolvedValueOnce(ok('CONFIRMED'));
+
+    // pollPendingTransactions (the main path) never calls recheckRecentlyConfirmedTransactions.
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transaction.id)?.status).toBe('CONFIRMED');
     expect(handler.getStatus).toHaveBeenCalledTimes(1);
   });
 });

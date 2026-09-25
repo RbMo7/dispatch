@@ -172,7 +172,32 @@ describe('InMemoryDispatchStore', () => {
 
       await store.markConfirmed(transaction.id);
 
-      expect(store.getTransaction(transaction.id)?.status).toBe('CONFIRMED');
+      const confirmed = store.getTransaction(transaction.id);
+      expect(confirmed?.status).toBe('CONFIRMED');
+      expect(confirmed?.confirmedAt).toBeInstanceOf(Date);
+    });
+
+    it('reopens a CONFIRMED Transaction back to PENDING, clearing confirmedAt (base-chain-handler issue 07)', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      const transaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-1',
+      });
+      await store.markConfirmed(transaction.id);
+
+      await store.reopenTransaction(transaction.id);
+
+      const reopened = store.getTransaction(transaction.id);
+      expect(reopened?.status).toBe('PENDING');
+      expect(reopened?.confirmedAt).toBeNull();
     });
 
     it('marks a Transaction failed with a structured error', async () => {
@@ -410,6 +435,89 @@ describe('InMemoryDispatchStore', () => {
       expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
 
       const limited = await clock.listAbandonedTransactions(1, new Date(0));
+      expect(limited.map((t) => t.id)).toEqual([first.id]);
+    });
+  });
+
+  describe('listRecentlyConfirmedTransactions (base-chain-handler issue 07)', () => {
+    it('returns only CONFIRMED transactions whose confirmedAt is no earlier than notConfirmedBefore', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const stillPending = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-pending',
+      });
+      const confirmedLongAgo = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-old',
+      });
+      await clock.markConfirmed(confirmedLongAgo.id);
+
+      currentTime = new Date('2024-01-02T00:00:00.000Z'); // 24h later
+      const confirmedRecently = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 2,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-recent',
+      });
+      await clock.markConfirmed(confirmedRecently.id);
+
+      const notConfirmedBefore = new Date(currentTime.getTime() - 60 * 60 * 1000);
+      const result = await clock.listRecentlyConfirmedTransactions(10, notConfirmedBefore);
+
+      expect(result.map((t) => t.id)).toEqual([confirmedRecently.id]);
+      expect(result.map((t) => t.id)).not.toContain(stillPending.id);
+      expect(result.map((t) => t.id)).not.toContain(confirmedLongAgo.id);
+    });
+
+    it('orders oldest-confirmed first and respects the limit', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+
+      const second = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-a',
+      });
+      currentTime = new Date('2024-01-01T01:00:00.000Z');
+      await clock.markConfirmed(second.id);
+
+      currentTime = new Date('2024-01-01T00:30:00.000Z'); // confirmed earlier than `second`, even though created after it
+      const first = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-b',
+      });
+      await clock.markConfirmed(first.id);
+
+      const all = await clock.listRecentlyConfirmedTransactions(10, new Date(0));
+      expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
+
+      const limited = await clock.listRecentlyConfirmedTransactions(1, new Date(0));
       expect(limited.map((t) => t.id)).toEqual([first.id]);
     });
   });

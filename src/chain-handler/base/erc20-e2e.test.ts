@@ -47,7 +47,7 @@ describe('BaseChainHandler ERC-20 token transfer (real Base Sepolia)', () => {
   let testSigner: TestSignerHandle;
   let handler: BaseChainHandler;
   let token: TestTokenInfo;
-  let releaseDevSenderLock: () => void;
+  let releaseDevSenderLock: () => Promise<void>;
 
   beforeAll(async () => {
     // See acquireDevSenderLock's doc comment: serializes every real-broadcast
@@ -69,7 +69,7 @@ describe('BaseChainHandler ERC-20 token transfer (real Base Sepolia)', () => {
 
   afterAll(async () => {
     await testSigner?.close();
-    releaseDevSenderLock?.();
+    await releaseDevSenderLock?.();
   });
 
   it('translates a known ERC-20 Payment and lands it on-chain, verified against the recipient token balance', async () => {

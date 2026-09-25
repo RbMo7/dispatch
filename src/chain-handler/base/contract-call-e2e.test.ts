@@ -48,7 +48,7 @@ describe('BaseChainHandler smart contract call submission (real Base Sepolia)', 
   let handler: BaseChainHandler;
   let token: TestTokenInfo;
   let client: PublicClient;
-  let releaseDevSenderLock: () => void;
+  let releaseDevSenderLock: () => Promise<void>;
 
   beforeAll(async () => {
     // See acquireDevSenderLock's doc comment: serializes every real-broadcast
@@ -70,7 +70,7 @@ describe('BaseChainHandler smart contract call submission (real Base Sepolia)', 
 
   afterAll(async () => {
     await testSigner?.close();
-    releaseDevSenderLock?.();
+    await releaseDevSenderLock?.();
   });
 
   it('broadcasts a raw increment() call, confirms, and its emitted event/state change is independently checked', async () => {

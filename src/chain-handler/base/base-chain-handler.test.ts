@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { InMemoryNonceHistoryStore } from '../../repository/in-memory-nonce-history-store.js';
 import { BaseChainHandler } from './base-chain-handler.js';
-import { BASE_SEPOLIA_CHAIN_ID, BASE_SEPOLIA_RPC_URL, getDevSenderAccount } from './test-support/base-fixtures.js';
+import {
+  BASE_SEPOLIA_CHAIN_ID,
+  BASE_SEPOLIA_RPC_URL,
+  acquireDevSenderLock,
+  getDevSenderAccount,
+} from './test-support/base-fixtures.js';
 
 /**
  * ADR-0013: exercised against real Base Sepolia RPC throughout, no fake
@@ -49,6 +54,19 @@ describe('BaseChainHandler.create (real Base Sepolia)', () => {
 });
 
 describe('BaseChainHandler nonce authority (real Base Sepolia)', () => {
+  // These tests assume the real chain's nonce stays put across two RPC
+  // reads within one test — an assumption only the dev-sender lock can
+  // actually guarantee, since other e2e files genuinely broadcast against
+  // this same account in parallel (see acquireDevSenderLock's own doc
+  // comment).
+  let releaseDevSenderLock: () => Promise<void>;
+  beforeAll(async () => {
+    releaseDevSenderLock = await acquireDevSenderLock();
+  }, 60_000);
+  afterAll(async () => {
+    await releaseDevSenderLock();
+  });
+
   it('initializes the next-nonce counter from eth_getTransactionCount on construction', async () => {
     const sender = getDevSenderAccount();
 

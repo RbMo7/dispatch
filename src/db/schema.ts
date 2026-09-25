@@ -51,6 +51,8 @@ export const transactions = pgTable('transactions', {
   broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
   /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
   abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+  /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
 });
 
 export const attempts = pgTable('attempts', {

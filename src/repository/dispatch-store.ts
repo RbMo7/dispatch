@@ -52,6 +52,8 @@ export interface DispatchStore {
   listPendingTransactions(limit: number): Promise<Transaction[]>;
   /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
   listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]>;
+  /** base-chain-handler issue 07: up to `limit` CONFIRMED Transactions whose `confirmedAt` is no earlier than `notConfirmedBefore`, oldest-confirmed first — the reorg safety net's own low-frequency re-watch work queue, mirroring listAbandonedTransactions's shape exactly. A Transaction confirmed before `notConfirmedBefore` (outside the bounded re-check window) is excluded — it's aged past the point this engine still bothers re-verifying it. */
+  listRecentlyConfirmedTransactions(limit: number, notConfirmedBefore: Date): Promise<Transaction[]>;
   /** Persists a Call's freshly-signed Transaction, once broadcast for the first time. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
@@ -61,6 +63,8 @@ export interface DispatchStore {
   markAbandoned(transactionId: string): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
   markConfirmed(transactionId: string): Promise<void>;
+  /** base-chain-handler issue 07: a re-check found the receipt gone — reopens a CONFIRMED Transaction back to PENDING (clearing confirmedAt) so it re-enters the normal poll/abandonment lifecycle, rather than being left silently wrong. */
+  reopenTransaction(transactionId: string): Promise<void>;
 
   /** Idempotent create (ADR-0021), mirroring createDispatch — a Relay Dispatch's own table (ADR-0031), never squeezed into `dispatches`. */
   createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;

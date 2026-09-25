@@ -72,6 +72,44 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchTransactionCount(address: string): Promise<number> {
+  const response = await fetch(BASE_SEPOLIA_RPC_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_getTransactionCount',
+      params: [address, 'latest'],
+    }),
+  });
+  const body = (await response.json()) as { result: string };
+  return Number.parseInt(body.result, 16);
+}
+
+/**
+ * Base Sepolia's public RPC is a multi-node gateway with no
+ * read-after-write guarantee across nodes: releasing the dev-sender lock
+ * right after a broadcast lets the *next* lock holder's
+ * `BaseChainHandler.create()` read a stale nonce from a lagging node,
+ * before it's seen this holder's own last broadcast — observed directly,
+ * causing a real "nonce too low" failure in the very next file. Waits for
+ * two identical back-to-back reads (a cheap, chain-agnostic proxy for "the
+ * gateway has converged") before actually releasing, rather than a single
+ * read, since a single stale read is exactly the failure mode this exists
+ * to prevent.
+ */
+async function waitForNonceConsistency(address: string): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let previous: number | undefined;
+  while (Date.now() < deadline) {
+    const current = await fetchTransactionCount(address);
+    if (previous !== undefined && current === previous) return;
+    previous = current;
+    await sleepMs(1_000);
+  }
+}
+
 /**
  * vitest runs separate test *files* in parallel workers by default — but
  * every base-chain-handler e2e test constructs its own `BaseChainHandler`
@@ -85,16 +123,19 @@ function sleepMs(ms: number): Promise<void> {
  * one real account. A plain exclusive-create file lock serializes any
  * such test across processes: `getDevSenderAccount`-using e2e test files
  * `await acquireDevSenderLock()` in `beforeAll` (before constructing a
- * BaseChainHandler) and call the returned release function in `afterAll`,
- * holding it for their whole file's real-broadcast lifetime.
+ * BaseChainHandler) and `await` the returned release function in
+ * `afterAll`, holding it for their whole file's real-broadcast lifetime.
  */
-export async function acquireDevSenderLock(): Promise<() => void> {
+export async function acquireDevSenderLock(): Promise<() => Promise<void>> {
   mkdirSync(FIXTURES_DIR, { recursive: true });
   const deadline = Date.now() + 60_000;
   for (;;) {
     try {
       closeSync(openSync(DEV_SENDER_LOCK_PATH, 'wx'));
-      return () => rmSync(DEV_SENDER_LOCK_PATH, { force: true });
+      return async () => {
+        await waitForNonceConsistency(getDevSenderAccount().address);
+        rmSync(DEV_SENDER_LOCK_PATH, { force: true });
+      };
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') throw cause;
       try {

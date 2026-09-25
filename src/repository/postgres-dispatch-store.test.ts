@@ -252,13 +252,69 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       await store.markAbandoned(abandoned.id);
 
       const rows = await store.listTransactions(dispatch.id);
-      expect(rows.find((r) => r.id === confirmed.id)?.status).toBe('CONFIRMED');
+      const confirmedRow = rows.find((r) => r.id === confirmed.id);
+      expect(confirmedRow?.status).toBe('CONFIRMED');
+      expect(confirmedRow?.confirmedAt).toBeInstanceOf(Date);
       const failedRow = rows.find((r) => r.id === failed.id);
       expect(failedRow?.status).toBe('FAILED');
       expect(failedRow?.error).toEqual({ code: 'CHAIN_REJECTED', message: 'reverted' });
       const abandonedRow = rows.find((r) => r.id === abandoned.id);
       expect(abandonedRow?.status).toBe('ABANDONED');
       expect(abandonedRow?.abandonedAt).toBeInstanceOf(Date);
+    });
+
+    it('reopenTransaction resets a CONFIRMED row back to PENDING, clearing confirmedAt (base-chain-handler issue 07)', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      const transaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'hash-reopen',
+      });
+      await store.markConfirmed(transaction.id);
+
+      await store.reopenTransaction(transaction.id);
+
+      const [row] = await store.listTransactions(dispatch.id);
+      expect(row?.status).toBe('PENDING');
+      expect(row?.confirmedAt).toBeNull();
+    });
+  });
+
+  describe('listRecentlyConfirmedTransactions', () => {
+    it('returns only CONFIRMED transactions whose confirmedAt is no earlier than notConfirmedBefore', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const pending = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'hash-pending',
+      });
+      const confirmed = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'hash-confirmed-recent',
+      });
+      await store.markConfirmed(confirmed.id);
+
+      const result = await store.listRecentlyConfirmedTransactions(10, new Date(0));
+
+      expect(result.map((t) => t.id)).toContain(confirmed.id);
+      expect(result.map((t) => t.id)).not.toContain(pending.id);
     });
   });
 });

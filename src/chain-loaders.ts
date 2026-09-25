@@ -2,6 +2,7 @@ import { Connection } from '@solana/web3.js';
 
 import {
   BASE_ABANDONMENT_TIMEOUT_MS,
+  BASE_REORG_RECHECK_WINDOW_MS,
   BaseChainHandler,
 } from './chain-handler/base/base-chain-handler.js';
 import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
@@ -73,6 +74,17 @@ const abandonmentTimeoutMsByChain: Partial<Record<Chain, number>> = {
   base: BASE_ABANDONMENT_TIMEOUT_MS,
 };
 
+/**
+ * issue 07: which chains opt into the reorg safety net's background
+ * re-check, and for how long — a chain simply absent here (e.g. 'solana',
+ * whose own commitment-level getStatus already covers this) is never
+ * re-checked at all, unlike `abandonmentTimeoutMsByChain` above, which
+ * every enabled chain must have an entry in.
+ */
+const reorgRecheckWindowMsByChain: Partial<Record<Chain, number>> = {
+  base: BASE_REORG_RECHECK_WINDOW_MS,
+};
+
 export async function loadChainRegistry(): Promise<ChainRegistry> {
   return ChainRegistry.load(parseEnabledChains(config.enabledChains), loaders);
 }
@@ -87,9 +99,11 @@ export async function loadChainRegistry(): Promise<ChainRegistry> {
 export function coordinatorConfigFor(registry: ChainRegistry): {
   senderAddresses: Map<Chain, string>;
   abandonmentTimeoutMs: Map<Chain, number>;
+  reorgRecheckWindowMs: Map<Chain, number>;
 } {
   const senderAddresses = new Map<Chain, string>();
   const abandonmentTimeoutMs = new Map<Chain, number>();
+  const reorgRecheckWindowMs = new Map<Chain, number>();
 
   for (const chain of registry.handlers.keys()) {
     const senderAddress = senderAddressByChain[chain];
@@ -101,7 +115,10 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
     }
     senderAddresses.set(chain, senderAddress);
     abandonmentTimeoutMs.set(chain, timeoutMs);
+
+    const recheckWindowMs = reorgRecheckWindowMsByChain[chain];
+    if (recheckWindowMs !== undefined) reorgRecheckWindowMs.set(chain, recheckWindowMs);
   }
 
-  return { senderAddresses, abandonmentTimeoutMs };
+  return { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs };
 }

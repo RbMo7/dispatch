@@ -89,6 +89,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       error: null,
       broadcastAt: this.now(),
       abandonedAt: null,
+      confirmedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -108,6 +109,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       error: input.error,
       broadcastAt: null,
       abandonedAt: null,
+      confirmedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -135,6 +137,19 @@ export class InMemoryDispatchStore implements DispatchStore {
       .slice(0, limit);
 
     return Promise.resolve(abandoned);
+  }
+
+  listRecentlyConfirmedTransactions(limit: number, notConfirmedBefore: Date): Promise<Transaction[]> {
+    const confirmed = [...this.transactions.values()]
+      .filter(
+        (transaction) =>
+          transaction.status === 'CONFIRMED' &&
+          (transaction.confirmedAt?.getTime() ?? 0) >= notConfirmedBefore.getTime(),
+      )
+      .sort((a, b) => (a.confirmedAt?.getTime() ?? 0) - (b.confirmedAt?.getTime() ?? 0))
+      .slice(0, limit);
+
+    return Promise.resolve(confirmed);
   }
 
   recordBroadcast(transactionId: string, hash: string): Promise<void> {
@@ -177,7 +192,18 @@ export class InMemoryDispatchStore implements DispatchStore {
   markConfirmed(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'CONFIRMED' });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'CONFIRMED',
+        confirmedAt: this.now(),
+      });
+    });
+  }
+
+  reopenTransaction(transactionId: string): Promise<void> {
+    return this.settle(() => {
+      const transaction = this.requireTransaction(transactionId);
+      this.transactions.set(transactionId, { ...transaction, status: 'PENDING', confirmedAt: null });
     });
   }
 

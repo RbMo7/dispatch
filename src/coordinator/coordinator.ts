@@ -59,6 +59,17 @@ export type CoordinatorDeps = {
   abandonmentTimeoutMs: Map<Chain, number>;
   /** issue 10: how long after being marked ABANDONED a Transaction is still eligible for the low-frequency re-watch (see rewatchAbandonedTransactions). Defaults to DEFAULT_ABANDONED_REWATCH_WINDOW_MS. */
   abandonedRewatchWindowMs?: number;
+  /**
+   * base-chain-handler issue 07: how long after being marked CONFIRMED a
+   * Transaction stays eligible for the reorg safety net's low-frequency
+   * re-check (see recheckRecentlyConfirmedTransactions) — a fixed,
+   * chain-agnostic proxy for "past the point a reorg is credible," rather
+   * than any chain-specific "safe head" concept the Coordinator would
+   * otherwise need to know about. A chain simply absent from this map
+   * (e.g. 'solana', whose own getStatus commitment levels already cover
+   * this) is never re-checked at all — defaults to an empty map.
+   */
+  reorgRecheckWindowMs?: Map<Chain, number>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -82,6 +93,7 @@ export class Coordinator {
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
+  private readonly reorgRecheckWindowMs: Map<Chain, number>;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
@@ -92,6 +104,7 @@ export class Coordinator {
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs = deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
+    this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
@@ -494,6 +507,82 @@ export class Coordinator {
     for (const transaction of abandoned) {
       await this.resolveAbandonedTransaction(transaction);
     }
+  }
+
+  /**
+   * base-chain-handler issue 07: a pure background safety net for a chain
+   * (today, only 'base') whose `getStatus` reports CONFIRMED before real
+   * finality, trading speed for a small reorg window — never gates or
+   * delays the initial CONFIRMED report itself (a wholly separate method,
+   * never called from processChainBatch/resolvePendingTransaction). Chains
+   * absent from `reorgRecheckWindowMs` (e.g. 'solana', whose own commitment
+   * levels already cover this) are never touched by this loop at all. A
+   * Transaction whose `confirmedAt` has aged past its own chain's window is
+   * silently excluded from `listRecentlyConfirmedTransactions` below and
+   * never looked at again — same "stopped watching, finally meaning it"
+   * discipline as `rewatchAbandonedTransactions`.
+   */
+  async recheckRecentlyConfirmedTransactions(limit: number): Promise<void> {
+    if (this.reorgRecheckWindowMs.size === 0) return;
+
+    const maxWindowMs = Math.max(...this.reorgRecheckWindowMs.values());
+    const notConfirmedBefore = new Date(this.now().getTime() - maxWindowMs);
+    const confirmed = await this.store.listRecentlyConfirmedTransactions(limit, notConfirmedBefore);
+    this.logger.debug({ count: confirmed.length, limit }, 'rechecking recently confirmed transactions');
+
+    for (const transaction of confirmed) {
+      const windowMs = this.reorgRecheckWindowMs.get(transaction.chain);
+      if (windowMs === undefined) continue; // this chain never opted into reorg re-checking
+
+      const elapsedMs = this.now().getTime() - (transaction.confirmedAt?.getTime() ?? 0);
+      if (elapsedMs > windowMs) continue; // aged out of this chain's own window
+
+      await this.recheckConfirmedTransaction(transaction);
+    }
+  }
+
+  /**
+   * Re-asks `getStatus` for a hash already persisted as CONFIRMED — the
+   * exact same call `tryResolveByStatus` makes for a PENDING one, just
+   * aimed at a different starting state. Still CONFIRMED: nothing to do,
+   * it'll simply age out of the window above eventually. Now FAILED: a
+   * genuine, if rare, possibility after a reorg re-orders execution: marks
+   * it failed for real. No longer found at all (`getStatus` reports
+   * PENDING again): the receipt is gone — reopens it back to PENDING so it
+   * re-enters the normal poll/abandonment lifecycle rather than being left
+   * silently, permanently wrong. A `getStatus` failure (e.g. RPC hiccup)
+   * is not evidence of a reorg and leaves the Transaction untouched — the
+   * next cadence tries again.
+   */
+  private async recheckConfirmedTransaction(transaction: Transaction): Promise<void> {
+    if (!transaction.hash) {
+      throw new Error(`Transaction ${transaction.id} is CONFIRMED but has no hash.`);
+    }
+    const log = this.transactionLogger(transaction).child({ reorgRecheck: true });
+    const handler = this.requireChainHandler(transaction.chain);
+    const statusResult = await handler.getStatus(transaction.hash);
+
+    if (!statusResult.ok) {
+      log.warn({ error: statusResult.error }, 'reorg recheck: status check failed, leaving as-is');
+      return;
+    }
+    if (statusResult.value === 'CONFIRMED') {
+      log.debug('reorg recheck: still confirmed');
+      return;
+    }
+    if (statusResult.value === 'FAILED') {
+      log.warn('reorg recheck: now reports failed after a reorg — marking failed');
+      await this.store.markFailed(transaction.id, {
+        code: 'CHAIN_REJECTED',
+        message: `${transaction.chain} reported this transaction as failed on reorg re-check`,
+      });
+      return;
+    }
+
+    // statusResult.value === 'PENDING': the receipt this handler once
+    // reported is no longer found — a reorg dropped it.
+    log.warn('reorg recheck: receipt no longer found — reopening');
+    await this.store.reopenTransaction(transaction.id);
   }
 
   private async resolvePendingTransaction(transaction: Transaction): Promise<void> {
