@@ -38,9 +38,6 @@ import {
   type EncodedEvmTransaction,
 } from './transaction-codec.js';
 
-/** A plain native-ETH transfer's gas cost is a protocol-fixed constant — no `eth_estimateGas` round trip needed or more correct than one for this exact case. */
-const NATIVE_TRANSFER_GAS = 21_000n;
-
 /** issue 05: what `prepare` falls back to when `eth_estimateGas` fails (a simulated revert) — generous enough for any call this handler realistically submits, comfortably under Base's block gas limit. */
 const FALLBACK_GAS_LIMIT = 500_000n;
 
@@ -263,34 +260,38 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       const to = requireAddressResult(call.to);
       if (!to.ok) return to;
 
+      // Always estimated, never shortcut to a fixed 21,000 for empty
+      // calldata: a raw caller-supplied EvmCall (issue 05) with `data: "0x"`
+      // isn't necessarily a plain EOA transfer — it could target a
+      // contract with a non-trivial payable fallback, which a hardcoded
+      // 21,000 would under-fund into an out-of-gas revert. A real plain
+      // transfer estimates to exactly 21,000 anyway (confirmed against
+      // real Base Sepolia), so this costs one extra RPC round trip for
+      // that case rather than a latent bug for every other one.
       let gas: bigint;
-      if (call.data === '0x') {
-        gas = NATIVE_TRANSFER_GAS;
-      } else {
-        try {
-          gas = await this.client.estimateGas({
-            account: sender.value,
-            to: to.value,
-            data: call.data as `0x${string}`,
-            value: BigInt(call.value),
-          });
-        } catch (cause) {
-          // issue 05: `eth_estimateGas` simulates the call and throws if it
-          // would revert — but this handler never interprets a Call's
-          // semantics, including whether it succeeds (ADR-0018/0027), so a
-          // call that would revert is still submitted, exactly like any
-          // other. Falls back to a generous fixed gas limit (comfortably
-          // under Base's block gas limit) so the real on-chain outcome —
-          // success or revert — is what actually gets reported, not a
-          // pre-emptive guess made here. By this point `getBlock()` above
-          // already proved the RPC itself is reachable, so a failure here
-          // is a simulated revert, not a connectivity problem.
-          this.logger.warn(
-            { error: extractMessage(cause) },
-            'estimateGas failed (likely a simulated revert) — falling back to a fixed gas limit so the real on-chain outcome is what gets reported',
-          );
-          gas = FALLBACK_GAS_LIMIT;
-        }
+      try {
+        gas = await this.client.estimateGas({
+          account: sender.value,
+          to: to.value,
+          data: call.data as `0x${string}`,
+          value: BigInt(call.value),
+        });
+      } catch (cause) {
+        // issue 05: `eth_estimateGas` simulates the call and throws if it
+        // would revert — but this handler never interprets a Call's
+        // semantics, including whether it succeeds (ADR-0018/0027), so a
+        // call that would revert is still submitted, exactly like any
+        // other. Falls back to a generous fixed gas limit (comfortably
+        // under Base's block gas limit) so the real on-chain outcome —
+        // success or revert — is what actually gets reported, not a
+        // pre-emptive guess made here. By this point `getBlock()` above
+        // already proved the RPC itself is reachable, so a failure here
+        // is a simulated revert, not a connectivity problem.
+        this.logger.warn(
+          { error: extractMessage(cause) },
+          'estimateGas failed (likely a simulated revert) — falling back to a fixed gas limit so the real on-chain outcome is what gets reported',
+        );
+        gas = FALLBACK_GAS_LIMIT;
       }
 
       const encoded: EncodedEvmTransaction = {

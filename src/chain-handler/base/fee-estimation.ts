@@ -7,6 +7,14 @@
  * is a documented fixed tip. Both are tunable constants here, not
  * operator config — `config.base` (issue 01) doesn't name either of them,
  * only `feeBumpPercent` (issue 09) and `bulkCallMaxBatchSize` (issue 11).
+ *
+ * Deliberately doesn't account for Base's L1 data fee (the OP Stack
+ * GasPriceOracle component covering L1 calldata-posting cost,
+ * research-base.md §4) anywhere — issue 03's own acceptance criteria
+ * names only this L2 fee-field heuristic, and research-base.md's Open
+ * Question #2 leaves whether the L1 fee needs its own line item
+ * (Funding Check, a persisted cost field, fee-bump math) explicitly
+ * undecided. A real gap for exact-cost accuracy, not an oversight here.
  */
 
 /** Base fee can move ~12.5%/block in either direction (EIP-1559) — 2x tolerates several blocks' worth of increase between prepare() and inclusion. */
