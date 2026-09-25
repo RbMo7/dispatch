@@ -62,6 +62,37 @@ export const attempts = pgTable('attempts', {
   error: jsonb('error').$type<DispatchError | null>(),
 });
 
+/**
+ * base-chain-handler issue 02: a persisted per-(chain, Sender) nonce->hash
+ * history, populated on every successful broadcast (issue 03) but consumed
+ * by no logic yet — groundwork for the deferred EVM analogue of ADR-0030
+ * (a future issue proving a lower-nonce transaction dead once a
+ * higher-nonce one from the same Sender confirms), which needs this
+ * history to survive a process restart. `(chain, sender_address, nonce)`
+ * is unique: a nonce is only ever assigned once per Sender, even across a
+ * fee-bump replacement (CONTEXT.md's Attempt-vs-Transaction split — a
+ * fee-bump is a new Transaction, but never a new nonce), so only the
+ * account's own next-nonce counter (issue 02) ever appends new rows.
+ */
+export const nonceHistory = pgTable(
+  'nonce_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    senderAddress: text('sender_address').notNull(),
+    nonce: integer('nonce').notNull(),
+    hash: text('hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('nonce_history_chain_sender_nonce_idx').on(
+      table.chain,
+      table.senderAddress,
+      table.nonce,
+    ),
+  ],
+);
+
 /** ADR-0031: Relay Dispatch's own table — never squeezed into `dispatches`, which has no meaningful `items`/`retryPolicy` for this shape. */
 export const relayDispatches = pgTable(
   'relay_dispatches',
