@@ -48,7 +48,7 @@ export interface DispatchStore {
   listTransactions(dispatchId: string): Promise<Transaction[]>;
   /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). */
   claimQueued(limit: number): Promise<Dispatch[]>;
-  /** Up to `limit` still-PENDING Transactions, oldest-broadcast first — the Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
+  /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(limit: number): Promise<Transaction[]>;
   /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
   listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]>;

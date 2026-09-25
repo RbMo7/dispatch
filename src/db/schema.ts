@@ -53,6 +53,8 @@ export const transactions = pgTable('transactions', {
   abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
   /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
   confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
 });
 
 export const attempts = pgTable('attempts', {

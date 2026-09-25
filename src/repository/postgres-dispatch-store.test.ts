@@ -287,6 +287,34 @@ describe('PostgresDispatchStore (real Postgres)', () => {
     });
   });
 
+  describe('listPendingTransactions', () => {
+    it('rotates through every pending row, so long-pending rows never starve newer ones (#21)', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const ids: string[] = [];
+      for (const callIndex of [0, 1, 2]) {
+        const transaction = await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: 'solana',
+          signedBytes: 'c2lnbmVk',
+          hash: `hash-rotate-${callIndex}`,
+        });
+        ids.push(transaction.id);
+      }
+
+      const firstTick = await store.listPendingTransactions(2);
+      const secondTick = await store.listPendingTransactions(2);
+
+      expect(firstTick.map((t) => t.id)).toEqual([ids[0], ids[1]]);
+      expect(secondTick.map((t) => t.id)[0]).toBe(ids[2]);
+    });
+  });
+
   describe('listRecentlyConfirmedTransactions', () => {
     it('returns only CONFIRMED transactions whose confirmedAt is no earlier than notConfirmedBefore', async () => {
       const dispatch = await store.createDispatch({

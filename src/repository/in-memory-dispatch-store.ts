@@ -90,6 +90,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: this.now(),
       abandonedAt: null,
       confirmedAt: null,
+      lastCheckedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -110,6 +111,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: null,
       abandonedAt: null,
       confirmedAt: null,
+      lastCheckedAt: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -120,10 +122,17 @@ export class InMemoryDispatchStore implements DispatchStore {
   listPendingTransactions(limit: number): Promise<Transaction[]> {
     const pending = [...this.transactions.values()]
       .filter((transaction) => transaction.status === 'PENDING')
-      .sort((a, b) => (a.broadcastAt?.getTime() ?? 0) - (b.broadcastAt?.getTime() ?? 0))
+      .sort(
+        (a, b) =>
+          (a.lastCheckedAt?.getTime() ?? -Infinity) - (b.lastCheckedAt?.getTime() ?? -Infinity) ||
+          (a.broadcastAt?.getTime() ?? 0) - (b.broadcastAt?.getTime() ?? 0),
+      )
       .slice(0, limit);
 
-    return Promise.resolve(pending);
+    const lastCheckedAt = this.now();
+    const stamped = pending.map((transaction) => ({ ...transaction, lastCheckedAt }));
+    for (const transaction of stamped) this.transactions.set(transaction.id, transaction);
+    return Promise.resolve(stamped);
   }
 
   listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {

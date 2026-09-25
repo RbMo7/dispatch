@@ -439,6 +439,39 @@ describe('InMemoryDispatchStore', () => {
     });
   });
 
+  describe('listPendingTransactions', () => {
+    it('rotates through every pending row, so long-pending rows never starve newer ones (#21)', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const ids: string[] = [];
+      for (const callIndex of [0, 1, 2]) {
+        currentTime = new Date(currentTime.getTime() + 1_000);
+        const transaction = await clock.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: 'solana',
+          signedBytes: 'c2lnbmVk',
+          hash: `sig-${callIndex}`,
+        });
+        ids.push(transaction.id);
+      }
+
+      currentTime = new Date(currentTime.getTime() + 1_000);
+      const firstTick = await clock.listPendingTransactions(2);
+      currentTime = new Date(currentTime.getTime() + 1_000);
+      const secondTick = await clock.listPendingTransactions(2);
+
+      expect(firstTick.map((t) => t.id)).toEqual([ids[0], ids[1]]);
+      expect(secondTick.map((t) => t.id)[0]).toBe(ids[2]);
+    });
+  });
+
   describe('listRecentlyConfirmedTransactions (base-chain-handler issue 07)', () => {
     it('returns only CONFIRMED transactions whose confirmedAt is no earlier than notConfirmedBefore', async () => {
       let currentTime = new Date('2024-01-01T00:00:00.000Z');

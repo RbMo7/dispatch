@@ -41,6 +41,8 @@ export type Transaction = {
    * (a re-check that found the receipt gone), set again if it later re-confirms.
    */
   confirmedAt: Date | null;
+  /** #21: when the pending poll last picked this Transaction up — null until its first poll. What `listPendingTransactions` rotates on, so rows that stay PENDING can't starve newer ones. */
+  lastCheckedAt: Date | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */

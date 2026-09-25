@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
@@ -43,6 +43,7 @@ function toTransaction(row: TransactionRow): Transaction {
     broadcastAt: row.broadcastAt,
     abandonedAt: row.abandonedAt,
     confirmedAt: row.confirmedAt,
+    lastCheckedAt: row.lastCheckedAt,
   };
 }
 
@@ -139,10 +140,22 @@ export class PostgresDispatchStore implements DispatchStore {
   async listPendingTransactions(limit: number): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
       where: eq(transactions.status, 'PENDING'),
-      orderBy: transactions.broadcastAt,
+      orderBy: [sql`${transactions.lastCheckedAt} asc nulls first`, transactions.broadcastAt],
       limit,
     });
-    return rows.map(toTransaction);
+    if (rows.length === 0) return [];
+    // ponytail: select-then-stamp, not one atomic UPDATE…RETURNING — fine for the single worker (ADR-0009); make it atomic if workers ever run concurrently.
+    const lastCheckedAt = new Date();
+    await this.db
+      .update(transactions)
+      .set({ lastCheckedAt })
+      .where(
+        inArray(
+          transactions.id,
+          rows.map((row) => row.id),
+        ),
+      );
+    return rows.map((row) => toTransaction({ ...row, lastCheckedAt }));
   }
 
   async listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
