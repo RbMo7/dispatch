@@ -1,3 +1,7 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+import { recoverTransactionAddress, type TransactionSerializedEIP1559 } from 'viem';
 import { generatePrivateKey, privateKeyToAddress } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -84,6 +88,57 @@ describe('Base nonce gaps (#24, real Base Sepolia)', () => {
 
     expect(signed.ok).toBe(false);
     expect(handler.peekNextNonce()).toBe(before);
+  }, 60_000);
+
+  it("normalizes a Signer's high-s signature (e.g. a cloud KMS) to low-s, so the bytes are sendable and its nonce is never stranded", async () => {
+    // A Signer that answers every request with the high-s twin of a real signature.
+    const n = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const proxy = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void fetch(new URL('/sign', testSigner.url), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: Buffer.concat(chunks),
+        })
+          .then((r) => r.json() as Promise<{ signature: string }>)
+          .then(({ signature }) => {
+            const bytes = Buffer.from(signature, 'base64');
+            const highS = n - BigInt(`0x${bytes.subarray(32, 64).toString('hex')}`);
+            Buffer.from(highS.toString(16).padStart(64, '0'), 'hex').copy(bytes, 32);
+            bytes[64] = bytes[64] === 0 ? 1 : 0;
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ signature: bytes.toString('base64') }));
+          });
+      });
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const { port } = proxy.address() as AddressInfo;
+    try {
+      const handler = await createHandler(`http://127.0.0.1:${port}`);
+      const prepared = await handler.prepare(
+        [{ to: sender.address, data: '0x', value: '0' }],
+        sender.address,
+      );
+      if (!prepared.ok || !prepared.value[0]) throw new Error('prepare failed');
+
+      const signed = await handler.sign(prepared.value[0], sender.address);
+
+      expect(signed.ok).toBe(true);
+      if (!signed.ok) return;
+      expect(await handler.validateSignedTransaction(signed.value)).toEqual({
+        ok: true,
+        value: undefined,
+      });
+      expect(
+        await recoverTransactionAddress({
+          serializedTransaction: signed.value as TransactionSerializedEIP1559,
+        }),
+      ).toBe(sender.address);
+    } finally {
+      proxy.close();
+    }
   }, 60_000);
 
   it('a refused broadcast mid-batch never strands the next Call: it takes the released nonce and confirms', async () => {

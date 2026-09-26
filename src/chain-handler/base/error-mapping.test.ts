@@ -9,7 +9,7 @@ import {
 } from 'viem';
 import { describe, expect, it } from 'vitest';
 
-import { mapBaseFailure } from './error-mapping.js';
+import { isDefinitiveRefusal, mapBaseFailure } from './error-mapping.js';
 
 const url = 'https://sepolia.base.org';
 
@@ -163,5 +163,35 @@ describe('mapBaseFailure (#10) — real Base Sepolia failure shapes', () => {
       message: 'something unexpected',
       chainDetail: { message: 'something unexpected' },
     });
+  });
+});
+
+describe('isDefinitiveRefusal (#24): the node said no, and pooled nothing at that nonce', () => {
+  it.each([
+    [
+      'insufficient funds',
+      'INSUFFICIENT_FUNDS',
+      'insufficient funds for gas * price + value: have 1 want 2',
+    ],
+    ['intrinsic gas too low', 'CHAIN_REJECTED', 'intrinsic gas too low'],
+    ['a full txpool', 'CHAIN_REJECTED', 'txpool is full'],
+    ['an invalid chain ID', 'CHAIN_REJECTED', 'invalid chain ID'],
+  ] as const)('releases on %s', (_label, code, message) => {
+    expect(isDefinitiveRefusal({ code, message })).toBe(true);
+  });
+
+  it.each([
+    [
+      'an underpriced replacement — another transaction is pooled at this nonce',
+      'CHAIN_REJECTED',
+      'replacement transaction underpriced',
+    ],
+    ['plain "transaction underpriced"', 'CHAIN_REJECTED', 'transaction underpriced'],
+    ['geth "already known"', 'CHAIN_REJECTED', 'already known'],
+    ['Nethermind "AlreadyKnown"', 'CHAIN_REJECTED', 'AlreadyKnown'],
+    ['a used nonce', 'NONCE_ALREADY_USED', 'nonce too low'],
+    ['a timeout — it may have arrived', 'RPC_UNAVAILABLE', 'The request took too long to respond.'],
+  ] as const)('never releases on %s', (_label, code, message) => {
+    expect(isDefinitiveRefusal({ code, message })).toBe(false);
   });
 });

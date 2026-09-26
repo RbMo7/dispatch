@@ -11,7 +11,8 @@ Nothing was ever sent at the leaked nonce, so every later transaction from the S
 Now `prepare` leaves the nonce empty, and `sign` assigns it at the last moment. The counter hands a nonce back only if it's the most recently assigned one (`NonceCounter.release`):
 
 - **`sign` fails:** the nonce is handed back straight away.
-- **`broadcast` is refused definitively** (the node answered no: `CHAIN_REJECTED` or `INSUFFICIENT_FUNDS`, and not "already known"): the nonce is handed back too. This only applies to a nonce this handler assigned and hasn't sent before, so a rebroadcast of a transaction already in a mempool can never release its nonce.
+- **`broadcast` is refused definitively:** the node answered no and pooled nothing at the nonce (`error-mapping.ts` `isDefinitiveRefusal`), so the nonce is handed back too. It **never** counts as definitive when the answer is "already known", or anything "underpriced" or "replacement": those mean a transaction is already pooled at this nonce (for example one left over from before a restart, since the counter is seeded from the confirmed count), and reusing the nonce could replace a different Call's transaction. The release only applies to this handler's own Sender, and to a nonce it assigned and hasn't sent before, so a rebroadcast of a transaction already in a mempool can never release its nonce.
+- **High-s signatures are normalized:** `sign` converts a Signer's high-s signature (common from cloud KMS) to its equally valid low-s twin. Otherwise every node would refuse the bytes (EIP-2).
 
 A fee-bump replacement still carries its stuck predecessor's nonce explicitly. Because a single worker signs and broadcasts one transaction at a time, the refused nonce is always the most recent one, so releasing it is always safe.
 

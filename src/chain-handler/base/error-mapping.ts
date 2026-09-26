@@ -110,6 +110,19 @@ function isNonceTooLow(message: string): boolean {
   return /nonce too low/i.test(message);
 }
 
+/**
+ * #24 (ADR-0039): the node answered, said no, and pooled nothing at this
+ * transaction's nonce — so the nonce is free to hand back. Never for a
+ * timeout (the send may have arrived), a used nonce, "already known" (it is
+ * pooled), or any "underpriced" answer: that means another transaction is
+ * already pooled at this nonce, and reusing it could replace a different
+ * Call's transaction.
+ */
+export function isDefinitiveRefusal(error: DispatchError): boolean {
+  if (error.code !== 'CHAIN_REJECTED' && error.code !== 'INSUFFICIENT_FUNDS') return false;
+  return !/already ?known|known transaction|underpriced|replacement/i.test(error.message);
+}
+
 function summarize(message: string): string {
   const firstLine = message.split('\n')[0]?.trim();
   return firstLine && firstLine.length > 0 ? firstLine : 'Base RPC call failed';

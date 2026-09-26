@@ -48,7 +48,7 @@ import {
 } from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
-import { extractMessage, isRpcOutage, mapBaseFailure } from './error-mapping.js';
+import { extractMessage, isDefinitiveRefusal, isRpcOutage, mapBaseFailure } from './error-mapping.js';
 import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
 import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
@@ -131,15 +131,8 @@ function requireAddressResult(value: string): Result<Address, DispatchError> {
 }
 
 /** EIP-2's upper bound for a signature's s value: half the secp256k1 curve order. */
-const SECP256K1_HALF_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n / 2n;
-
-/** #24: the node answered, and said no — as opposed to a timeout (it may have arrived) or "already known"/"nonce too low" (the nonce is in use). */
-function isDefinitiveRefusal(error: DispatchError): boolean {
-  return (
-    (error.code === 'CHAIN_REJECTED' || error.code === 'INSUFFICIENT_FUNDS') &&
-    !/already known/i.test(error.message)
-  );
-}
+const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const SECP256K1_HALF_N = SECP256K1_N / 2n;
 
 function isSameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
@@ -457,10 +450,18 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       });
     }
     const r = `0x${signatureBytes.subarray(0, 32).toString('hex')}` as const;
-    const s = `0x${signatureBytes.subarray(32, 64).toString('hex')}` as const;
-    const yParity = signatureBytes[64];
+    let sValue = BigInt(`0x${signatureBytes.subarray(32, 64).toString('hex')}`);
+    let yParity = signatureBytes[64] ?? 0;
+    // #24 review: some Signers (e.g. cloud KMS) return a high-s signature,
+    // which every node refuses (EIP-2). Its low-s twin is equally valid —
+    // normalize rather than send bytes that can only be refused.
+    if (sValue > SECP256K1_HALF_N) {
+      sValue = SECP256K1_N - sValue;
+      yParity = yParity === 0 ? 1 : 0;
+    }
+    const s = `0x${sValue.toString(16).padStart(64, '0')}` as const;
 
-    const signed = serializeTransaction(tx, { r, s, yParity: yParity ?? 0 });
+    const signed = serializeTransaction(tx, { r, s, yParity });
     if (assigned) this.unsentNonces.add(nonce);
     return ok(signed);
   }
@@ -781,7 +782,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     // Relay Dispatch caller's own signing address otherwise. Recovered from the bytes,
     // no RPC (ADR-0033 precedent).
     const sender = await recoverSender(hex);
-    if (!sender.ok) return sender;
+    if (!sender.ok) {
+      // A local refusal of bytes this handler signed: the nonce never went out.
+      if (this.unsentNonces.delete(nonce)) this.nonceCounter.release(nonce);
+      return sender;
+    }
 
     let hash: string;
     try {
@@ -795,7 +800,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       // just assigned and never sent before (so never a rebroadcast of one
       // already in a mempool), and never on an ambiguous failure: a timed-
       // out send may still have reached the node.
-      if (this.unsentNonces.delete(nonce) && isDefinitiveRefusal(error)) {
+      if (
+        isSameAddress(sender.value, this.senderAddress) &&
+        this.unsentNonces.delete(nonce) &&
+        isDefinitiveRefusal(error)
+      ) {
         if (this.nonceCounter.release(nonce)) {
           this.logger.info({ nonce, error: error.message }, 'broadcast refused — nonce released, no gap');
         }
