@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
@@ -131,6 +133,14 @@ function requireAddressResult(value: string): Result<Address, DispatchError> {
 /** EIP-2's upper bound for a signature's s value: half the secp256k1 curve order. */
 const SECP256K1_HALF_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n / 2n;
 
+/** #24: the node answered, and said no — as opposed to a timeout (it may have arrived) or "already known"/"nonce too low" (the nonce is in use). */
+function isDefinitiveRefusal(error: DispatchError): boolean {
+  return (
+    (error.code === 'CHAIN_REJECTED' || error.code === 'INSUFFICIENT_FUNDS') &&
+    !/already known/i.test(error.message)
+  );
+}
+
 function isSameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
@@ -172,6 +182,9 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
   /** #11: present only with a tracing RPC — the Coordinator reads its presence as "per-item outcomes are available". */
   readonly getBundleStatus?: (hash: string) => Promise<Result<BundleSlotStatus[], DispatchError>>;
+
+  /** #24: nonces `sign` assigned whose transaction hasn't been sent yet — the only ones a refused broadcast may release. */
+  private readonly unsentNonces = new Set<number>();
 
   /** issue 02: the single next-nonce authority for `senderAddress` (nonce-authority.ts) — assigned in-process, never via a per-request `eth_getTransactionCount("pending")` read, so concurrent Managed Dispatch submissions can't collide or skip (ADR-0002's single-nonce-authority requirement). */
   private readonly nonceCounter: NonceCounter;
@@ -354,13 +367,14 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       const encoded: EncodedEvmTransaction = {
         senderAddress: sender.value,
         chainId: this.chainId,
-        nonce: this.nonceCounter.assignNext(),
+        nonce: null, // assigned at sign time (#24)
         to: to.value,
         value: call.value,
         data: call.data as EncodedEvmTransaction['data'],
         gas: gas.toString(),
         maxFeePerGas: maxFeePerGas.toString(),
         maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+        preparedId: randomUUID(),
       };
       prepared.push({ callIndex, unsignedTransaction: encodeUnsignedTransaction(encoded) });
     }
@@ -381,16 +395,9 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     prepared: PreparedTransaction,
     senderAddress: string,
   ): Promise<Result<SignedTransaction, DispatchError>> {
-    // #10: decoding, and viem's own serialization checks (e.g. a tip above
-    // the fee cap), throw on bad input — answered as a structured error,
-    // before any Signer is ever asked.
     let encoded: EncodedEvmTransaction;
-    let tx: ReturnType<typeof toViemTransaction>;
-    let signingHash: `0x${string}`;
     try {
       encoded = decodeUnsignedTransaction(prepared.unsignedTransaction);
-      tx = toViemTransaction(encoded);
-      signingHash = keccak256(serializeTransaction(tx));
     } catch (cause) {
       return err({ ...mapBaseFailure(cause), code: 'CHAIN_REJECTED' });
     }
@@ -400,7 +407,6 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         message: `PreparedTransaction was built for ${encoded.senderAddress}, asked to sign as ${senderAddress}`,
       });
     }
-
     if (!this.signerClient) {
       this.logger.warn({ senderAddress }, 'asked to sign but no Signer is configured for this ChainHandler');
       return err({
@@ -408,6 +414,28 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         message:
           'no Signer configured for this ChainHandler — a Relay-Dispatch-only deployment never signs, so signerClient was never provided',
       });
+    }
+
+    // #24 (ADR-0039): the nonce is assigned here, the moment the
+    // transaction is actually about to go out — not in prepare — and handed
+    // straight back if signing fails, so no gap ever forms at it. A
+    // fee-bump replacement arrives with its stuck predecessor's nonce.
+    const assigned = encoded.nonce === null;
+    const nonce = encoded.nonce ?? this.nonceCounter.assignNext();
+    const fail = (error: DispatchError): Result<SignedTransaction, DispatchError> => {
+      if (assigned) this.nonceCounter.release(nonce);
+      return err(error);
+    };
+
+    // #10: viem's own serialization checks (e.g. a tip above the fee cap)
+    // throw on bad input — answered as a structured error.
+    let tx: ReturnType<typeof toViemTransaction>;
+    let signingHash: `0x${string}`;
+    try {
+      tx = toViemTransaction(encoded, nonce);
+      signingHash = keccak256(serializeTransaction(tx));
+    } catch (cause) {
+      return fail({ ...mapBaseFailure(cause), code: 'CHAIN_REJECTED' });
     }
 
     const signResult = await this.signerClient.requestSignature({
@@ -418,12 +446,12 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     });
     if (!signResult.ok) {
       this.logger.warn({ error: signResult.error }, 'signer request failed');
-      return signResult;
+      return fail(signResult.error);
     }
 
     const signatureBytes = Buffer.from(signResult.value.signature, 'base64');
     if (signatureBytes.length !== 65) {
-      return err({
+      return fail({
         code: 'SIGNER_UNREACHABLE',
         message: `signer returned a ${signatureBytes.length}-byte signature, expected 65 (r||s||recovery)`,
       });
@@ -433,8 +461,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const yParity = signatureBytes[64];
 
     const signed = serializeTransaction(tx, { r, s, yParity: yParity ?? 0 });
+    if (assigned) this.unsentNonces.add(nonce);
     return ok(signed);
   }
+
 
   /**
    * #9 (ADR-0037): an unsigned replacement for a stuck transaction — the
@@ -500,6 +530,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       gas: gas.toString(),
       maxFeePerGas: fees.maxFeePerGas.toString(),
       maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+      preparedId: randomUUID(),
     };
     return ok({ callIndex: 0, unsignedTransaction: encodeUnsignedTransaction(encoded) });
   }
@@ -617,13 +648,14 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       const unsignedTransaction = encodeUnsignedTransaction({
         senderAddress: sender,
         chainId: this.chainId,
-        nonce: this.nonceCounter.assignNext(),
+        nonce: null, // assigned at sign time (#24)
         to: aggregator.value,
         value: value.toString(),
         data,
         gas: gas.toString(),
         maxFeePerGas: maxFeePerGas.toString(),
         maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+        preparedId: randomUUID(), // one per chunk: its members share these bytes
       });
       for (let i = 0; i < calls.length; i++) prepared.push({ callIndex: callIndex++, unsignedTransaction });
     }
@@ -757,6 +789,17 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     } catch (cause) {
       this.logger.warn({ error: extractMessage(cause) }, 'sendRawTransaction failed');
       const error = mapBaseFailure(cause);
+      // #24 (ADR-0039): a send the node definitively refused never
+      // consumed its nonce — hand it back so the Sender's next transaction
+      // doesn't queue behind a gap forever. Only for a nonce this handler
+      // just assigned and never sent before (so never a rebroadcast of one
+      // already in a mempool), and never on an ambiguous failure: a timed-
+      // out send may still have reached the node.
+      if (this.unsentNonces.delete(nonce) && isDefinitiveRefusal(error)) {
+        if (this.nonceCounter.release(nonce)) {
+          this.logger.info({ nonce, error: error.message }, 'broadcast refused — nonce released, no gap');
+        }
+      }
       // #10: the chain is ahead of our counter (e.g. something else sent
       // from this Sender) — catch up, or every later Managed send fails
       // the same way. Forward only: also expected after a fee-bump race,
@@ -769,6 +812,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return err(error);
     }
 
+    this.unsentNonces.delete(nonce);
     // #10: the transaction is already on-chain at this point — a failed
     // history write must never turn that into an error, or the Coordinator
     // would lose the hash of a transaction that may land. Logged loudly

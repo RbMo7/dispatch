@@ -18,6 +18,7 @@ const ENCODED: EncodedEvmTransaction = {
   gas: '21000',
   maxFeePerGas: '10000000',
   maxPriorityFeePerGas: '1000000',
+  preparedId: 'prepared-1',
 };
 
 describe('encodeUnsignedTransaction / decodeUnsignedTransaction', () => {
@@ -28,9 +29,15 @@ describe('encodeUnsignedTransaction / decodeUnsignedTransaction', () => {
   });
 });
 
+describe('toViemTransaction nonce (#24)', () => {
+  it('takes the nonce it is given — a prepared transaction carries none until sign assigns one', () => {
+    expect(toViemTransaction({ ...ENCODED, nonce: null }, 9).nonce).toBe(9);
+  });
+});
+
 describe('toViemTransaction', () => {
   it('converts JSON-safe decimal-string fields into a bigint-typed EIP-1559 transaction', () => {
-    const tx = toViemTransaction(ENCODED);
+    const tx = toViemTransaction(ENCODED, 3);
     expect(tx).toEqual({
       type: 'eip1559',
       chainId: 84532,

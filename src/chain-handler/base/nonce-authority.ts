@@ -38,6 +38,18 @@ export class NonceCounter {
     this.nextNonce = Math.max(this.nextNonce, confirmedFromChain);
   }
 
+  /**
+   * #24: hands back a nonce whose send definitively never reached the
+   * chain, so no gap forms at it. Only the most recently assigned nonce can
+   * come back — if a later one is already out, reusing this one would put
+   * two transactions at different Calls' mercy — and returns whether it did.
+   */
+  release(nonce: number): boolean {
+    if (nonce !== this.nextNonce - 1) return false;
+    this.nextNonce = nonce;
+    return true;
+  }
+
   /** The next value `assignNext` would hand out — read-only inspection, never itself an assignment. */
   peek(): number {
     return this.nextNonce;

@@ -42,4 +42,17 @@ describe('NonceCounter', () => {
     counter.advanceTo(15); // chain is genuinely ahead
     expect(counter.peek()).toBe(15);
   });
+
+  it('release hands a nonce back only when it is the most recently assigned one (#24)', () => {
+    const counter = new NonceCounter(5);
+    const first = counter.assignNext(); // 5
+    const second = counter.assignNext(); // 6
+
+    expect(counter.release(first)).toBe(false); // 6 is already out: releasing 5 would reuse it under 6
+    expect(counter.peek()).toBe(7);
+
+    expect(counter.release(second)).toBe(true);
+    expect(counter.peek()).toBe(6);
+    expect(counter.assignNext()).toBe(6); // reused — the gap never forms
+  });
 });
