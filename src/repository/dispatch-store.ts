@@ -56,13 +56,15 @@ export interface DispatchStore {
   /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
   listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]>;
   /** base-chain-handler issue 07: up to `limit` of `chain`'s CONFIRMED Transactions (per chain, so one chain's volume never crowds another's out of `limit`) whose `confirmedAt` is no earlier than `notConfirmedBefore`, oldest-confirmed first — the reorg safety net's own low-frequency re-watch work queue, mirroring listAbandonedTransactions's shape exactly. A Transaction confirmed before `notConfirmedBefore` (outside the bounded re-check window) is excluded — it's aged past the point this engine still bothers re-verifying it. */
-  listRecentlyConfirmedTransactions(
-    chain: Chain,
-    limit: number,
-    notConfirmedBefore: Date,
-  ): Promise<Transaction[]>;
-  /** Persists a Call's freshly-signed Transaction, once broadcast for the first time. */
+  listRecentlyConfirmedTransactions(chain: Chain, limit: number, notConfirmedBefore: Date): Promise<Transaction[]>;
+  /** Persists a Call's freshly-signed Transaction — #20 (ADR-0041): written down *before* it is ever sent. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
+  /** #20 review: every member of one bundled broadcast, written down in one atomic step — a crash can never leave a bundle half-recorded. */
+  createTransactions(inputs: NewTransactionInput[]): Promise<Transaction[]>;
+  /** #20 review: every Transaction for `chain` that is PENDING or REPLACED — what a restarted Chain Handler must never hand a nonce out over. */
+  listUnsettledTransactions(chain: Chain): Promise<Transaction[]>;
+  /** #20 review: re-stamps these Dispatches' claims as live — a heartbeat, so a slow batch is never mistaken for a crashed one. */
+  touchClaims(dispatchIds: string[]): Promise<void>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
   recordCallFailure(input: NewFailedCallInput): Promise<Transaction>;
   /** Records a re-broadcast of a Transaction's exact signed bytes — a new Attempt of the same Transaction, with the send's `error` if the chain refused it (e.g. "already known"). Updates `lastBroadcastAt` either way: a refused send is still a send, for the stuck timer. */
@@ -80,9 +82,9 @@ export interface DispatchStore {
   recordSent(transactionId: string, hash: string): Promise<void>;
   /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
   undoReplacement(replacementId: string): Promise<void>;
-  /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
+  /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` (or was never stamped) and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
   reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]>;
-  /** #20: the same for Relay Dispatches that never got a Transaction. */
+  /** #20: the same for Relay Dispatches with no Transaction row at all (not merely an unwritten link). */
   reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]>;
   /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
   markDropped(transactionId: string): Promise<void>;

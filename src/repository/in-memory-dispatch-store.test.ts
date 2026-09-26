@@ -631,6 +631,16 @@ describe('InMemoryDispatchStore', () => {
       expect(reclaimed.map((d) => d.id)).not.toContain(dispatch.id);
     });
 
+    it('never reclaims a Relay Dispatch that has a Transaction, even if its link was never written (#20 review)', async () => {
+      const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `wa-${Math.random()}`, signedTransaction: 'c2lnbmVk' });
+      await store.claimQueuedRelayDispatches(100);
+      await store.createTransaction({ dispatchId: relay.id, callIndex: 0, chain: 'solana', signedBytes: 'c2lnbmVk', hash: 'h' });
+
+      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((r) => r.id)).not.toContain(relay.id);
+    });
+
     it('reclaims a Relay Dispatch claimed before the cutoff that never got a Transaction', async () => {
       const relay = await store.createRelayDispatch({
         chain: 'solana',

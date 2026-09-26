@@ -1229,6 +1229,59 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
     expect(handler.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it('writes every member of a bundled broadcast down in one atomic step (#20 review)', async () => {
+    const { store, handler, coordinator } = setup();
+    await queueOne(store, [solanaItem, solanaItem]);
+    handler.prepare.mockImplementation((items: Call[]) =>
+      Promise.resolve(ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'one-bundle' })))),
+    );
+    const createTransactions = vi.spyOn(store, 'createTransactions');
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(createTransactions).toHaveBeenCalledTimes(1);
+    expect(createTransactions.mock.calls[0]?.[0]).toHaveLength(2);
+  });
+
+  it('never marks a Relay FAILED once any attempt was ambiguous — a later refusal may be "it already arrived" (#20 review)', async () => {
+    const { store, handler, coordinator } = setup();
+    handler.broadcast
+      .mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'timed out' }))
+      .mockResolvedValueOnce(err({ code: 'NONCE_ALREADY_USED', message: 'nonce too low' }));
+    const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `amb-${Math.random()}`, signedTransaction: 'relay-bytes' });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    const [row] = await store.listTransactions(relay.id);
+    expect(row?.status).toBe('PENDING');
+  });
+
+  it('treats ALREADY_KNOWN as ambiguous — the bytes are pooled, never FAILED (#20 review)', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.broadcast.mockResolvedValueOnce(err({ code: 'ALREADY_KNOWN', message: 'already known' }));
+
+    await coordinator.processQueuedDispatches(10);
+
+    const [row] = await store.listTransactions(dispatch.id);
+    expect(row?.status).toBe('PENDING');
+  });
+
+  it('hands every unsettled Transaction\'s signed bytes to the Chain Handler on restoreReservations (#20 review)', async () => {
+    const { store, handler, coordinator } = setup();
+    const reserve = vi.fn();
+    (handler as FakeChainHandler & { reserveNonces?: (signed: string[]) => void }).reserveNonces = reserve;
+    const dispatch = await queueOne(store, [solanaItem, solanaItem]);
+    const pendingRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 0, chain: 'solana', signedBytes: 'pending-bytes', hash: 'p' });
+    const confirmedRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 1, chain: 'solana', signedBytes: 'confirmed-bytes', hash: 'c' });
+    await store.markConfirmed(confirmedRow.id);
+
+    await coordinator.restoreReservations();
+
+    expect(reserve).toHaveBeenCalledWith(['pending-bytes']);
+    expect(pendingRow.id).toBeDefined();
+  });
+
   describe('reclaiming stale claims', () => {
     function setupClocked() {
       let currentTime = new Date('2024-01-01T00:00:00.000Z');
@@ -1276,6 +1329,22 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
       expect(handler.prepare).toHaveBeenCalledWith([second], 'sender-address');
       const rows = await store.listTransactions(dispatch.id);
       expect(rows.map((t) => t.callIndex).sort()).toEqual([0, 1]);
+    });
+
+    it('never reclaims a Dispatch this Coordinator is itself still processing — a slow batch is not a crash (#20 review)', async () => {
+      const { store, handler, coordinator, advance } = setupClocked();
+      await store.createDispatch({ chain: 'solana', idempotencyKey: 'slow-1', items: [solanaItem], retryPolicy: false });
+      let reclaimDuringSend: Promise<void> | undefined;
+      handler.sign.mockImplementationOnce(async () => {
+        advance(5 * 60_000 + 1); // the batch is slow: its claim looks stale mid-flight
+        reclaimDuringSend = coordinator.reclaimStaleClaims(10);
+        await reclaimDuringSend;
+        return ok('signed-bytes');
+      });
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(handler.prepare).toHaveBeenCalledTimes(1); // reclaim never re-processed it
     });
 
     it('leaves a claim alone until it is 5 minutes stale', async () => {

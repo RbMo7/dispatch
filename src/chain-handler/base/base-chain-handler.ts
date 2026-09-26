@@ -227,15 +227,14 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       );
     }
 
-    // #20 (ADR-0041): never below anything this Sender may still have in
-    // flight — its mempool (pending) or a nonce this engine wrote down
-    // before sending (nonce_history), possibly never sent before a crash.
-    const [confirmed, pending, highestRecorded] = await Promise.all([
+    // #20 (ADR-0041): never below what this Sender still has in its
+    // mempool. Nonces written down but never sent are reserved separately,
+    // from the engine's own rows (reserveNonces), once the worker starts.
+    const [confirmed, pending] = await Promise.all([
       client.getTransactionCount({ address: senderAddress, blockTag: 'latest' }),
       client.getTransactionCount({ address: senderAddress, blockTag: 'pending' }),
-      deps.nonceHistoryStore.highestNonce('base', senderAddress),
     ]);
-    const initialNonce = Math.max(confirmed, pending, (highestRecorded ?? -1) + 1);
+    const initialNonce = Math.max(confirmed, pending);
 
     return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce);
   }
@@ -471,20 +470,6 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
     const signed = serializeTransaction(tx, { r, s, yParity });
     if (assigned) this.unsentNonces.add(nonce);
-    // #20 (ADR-0041): written down before it is ever sent, so a restart
-    // seeds past this nonce and never hands it to a different transaction.
-    // A failed write is logged, not fatal: nothing has been sent yet, and
-    // refusing to send on a history hiccup would stall every payment.
-    try {
-      await this.nonceHistoryStore.recordNonce({
-        chain: 'base',
-        senderAddress: this.senderAddress,
-        nonce,
-        hash: keccak256(signed),
-      });
-    } catch (cause) {
-      this.logger.error({ nonce, error: extractMessage(cause) }, 'recording nonce history at sign time failed');
-    }
     return ok(signed);
   }
 
@@ -738,6 +723,25 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   }
 
   /**
+   * #20 review (ADR-0041): moves the counter past every nonce this Sender
+   * holds among the engine's in-flight Transactions — including one
+   * written down but never sent before a crash, which recovery will send
+   * later. Bytes signed by anyone else (Relay Dispatch) are ignored.
+   */
+  async reserveNonces(signed: SignedTransaction[]): Promise<void> {
+    let highest = -1;
+    for (const bytes of signed) {
+      const decoded = this.decodeSigned(bytes);
+      if (!decoded.ok) continue;
+      const sender = await recoverSender(decoded.value.hex);
+      if (sender.ok && isSameAddress(sender.value, this.senderAddress)) {
+        highest = Math.max(highest, decoded.value.tx.nonce);
+      }
+    }
+    if (highest >= 0) this.nonceCounter.advanceTo(highest + 1);
+  }
+
+  /**
    * #13 (ADR-0032): RPC-free proof that a Relay Dispatch submission really
    * is a Base transaction this network will consider — an EIP-1559 (type
    * 0x02) transaction for this handler's chain ID, carrying a signature a
@@ -815,9 +819,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const sender = await recoverSender(hex);
     if (!sender.ok) {
       // A local refusal of bytes this handler signed: the nonce never went out.
-      if (this.unsentNonces.delete(nonce) && this.nonceCounter.release(nonce)) {
-        await this.nonceHistoryStore.forgetNonce('base', this.senderAddress, nonce).catch(() => undefined);
-      }
+      if (this.unsentNonces.delete(nonce)) this.nonceCounter.release(nonce);
       return sender;
     }
 
@@ -840,11 +842,6 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       ) {
         if (this.nonceCounter.release(nonce)) {
           this.logger.info({ nonce, error: error.message }, 'broadcast refused — nonce released, no gap');
-          await this.nonceHistoryStore
-            .forgetNonce('base', this.senderAddress, nonce)
-            .catch((forgetCause: unknown) =>
-              this.logger.error({ nonce, error: extractMessage(forgetCause) }, 'forgetting a released nonce failed'),
-            );
         }
       }
       // #10: the chain is ahead of our counter (e.g. something else sent

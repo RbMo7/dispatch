@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
@@ -297,7 +297,7 @@ export class PostgresDispatchStore implements DispatchStore {
         .where(
           and(
             eq(dispatches.status, 'broadcasting'),
-            lt(dispatches.claimedAt, claimedBefore),
+            or(isNull(dispatches.claimedAt), lt(dispatches.claimedAt, claimedBefore)),
             sql`jsonb_array_length(${dispatches.items}) > (select count(distinct ${transactions.callIndex}) from ${transactions} where ${transactions.dispatchId} = ${dispatches.id})`,
           ),
         )
@@ -327,8 +327,8 @@ export class PostgresDispatchStore implements DispatchStore {
         .where(
           and(
             eq(relayDispatches.status, 'broadcasting'),
-            lt(relayDispatches.claimedAt, claimedBefore),
-            isNull(relayDispatches.transactionId),
+            or(isNull(relayDispatches.claimedAt), lt(relayDispatches.claimedAt, claimedBefore)),
+            sql`not exists (select 1 from ${transactions} where ${transactions.dispatchId} = ${relayDispatches.id})`,
           ),
         )
         .orderBy(relayDispatches.claimedAt)
@@ -354,6 +354,38 @@ export class PostgresDispatchStore implements DispatchStore {
       .update(transactions)
       .set({ status: 'DROPPED' })
       .where(eq(transactions.id, transactionId));
+  }
+
+  async createTransactions(inputs: NewTransactionInput[]): Promise<Transaction[]> {
+    if (inputs.length === 0) return [];
+    const now = new Date();
+    const rows = await this.db
+      .insert(transactions)
+      .values(
+        inputs.map((input) => ({
+          dispatchId: input.dispatchId,
+          callIndex: input.callIndex,
+          chain: input.chain,
+          signedBytes: input.signedBytes,
+          hash: input.hash,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+        })),
+      )
+      .returning();
+    return rows.map(toTransaction);
+  }
+
+  async listUnsettledTransactions(chain: Chain): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: and(eq(transactions.chain, chain), inArray(transactions.status, ['PENDING', 'REPLACED'])),
+    });
+    return rows.map(toTransaction);
+  }
+
+  async touchClaims(dispatchIds: string[]): Promise<void> {
+    if (dispatchIds.length === 0) return;
+    await this.db.update(dispatches).set({ claimedAt: new Date() }).where(inArray(dispatches.id, dispatchIds));
   }
 
   async recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {

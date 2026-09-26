@@ -67,6 +67,13 @@ describe('mapBaseFailure (#10) — real Base Sepolia failure shapes', () => {
     ],
     ['a wrong chain ID', InvalidInputRpcError, -32000, 'invalid chain ID', 'CHAIN_REJECTED'],
     [
+      'bytes already pooled (#20 review)',
+      InvalidInputRpcError,
+      -32000,
+      'already known',
+      'ALREADY_KNOWN',
+    ],
+    [
       'undecodable signed bytes',
       InvalidParamsRpcError,
       -32602,

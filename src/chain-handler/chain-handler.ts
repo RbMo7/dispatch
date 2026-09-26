@@ -137,6 +137,14 @@ export interface ChainHandler<C extends Chain = Chain> {
    */
   transactionHash(signed: SignedTransaction): Result<string, DispatchError>;
 
+  /**
+   * #20 review (ADR-0041), optional: only a chain whose handler assigns
+   * nonces from an in-memory counter needs it. Called once at worker start
+   * with the signed bytes of every Transaction still in flight, so a
+   * restarted handler never hands out a nonce one of them already holds.
+   */
+  reserveNonces?(signed: SignedTransaction[]): Promise<void>;
+
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;
 

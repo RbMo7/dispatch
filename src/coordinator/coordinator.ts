@@ -39,6 +39,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * #20 (ADR-0041): the send may have reached the node — or it's already
+ * pooled — so the Transaction stays PENDING for polling and rebroadcast to
+ * resolve. Never a FAILED.
+ */
+function isAmbiguousBroadcastFailure(error: DispatchError): boolean {
+  return error.code === 'RPC_UNAVAILABLE' || error.code === 'ALREADY_KNOWN';
+}
+
 /** Only a send-layer hiccup is worth retrying with identical bytes — a genuine on-chain rejection (CHAIN_REJECTED) never becomes true by resending the exact same bytes again. */
 function isTransientBroadcastFailure(error: DispatchError): boolean {
   return error.code === 'RPC_UNAVAILABLE';
@@ -116,6 +125,8 @@ export class Coordinator {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
+  /** #20 review: Dispatches this Coordinator is processing right now — never reclaimed out from under itself. */
+  private readonly inFlight = new Set<string>();
   /** #11: one bundle trace per hash per poll tick — cleared at the start of every tick. */
   private bundleStatusCache = new Map<string, Promise<Result<BundleSlotStatus[], DispatchError>>>();
 
@@ -158,6 +169,15 @@ export class Coordinator {
       'claimed queued dispatches',
     );
 
+    for (const dispatch of dispatches) this.inFlight.add(dispatch.id);
+    try {
+      await this.processClaimedDispatches(dispatches);
+    } finally {
+      for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+    }
+  }
+
+  private async processClaimedDispatches(dispatches: Dispatch[]): Promise<void> {
     const fundingFailed = await this.runFundingCheck(dispatches);
 
     const itemsByChain = new Map<Chain, CallRef[]>();
@@ -296,6 +316,8 @@ export class Coordinator {
     members: CallRef[],
   ): Promise<void> {
     const log = this.logger.child({ chain, bundleSize: members.length });
+    // #20 review: a heartbeat — this claim is alive, however slow the batch.
+    await this.store.touchClaims([...new Set(members.map(({ dispatch }) => dispatch.id))]);
 
     const signResult = await handler.sign(prepared, senderAddress);
     if (!signResult.ok) {
@@ -323,22 +345,20 @@ export class Coordinator {
       }
       return;
     }
-    const noted: Transaction[] = [];
-    for (const { dispatch, callIndex } of members) {
-      noted.push(
-        await this.store.createTransaction({
-          dispatchId: dispatch.id,
-          callIndex,
-          chain,
-          signedBytes: signResult.value,
-          hash: hashResult.value,
-        }),
-      );
-    }
+    // One atomic write for every member: a crash can never leave a bundle half-recorded.
+    const noted = await this.store.createTransactions(
+      members.map(({ dispatch, callIndex }) => ({
+        dispatchId: dispatch.id,
+        callIndex,
+        chain,
+        signedBytes: signResult.value,
+        hash: hashResult.value,
+      })),
+    );
 
     const broadcastResult = await handler.broadcast(signResult.value);
     if (!broadcastResult.ok) {
-      if (isTransientBroadcastFailure(broadcastResult.error)) {
+      if (isAmbiguousBroadcastFailure(broadcastResult.error)) {
         // It may have reached the node: stays PENDING — polling, Base's
         // rebroadcast of the identical bytes, and abandonment resolve it.
         log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'broadcast ambiguous — left PENDING');
@@ -469,22 +489,44 @@ export class Coordinator {
     const claimedBefore = new Date(this.now().getTime() - STALE_CLAIM_MS);
 
     for (const dispatch of await this.store.reclaimStaleDispatches(claimedBefore, limit)) {
+      if (this.inFlight.has(dispatch.id)) continue; // merely slow, not crashed: this Coordinator is still on it
       const sent = new Set((await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex));
       const unsent = dispatch.items
         .map((_, callIndex) => ({ dispatch, callIndex }))
         .filter(({ callIndex }) => !sent.has(callIndex));
       this.logger.warn({ dispatchId: dispatch.id, unsent: unsent.length }, 'reclaiming a stale claim');
-      await this.processChainBatch(
-        this.requireChainHandler(dispatch.chain),
-        this.requireSenderAddress(dispatch.chain),
-        dispatch.chain,
-        unsent,
-      );
+      this.inFlight.add(dispatch.id);
+      try {
+        await this.processChainBatch(
+          this.requireChainHandler(dispatch.chain),
+          this.requireSenderAddress(dispatch.chain),
+          dispatch.chain,
+          unsent,
+        );
+      } finally {
+        this.inFlight.delete(dispatch.id);
+      }
     }
 
     for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(claimedBefore, limit)) {
       this.logger.warn({ relayDispatchId: relayDispatch.id }, 'reclaiming a stale relay dispatch claim');
       await this.processRelayDispatch(relayDispatch);
+    }
+  }
+
+  /**
+   * #20 review (ADR-0041): once, at worker start — hands each Chain
+   * Handler that keeps an in-memory nonce counter the signed bytes of every
+   * Transaction still in flight on its chain, so a restart never hands out
+   * a nonce one of them (possibly written down but never sent) holds.
+   */
+  async restoreReservations(): Promise<void> {
+    for (const [chain, handler] of this.chainHandlers) {
+      if (!handler.reserveNonces) continue;
+      const unsettled = await this.store.listUnsettledTransactions(chain);
+      const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
+      await handler.reserveNonces(signed);
+      this.logger.info({ chain, reserved: signed.length }, 'restored nonce reservations from in-flight transactions');
     }
   }
 
@@ -534,10 +576,14 @@ export class Coordinator {
     await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
 
     let broadcastResult: Awaited<ReturnType<ChainHandler['broadcast']>> | undefined;
+    // Once any attempt may have reached the node, a later refusal can mean
+    // "it already arrived" ("already known", "nonce too low").
+    let sawAmbiguous = false;
     for (let attempt = 0; attempt < RELAY_BROADCAST_MAX_ATTEMPTS; attempt++) {
       log.debug({ attempt }, 'broadcasting relay dispatch');
       broadcastResult = await handler.broadcast(relayDispatch.signedTransaction);
       if (broadcastResult.ok) break;
+      if (isAmbiguousBroadcastFailure(broadcastResult.error)) sawAmbiguous = true;
       if (
         attempt === RELAY_BROADCAST_MAX_ATTEMPTS - 1 ||
         !isTransientBroadcastFailure(broadcastResult.error)
@@ -560,7 +606,7 @@ export class Coordinator {
       code: 'RPC_UNAVAILABLE' as const,
       message: 'broadcast was never attempted',
     };
-    if (isTransientBroadcastFailure(error)) {
+    if (sawAmbiguous || isAmbiguousBroadcastFailure(error)) {
       log.warn({ error }, 'relay dispatch broadcast ambiguous — left PENDING');
       return;
     }
@@ -758,13 +804,13 @@ export class Coordinator {
     };
 
     const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
-    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
-    const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
     if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
       log.info({ error: prepared.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
       await recordAttempts(config.maxFeeBumps);
       return 'handled';
     }
+    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
+    const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
     if (!signed.ok || !replacementHash.ok) {
       const error = !replacementHash.ok ? replacementHash.error : undefined;
       log.warn({ error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
@@ -785,8 +831,8 @@ export class Coordinator {
       for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
       return 'bumped';
     }
-    if (isTransientBroadcastFailure(broadcast.error)) {
-      // It may have reached the node: the replacement stays written down, PENDING.
+    if (isAmbiguousBroadcastFailure(broadcast.error)) {
+      // It may have reached the node (or is already pooled): the replacement stays written down, PENDING.
       log.warn({ error: broadcast.error }, 'fee-bump: replacement broadcast ambiguous — left PENDING');
       return 'bumped';
     }

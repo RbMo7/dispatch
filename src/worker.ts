@@ -48,6 +48,11 @@ const coordinator = new Coordinator({
   stuckHandling,
 });
 
+// #20 review (ADR-0041): before anything is signed, reserve every nonce the
+// engine's in-flight Transactions hold — including one written down but never
+// sent before a crash, which recovery will send.
+await coordinator.restoreReservations();
+
 let running = true;
 
 function shutdown(signal: string): void {

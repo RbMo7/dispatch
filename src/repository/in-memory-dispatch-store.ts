@@ -105,6 +105,25 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(transaction);
   }
 
+  async createTransactions(inputs: NewTransactionInput[]): Promise<Transaction[]> {
+    const created: Transaction[] = [];
+    for (const input of inputs) created.push(await this.createTransaction(input));
+    return created;
+  }
+
+  listUnsettledTransactions(chain: Chain): Promise<Transaction[]> {
+    return Promise.resolve(
+      [...this.transactions.values()].filter(
+        (t) => t.chain === chain && (t.status === 'PENDING' || t.status === 'REPLACED'),
+      ),
+    );
+  }
+
+  touchClaims(dispatchIds: string[]): Promise<void> {
+    for (const id of dispatchIds) if (this.claimedAt.has(id)) this.claimedAt.set(id, this.now());
+    return Promise.resolve();
+  }
+
   recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
     const transaction: Transaction = {
       id: randomUUID(),
@@ -276,12 +295,9 @@ export class InMemoryDispatchStore implements DispatchStore {
     const stale = [...this.relayDispatches.values()]
       .filter((relay) => {
         const claimed = this.claimedAt.get(relay.id);
-        return (
-          relay.status === 'broadcasting' &&
-          relay.transactionId === null &&
-          !!claimed &&
-          claimed < claimedBefore
-        );
+        // No Transaction row at all — not merely an unwritten link (a crash between the two writes).
+        const hasTransaction = [...this.transactions.values()].some((t) => t.dispatchId === relay.id);
+        return relay.status === 'broadcasting' && !hasTransaction && !!claimed && claimed < claimedBefore;
       })
       .slice(0, limit);
     for (const relay of stale) this.claimedAt.set(relay.id, this.now());
@@ -327,11 +343,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   reopenTransaction(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, {
-        ...transaction,
-        status: 'PENDING',
-        confirmedAt: null,
-      });
+      this.transactions.set(transactionId, { ...transaction, status: 'PENDING', confirmedAt: null });
     });
   }
 

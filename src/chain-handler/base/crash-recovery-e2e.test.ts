@@ -116,8 +116,9 @@ describe('Base write-ahead crash recovery (#20, real Base Sepolia)', () => {
 
     // Restart: a fresh handler and Coordinator over the same stores.
     const restarted = await createHandler(nonceHistory);
-    expect(restarted.peekNextNonce()).toBe(notedNonce + 1); // the noted nonce stays reserved for its recovery
     const coordinator = coordinatorFor(store, restarted);
+    await coordinator.restoreReservations(); // what the worker does on start
+    expect(restarted.peekNextNonce()).toBe(notedNonce + 1); // the noted nonce stays reserved for its recovery
     const second = await store.createDispatch({
       chain: 'base',
       idempotencyKey: `after-restart-${Date.now()}`,

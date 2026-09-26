@@ -52,6 +52,7 @@ function classify(
   rpcCode: number | undefined,
   transport: boolean,
 ): DispatchErrorCode {
+  if (isAlreadyKnown(nodeText)) return 'ALREADY_KNOWN';
   if (isInsufficientFunds(nodeText)) return 'INSUFFICIENT_FUNDS';
   if (isNonceTooLow(nodeText)) return 'NONCE_ALREADY_USED';
   if (transport || rpcCode === LIMIT_EXCEEDED_RPC_CODE || isRateLimitOrTimeout(nodeText)) {
@@ -99,6 +100,11 @@ function isRateLimitOrTimeout(text: string): boolean {
   return /too many requests|rate.?limit|rate exceeded|timed? ?out|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
     text,
   );
+}
+
+/** #20 review: geth "already known", Nethermind "AlreadyKnown", and the like — these exact bytes are already pooled. */
+function isAlreadyKnown(message: string): boolean {
+  return /already ?known|known transaction/i.test(message);
 }
 
 function isInsufficientFunds(message: string): boolean {
