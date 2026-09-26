@@ -6,7 +6,7 @@ Read `CONTEXT.md` and `docs/adr/` at the repo root — every naming/architecture
 
 ### Issue tracker
 
-Local markdown under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`. Each feature is `spec.md` (the feature-level spec — problem, solution, user stories, decisions) plus `issues/NN-slug.md` (one file per execution ticket, numbered from `01`). A `Status:` line near the top of each file records triage state.
+Specs stay local, tickets live on GitHub. Each feature is `.scratch/<feature-slug>/spec.md` (the feature-level design record — problem, solution, user stories, decisions); its execution tickets are **GitHub Issues** on `RbMo7/dispatch`, the source of truth for ticket state. See `docs/agents/issue-tracker.md`. (The older `.scratch/*/issues/NN-*.md` files are stale snapshots — don't read ticket state from them.)
 
 ### Triage labels
 
@@ -25,5 +25,7 @@ Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domai
 
 - `old-docs/` is a frozen snapshot from the prior product this repo diverged from — reference only, never treat it as current.
 - `docs/api.md` pins the `/v1/dispatch` wire format.
-- Current work order: `.scratch/core-engine-scaffold/` (spec done, issues `01`–`15` all implemented — `11`/`14`/`15` were filed during `12`'s review, triaged and resolved 2026-09-24: `11` was a doc-only spec fix, `14` added a real-Postgres third testing tier (ADR-0034), `15` pushed an RPC/Signer timeout into the Chain Handler/Connection boundary rather than the worker loop); `.scratch/solana-chain-handler/` (spec done, issues `01`–`15` all implemented — `13` (wire bundling into the Coordinator's real call loop) triaged and resolved 2026-09-24: same-tick opportunistic, automatic bundling, no caller-selectable mode, per ADR-0006) is the first real chain, proven end to end; `.scratch/relay-dispatch/` (spec done, single ticket `01` — the full end-to-end vertical slice, broken out via `/to-tickets` — implemented) is a working vertical slice, verified against real devnet.
+- Done: `core-engine-scaffold` (issues `01`–`15`), `solana-chain-handler` (`01`–`15`, the first real chain), `relay-dispatch` (a working vertical slice), and `base-chain-handler` — the second real chain, all its GitHub issues (#1–#15) plus #20/#21/#24 filed during review, merged to `main` 2026-09-26 and proven end to end against real Base Sepolia (fee-bump ADR-0037, Bulk Call ADR-0038, nonce gaps ADR-0039, the opt-in volume run ADR-0040, write-before-send ADR-0041).
+- Testing: `pnpm test:offline` (unit + fake-store Coordinator + real-Postgres tiers, ADR-0034) is what CI runs (`.github/workflows/ci.yml`). The live-chain tier — every test importing `test-support/*-fixtures` — runs only locally via `pnpm test`, since it spends testnet funds (ADR-0013); the Base volume run additionally needs `RUN_BASE_VOLUME=1` (ADR-0040). Live RPC URLs come from a gitignored `.env` (loaded by the test runner and by `src/config.ts`).
+- Open follow-ups, not yet ticketed: the Bulk Call `allowFailure: true` API-level proof needs a tracing RPC (`BASE_TRACE_RPC_URL`); ADR roadmap items — webhooks (ADR-0023), Ethereum L1 as its own chain (ADR-0035), Sender Pool (ADR-0016).
 - Nothing is blocked. No open tickets currently need triage.
