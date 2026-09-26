@@ -227,7 +227,15 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       );
     }
 
-    const initialNonce = await client.getTransactionCount({ address: senderAddress, blockTag: 'latest' });
+    // #20 (ADR-0041): never below anything this Sender may still have in
+    // flight — its mempool (pending) or a nonce this engine wrote down
+    // before sending (nonce_history), possibly never sent before a crash.
+    const [confirmed, pending, highestRecorded] = await Promise.all([
+      client.getTransactionCount({ address: senderAddress, blockTag: 'latest' }),
+      client.getTransactionCount({ address: senderAddress, blockTag: 'pending' }),
+      deps.nonceHistoryStore.highestNonce('base', senderAddress),
+    ]);
+    const initialNonce = Math.max(confirmed, pending, (highestRecorded ?? -1) + 1);
 
     return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce);
   }
@@ -463,6 +471,20 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
     const signed = serializeTransaction(tx, { r, s, yParity });
     if (assigned) this.unsentNonces.add(nonce);
+    // #20 (ADR-0041): written down before it is ever sent, so a restart
+    // seeds past this nonce and never hands it to a different transaction.
+    // A failed write is logged, not fatal: nothing has been sent yet, and
+    // refusing to send on a history hiccup would stall every payment.
+    try {
+      await this.nonceHistoryStore.recordNonce({
+        chain: 'base',
+        senderAddress: this.senderAddress,
+        nonce,
+        hash: keccak256(signed),
+      });
+    } catch (cause) {
+      this.logger.error({ nonce, error: extractMessage(cause) }, 'recording nonce history at sign time failed');
+    }
     return ok(signed);
   }
 
@@ -706,6 +728,15 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   }
 
 
+  /** #20 (ADR-0041): an EIP-1559 transaction's hash is keccak256 of its signed serialization — exactly what eth_sendRawTransaction reports. */
+  transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
+    const hex = signedTransactionHex(signed);
+    if (!hex) {
+      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is neither 0x-hex nor base64 bytes' });
+    }
+    return ok(keccak256(hex));
+  }
+
   /**
    * #13 (ADR-0032): RPC-free proof that a Relay Dispatch submission really
    * is a Base transaction this network will consider — an EIP-1559 (type
@@ -784,7 +815,9 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const sender = await recoverSender(hex);
     if (!sender.ok) {
       // A local refusal of bytes this handler signed: the nonce never went out.
-      if (this.unsentNonces.delete(nonce)) this.nonceCounter.release(nonce);
+      if (this.unsentNonces.delete(nonce) && this.nonceCounter.release(nonce)) {
+        await this.nonceHistoryStore.forgetNonce('base', this.senderAddress, nonce).catch(() => undefined);
+      }
       return sender;
     }
 
@@ -807,6 +840,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       ) {
         if (this.nonceCounter.release(nonce)) {
           this.logger.info({ nonce, error: error.message }, 'broadcast refused — nonce released, no gap');
+          await this.nonceHistoryStore
+            .forgetNonce('base', this.senderAddress, nonce)
+            .catch((forgetCause: unknown) =>
+              this.logger.error({ nonce, error: extractMessage(forgetCause) }, 'forgetting a released nonce failed'),
+            );
         }
       }
       // #10: the chain is ahead of our counter (e.g. something else sent

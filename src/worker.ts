@@ -109,6 +109,25 @@ async function rewatchLoop(): Promise<void> {
  * exactly, for the same reason (a genuinely different, much slower
  * cadence than the main poll loop).
  */
+/**
+ * #20 (ADR-0041): resumes claims a crashed worker left half-done — a
+ * claim counts as stale after 5 minutes, so checking once a minute is
+ * plenty.
+ */
+const RECLAIM_INTERVAL_MS = 60_000;
+
+async function reclaimLoop(): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.reclaimStaleClaims(BATCH_LIMIT);
+    } catch (cause) {
+      logger.error({ cause }, 'worker reclaim tick failed');
+    }
+    if (!running) break;
+    await sleep(RECLAIM_INTERVAL_MS);
+  }
+}
+
 async function reorgRecheckLoop(): Promise<void> {
   while (running) {
     try {
@@ -123,11 +142,11 @@ async function reorgRecheckLoop(): Promise<void> {
 
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// All three are self-scheduling loops, not setInterval: each only
+// All four are self-scheduling loops, not setInterval: each only
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
-await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop()]);
+await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop()]);
 
 logger.info('worker stopped');
 process.exit(0);

@@ -130,6 +130,13 @@ export interface ChainHandler<C extends Chain = Chain> {
    */
   validateSignedTransaction(signed: SignedTransaction): Promise<Result<void, DispatchError>>;
 
+  /**
+   * #20 (ADR-0041): the hash `broadcast` will report for these signed
+   * bytes, computed locally — no network — so the Coordinator can write a
+   * Transaction down *before* sending it. Must never mutate `signed`.
+   */
+  transactionHash(signed: SignedTransaction): Result<string, DispatchError>;
+
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;
 

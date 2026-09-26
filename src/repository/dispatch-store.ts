@@ -56,7 +56,11 @@ export interface DispatchStore {
   /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
   listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]>;
   /** base-chain-handler issue 07: up to `limit` of `chain`'s CONFIRMED Transactions (per chain, so one chain's volume never crowds another's out of `limit`) whose `confirmedAt` is no earlier than `notConfirmedBefore`, oldest-confirmed first — the reorg safety net's own low-frequency re-watch work queue, mirroring listAbandonedTransactions's shape exactly. A Transaction confirmed before `notConfirmedBefore` (outside the bounded re-check window) is excluded — it's aged past the point this engine still bothers re-verifying it. */
-  listRecentlyConfirmedTransactions(chain: Chain, limit: number, notConfirmedBefore: Date): Promise<Transaction[]>;
+  listRecentlyConfirmedTransactions(
+    chain: Chain,
+    limit: number,
+    notConfirmedBefore: Date,
+  ): Promise<Transaction[]>;
   /** Persists a Call's freshly-signed Transaction, once broadcast for the first time. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** Persists a Call that failed before ever reaching a broadcast (validateCall/prepare/sign) — no hash/signedBytes exist yet, unlike createTransaction. */
@@ -72,6 +76,14 @@ export interface DispatchStore {
   listTransactionsByHash(hash: string): Promise<Transaction[]>;
   /** #9: records a failed (or exhausted) fee-bump attempt against the cap without creating a replacement. */
   setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void>;
+  /** #20 (ADR-0041): a Transaction written down before sending was actually sent — stamps lastBroadcastAt, and takes the hash the chain reported if it differs (Solana re-signing with a fresh blockhash). */
+  recordSent(transactionId: string, hash: string): Promise<void>;
+  /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
+  undoReplacement(replacementId: string): Promise<void>;
+  /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
+  reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]>;
+  /** #20: the same for Relay Dispatches that never got a Transaction. */
+  reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]>;
   /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
   markDropped(transactionId: string): Promise<void>;
   markAbandoned(transactionId: string): Promise<void>;

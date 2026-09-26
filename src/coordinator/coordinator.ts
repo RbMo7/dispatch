@@ -32,6 +32,9 @@ const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
  */
 const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** #20 (ADR-0041): how long a claim may stay `broadcasting` with unsent items before another tick resumes it. */
+const STALE_CLAIM_MS = 5 * 60 * 1000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -308,30 +311,46 @@ export class Coordinator {
       return;
     }
 
-    const broadcastResult = await handler.broadcast(signResult.value);
-    if (!broadcastResult.ok) {
-      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
+    // #20 (ADR-0041): write every member's Transaction down *before*
+    // sending, under the hash the chain will report — so a crash or an
+    // ambiguous failure after this point can never lose track of a
+    // transaction that may land.
+    const hashResult = handler.transactionHash(signResult.value);
+    if (!hashResult.ok) {
+      log.warn({ stage: 'transactionHash', error: hashResult.error }, 'call(s) failed');
       for (const { dispatch, callIndex } of members) {
-        await this.store.recordCallFailure({
+        await this.store.recordCallFailure({ dispatchId: dispatch.id, callIndex, chain, error: hashResult.error });
+      }
+      return;
+    }
+    const noted: Transaction[] = [];
+    for (const { dispatch, callIndex } of members) {
+      noted.push(
+        await this.store.createTransaction({
           dispatchId: dispatch.id,
           callIndex,
           chain,
-          error: broadcastResult.error,
-        });
+          signedBytes: signResult.value,
+          hash: hashResult.value,
+        }),
+      );
+    }
+
+    const broadcastResult = await handler.broadcast(signResult.value);
+    if (!broadcastResult.ok) {
+      if (isTransientBroadcastFailure(broadcastResult.error)) {
+        // It may have reached the node: stays PENDING — polling, Base's
+        // rebroadcast of the identical bytes, and abandonment resolve it.
+        log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'broadcast ambiguous — left PENDING');
+        return;
       }
+      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
+      for (const row of noted) await this.store.markFailed(row.id, broadcastResult.error);
       return;
     }
 
     log.info({ hash: broadcastResult.value.hash }, 'call(s) broadcast succeeded');
-    for (const { dispatch, callIndex } of members) {
-      await this.store.createTransaction({
-        dispatchId: dispatch.id,
-        callIndex,
-        chain,
-        signedBytes: signResult.value,
-        hash: broadcastResult.value.hash,
-      });
-    }
+    for (const row of noted) await this.store.recordSent(row.id, broadcastResult.value.hash);
   }
 
   /**
@@ -439,6 +458,36 @@ export class Coordinator {
    * need one). `pollPendingTransactions` below then tracks the resulting
    * Transaction to a terminal state exactly like a Managed Dispatch one.
    */
+  /**
+   * #20 (ADR-0041): resumes work a crashed worker claimed but never
+   * finished. Only items with no Transaction are processed again — and
+   * since nothing is ever sent without its Transaction written down first,
+   * such an item was never sent, so this can't pay twice. Reclaimed items
+   * skip the Funding Check (it ran at the original claim).
+   */
+  async reclaimStaleClaims(limit: number): Promise<void> {
+    const claimedBefore = new Date(this.now().getTime() - STALE_CLAIM_MS);
+
+    for (const dispatch of await this.store.reclaimStaleDispatches(claimedBefore, limit)) {
+      const sent = new Set((await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex));
+      const unsent = dispatch.items
+        .map((_, callIndex) => ({ dispatch, callIndex }))
+        .filter(({ callIndex }) => !sent.has(callIndex));
+      this.logger.warn({ dispatchId: dispatch.id, unsent: unsent.length }, 'reclaiming a stale claim');
+      await this.processChainBatch(
+        this.requireChainHandler(dispatch.chain),
+        this.requireSenderAddress(dispatch.chain),
+        dispatch.chain,
+        unsent,
+      );
+    }
+
+    for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(claimedBefore, limit)) {
+      this.logger.warn({ relayDispatchId: relayDispatch.id }, 'reclaiming a stale relay dispatch claim');
+      await this.processRelayDispatch(relayDispatch);
+    }
+  }
+
   async processQueuedRelayDispatches(limit: number): Promise<void> {
     const relayDispatches = await this.store.claimQueuedRelayDispatches(limit);
     if (relayDispatches.length === 0) {
@@ -462,6 +511,28 @@ export class Coordinator {
       chain: relayDispatch.chain,
     });
 
+    // #20 (ADR-0041): written down (and linked) before it is ever sent.
+    const hashResult = handler.transactionHash(relayDispatch.signedTransaction);
+    if (!hashResult.ok) {
+      log.warn({ error: hashResult.error }, 'relay dispatch hash failed');
+      const failed = await this.store.recordCallFailure({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: relayDispatch.chain,
+        error: hashResult.error,
+      });
+      await this.store.setRelayDispatchTransaction(relayDispatch.id, failed.id);
+      return;
+    }
+    const transaction = await this.store.createTransaction({
+      dispatchId: relayDispatch.id,
+      callIndex: 0,
+      chain: relayDispatch.chain,
+      signedBytes: relayDispatch.signedTransaction,
+      hash: hashResult.value,
+    });
+    await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+
     let broadcastResult: Awaited<ReturnType<ChainHandler['broadcast']>> | undefined;
     for (let attempt = 0; attempt < RELAY_BROADCAST_MAX_ATTEMPTS; attempt++) {
       log.debug({ attempt }, 'broadcasting relay dispatch');
@@ -480,35 +551,21 @@ export class Coordinator {
       await this.sleep(RELAY_BROADCAST_RETRY_BASE_DELAY_MS * 2 ** attempt);
     }
 
-    // A single item, always at callIndex 0 (RelayDispatch is never a batch,
-    // ADR-0031) — createTransaction/recordCallFailure are the exact same
-    // DispatchStore methods Managed Dispatch's processCall already uses, so
-    // Transaction/Attempt records are reused completely unchanged.
-    let transaction;
     if (broadcastResult?.ok === true) {
       log.info({ hash: broadcastResult.value.hash }, 'relay dispatch broadcast succeeded');
-      transaction = await this.store.createTransaction({
-        dispatchId: relayDispatch.id,
-        callIndex: 0,
-        chain: relayDispatch.chain,
-        signedBytes: relayDispatch.signedTransaction,
-        hash: broadcastResult.value.hash,
-      });
-    } else {
-      const error = broadcastResult?.error ?? {
-        code: 'RPC_UNAVAILABLE' as const,
-        message: 'broadcast was never attempted',
-      };
-      log.warn({ error }, 'relay dispatch broadcast failed');
-      transaction = await this.store.recordCallFailure({
-        dispatchId: relayDispatch.id,
-        callIndex: 0,
-        chain: relayDispatch.chain,
-        error,
-      });
+      await this.store.recordSent(transaction.id, broadcastResult.value.hash);
+      return;
     }
-
-    await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+    const error = broadcastResult?.error ?? {
+      code: 'RPC_UNAVAILABLE' as const,
+      message: 'broadcast was never attempted',
+    };
+    if (isTransientBroadcastFailure(error)) {
+      log.warn({ error }, 'relay dispatch broadcast ambiguous — left PENDING');
+      return;
+    }
+    log.warn({ error }, 'relay dispatch broadcast failed');
+    await this.store.markFailed(transaction.id, error);
   }
 
   /**
@@ -702,30 +759,47 @@ export class Coordinator {
 
     const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
     const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
-    const broadcast = signed.ok ? await handler.broadcast(signed.value) : signed;
-    if (!broadcast.ok && broadcast.error.code === 'NONCE_ALREADY_USED') {
-      // Some version landed — whether seen by prepareReplacement's own check
-      // or only by the replacement's broadcast. Exhausting the cap is what
-      // stops further bumps; resolution will find the landed version.
-      log.info({ error: broadcast.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+    const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
+    if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
+      log.info({ error: prepared.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
       await recordAttempts(config.maxFeeBumps);
       return 'handled';
     }
-    if (!signed.ok || !broadcast.ok) {
-      const error = broadcast.ok ? undefined : broadcast.error;
+    if (!signed.ok || !replacementHash.ok) {
+      const error = !replacementHash.ok ? replacementHash.error : undefined;
       log.warn({ error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
       await recordAttempts(transaction.feeBumpAttempts + 1);
       return 'failed';
     }
 
-    log.info({ replacementHash: broadcast.value.hash }, 'fee-bump: replacement broadcast at the same nonce');
+    // #20 (ADR-0041): the replacement is written down before it is sent.
+    const replacements: Transaction[] = [];
     for (const member of members) {
-      await this.store.createReplacementTransaction(member.id, {
-        signedBytes: signed.value,
-        hash: broadcast.value.hash,
-      });
+      replacements.push(
+        await this.store.createReplacementTransaction(member.id, { signedBytes: signed.value, hash: replacementHash.value }),
+      );
     }
-    return 'bumped';
+    const broadcast = await handler.broadcast(signed.value);
+    if (broadcast.ok) {
+      log.info({ replacementHash: broadcast.value.hash }, 'fee-bump: replacement broadcast at the same nonce');
+      for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
+      return 'bumped';
+    }
+    if (isTransientBroadcastFailure(broadcast.error)) {
+      // It may have reached the node: the replacement stays written down, PENDING.
+      log.warn({ error: broadcast.error }, 'fee-bump: replacement broadcast ambiguous — left PENDING');
+      return 'bumped';
+    }
+    // Definitely refused: undo it, so the original is the live version again.
+    for (const replacement of replacements) await this.store.undoReplacement(replacement.id);
+    if (broadcast.error.code === 'NONCE_ALREADY_USED') {
+      log.info({ error: broadcast.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+      await recordAttempts(config.maxFeeBumps);
+      return 'handled';
+    }
+    log.warn({ error: broadcast.error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
+    await recordAttempts(transaction.feeBumpAttempts + 1);
+    return 'failed';
   }
 
   private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {

@@ -155,6 +155,22 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       if (result.ok) expect(result.value.every((slot) => slot.status !== 'CONFIRMED')).toBe(true);
     });
 
+    it("transactionHash computes a signed transaction's hash locally, deterministically, never throwing (#20)", () => {
+      const handler = createHandler();
+      const first = handler.transactionHash(fixtures.validSignedTransaction);
+      const second = handler.transactionHash(fixtures.validSignedTransaction);
+      expect(first.ok).toBe(true);
+      expect(first).toEqual(second);
+      expect(first.ok && first.value.length).toBeGreaterThan(0);
+    });
+
+    it('transactionHash answers malformed bytes with a structured error, never throwing (#20)', () => {
+      const handler = createHandler();
+      const result = handler.transactionHash('not-real-signed-bytes-%%%');
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toEqual(expect.any(String));
+    });
+
     it('a broadcast failure surfaces a structured DispatchError instead of throwing', async () => {
       const handler = createHandler();
       const result = await handler.broadcast(fixtures.invalidSignedTransaction);

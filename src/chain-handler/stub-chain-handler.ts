@@ -24,7 +24,6 @@ export class StubChainHandler implements ChainHandler<'base'> {
   readonly chain = 'base';
 
   private readonly broadcastHashes = new Set<string>();
-  private nextHash = 0;
 
   /**
    * A real ChainHandler.paymentToCall does a real native/token-transfer
@@ -89,6 +88,14 @@ export class StubChainHandler implements ChainHandler<'base'> {
     return Promise.resolve(ok(undefined));
   }
 
+  /** A stub hash derived from the bytes themselves, so `broadcast` reports exactly what this computes — as a real chain does. */
+  transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
+    if (!/^[\w:.-]+$/.test(signed)) {
+      return err({ code: 'CHAIN_REJECTED', message: 'stub: not a well-formed signed transaction' });
+    }
+    return ok(`stub-hash-${signed}`);
+  }
+
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
     if (signed === 'force-failure') {
       return Promise.resolve(
@@ -96,9 +103,10 @@ export class StubChainHandler implements ChainHandler<'base'> {
       );
     }
 
-    const hash = `stub-hash-${this.nextHash++}`;
-    this.broadcastHashes.add(hash);
-    return Promise.resolve(ok({ hash }));
+    const hashResult = this.transactionHash(signed);
+    if (!hashResult.ok) return Promise.resolve(hashResult);
+    this.broadcastHashes.add(hashResult.value);
+    return Promise.resolve(ok({ hash: hashResult.value }));
   }
 
   getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {

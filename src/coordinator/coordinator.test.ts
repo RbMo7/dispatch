@@ -63,6 +63,10 @@ class FakeChainHandler implements ChainHandler {
       _senderAddress: string,
     ): Promise<Result<SignedTransaction, DispatchError>> => Promise.resolve(ok('signed-bytes')),
   );
+  /** Matches broadcast's default hash — a real chain's broadcast reports exactly what this computes. */
+  transactionHash = vi.fn((_signed: SignedTransaction): Result<string, DispatchError> =>
+    ok('hash-1'),
+  );
   broadcast = vi.fn((_signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> =>
     Promise.resolve(ok({ hash: 'hash-1' })),
   );
@@ -792,6 +796,7 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   it('stops bumping when the replacement broadcast itself finds the nonce already used (review of #9)', async () => {
     const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
+    handler.transactionHash.mockReturnValue(ok('hash-2'));
     handler.broadcast.mockResolvedValueOnce(
       err({ code: 'NONCE_ALREADY_USED', message: 'nonce too low' }),
     );
@@ -799,8 +804,10 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
 
     await coordinator.pollPendingTransactions(10);
 
+    // The refused replacement stays on record, undone (ADR-0041); the original is live, bumping stopped.
     expect(currentVersions(store, dispatch.id)).toEqual([
       { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
+      { hash: 'hash-2', status: 'DROPPED', feeBumpAttempts: 1 },
     ]);
   });
 
@@ -869,6 +876,23 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
     const versions = currentVersions(store, dispatch.id);
     expect(versions).toHaveLength(MAX_FEE_BUMPS + 1);
     expect(versions.at(-1)?.status).toBe('ABANDONED');
+  });
+
+  it('undoes a replacement the node refused — the replacement DROPPED, the original PENDING again, the attempt counted (ADR-0041)', async () => {
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
+    const { dispatch } = await createStuckCandidate(store, true);
+    handler.transactionHash.mockReturnValue(ok('hash-2'));
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'replacement transaction underpriced' }),
+    );
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: 1 },
+      { hash: 'hash-2', status: 'DROPPED', feeBumpAttempts: 1 },
+    ]);
   });
 
   it('stops bumping for good once the nonce is already used, without creating a replacement', async () => {
@@ -1101,6 +1125,193 @@ describe('Coordinator Bulk Call (#11, ADR-0038)', () => {
   });
 });
 
+describe('Coordinator write-ahead: every Transaction is written down before it is sent (#20, ADR-0041)', () => {
+  async function queueOne(
+    store: InMemoryDispatchStore,
+    items: DispatchItem<'solana'>[] = [solanaItem],
+  ) {
+    return store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: `wa-${Math.random()}`,
+      items,
+      retryPolicy: false,
+    });
+  }
+
+  it('saves the Transaction, under the locally computed hash, before calling broadcast', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.transactionHash.mockReturnValue(ok('noted-hash'));
+    handler.broadcast.mockImplementation(async () => {
+      const [row] = await store.listTransactions(dispatch.id);
+      expect(row).toMatchObject({
+        status: 'PENDING',
+        hash: 'noted-hash',
+        signedBytes: 'signed-bytes',
+      });
+      return ok({ hash: 'noted-hash' });
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the Transaction PENDING, not FAILED, when the broadcast is ambiguous (e.g. a timeout)', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.broadcast.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'timed out' }));
+
+    await coordinator.processQueuedDispatches(10);
+
+    const [row] = await store.listTransactions(dispatch.id);
+    expect(row).toMatchObject({ status: 'PENDING', hash: 'hash-1', error: null });
+  });
+
+  it('marks the Transaction FAILED when the node definitely refused it', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'intrinsic gas too low' }),
+    );
+
+    await coordinator.processQueuedDispatches(10);
+
+    const [row] = await store.listTransactions(dispatch.id);
+    expect(row).toMatchObject({
+      status: 'FAILED',
+      error: { code: 'CHAIN_REJECTED', message: 'intrinsic gas too low' },
+    });
+  });
+
+  it('takes the hash the chain reported when the send re-signed (e.g. Solana refreshing an expired blockhash)', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.transactionHash.mockReturnValue(ok('noted-hash'));
+    handler.broadcast.mockResolvedValueOnce(ok({ hash: 'refreshed-hash' }));
+
+    await coordinator.processQueuedDispatches(10);
+
+    const [row] = await store.listTransactions(dispatch.id);
+    expect(row?.hash).toBe('refreshed-hash');
+  });
+
+  it('fails the Call without ever broadcasting when its hash cannot be computed', async () => {
+    const { store, handler, coordinator } = setup();
+    const dispatch = await queueOne(store);
+    handler.transactionHash.mockReturnValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'undecodable' }),
+    );
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.broadcast).not.toHaveBeenCalled();
+    const [row] = await store.listTransactions(dispatch.id);
+    expect(row?.status).toBe('FAILED');
+  });
+
+  it("writes a Relay Dispatch's Transaction down (and links it) before broadcasting", async () => {
+    const { store, handler, coordinator } = setup();
+    const relay = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: `wa-r-${Math.random()}`,
+      signedTransaction: 'relay-bytes',
+    });
+    handler.broadcast.mockImplementation(async () => {
+      const [row] = await store.listTransactions(relay.id);
+      expect(row?.status).toBe('PENDING');
+      expect((await store.getRelayDispatch(relay.id))?.transactionId).toBe(row?.id);
+      return ok({ hash: 'hash-1' });
+    });
+
+    await coordinator.processQueuedRelayDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  describe('reclaiming stale claims', () => {
+    function setupClocked() {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = () => currentTime;
+      const store = new InMemoryDispatchStore(clock);
+      const handler = new FakeChainHandler('solana');
+      const coordinator = new Coordinator({
+        store,
+        chainHandlers: new Map([['solana', handler]]),
+        senderAddresses: new Map([['solana', 'sender-address']]),
+        abandonmentTimeoutMs: new Map([['solana', ABANDON_AFTER_MS]]),
+        now: clock,
+        sleep: () => Promise.resolve(),
+      });
+      return {
+        store,
+        handler,
+        coordinator,
+        advance: (ms: number) => (currentTime = new Date(currentTime.getTime() + ms)),
+      };
+    }
+
+    it('resumes only the never-sent items of a Dispatch whose claim went stale (a crash mid-batch)', async () => {
+      const { store, handler, coordinator, advance } = setupClocked();
+      const second: SolanaCall = { programId: 'prog-2', accounts: [], data: 'ZGF0YQ==' };
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'stale-1',
+        items: [solanaItem, { call: second, payment: null }],
+        retryPolicy: false,
+      });
+      await store.claimQueued(10); // the crashed worker's claim
+      await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'b',
+        hash: 'h0',
+      });
+      advance(5 * 60_000 + 1);
+
+      await coordinator.reclaimStaleClaims(10);
+
+      expect(handler.prepare).toHaveBeenCalledTimes(1);
+      expect(handler.prepare).toHaveBeenCalledWith([second], 'sender-address');
+      const rows = await store.listTransactions(dispatch.id);
+      expect(rows.map((t) => t.callIndex).sort()).toEqual([0, 1]);
+    });
+
+    it('leaves a claim alone until it is 5 minutes stale', async () => {
+      const { store, handler, coordinator, advance } = setupClocked();
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'stale-2',
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(10);
+      advance(5 * 60_000 - 1);
+
+      await coordinator.reclaimStaleClaims(10);
+
+      expect(handler.prepare).not.toHaveBeenCalled();
+    });
+
+    it('resumes a stale Relay Dispatch claim that never got a Transaction', async () => {
+      const { store, handler, coordinator, advance } = setupClocked();
+      const relay = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: 'stale-r',
+        signedTransaction: 'relay-bytes',
+      });
+      await store.claimQueuedRelayDispatches(10);
+      advance(5 * 60_000 + 1);
+
+      await coordinator.reclaimStaleClaims(10);
+
+      expect(handler.broadcast).toHaveBeenCalledWith('relay-bytes');
+      expect((await store.getRelayDispatch(relay.id))?.transactionId).not.toBeNull();
+    });
+  });
+});
+
 describe('Coordinator.processQueuedRelayDispatches', () => {
   it('broadcasts a queued RelayDispatch exactly once — no validateCall/prepare/sign — and persists a PENDING Transaction', async () => {
     const { store, handler, coordinator } = setup();
@@ -1153,7 +1364,7 @@ describe('Coordinator.processQueuedRelayDispatches', () => {
     expect(transaction).toMatchObject({ status: 'PENDING', hash: 'relay-hash-2' });
   });
 
-  it('never retries a non-transient broadcast failure (e.g. CHAIN_REJECTED), and records it as a failed Transaction with no hash', async () => {
+  it('never retries a non-transient broadcast failure (e.g. CHAIN_REJECTED), and records it as a failed Transaction', async () => {
     const { store, handler, coordinator } = setup();
     handler.broadcast.mockResolvedValueOnce(
       err({ code: 'CHAIN_REJECTED', message: 'simulation failed' }),
@@ -1168,17 +1379,18 @@ describe('Coordinator.processQueuedRelayDispatches', () => {
 
     expect(handler.broadcast).toHaveBeenCalledTimes(1);
     const [transaction] = await store.listTransactions(relayDispatch.id);
+    // Written down before it was sent (ADR-0041), so its hash and bytes are on record too.
     expect(transaction).toMatchObject({
       status: 'FAILED',
-      hash: null,
-      signedBytes: null,
+      hash: 'hash-1',
+      signedBytes: 'externally-signed-bytes',
       error: { code: 'CHAIN_REJECTED', message: 'simulation failed' },
     });
     const updated = await store.getRelayDispatch(relayDispatch.id);
     expect(updated?.transactionId).toBe(transaction?.id);
   });
 
-  it('records a failed Transaction once every bounded retry of a transient failure is exhausted', async () => {
+  it('leaves a Relay Transaction PENDING — never falsely FAILED — once every bounded retry of a transient failure is exhausted (ADR-0041)', async () => {
     const { store, handler, coordinator } = setup();
     handler.broadcast.mockResolvedValue(err({ code: 'RPC_UNAVAILABLE', message: 'still down' }));
     const relayDispatch = await store.createRelayDispatch({
@@ -1191,11 +1403,7 @@ describe('Coordinator.processQueuedRelayDispatches', () => {
 
     expect(handler.broadcast).toHaveBeenCalledTimes(3); // RELAY_BROADCAST_MAX_ATTEMPTS
     const [transaction] = await store.listTransactions(relayDispatch.id);
-    expect(transaction).toMatchObject({
-      status: 'FAILED',
-      hash: null,
-      error: { code: 'RPC_UNAVAILABLE', message: 'still down' },
-    });
+    expect(transaction).toMatchObject({ status: 'PENDING', hash: 'hash-1', error: null }); // may have arrived: keep checking
   });
 
   it('processes each claimed RelayDispatch independently — one failing never blocks another', async () => {

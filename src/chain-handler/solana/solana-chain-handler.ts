@@ -610,6 +610,17 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * into a decoded `Transaction`, or a structured `CHAIN_REJECTED` if they
    * aren't one.
    */
+  /** #20 (ADR-0041): a Solana transaction's id is its first (fee payer's) signature, base58 — exactly what sendRawTransaction reports. */
+  transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
+    const decoded = this.decodeSignedTransaction(Buffer.from(signed, 'base64'));
+    if (!decoded.ok) return decoded;
+    const signature = decoded.value.signature;
+    if (!signature) {
+      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction carries no signature' });
+    }
+    return ok(bs58.encode(signature));
+  }
+
   private decodeSignedTransaction(raw: Buffer): Result<Transaction, DispatchError> {
     try {
       return ok(Transaction.from(raw));

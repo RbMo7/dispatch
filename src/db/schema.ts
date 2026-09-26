@@ -24,6 +24,8 @@ export const dispatches = pgTable(
     retryPolicy: boolean('retry_policy').notNull().default(false),
     /** #11 (ADR-0038): the Bulk Call opt-in, null for the default mode. */
     bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
+    /** #20 (ADR-0041): when a worker last claimed this row — a claim still `broadcasting` long after is reclaimed. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],
@@ -117,6 +119,8 @@ export const relayDispatches = pgTable(
     status: text('status').notNull().default('queued'),
     transactionId: uuid('transaction_id').references(() => transactions.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** #20: when a worker last claimed this row. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
   },
   (table) => [uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey)],
 );

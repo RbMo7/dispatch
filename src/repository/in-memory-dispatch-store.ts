@@ -26,6 +26,8 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly transactions = new Map<string, Transaction>();
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
+  /** #20: when each Dispatch / Relay Dispatch was last claimed. */
+  private readonly claimedAt = new Map<string, Date>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -72,6 +74,7 @@ export class InMemoryDispatchStore implements DispatchStore {
 
       const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting' };
       this.dispatches.set(dispatch.id, broadcasting);
+      this.claimedAt.set(dispatch.id, this.now());
       claimed.push(broadcasting);
     }
 
@@ -233,6 +236,58 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
+  recordSent(transactionId: string, hash: string): Promise<void> {
+    return this.settle(() => {
+      const transaction = this.requireTransaction(transactionId);
+      this.transactions.set(transactionId, { ...transaction, hash, lastBroadcastAt: this.now() });
+    });
+  }
+
+  undoReplacement(replacementId: string): Promise<void> {
+    return this.settle(() => {
+      const replacement = this.requireTransaction(replacementId);
+      if (!replacement.replacesTransactionId)
+        throw new Error(`Not a replacement transaction: ${replacementId}`);
+      const predecessor = this.requireTransaction(replacement.replacesTransactionId);
+      this.transactions.set(replacementId, { ...replacement, status: 'DROPPED' });
+      this.transactions.set(predecessor.id, { ...predecessor, status: 'PENDING' });
+    });
+  }
+
+  reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]> {
+    const stale = [...this.dispatches.values()]
+      .filter((dispatch) => {
+        const claimed = this.claimedAt.get(dispatch.id);
+        if (dispatch.status !== 'broadcasting' || !claimed || claimed >= claimedBefore)
+          return false;
+        const sent = new Set(
+          [...this.transactions.values()]
+            .filter((t) => t.dispatchId === dispatch.id)
+            .map((t) => t.callIndex),
+        );
+        return sent.size < dispatch.items.length;
+      })
+      .slice(0, limit);
+    for (const dispatch of stale) this.claimedAt.set(dispatch.id, this.now());
+    return Promise.resolve(stale);
+  }
+
+  reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]> {
+    const stale = [...this.relayDispatches.values()]
+      .filter((relay) => {
+        const claimed = this.claimedAt.get(relay.id);
+        return (
+          relay.status === 'broadcasting' &&
+          relay.transactionId === null &&
+          !!claimed &&
+          claimed < claimedBefore
+        );
+      })
+      .slice(0, limit);
+    for (const relay of stale) this.claimedAt.set(relay.id, this.now());
+    return Promise.resolve(stale);
+  }
+
   markDropped(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
@@ -272,7 +327,11 @@ export class InMemoryDispatchStore implements DispatchStore {
   reopenTransaction(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'PENDING', confirmedAt: null });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'PENDING',
+        confirmedAt: null,
+      });
     });
   }
 
@@ -309,6 +368,7 @@ export class InMemoryDispatchStore implements DispatchStore {
 
       const broadcasting: RelayDispatch = { ...relayDispatch, status: 'broadcasting' };
       this.relayDispatches.set(relayDispatch.id, broadcasting);
+      this.claimedAt.set(relayDispatch.id, this.now());
       claimed.push(broadcasting);
     }
 

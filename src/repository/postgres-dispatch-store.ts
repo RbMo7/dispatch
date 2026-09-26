@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
@@ -129,7 +129,7 @@ export class PostgresDispatchStore implements DispatchStore {
 
       const rows = await tx
         .update(dispatches)
-        .set({ status: 'broadcasting' })
+        .set({ status: 'broadcasting', claimedAt: new Date() })
         .where(
           inArray(
             dispatches.id,
@@ -263,6 +263,92 @@ export class PostgresDispatchStore implements DispatchStore {
       .where(eq(transactions.id, transactionId));
   }
 
+  async recordSent(transactionId: string, hash: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ hash, lastBroadcastAt: new Date() })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async undoReplacement(replacementId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const replacement = await tx.query.transactions.findFirst({
+        where: eq(transactions.id, replacementId),
+      });
+      if (!replacement?.replacesTransactionId) {
+        throw new Error(`Not a replacement transaction: ${replacementId}`);
+      }
+      await tx
+        .update(transactions)
+        .set({ status: 'DROPPED' })
+        .where(eq(transactions.id, replacementId));
+      await tx
+        .update(transactions)
+        .set({ status: 'PENDING' })
+        .where(eq(transactions.id, replacement.replacesTransactionId));
+    });
+  }
+
+  async reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]> {
+    return this.db.transaction(async (tx) => {
+      const stale = await tx
+        .select({ id: dispatches.id })
+        .from(dispatches)
+        .where(
+          and(
+            eq(dispatches.status, 'broadcasting'),
+            lt(dispatches.claimedAt, claimedBefore),
+            sql`jsonb_array_length(${dispatches.items}) > (select count(distinct ${transactions.callIndex}) from ${transactions} where ${transactions.dispatchId} = ${dispatches.id})`,
+          ),
+        )
+        .orderBy(dispatches.claimedAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
+      if (stale.length === 0) return [];
+      const rows = await tx
+        .update(dispatches)
+        .set({ claimedAt: new Date() })
+        .where(
+          inArray(
+            dispatches.id,
+            stale.map((row) => row.id),
+          ),
+        )
+        .returning();
+      return rows.map(toDispatch);
+    });
+  }
+
+  async reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]> {
+    return this.db.transaction(async (tx) => {
+      const stale = await tx
+        .select({ id: relayDispatches.id })
+        .from(relayDispatches)
+        .where(
+          and(
+            eq(relayDispatches.status, 'broadcasting'),
+            lt(relayDispatches.claimedAt, claimedBefore),
+            isNull(relayDispatches.transactionId),
+          ),
+        )
+        .orderBy(relayDispatches.claimedAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
+      if (stale.length === 0) return [];
+      const rows = await tx
+        .update(relayDispatches)
+        .set({ claimedAt: new Date() })
+        .where(
+          inArray(
+            relayDispatches.id,
+            stale.map((row) => row.id),
+          ),
+        )
+        .returning();
+      return rows.map(toRelayDispatch);
+    });
+  }
+
   async markDropped(transactionId: string): Promise<void> {
     await this.db
       .update(transactions)
@@ -389,7 +475,7 @@ export class PostgresDispatchStore implements DispatchStore {
 
       const rows = await tx
         .update(relayDispatches)
-        .set({ status: 'broadcasting' })
+        .set({ status: 'broadcasting', claimedAt: new Date() })
         .where(
           inArray(
             relayDispatches.id,

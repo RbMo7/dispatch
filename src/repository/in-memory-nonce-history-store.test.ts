@@ -6,8 +6,18 @@ describe('InMemoryNonceHistoryStore', () => {
   it('records and lists a Sender’s nonce history, ascending by nonce', async () => {
     const store = new InMemoryNonceHistoryStore();
 
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 1, hash: '0xhash1' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 1,
+      hash: '0xhash1',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xhash0',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' },
@@ -29,8 +39,18 @@ describe('InMemoryNonceHistoryStore', () => {
   it('recording the same (chain, senderAddress, nonce) again is a no-op, keeping the first hash', async () => {
     const store = new InMemoryNonceHistoryStore();
 
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xreplacement' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xoriginal',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xreplacement',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' },
@@ -40,5 +60,21 @@ describe('InMemoryNonceHistoryStore', () => {
   it('returns an empty list for a Sender with no recorded history', async () => {
     const store = new InMemoryNonceHistoryStore();
     expect(await store.listNonceHistory('base', '0xnever-broadcast')).toEqual([]);
+  });
+
+  it('highestNonce reports the highest recorded nonce, and forgetNonce removes a released one (#20)', async () => {
+    const store = new InMemoryNonceHistoryStore();
+    const sender = `0xsender-${Math.random()}`;
+    expect(await store.highestNonce('base', sender)).toBeNull();
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 4, hash: '0xa' });
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 7, hash: '0xb' });
+    expect(await store.highestNonce('base', sender)).toBe(7);
+
+    await store.forgetNonce('base', sender, 7);
+
+    expect(await store.highestNonce('base', sender)).toBe(4);
+    // A forgotten nonce can be recorded afresh — the reused nonce's new hash wins.
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 7, hash: '0xc' });
+    expect((await store.listNonceHistory('base', sender)).map((r) => r.hash)).toEqual(['0xa', '0xc']);
   });
 });

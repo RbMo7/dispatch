@@ -49,6 +49,8 @@ describe('BaseChainHandler never throws on its sign/broadcast paths (#10, real B
   const inertHistory: NonceHistoryStore = {
     recordNonce: () => Promise.resolve(),
     listNonceHistory: () => Promise.resolve([]),
+    highestNonce: () => Promise.resolve(null),
+    forgetNonce: () => Promise.resolve(),
   };
 
   it('sign answers an undecodable PreparedTransaction with a structured error', async () => {
@@ -90,6 +92,8 @@ describe('BaseChainHandler never throws on its sign/broadcast paths (#10, real B
     const failingHistory: NonceHistoryStore = {
       recordNonce: () => Promise.reject(new Error('nonce_history insert failed')),
       listNonceHistory: () => Promise.resolve([]),
+      highestNonce: () => Promise.resolve(null),
+      forgetNonce: () => Promise.resolve(),
     };
     const handler = await createHandler(failingHistory);
     const prepared = await handler.prepare(

@@ -15,8 +15,18 @@ describe('PostgresNonceHistoryStore (real Postgres)', () => {
   });
 
   it('persists and lists a Sender’s nonce history, ascending by nonce', async () => {
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 1, hash: '0xhash1' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 1,
+      hash: '0xhash1',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xhash0',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' },
@@ -25,8 +35,18 @@ describe('PostgresNonceHistoryStore (real Postgres)', () => {
   });
 
   it('the real unique index makes recordNonce a no-op for an already-recorded (chain, sender, nonce)', async () => {
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xreplacement' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xoriginal',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xreplacement',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' },
@@ -40,5 +60,21 @@ describe('PostgresNonceHistoryStore (real Postgres)', () => {
     expect(await store.listNonceHistory('base', '0xa')).toEqual([
       { chain: 'base', senderAddress: '0xa', nonce: 0, hash: '0xhash-a' },
     ]);
+  });
+
+  it('highestNonce reports the highest recorded nonce, and forgetNonce removes a released one (#20)', async () => {
+    
+    const sender = `0xsender-${Math.random()}`;
+    expect(await store.highestNonce('base', sender)).toBeNull();
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 4, hash: '0xa' });
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 7, hash: '0xb' });
+    expect(await store.highestNonce('base', sender)).toBe(7);
+
+    await store.forgetNonce('base', sender, 7);
+
+    expect(await store.highestNonce('base', sender)).toBe(4);
+    // A forgotten nonce can be recorded afresh — the reused nonce's new hash wins.
+    await store.recordNonce({ chain: 'base', senderAddress: sender, nonce: 7, hash: '0xc' });
+    expect((await store.listNonceHistory('base', sender)).map((r) => r.hash)).toEqual(['0xa', '0xc']);
   });
 });

@@ -1,4 +1,4 @@
-import { asc, eq, and } from 'drizzle-orm';
+import { and, asc, eq, max } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { nonceHistory } from '../db/schema.js';
@@ -8,7 +8,12 @@ import type { NonceHistoryRecord, NonceHistoryStore } from './nonce-history-stor
 type NonceHistoryRow = typeof nonceHistory.$inferSelect;
 
 function toRecord(row: NonceHistoryRow): NonceHistoryRecord {
-  return { chain: row.chain as Chain, senderAddress: row.senderAddress, nonce: row.nonce, hash: row.hash };
+  return {
+    chain: row.chain as Chain,
+    senderAddress: row.senderAddress,
+    nonce: row.nonce,
+    hash: row.hash,
+  };
 }
 
 /** The real persistence behind NonceHistoryStore (ADR-0008/ADR-0011). */
@@ -31,5 +36,25 @@ export class PostgresNonceHistoryStore implements NonceHistoryStore {
       .where(and(eq(nonceHistory.chain, chain), eq(nonceHistory.senderAddress, senderAddress)))
       .orderBy(asc(nonceHistory.nonce));
     return rows.map(toRecord);
+  }
+
+  async highestNonce(chain: Chain, senderAddress: string): Promise<number | null> {
+    const [row] = await this.db
+      .select({ highest: max(nonceHistory.nonce) })
+      .from(nonceHistory)
+      .where(and(eq(nonceHistory.chain, chain), eq(nonceHistory.senderAddress, senderAddress)));
+    return row?.highest ?? null;
+  }
+
+  async forgetNonce(chain: Chain, senderAddress: string, nonce: number): Promise<void> {
+    await this.db
+      .delete(nonceHistory)
+      .where(
+        and(
+          eq(nonceHistory.chain, chain),
+          eq(nonceHistory.senderAddress, senderAddress),
+          eq(nonceHistory.nonce, nonce),
+        ),
+      );
   }
 }

@@ -21,4 +21,16 @@ export class InMemoryNonceHistoryStore implements NonceHistoryStore {
       .sort((a, b) => a.nonce - b.nonce);
     return Promise.resolve(matches);
   }
+
+  highestNonce(chain: Chain, senderAddress: string): Promise<number | null> {
+    const nonces = [...this.records.values()]
+      .filter((r) => r.chain === chain && r.senderAddress === senderAddress)
+      .map((r) => r.nonce);
+    return Promise.resolve(nonces.length ? Math.max(...nonces) : null);
+  }
+
+  forgetNonce(chain: Chain, senderAddress: string, nonce: number): Promise<void> {
+    this.records.delete(key(chain, senderAddress, nonce));
+    return Promise.resolve();
+  }
 }

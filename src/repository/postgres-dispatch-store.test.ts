@@ -211,7 +211,9 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         hash: 'hash-1',
       });
 
-      await expect(store.recordBroadcast(transaction.id, 'hash-2')).rejects.toThrow(/hash mismatch/);
+      await expect(store.recordBroadcast(transaction.id, 'hash-2')).rejects.toThrow(
+        /hash mismatch/,
+      );
     });
   });
 
@@ -350,18 +352,24 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       expect(original.lastBroadcastAt).not.toBeNull();
       await store.recordBroadcast(original.id, hashOriginal);
       const [row] = await store.listTransactionsByHash(hashOriginal);
-      expect(row!.lastBroadcastAt!.getTime()).toBeGreaterThanOrEqual(original.lastBroadcastAt!.getTime());
+      expect(row!.lastBroadcastAt!.getTime()).toBeGreaterThanOrEqual(
+        original.lastBroadcastAt!.getTime(),
+      );
     });
   });
 
   describe('bulkCall (#11)', () => {
-    it('round-trips a Dispatch\'s bulkCall and each item\'s fundedBy', async () => {
+    it("round-trips a Dispatch's bulkCall and each item's fundedBy", async () => {
       const created = await store.createDispatch({
         chain: 'base',
         idempotencyKey: randomUUID(),
         items: [
           { call: { to: '0xabc', data: '0x', value: '1' }, payment: null },
-          { call: { to: '0xtoken', data: '0xa9059cbb', value: '0' }, payment: null, fundedBy: '0xaggregator' },
+          {
+            call: { to: '0xtoken', data: '0xa9059cbb', value: '0' },
+            payment: null,
+            fundedBy: '0xaggregator',
+          },
         ],
         retryPolicy: false,
         bulkCall: { aggregator: '0xaggregator', maxBatchSize: 2, allowFailure: false },
@@ -369,7 +377,11 @@ describe('PostgresDispatchStore (real Postgres)', () => {
 
       const read = await store.getDispatch(created.id);
 
-      expect(read?.bulkCall).toEqual({ aggregator: '0xaggregator', maxBatchSize: 2, allowFailure: false });
+      expect(read?.bulkCall).toEqual({
+        aggregator: '0xaggregator',
+        maxBatchSize: 2,
+        allowFailure: false,
+      });
       expect(read?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xaggregator']);
     });
 
@@ -381,6 +393,108 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         retryPolicy: false,
       });
       expect((await store.getDispatch(created.id))?.bulkCall).toBeNull();
+    });
+  });
+
+  describe('write-ahead bookkeeping (#20, ADR-0041)', () => {
+    async function pending(hash: string) {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem],
+        retryPolicy: true,
+      });
+      return store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash,
+      });
+    }
+
+    it('recordSent stamps lastBroadcastAt and takes the hash the chain actually reported', async () => {
+      const noted = await pending(`h-noted-${Math.random()}`);
+      const reported = `h-reported-${Math.random()}`;
+
+      await store.recordSent(noted.id, reported);
+
+      const [row] = await store.listTransactionsByHash(reported);
+      expect(row?.id).toBe(noted.id);
+      expect(row?.status).toBe('PENDING');
+      expect(row?.lastBroadcastAt).not.toBeNull();
+    });
+
+    it('undoReplacement drops a refused replacement and puts its predecessor back to PENDING', async () => {
+      const original = await pending(`h-orig-${Math.random()}`);
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'YnVtcGVk',
+        hash: `h-bump-${Math.random()}`,
+      });
+
+      await store.undoReplacement(replacement.id);
+
+      const rows = await store.listTransactions(original.dispatchId);
+      expect(rows.find((t) => t.id === original.id)?.status).toBe('PENDING');
+      expect(rows.find((t) => t.id === replacement.id)?.status).toBe('DROPPED');
+    });
+
+    it('reclaims a Dispatch claimed before the cutoff that still has items with no Transaction, and only once', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(100);
+      await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: `h-${Math.random()}`,
+      });
+
+      const future = new Date(Date.now() + 60_000);
+      const reclaimed = await store.reclaimStaleDispatches(future, 100);
+      const again = await store.reclaimStaleDispatches(new Date(Date.now() - 60_000), 100);
+
+      expect(reclaimed.map((d) => d.id)).toContain(dispatch.id);
+      expect(again.map((d) => d.id)).not.toContain(dispatch.id); // re-stamped: not stale again yet
+    });
+
+    it('never reclaims a Dispatch whose items all have Transactions', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(100);
+      await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: `h-${Math.random()}`,
+      });
+
+      const reclaimed = await store.reclaimStaleDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((d) => d.id)).not.toContain(dispatch.id);
+    });
+
+    it('reclaims a Relay Dispatch claimed before the cutoff that never got a Transaction', async () => {
+      const relay = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        signedTransaction: 'c2lnbmVk',
+      });
+      await store.claimQueuedRelayDispatches(100);
+
+      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((r) => r.id)).toContain(relay.id);
     });
   });
 
