@@ -1,22 +1,20 @@
 import { decodeFunctionData, encodeFunctionResult } from 'viem';
 import { describe, expect, it } from 'vitest';
 
-import {
-  AGGREGATE3_VALUE_ABI,
-  chunk,
-  encodeAggregate3Value,
-  slotsFromTrace,
-} from './bulk-call.js';
+import { AGGREGATE3_VALUE_ABI, chunk, encodeAggregate3Value, slotsFromTrace } from './bulk-call.js';
 
 const target = '0x000000000000000000000000000000000000dEaD';
 
 describe('encodeAggregate3Value (#11)', () => {
-  it('encodes every item with allowFailure: true, in order, and totals the native value', () => {
-    const { data, value } = encodeAggregate3Value([
-      { to: target, data: '0x', value: '5' },
-      { to: target, data: '0xa9059cbb', value: '0' },
-      { to: target, data: '0x', value: '7' },
-    ]);
+  it('encodes every item with the requested allowFailure, in order, and totals the native value', () => {
+    const { data, value } = encodeAggregate3Value(
+      [
+        { to: target, data: '0x', value: '5' },
+        { to: target, data: '0xa9059cbb', value: '0' },
+        { to: target, data: '0x', value: '7' },
+      ],
+      true,
+    );
 
     const decoded = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data });
     expect(decoded.args[0].map((c) => [c.allowFailure, c.value, c.callData])).toEqual([
@@ -25,6 +23,14 @@ describe('encodeAggregate3Value (#11)', () => {
       [true, 7n, '0x'],
     ]);
     expect(value).toBe(12n);
+  });
+});
+
+describe('encodeAggregate3Value allowFailure: false (the default, #11 amendment)', () => {
+  it('marks every item allowFailure: false, so any failing item reverts the whole chunk', () => {
+    const { data } = encodeAggregate3Value([{ to: target, data: '0x', value: '1' }], false);
+    const decoded = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data });
+    expect(decoded.args[0].map((c) => c.allowFailure)).toEqual([false]);
   });
 });
 

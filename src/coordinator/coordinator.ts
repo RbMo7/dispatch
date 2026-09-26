@@ -883,7 +883,9 @@ export class Coordinator {
   ): Promise<Result<{ slot: number; slotStatus: BundleSlotStatus }, DispatchError> | undefined> {
     if (!handler.getBundleStatus) return undefined;
     const dispatch = await this.store.getDispatch(transaction.dispatchId);
-    if (!dispatch?.bulkCall) return undefined;
+    // allowFailure false (the default): the transaction's own status is
+    // every member's status — a revert fails them all, no trace needed.
+    if (!dispatch?.bulkCall?.allowFailure) return undefined;
 
     const members = (await this.store.listTransactionsByHash(hash))
       .filter((t) => t.dispatchId === transaction.dispatchId)

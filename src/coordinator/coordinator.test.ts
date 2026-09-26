@@ -977,7 +977,7 @@ describe('Coordinator Bulk Call (#11, ADR-0038)', () => {
     });
     return { store, handler, coordinator };
   }
-  const bulkCall = { aggregator: '0xaggregator', maxBatchSize: 50 };
+  const bulkCall = { aggregator: '0xaggregator', maxBatchSize: 50, allowFailure: true };
 
   it('prepares a Bulk Dispatch on its own with its bulkCall, apart from default-mode Dispatches in the same claim', async () => {
     const { store, handler, coordinator } = setupBulk();
@@ -1033,13 +1033,13 @@ describe('Coordinator Bulk Call (#11, ADR-0038)', () => {
     });
   });
 
-  async function bundledPair(store: InMemoryDispatchStore) {
+  async function bundledPair(store: InMemoryDispatchStore, allowFailure = true) {
     const dispatch = await store.createDispatch({
       chain: 'base',
       idempotencyKey: `bundle-${Math.random()}`,
       items: [evmItem, evmItem],
       retryPolicy: false,
-      bulkCall,
+      bulkCall: { ...bulkCall, allowFailure },
     });
     const rows = [];
     for (const callIndex of [0, 1]) {
@@ -1070,6 +1070,18 @@ describe('Coordinator Bulk Call (#11, ADR-0038)', () => {
     expect(failed?.status).toBe('FAILED');
     expect(failed?.error?.chainDetail).toMatchObject({ slot: 1, revert: '0x08c379a0' });
     expect(handler.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('settles every member of an allowFailure: false bundle from the transaction itself — never traced (the default)', async () => {
+    const { store, handler, coordinator } = setupBulk();
+    const [first, second] = await bundledPair(store, false);
+    handler.getStatus.mockResolvedValue(ok('FAILED')); // one bad item reverted the whole chunk
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(first!.id)?.status).toBe('FAILED');
+    expect(store.getTransaction(second!.id)?.status).toBe('FAILED');
+    expect(handler.getBundleStatus).not.toHaveBeenCalled();
   });
 
   it("leaves bundled members PENDING while the bundle is unresolved or its status can't be read", async () => {

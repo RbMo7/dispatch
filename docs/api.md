@@ -64,20 +64,23 @@ A Managed Dispatch on Base can opt into Bulk Call (ADR-0006, ADR-0038). Its item
 ```json
 {
   "chain": "base",
-  "bulkCall": { "aggregator": "0x…", "maxBatchSize": 50 },
+  "bulkCall": { "aggregator": "0x…", "maxBatchSize": 50, "allowFailure": false },
   "items": [ … ]
 }
 ```
 
 - **`maxBatchSize`** is optional. It defaults to, and can't exceed, the operator's `BASE_BULK_CALL_MAX_BATCH_SIZE`. A request with more items is split into several transactions, never truncated.
-- **Items are independent.** Every item is sent with `allowFailure: true`, so one failing item is reported `failed` on its own while its batch-mates confirm. The response shape is unchanged.
+- **`allowFailure`** is optional and defaults to `false`:
+  - **`false`:** the items in a transaction succeed or fail **together**. If any one would fail, the whole transaction reverts and every item in it is reported `failed`, so resubmit the corrected batch. Nothing is ever silently half-done.
+  - **`true`:** each item succeeds or fails **on its own**. One failing item is reported `failed` while its batch-mates confirm. The operator must configure a tracing RPC (`BASE_TRACE_RPC_URL`), because per-item outcomes are only visible in a transaction trace.
+  - The response shape is the same either way.
 - **ERC-20 items spend the aggregator's own token balance.** Inside `aggregate3Value`, the calls come *from the aggregator*, so fund your aggregator with the tokens. Native ETH items are paid by the Sender, which sends the total along with the call. The Funding Check checks each against its real payer.
 - **Returns `400`:**
   - `mode: "relay"`;
   - a chain without Bulk Call;
-  - a malformed aggregator;
+  - a malformed aggregator, or one with no contract code;
   - an out-of-range `maxBatchSize`;
-  - no tracing RPC configured (`BASE_TRACE_RPC_URL`), because per-item outcomes are only visible in a trace;
+  - `allowFailure: true` with no tracing RPC configured (`BASE_TRACE_RPC_URL`);
   - **any ERC-20 item with the canonical Multicall3 (`0xcA11bde05977b3631167028862bE2a173976CA11`) as aggregator.** It's permissionless, so any balance or approval it holds can be taken by anyone.
 
 ## Relay Dispatch (`mode: "relay"`)

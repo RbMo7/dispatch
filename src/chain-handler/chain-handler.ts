@@ -37,7 +37,7 @@ export type PrepareOptions = {
 };
 
 /** #11: a Bulk Call request as the caller sent it — `maxBatchSize` not yet defaulted. */
-export type BulkCallRequest = { aggregator: string; maxBatchSize?: number };
+export type BulkCallRequest = { aggregator: string; maxBatchSize?: number; allowFailure?: boolean };
 
 /** #11: a checked Bulk Call — the resolved opt-in, plus who funds each item (null = the Sender). */
 export type BulkCallPlan = { bulkCall: BulkCall; fundedBy: (string | null)[] };

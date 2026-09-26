@@ -45,11 +45,18 @@ export const AGGREGATE3_VALUE_ABI = [
   },
 ] as const;
 
-/** One chunk's calldata, and the native value the aggregator must be sent to forward — the sum of its items'. */
-export function encodeAggregate3Value(calls: EvmCall[]): { data: Hex; value: bigint } {
+/**
+ * One chunk's calldata, and the native value the aggregator must be sent to
+ * forward — the sum of its items'. `allowFailure` is applied to every item:
+ * false makes any failing item revert the whole chunk.
+ */
+export function encodeAggregate3Value(
+  calls: EvmCall[],
+  allowFailure: boolean,
+): { data: Hex; value: bigint } {
   const call3Values = calls.map((call) => ({
     target: call.to as Address,
-    allowFailure: true, // one bad item never takes its batch-mates down
+    allowFailure,
     value: BigInt(call.value),
     callData: call.data as Hex,
   }));

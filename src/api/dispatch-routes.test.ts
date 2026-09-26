@@ -379,7 +379,11 @@ class BulkCapableStub extends StubChainHandler {
     }
     return Promise.resolve(
       ok({
-        bulkCall: { aggregator: request.aggregator, maxBatchSize: request.maxBatchSize ?? 50 },
+        bulkCall: {
+          aggregator: request.aggregator,
+          maxBatchSize: request.maxBatchSize ?? 50,
+          allowFailure: request.allowFailure ?? false,
+        },
         fundedBy: items.map((_, i) => (i === 1 ? request.aggregator : null)),
       }),
     );
@@ -408,8 +412,25 @@ describe('POST /v1/dispatch with bulkCall (#11)', () => {
 
     expect(response.statusCode).toBe(202);
     const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
-    expect(dispatch?.bulkCall).toEqual({ aggregator: '0xagg', maxBatchSize: 50 });
+    expect(dispatch?.bulkCall).toEqual({
+      aggregator: '0xagg',
+      maxBatchSize: 50,
+      allowFailure: false,
+    });
     expect(dispatch?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xagg']);
+  });
+
+  it('passes an explicit allowFailure: true through to the Chain Handler', async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+
+    const response = await post(app, {
+      chain: 'base',
+      items,
+      bulkCall: { aggregator: '0xagg', allowFailure: true },
+    });
+
+    const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
+    expect(dispatch?.bulkCall?.allowFailure).toBe(true);
   });
 
   it('rejects bulkCall with 400 on a chain whose handler has no Bulk Call', async () => {

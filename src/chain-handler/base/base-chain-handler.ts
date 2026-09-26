@@ -531,10 +531,14 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     request: BulkCallRequest,
     items: DispatchItem<'base'>[],
   ): Promise<Result<BulkCallPlan, DispatchError>> {
-    if (!this.traceClient) {
+    const allowFailure = request.allowFailure ?? false;
+    // Only per-item outcomes (allowFailure: true) need a trace: with false,
+    // the receipt alone says what happened to every item.
+    if (allowFailure && !this.traceClient) {
       return err({
         code: 'CHAIN_REJECTED',
-        message: 'Bulk Call needs a tracing RPC (BASE_TRACE_RPC_URL) to read per-item outcomes',
+        message:
+          'allowFailure: true needs a tracing RPC (BASE_TRACE_RPC_URL) to read per-item outcomes — omit it, or set it false, to have any failing item fail its whole chunk instead',
       });
     }
     const checked = requireAddressResult(request.aggregator);
@@ -548,7 +552,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         return err({
           code: 'INVALID_RECIPIENT',
           message: `aggregator ${aggregator} has no contract code on this network`,
-          chainDetail: { aggregator: aggregator },
+          chainDetail: { aggregator },
         });
       }
     } catch (cause) {
@@ -570,10 +574,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         code: 'CHAIN_REJECTED',
         message:
           'ERC-20 items cannot go through the canonical Multicall3: it is permissionless, so any token balance or approval it holds can be taken by anyone — name your own aggregator',
-        chainDetail: { aggregator: aggregator },
+        chainDetail: { aggregator },
       });
     }
-    return ok({ bulkCall: { aggregator: aggregator, maxBatchSize }, fundedBy });
+    return ok({ bulkCall: { aggregator, maxBatchSize, allowFailure }, fundedBy });
   }
 
   /**
@@ -597,15 +601,16 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     const prepared: PreparedTransaction[] = [];
     let callIndex = 0;
     for (const calls of chunk(items, bulkCall.maxBatchSize)) {
-      const { data, value } = encodeAggregate3Value(calls);
+      const { data, value } = encodeAggregate3Value(calls, bulkCall.allowFailure);
       let gas: bigint;
       try {
         gas = await this.client.estimateGas({ account: sender, to: aggregator.value, data, value });
       } catch (cause) {
         if (isRpcOutage(cause)) return err(mapBaseFailure(cause));
-        // allowFailure keeps a bad item from reverting the bundle, so a
-        // failed estimate is the whole call reverting (e.g. an aggregator
-        // that refuses this Sender) — still sent, so the chain answers.
+        // A failed estimate means the whole call would revert — with
+        // allowFailure false, any one bad item does that; with true, only
+        // the aggregator refusing the call. Still sent, so the chain answers
+        // (ADR-0018: never pre-judged here).
         this.logger.warn({ error: extractMessage(cause) }, 'bulk estimateGas failed — using the fallback gas limit');
         gas = FALLBACK_GAS_LIMIT;
       }

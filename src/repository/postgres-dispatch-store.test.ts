@@ -364,12 +364,12 @@ describe('PostgresDispatchStore (real Postgres)', () => {
           { call: { to: '0xtoken', data: '0xa9059cbb', value: '0' }, payment: null, fundedBy: '0xaggregator' },
         ],
         retryPolicy: false,
-        bulkCall: { aggregator: '0xaggregator', maxBatchSize: 2 },
+        bulkCall: { aggregator: '0xaggregator', maxBatchSize: 2, allowFailure: false },
       });
 
       const read = await store.getDispatch(created.id);
 
-      expect(read?.bulkCall).toEqual({ aggregator: '0xaggregator', maxBatchSize: 2 });
+      expect(read?.bulkCall).toEqual({ aggregator: '0xaggregator', maxBatchSize: 2, allowFailure: false });
       expect(read?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xaggregator']);
     });
 

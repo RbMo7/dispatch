@@ -37,4 +37,12 @@ export type Dispatch<C extends Chain = Chain> = {
 export type BulkCall = {
   aggregator: string;
   maxBatchSize: number;
+  /**
+   * #11 amendment (ADR-0038): false (the default) — any failing item
+   * reverts its whole chunk, and every item in it is reported FAILED from
+   * the receipt alone, no trace needed. true — each item succeeds or fails
+   * on its own, which is only visible in a trace (needs a tracing RPC).
+   * Off by default: a newcomer never gets a silently partial batch.
+   */
+  allowFailure: boolean;
 };

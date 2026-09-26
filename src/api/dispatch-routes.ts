@@ -57,6 +57,7 @@ const postDispatchSchema = {
         properties: {
           aggregator: { type: 'string', minLength: 1 },
           maxBatchSize: { type: 'integer', minimum: 1 },
+          allowFailure: { type: 'boolean' },
         },
       },
     },

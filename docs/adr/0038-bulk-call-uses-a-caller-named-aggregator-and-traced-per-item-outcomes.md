@@ -36,3 +36,12 @@ Native amounts and gas are checked against the Sender. Bulk ERC-20 amounts are c
 - **Interface growth.** The ChainHandler interface gains two optional methods and one optional parameter. None of them affect a chain that doesn't implement Bulk Call (ADR-0015 scrutiny, same pattern as ADR-0037).
 - **Tracing RPC required.** Bulk Call needs a tracing-capable RPC, which is usually a paid tier.
 - **Nonce gap.** A failed chunk broadcast leaves a nonce gap that strands the later chunks. The default one-transaction-per-payment mode has the same problem, tracked in #24.
+
+## Amendment (2026-09-26): `allowFailure` is per request, and defaults to `false`
+
+Per-item failures are rare for plain payouts to ordinary wallets. When they do happen, it's around contract recipients, blacklisted or paused tokens, and callers' own raw calls. Isolating them is what needs a tracing RPC, which is usually a paid tier. So `bulkCall.allowFailure` is now a request choice:
+
+- **`false` (the default):** every item is encoded `allowFailure: false`. Any failing item reverts its whole chunk, and every item in that chunk is reported `FAILED` from the receipt alone. The Coordinator uses plain `getStatus`, nothing is traced, and no tracing RPC is needed.
+- **`true`:** as originally decided above. Each item succeeds or fails on its own, read from `Result[]` in a trace, and a tracing RPC is required. Without one, the request gets `400`.
+
+The default follows ADR-0003's spirit for newcomers: a batch either lands whole or visibly fails whole, never silently partial. The cost is that one bad item takes its chunk-mates down and they must be resubmitted. That reverses user story 7's "one bad payment fails on its own" as the *default*; it remains available by opting in.

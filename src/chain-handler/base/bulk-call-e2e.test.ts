@@ -116,6 +116,33 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
     expect(response.json<{ code?: string }>().code).toBe('INVALID_RECIPIENT');
   }, 60_000);
 
+  it('refuses allowFailure: true without a tracing RPC with 400 — per-item outcomes would be invisible', async () => {
+    const handler = await BaseChainHandler.create({
+      rpcUrl: BASE_SEPOLIA_RPC_URL,
+      chainId: BASE_SEPOLIA_CHAIN_ID,
+      senderAddress: sender.address,
+      nonceHistoryStore: new InMemoryNonceHistoryStore(),
+    });
+    const { app } = await appWith(handler);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        'idempotency-key': `bulk-notrace-${Date.now()}`,
+      },
+      payload: {
+        chain: 'base',
+        bulkCall: { aggregator: CANONICAL_MULTICALL3, allowFailure: true },
+        items: [{ type: 'payment', recipient: sender.address, asset: 'ETH', amount: '1' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ message?: string }>().message).toMatch(/tracing RPC/);
+  }, 60_000);
+
   describe('through a caller-owned aggregator', () => {
     let testSigner: TestSignerHandle;
     let releaseDevSenderLock: () => Promise<void>;
@@ -177,7 +204,7 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
       ];
 
       const prepared = await handler.prepare(calls, sender.address, {
-        bulkCall: { aggregator, maxBatchSize: 50 },
+        bulkCall: { aggregator, maxBatchSize: 50, allowFailure: true },
       });
       expect(prepared.ok).toBe(true);
       if (!prepared.ok) return;
@@ -214,6 +241,98 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
       ).toBe(countBefore + 1n);
     }, 180_000);
 
+    /** Drives one Bulk Dispatch through the real API and Coordinator to a terminal state. */
+    async function runThroughApi(bulkCall: object, items: object[]) {
+      const { app, store, chainRegistry } = await appWith(handler);
+      const post = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: {
+          authorization: `Bearer ${AUTH_TOKEN}`,
+          'idempotency-key': `bulk-api-${Date.now()}-${Math.random()}`,
+        },
+        payload: { chain: 'base', bulkCall, items },
+      });
+      expect(post.statusCode).toBe(202);
+      const { dispatchId } = post.json<{ dispatchId: string }>();
+      const coordinator = new Coordinator({
+        store,
+        chainHandlers: chainRegistry.handlers,
+        senderAddresses: new Map([['base', sender.address]]),
+        abandonmentTimeoutMs: new Map([['base', BASE_ABANDONMENT_TIMEOUT_MS]]),
+      });
+      await coordinator.processQueuedDispatches(10);
+      expect(new Set((await store.listTransactions(dispatchId)).map((t) => t.hash)).size).toBe(1); // one chunk
+
+      let body: GetBody | undefined;
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        await coordinator.pollPendingTransactions(10);
+        const get = await app.inject({
+          method: 'GET',
+          url: `/v1/dispatch/${dispatchId}`,
+          headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+        });
+        body = get.json<GetBody>();
+        if (body.items.every((i) => i.status !== 'broadcasting' && i.status !== 'queued')) break;
+        await sleep(2_000);
+      }
+      return body;
+    }
+
+    it('default (allowFailure: false), all items valid: every native, ERC-20 and raw-call item confirms via the API — no trace needed', async () => {
+      const client = createPublicClient({ transport: http(BASE_SEPOLIA_RPC_URL) });
+      const nativeRecipient = privateKeyToAddress(generatePrivateKey());
+      const tokenRecipient = privateKeyToAddress(generatePrivateKey());
+
+      const body = await runThroughApi({ aggregator }, [
+        { type: 'payment', recipient: nativeRecipient, asset: 'ETH', amount: '1000' },
+        { type: 'payment', recipient: tokenRecipient, asset: 'TEST', amount: '3' },
+        {
+          type: 'call',
+          to: token.address,
+          data: encodeFunctionData({ abi: token.abi, functionName: 'increment' }),
+          value: '0',
+        },
+      ]);
+
+      expect(body).toMatchObject({ status: 'confirmed' });
+      expect(body?.items.map((i) => i.status)).toEqual(['confirmed', 'confirmed', 'confirmed']);
+      let nativeBalance = 0n;
+      for (let i = 0; i < 10 && nativeBalance === 0n; i++, await sleep(1_000)) {
+        nativeBalance = await client.getBalance({ address: nativeRecipient });
+      }
+      expect(nativeBalance).toBe(1000n);
+      expect(
+        await client.readContract({
+          address: token.address,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [tokenRecipient],
+        }),
+      ).toBe(3n);
+    }, 180_000);
+
+    it('default (allowFailure: false), one reverting item: the whole chunk reverts and every item reports failed — nothing is sent', async () => {
+      const client = createPublicClient({ transport: http(BASE_SEPOLIA_RPC_URL) });
+      const nativeRecipient = privateKeyToAddress(generatePrivateKey());
+
+      const body = await runThroughApi({ aggregator }, [
+        { type: 'payment', recipient: nativeRecipient, asset: 'ETH', amount: '1000' },
+        {
+          type: 'call',
+          to: token.address,
+          data: encodeFunctionData({ abi: token.abi, functionName: 'revertAlways' }),
+          value: '0',
+        },
+      ]);
+
+      expect(body?.items.map((i) => i.status)).toEqual(['failed', 'failed']);
+      expect(body?.status).toBe('failed');
+      await sleep(3_000); // the public gateway can lag a node behind the receipt
+      expect(await client.getBalance({ address: nativeRecipient })).toBe(0n);
+    }, 180_000);
+
     it.skipIf(!TRACE_RPC_URL)(
       "reports each item's own outcome through the API — native, ERC-20 and raw call confirmed, the reverting call failed alone (needs BASE_TRACE_RPC_URL)",
       async () => {
@@ -231,7 +350,7 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
           },
           payload: {
             chain: 'base',
-            bulkCall: { aggregator },
+            bulkCall: { aggregator, allowFailure: true },
             items: [
               { type: 'payment', recipient: nativeRecipient, asset: 'ETH', amount: '1000' },
               { type: 'payment', recipient: tokenRecipient, asset: 'TEST', amount: '7' },
