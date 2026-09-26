@@ -1,26 +1,31 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub Issues (spec stays local)
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Specs for this repo live as markdown files in `.scratch/`. Implementation tickets are tracked as GitHub Issues on this repo (`RbMo7/dispatch`) — not as local files.
 
 ## Conventions
 
 - One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- The spec is `.scratch/<feature-slug>/spec.md` — this stays local, it's the feature-level design record
+- Implementation tickets are GitHub Issues, one per ticket, opened in dependency order (blockers first) so each can reference its blockers by real issue number
+- Each ticket's body follows: `## Parent` (a reference to the feature's `spec.md`), `## What to build`, `## Acceptance criteria`, `## Blocked by`
+- Triage state is the issue's label (see `triage-labels.md` for the role strings) — apply `ready-for-agent` on publish unless instructed otherwise
+- Comments and status changes happen as ordinary GitHub issue comments/labels, not a `## Comments` heading appended to a file
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Open a new GitHub Issue on this repo (`gh issue create`), after creating the feature's `.scratch/<feature-slug>/spec.md` first if it doesn't exist yet, so the issue's `## Parent` section has something to link to.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Fetch the referenced GitHub Issue (`gh issue view <number>`). The user will normally pass the issue number or URL directly.
+
+## History
+
+`core-engine-scaffold`, `solana-chain-handler`, `relay-dispatch`, and `base-chain-handler`'s first 14 tickets were opened before this convention and keep their local `.scratch/<feature-slug>/issues/*.md` files as a frozen historical record — not updated further, not migrated to GitHub. Every ticket from here on uses GitHub Issues.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
+Used by `/wayfinder`. Unaffected by the switch above — this is a separate claim/resolve research-question flow, not the ticket-execution tracker. The **map** is a file with one **child** file per ticket.
 
 - **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
 - **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.

@@ -25,6 +25,8 @@ export type ChainHandlerConformanceFixtures<C extends Chain> = {
    * failure.
    */
   invalidSignedTransaction: SignedTransaction;
+  /** A well-formed transaction hash/signature for this chain that was never broadcast — so `getStatus` is asked a real question, not answered with a malformed-input error (#14). */
+  neverBroadcastHash: string;
 };
 
 /**
@@ -105,10 +107,10 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       expect(signResult.ok).toBe(true);
     });
 
-    it('getStatus never reports CONFIRMED for a transaction that was never broadcast', async () => {
+    it('getStatus reports PENDING — never CONFIRMED — for a well-formed transaction that was never broadcast', async () => {
       const handler = createHandler();
-      const result = await handler.getStatus('conformance-suite-never-broadcast');
-      expect(result.ok && result.value).not.toBe('CONFIRMED');
+      const result = await handler.getStatus(fixtures.neverBroadcastHash);
+      expect(result).toEqual({ ok: true, value: 'PENDING' });
     });
 
     it('validateSignedTransaction accepts a genuinely, correctly signed transaction', async () => {
@@ -129,6 +131,44 @@ export function runChainHandlerConformanceSuite<C extends Chain>(
       const before = fixtures.validSignedTransaction;
       await handler.validateSignedTransaction(fixtures.validSignedTransaction);
       expect(fixtures.validSignedTransaction).toBe(before);
+    });
+
+    // #9 (ADR-0037): optional — only a handler that can fee-bump implements it.
+    it('prepareReplacement, where implemented, answers malformed bytes with a structured error, never throwing, and never mutates its input', async (context) => {
+      const handler = createHandler();
+      if (!handler.prepareReplacement) return context.skip(); // optional — only a chain that can fee-bump has it
+      const before = fixtures.invalidSignedTransaction;
+      const result = await handler.prepareReplacement(
+        fixtures.invalidSignedTransaction,
+        fixtures.senderAddress,
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toEqual(expect.any(String));
+      expect(fixtures.invalidSignedTransaction).toBe(before);
+    });
+
+    it('getBundleStatus, where implemented, answers a never-broadcast hash with a structured Result, never throwing and never CONFIRMED', async (context) => {
+      const handler = createHandler();
+      if (!handler.getBundleStatus) return context.skip(); // optional — only a chain with Bulk Call has it
+      const result = await handler.getBundleStatus(fixtures.neverBroadcastHash);
+      expect(typeof result.ok).toBe('boolean');
+      if (result.ok) expect(result.value.every((slot) => slot.status !== 'CONFIRMED')).toBe(true);
+    });
+
+    it("transactionHash computes a signed transaction's hash locally, deterministically, never throwing (#20)", () => {
+      const handler = createHandler();
+      const first = handler.transactionHash(fixtures.validSignedTransaction);
+      const second = handler.transactionHash(fixtures.validSignedTransaction);
+      expect(first.ok).toBe(true);
+      expect(first).toEqual(second);
+      expect(first.ok && first.value.length).toBeGreaterThan(0);
+    });
+
+    it('transactionHash answers malformed bytes with a structured error, never throwing (#20)', () => {
+      const handler = createHandler();
+      const result = handler.transactionHash('not-real-signed-bytes-%%%');
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toEqual(expect.any(String));
     });
 
     it('a broadcast failure surfaces a structured DispatchError instead of throwing', async () => {

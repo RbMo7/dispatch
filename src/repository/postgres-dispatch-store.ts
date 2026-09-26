@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
@@ -27,6 +27,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     items: row.items,
     status: row.status as DispatchStatus,
     retryPolicy: row.retryPolicy,
+    bulkCall: row.bulkCall ?? null,
   };
 }
 
@@ -42,6 +43,11 @@ function toTransaction(row: TransactionRow): Transaction {
     error: row.error ?? null,
     broadcastAt: row.broadcastAt,
     abandonedAt: row.abandonedAt,
+    confirmedAt: row.confirmedAt,
+    lastCheckedAt: row.lastCheckedAt,
+    lastBroadcastAt: row.lastBroadcastAt,
+    replacesTransactionId: row.replacesTransactionId,
+    feeBumpAttempts: row.feeBumpAttempts,
   };
 }
 
@@ -71,6 +77,7 @@ export class PostgresDispatchStore implements DispatchStore {
         idempotencyKey: input.idempotencyKey,
         items: input.items,
         retryPolicy: input.retryPolicy,
+        bulkCall: input.bulkCall ?? null,
       })
       .onConflictDoNothing({ target: dispatches.idempotencyKey })
       .returning();
@@ -122,7 +129,7 @@ export class PostgresDispatchStore implements DispatchStore {
 
       const rows = await tx
         .update(dispatches)
-        .set({ status: 'broadcasting' })
+        .set({ status: 'broadcasting', claimedAt: new Date() })
         .where(
           inArray(
             dispatches.id,
@@ -138,10 +145,22 @@ export class PostgresDispatchStore implements DispatchStore {
   async listPendingTransactions(limit: number): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
       where: eq(transactions.status, 'PENDING'),
-      orderBy: transactions.broadcastAt,
+      orderBy: [sql`${transactions.lastCheckedAt} asc nulls first`, transactions.broadcastAt],
       limit,
     });
-    return rows.map(toTransaction);
+    if (rows.length === 0) return [];
+    // ponytail: select-then-stamp, not one atomic UPDATE…RETURNING — fine for the single worker (ADR-0009); make it atomic if workers ever run concurrently.
+    const lastCheckedAt = new Date();
+    await this.db
+      .update(transactions)
+      .set({ lastCheckedAt })
+      .where(
+        inArray(
+          transactions.id,
+          rows.map((row) => row.id),
+        ),
+      );
+    return rows.map((row) => toTransaction({ ...row, lastCheckedAt }));
   }
 
   async listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
@@ -156,7 +175,25 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(toTransaction);
   }
 
+  async listRecentlyConfirmedTransactions(
+    chain: Chain,
+    limit: number,
+    notConfirmedBefore: Date,
+  ): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: and(
+        eq(transactions.chain, chain),
+        eq(transactions.status, 'CONFIRMED'),
+        gte(transactions.confirmedAt, notConfirmedBefore),
+      ),
+      orderBy: transactions.confirmedAt,
+      limit,
+    });
+    return rows.map(toTransaction);
+  }
+
   async createTransaction(input: NewTransactionInput): Promise<Transaction> {
+    const now = new Date();
     const [row] = await this.db
       .insert(transactions)
       .values({
@@ -165,7 +202,8 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         signedBytes: input.signedBytes,
         hash: input.hash,
-        broadcastAt: new Date(),
+        broadcastAt: now,
+        lastBroadcastAt: now,
       })
       .returning();
 
@@ -174,6 +212,180 @@ export class PostgresDispatchStore implements DispatchStore {
     }
 
     return toTransaction(row);
+  }
+
+  async createReplacementTransaction(
+    predecessorId: string,
+    replacement: { signedBytes: string; hash: string },
+  ): Promise<Transaction> {
+    return this.db.transaction(async (tx) => {
+      const predecessor = await tx.query.transactions.findFirst({
+        where: eq(transactions.id, predecessorId),
+      });
+      if (!predecessor) {
+        throw new Error(`Unknown transaction: ${predecessorId}`);
+      }
+      const now = new Date();
+      const [row] = await tx
+        .insert(transactions)
+        .values({
+          dispatchId: predecessor.dispatchId,
+          callIndex: predecessor.callIndex,
+          chain: predecessor.chain,
+          signedBytes: replacement.signedBytes,
+          hash: replacement.hash,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+          replacesTransactionId: predecessor.id,
+          feeBumpAttempts: predecessor.feeBumpAttempts + 1,
+        })
+        .returning();
+      if (!row) {
+        throw new Error('Failed to create replacement Transaction');
+      }
+      await tx
+        .update(transactions)
+        .set({ status: 'REPLACED' })
+        .where(eq(transactions.id, predecessorId));
+      return toTransaction(row);
+    });
+  }
+
+  async listTransactionsByHash(hash: string): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({ where: eq(transactions.hash, hash) });
+    return rows.map(toTransaction);
+  }
+
+  async setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ feeBumpAttempts })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async recordSent(transactionId: string, hash: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ hash, lastBroadcastAt: new Date() })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async undoReplacement(replacementId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const replacement = await tx.query.transactions.findFirst({
+        where: eq(transactions.id, replacementId),
+      });
+      if (!replacement?.replacesTransactionId) {
+        throw new Error(`Not a replacement transaction: ${replacementId}`);
+      }
+      await tx
+        .update(transactions)
+        .set({ status: 'DROPPED' })
+        .where(eq(transactions.id, replacementId));
+      await tx
+        .update(transactions)
+        .set({ status: 'PENDING' })
+        .where(eq(transactions.id, replacement.replacesTransactionId));
+    });
+  }
+
+  async reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]> {
+    return this.db.transaction(async (tx) => {
+      const stale = await tx
+        .select({ id: dispatches.id })
+        .from(dispatches)
+        .where(
+          and(
+            eq(dispatches.status, 'broadcasting'),
+            or(isNull(dispatches.claimedAt), lt(dispatches.claimedAt, claimedBefore)),
+            sql`jsonb_array_length(${dispatches.items}) > (select count(distinct ${transactions.callIndex}) from ${transactions} where ${transactions.dispatchId} = ${dispatches.id})`,
+          ),
+        )
+        .orderBy(dispatches.claimedAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
+      if (stale.length === 0) return [];
+      const rows = await tx
+        .update(dispatches)
+        .set({ claimedAt: new Date() })
+        .where(
+          inArray(
+            dispatches.id,
+            stale.map((row) => row.id),
+          ),
+        )
+        .returning();
+      return rows.map(toDispatch);
+    });
+  }
+
+  async reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]> {
+    return this.db.transaction(async (tx) => {
+      const stale = await tx
+        .select({ id: relayDispatches.id })
+        .from(relayDispatches)
+        .where(
+          and(
+            eq(relayDispatches.status, 'broadcasting'),
+            or(isNull(relayDispatches.claimedAt), lt(relayDispatches.claimedAt, claimedBefore)),
+            sql`not exists (select 1 from ${transactions} where ${transactions.dispatchId} = ${relayDispatches.id})`,
+          ),
+        )
+        .orderBy(relayDispatches.claimedAt)
+        .limit(limit)
+        .for('update', { skipLocked: true });
+      if (stale.length === 0) return [];
+      const rows = await tx
+        .update(relayDispatches)
+        .set({ claimedAt: new Date() })
+        .where(
+          inArray(
+            relayDispatches.id,
+            stale.map((row) => row.id),
+          ),
+        )
+        .returning();
+      return rows.map(toRelayDispatch);
+    });
+  }
+
+  async markDropped(transactionId: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ status: 'DROPPED' })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async createTransactions(inputs: NewTransactionInput[]): Promise<Transaction[]> {
+    if (inputs.length === 0) return [];
+    const now = new Date();
+    const rows = await this.db
+      .insert(transactions)
+      .values(
+        inputs.map((input) => ({
+          dispatchId: input.dispatchId,
+          callIndex: input.callIndex,
+          chain: input.chain,
+          signedBytes: input.signedBytes,
+          hash: input.hash,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+        })),
+      )
+      .returning();
+    return rows.map(toTransaction);
+  }
+
+  async listUnsettledTransactions(chain: Chain): Promise<Transaction[]> {
+    const rows = await this.db.query.transactions.findMany({
+      where: and(eq(transactions.chain, chain), inArray(transactions.status, ['PENDING', 'REPLACED'])),
+    });
+    return rows.map(toTransaction);
+  }
+
+  async touchClaims(dispatchIds: string[]): Promise<void> {
+    if (dispatchIds.length === 0) return;
+    await this.db.update(dispatches).set({ claimedAt: new Date() }).where(inArray(dispatches.id, dispatchIds));
   }
 
   async recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
@@ -195,7 +407,7 @@ export class PostgresDispatchStore implements DispatchStore {
     return toTransaction(row);
   }
 
-  async recordBroadcast(transactionId: string, hash: string): Promise<void> {
+  async recordBroadcast(transactionId: string, hash: string, error?: DispatchError): Promise<void> {
     await this.db.transaction(async (tx) => {
       const row = await tx.query.transactions.findFirst({
         where: eq(transactions.id, transactionId),
@@ -210,7 +422,11 @@ export class PostgresDispatchStore implements DispatchStore {
             `bytes are a new Transaction, not a new Attempt of this one.`,
         );
       }
-      await tx.insert(attempts).values({ transactionId });
+      await tx.insert(attempts).values({ transactionId, error: error ?? null });
+      await tx
+        .update(transactions)
+        .set({ lastBroadcastAt: new Date() })
+        .where(eq(transactions.id, transactionId));
     });
   }
 
@@ -231,7 +447,14 @@ export class PostgresDispatchStore implements DispatchStore {
   async markConfirmed(transactionId: string): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'CONFIRMED' })
+      .set({ status: 'CONFIRMED', confirmedAt: new Date() })
+      .where(eq(transactions.id, transactionId));
+  }
+
+  async reopenTransaction(transactionId: string): Promise<void> {
+    await this.db
+      .update(transactions)
+      .set({ status: 'PENDING', confirmedAt: null })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -284,7 +507,7 @@ export class PostgresDispatchStore implements DispatchStore {
 
       const rows = await tx
         .update(relayDispatches)
-        .set({ status: 'broadcasting' })
+        .set({ status: 'broadcasting', claimedAt: new Date() })
         .where(
           inArray(
             relayDispatches.id,

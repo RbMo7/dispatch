@@ -172,7 +172,32 @@ describe('InMemoryDispatchStore', () => {
 
       await store.markConfirmed(transaction.id);
 
-      expect(store.getTransaction(transaction.id)?.status).toBe('CONFIRMED');
+      const confirmed = store.getTransaction(transaction.id);
+      expect(confirmed?.status).toBe('CONFIRMED');
+      expect(confirmed?.confirmedAt).toBeInstanceOf(Date);
+    });
+
+    it('reopens a CONFIRMED Transaction back to PENDING, clearing confirmedAt (base-chain-handler issue 07)', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      const transaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-1',
+      });
+      await store.markConfirmed(transaction.id);
+
+      await store.reopenTransaction(transaction.id);
+
+      const reopened = store.getTransaction(transaction.id);
+      expect(reopened?.status).toBe('PENDING');
+      expect(reopened?.confirmedAt).toBeNull();
     });
 
     it('marks a Transaction failed with a structured error', async () => {
@@ -411,6 +436,371 @@ describe('InMemoryDispatchStore', () => {
 
       const limited = await clock.listAbandonedTransactions(1, new Date(0));
       expect(limited.map((t) => t.id)).toEqual([first.id]);
+    });
+  });
+
+  describe('fee-bump bookkeeping (#9)', () => {
+    async function createOriginal() {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem],
+        retryPolicy: true,
+      });
+      return store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'b3JpZ2luYWw=',
+        hash: 'sig-original',
+      });
+    }
+
+    it('creates a replacement for the same Call and marks the predecessor REPLACED', async () => {
+      const original = await createOriginal();
+
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'YnVtcGVk',
+        hash: 'sig-bumped',
+      });
+
+      expect(replacement).toMatchObject({
+        dispatchId: original.dispatchId,
+        callIndex: 0,
+        chain: 'solana',
+        status: 'PENDING',
+        hash: 'sig-bumped',
+        replacesTransactionId: original.id,
+        feeBumpAttempts: 1,
+      });
+      expect(replacement.lastBroadcastAt).not.toBeNull();
+      const all = await store.listTransactions(original.dispatchId);
+      expect(all.find((t) => t.id === original.id)?.status).toBe('REPLACED');
+    });
+
+    it('lists every Transaction sharing a hash', async () => {
+      const original = await createOriginal();
+      const byHash = await store.listTransactionsByHash('sig-original');
+      expect(byHash.map((t) => t.id)).toEqual([original.id]);
+    });
+
+    it('records fee-bump attempts and drops a version', async () => {
+      const original = await createOriginal();
+      await store.setFeeBumpAttempts(original.id, 3);
+      await store.markDropped(original.id);
+
+      const [row] = await store.listTransactionsByHash('sig-original');
+      expect(row?.feeBumpAttempts).toBe(3);
+      expect(row?.status).toBe('DROPPED');
+    });
+
+    it('stamps lastBroadcastAt on first broadcast and again on a rebroadcast Attempt', async () => {
+      const original = await createOriginal();
+      expect(original.lastBroadcastAt).not.toBeNull();
+      await store.recordBroadcast(original.id, 'sig-original');
+      const [row] = await store.listTransactionsByHash('sig-original');
+      expect(row!.lastBroadcastAt!.getTime()).toBeGreaterThanOrEqual(
+        original.lastBroadcastAt!.getTime(),
+      );
+    });
+  });
+
+  describe('bulkCall (#11)', () => {
+    it("round-trips a Dispatch's bulkCall and each item's fundedBy", async () => {
+      const created = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: 'key-bulk',
+        items: [
+          { call: { to: '0xabc', data: '0x', value: '1' }, payment: null },
+          {
+            call: { to: '0xtoken', data: '0xa9059cbb', value: '0' },
+            payment: null,
+            fundedBy: '0xaggregator',
+          },
+        ],
+        retryPolicy: false,
+        bulkCall: { aggregator: '0xaggregator', maxBatchSize: 2, allowFailure: false },
+      });
+
+      const read = await store.getDispatch(created.id);
+
+      expect(read?.bulkCall).toEqual({
+        aggregator: '0xaggregator',
+        maxBatchSize: 2,
+        allowFailure: false,
+      });
+      expect(read?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xaggregator']);
+    });
+
+    it('defaults bulkCall to null', async () => {
+      const created = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: 'key-bulk' + '-plain',
+        items: [{ call: { to: '0xabc', data: '0x', value: '1' }, payment: null }],
+        retryPolicy: false,
+      });
+      expect((await store.getDispatch(created.id))?.bulkCall).toBeNull();
+    });
+  });
+
+  describe('write-ahead bookkeeping (#20, ADR-0041)', () => {
+    async function pending(hash: string) {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: `wa-${Math.random()}`,
+        items: [solanaItem],
+        retryPolicy: true,
+      });
+      return store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash,
+      });
+    }
+
+    it('recordSent stamps lastBroadcastAt and takes the hash the chain actually reported', async () => {
+      const noted = await pending(`h-noted-${Math.random()}`);
+      const reported = `h-reported-${Math.random()}`;
+
+      await store.recordSent(noted.id, reported);
+
+      const [row] = await store.listTransactionsByHash(reported);
+      expect(row?.id).toBe(noted.id);
+      expect(row?.status).toBe('PENDING');
+      expect(row?.lastBroadcastAt).not.toBeNull();
+    });
+
+    it('undoReplacement drops a refused replacement and puts its predecessor back to PENDING', async () => {
+      const original = await pending(`h-orig-${Math.random()}`);
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'YnVtcGVk',
+        hash: `h-bump-${Math.random()}`,
+      });
+
+      await store.undoReplacement(replacement.id);
+
+      const rows = await store.listTransactions(original.dispatchId);
+      expect(rows.find((t) => t.id === original.id)?.status).toBe('PENDING');
+      expect(rows.find((t) => t.id === replacement.id)?.status).toBe('DROPPED');
+    });
+
+    it('reclaims a Dispatch claimed before the cutoff that still has items with no Transaction, and only once', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: `wa-${Math.random()}`,
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(100);
+      await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: `h-${Math.random()}`,
+      });
+
+      const future = new Date(Date.now() + 60_000);
+      const reclaimed = await store.reclaimStaleDispatches(future, 100);
+      const again = await store.reclaimStaleDispatches(new Date(Date.now() - 60_000), 100);
+
+      expect(reclaimed.map((d) => d.id)).toContain(dispatch.id);
+      expect(again.map((d) => d.id)).not.toContain(dispatch.id); // re-stamped: not stale again yet
+    });
+
+    it('never reclaims a Dispatch whose items all have Transactions', async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: `wa-${Math.random()}`,
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(100);
+      await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: `h-${Math.random()}`,
+      });
+
+      const reclaimed = await store.reclaimStaleDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((d) => d.id)).not.toContain(dispatch.id);
+    });
+
+    it('never reclaims a Relay Dispatch that has a Transaction, even if its link was never written (#20 review)', async () => {
+      const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `wa-${Math.random()}`, signedTransaction: 'c2lnbmVk' });
+      await store.claimQueuedRelayDispatches(100);
+      await store.createTransaction({ dispatchId: relay.id, callIndex: 0, chain: 'solana', signedBytes: 'c2lnbmVk', hash: 'h' });
+
+      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((r) => r.id)).not.toContain(relay.id);
+    });
+
+    it('reclaims a Relay Dispatch claimed before the cutoff that never got a Transaction', async () => {
+      const relay = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: `wa-${Math.random()}`,
+        signedTransaction: 'c2lnbmVk',
+      });
+      await store.claimQueuedRelayDispatches(100);
+
+      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+
+      expect(reclaimed.map((r) => r.id)).toContain(relay.id);
+    });
+  });
+
+  describe('listPendingTransactions', () => {
+    it('rotates through every pending row, so long-pending rows never starve newer ones (#21)', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const ids: string[] = [];
+      for (const callIndex of [0, 1, 2]) {
+        currentTime = new Date(currentTime.getTime() + 1_000);
+        const transaction = await clock.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: 'solana',
+          signedBytes: 'c2lnbmVk',
+          hash: `sig-${callIndex}`,
+        });
+        ids.push(transaction.id);
+      }
+
+      currentTime = new Date(currentTime.getTime() + 1_000);
+      const firstTick = await clock.listPendingTransactions(2);
+      currentTime = new Date(currentTime.getTime() + 1_000);
+      const secondTick = await clock.listPendingTransactions(2);
+
+      expect(firstTick.map((t) => t.id)).toEqual([ids[0], ids[1]]);
+      expect(secondTick.map((t) => t.id)[0]).toBe(ids[2]);
+    });
+  });
+
+  describe('listRecentlyConfirmedTransactions (base-chain-handler issue 07)', () => {
+    it('returns only CONFIRMED transactions whose confirmedAt is no earlier than notConfirmedBefore', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const stillPending = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-pending',
+      });
+      const confirmedLongAgo = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-old',
+      });
+      await clock.markConfirmed(confirmedLongAgo.id);
+
+      currentTime = new Date('2024-01-02T00:00:00.000Z'); // 24h later
+      const confirmedRecently = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 2,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-recent',
+      });
+      await clock.markConfirmed(confirmedRecently.id);
+
+      const notConfirmedBefore = new Date(currentTime.getTime() - 60 * 60 * 1000);
+      const result = await clock.listRecentlyConfirmedTransactions(
+        'solana',
+        10,
+        notConfirmedBefore,
+      );
+
+      expect(result.map((t) => t.id)).toEqual([confirmedRecently.id]);
+      expect(result.map((t) => t.id)).not.toContain(stillPending.id);
+      expect(result.map((t) => t.id)).not.toContain(confirmedLongAgo.id);
+    });
+
+    it('orders oldest-confirmed first and respects the limit', async () => {
+      let currentTime = new Date('2024-01-01T00:00:00.000Z');
+      const clock = new InMemoryDispatchStore(() => currentTime);
+      const dispatch = await clock.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+
+      const second = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-a',
+      });
+      currentTime = new Date('2024-01-01T01:00:00.000Z');
+      await clock.markConfirmed(second.id);
+
+      currentTime = new Date('2024-01-01T00:30:00.000Z'); // confirmed earlier than `second`, even though created after it
+      const first = await clock.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-b',
+      });
+      await clock.markConfirmed(first.id);
+
+      const all = await clock.listRecentlyConfirmedTransactions('solana', 10, new Date(0));
+      expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
+
+      const limited = await clock.listRecentlyConfirmedTransactions('solana', 1, new Date(0));
+      expect(limited.map((t) => t.id)).toEqual([first.id]);
+    });
+
+    it("returns only the requested chain's rows, so another chain's volume can't use up the limit", async () => {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'key-1',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+      const solanaTransaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'sig-solana',
+      });
+      await store.markConfirmed(solanaTransaction.id);
+      const baseTransaction = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'base',
+        signedBytes: 'c2lnbmVk',
+        hash: '0xbase',
+      });
+      await store.markConfirmed(baseTransaction.id);
+
+      const result = await store.listRecentlyConfirmedTransactions('base', 1, new Date(0));
+
+      expect(result.map((t) => t.id)).toEqual([baseTransaction.id]);
     });
   });
 

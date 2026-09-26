@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { ChainRegistry } from '../chain-registry/chain-registry.js';
-import type { ChainHandler } from '../chain-handler/chain-handler.js';
+import type {
+  BulkCallPlan,
+  BulkCallRequest,
+  ChainHandler,
+} from '../chain-handler/chain-handler.js';
 import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
@@ -31,7 +35,7 @@ const postDispatchSchema = {
     required: ['chain'],
     additionalProperties: false,
     properties: {
-      chain: { type: 'string', enum: ['evm', 'solana'] },
+      chain: { type: 'string', enum: ['base', 'solana'] },
       /** ADR-0031: defaults to 'managed' when omitted, so every existing caller keeps working unchanged. */
       mode: { type: 'string', enum: ['managed', 'relay'] },
       retryPolicy: { type: 'boolean' },
@@ -45,6 +49,17 @@ const postDispatchSchema = {
         },
       },
       signedTransaction: { type: 'string' },
+      /** #11 (ADR-0038): opt into Bulk Call through this caller-named aggregator. */
+      bulkCall: {
+        type: 'object',
+        required: ['aggregator'],
+        additionalProperties: false,
+        properties: {
+          aggregator: { type: 'string', minLength: 1 },
+          maxBatchSize: { type: 'integer', minimum: 1 },
+          allowFailure: { type: 'boolean' },
+        },
+      },
     },
   },
 };
@@ -55,6 +70,7 @@ type PostDispatchBody = {
   retryPolicy?: boolean;
   items?: Record<string, unknown>[];
   signedTransaction?: string;
+  bulkCall?: BulkCallRequest;
 };
 
 const INTEGER_STRING = /^\d+$/;
@@ -115,7 +131,15 @@ function toWireItemStatus(status: TransactionStatus): string {
       return 'failed';
     case 'ABANDONED':
       return 'abandoned';
+    case 'REPLACED':
+    case 'DROPPED':
+      throw new Error(`a ${status} Transaction is never a Call's reported version (ADR-0037)`);
   }
+}
+
+/** #9 (ADR-0037): a fee-bumped Call has several Transactions at one nonce — only the current one (latest while pending, or the one that settled it) is its reported version. */
+function isCurrentVersion(transaction: Transaction): boolean {
+  return transaction.status !== 'REPLACED' && transaction.status !== 'DROPPED';
 }
 
 /**
@@ -172,16 +196,16 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       const handler = registryResult.value;
 
       if ((mode ?? 'managed') === 'relay') {
-        const { signedTransaction, items, retryPolicy } = request.body;
+        const { signedTransaction, items, retryPolicy, bulkCall } = request.body;
         if (typeof signedTransaction !== 'string' || signedTransaction.length === 0) {
           return reply
             .code(400)
             .send({ error: 'a relay dispatch requires a string signedTransaction' });
         }
-        if (items !== undefined || retryPolicy !== undefined) {
+        if (items !== undefined || retryPolicy !== undefined || bulkCall !== undefined) {
           return reply.code(400).send({
             error:
-              'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy',
+              'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy, no bulkCall',
           });
         }
 
@@ -202,7 +226,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         return reply.code(202).send({ dispatchId: relayDispatch.id, status: relayDispatch.status });
       }
 
-      const { items, retryPolicy } = request.body;
+      const { items, retryPolicy, bulkCall } = request.body;
       if (!Array.isArray(items) || items.length === 0) {
         return reply.code(400).send({ error: 'items must be a non-empty array' });
       }
@@ -218,11 +242,31 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         translated.push(result.value);
       }
 
+      // #11 (ADR-0038): the Chain Handler both signals Bulk Call support (by
+      // having validateBulkCall at all) and checks the request against its
+      // items — resolving the batch size and who funds each item.
+      let bulkCallPlan: BulkCallPlan | undefined;
+      if (bulkCall !== undefined) {
+        if (!handler.validateBulkCall) {
+          return reply.code(400).send({ error: `chain ${chain} has no Bulk Call mode` });
+        }
+        const planResult = await handler.validateBulkCall(bulkCall, translated);
+        if (!planResult.ok) {
+          return reply.code(400).send(planResult.error satisfies DispatchError);
+        }
+        bulkCallPlan = planResult.value;
+        translated.forEach((item, index) => {
+          const fundedBy = bulkCallPlan?.fundedBy[index];
+          if (fundedBy) item.fundedBy = fundedBy;
+        });
+      }
+
       const dispatch = await store.createDispatch({
         chain,
         idempotencyKey,
         items: translated,
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
+        bulkCall: bulkCallPlan?.bulkCall ?? null,
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });
@@ -235,7 +279,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       const dispatch = await store.getDispatch(request.params.id);
       if (dispatch) {
-        const transactions = await store.listTransactions(dispatch.id);
+        const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
         const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
 
         const items = dispatch.items.map((_, index) => {

@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
+import type { BulkCallPlan, BulkCallRequest } from '../chain-handler/chain-handler.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
+import type { DispatchItem } from '../domain/call.js';
+import type { DispatchError } from '../domain/errors.js';
+import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
@@ -23,10 +27,13 @@ type RelayGetResponseBody = {
   error: unknown;
 };
 
-async function buildTestApp(options?: { defaultRetryPolicy?: boolean }) {
+async function buildTestApp(options?: {
+  defaultRetryPolicy?: boolean;
+  handler?: StubChainHandler;
+}) {
   const store = new InMemoryDispatchStore();
-  const chainRegistry = await ChainRegistry.load(['evm'], {
-    evm: () => Promise.resolve(new StubChainHandler()),
+  const chainRegistry = await ChainRegistry.load(['base'], {
+    base: () => Promise.resolve(options?.handler ?? new StubChainHandler()),
   });
   const app = buildApp({
     store,
@@ -45,7 +52,7 @@ describe('POST /v1/dispatch', () => {
       method: 'POST',
       url: '/v1/dispatch',
       headers: { 'idempotency-key': 'key-1' },
-      payload: { chain: 'evm', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
+      payload: { chain: 'base', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
     });
 
     expect(response.statusCode).toBe(401);
@@ -58,7 +65,7 @@ describe('POST /v1/dispatch', () => {
       method: 'POST',
       url: '/v1/dispatch',
       headers: AUTH_HEADERS,
-      payload: { chain: 'evm', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
+      payload: { chain: 'base', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
     });
 
     expect(response.statusCode).toBe(400);
@@ -94,7 +101,7 @@ describe('POST /v1/dispatch', () => {
       method: 'POST',
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
-      payload: { chain: 'evm', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
+      payload: { chain: 'base', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
     });
 
     expect(response.statusCode).toBe(202);
@@ -115,7 +122,7 @@ describe('POST /v1/dispatch', () => {
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
       payload: {
-        chain: 'evm',
+        chain: 'base',
         items: [{ type: 'payment', recipient: '0xrecipient', asset: 'USDC', amount: '10' }],
       },
     });
@@ -138,7 +145,7 @@ describe('POST /v1/dispatch', () => {
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
       payload: {
-        chain: 'evm',
+        chain: 'base',
         items: [{ type: 'payment', recipient: '0xrecipient', asset: 'USDC', amount: '10.5' }],
       },
     });
@@ -155,7 +162,7 @@ describe('POST /v1/dispatch', () => {
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
       payload: {
-        chain: 'evm',
+        chain: 'base',
         items: [{ type: 'payment', recipient: 'not-an-address', asset: 'USDC', amount: '10' }],
       },
     });
@@ -171,7 +178,7 @@ describe('POST /v1/dispatch', () => {
       method: 'POST',
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
-      payload: { chain: 'evm', items: [{ type: 'mystery' }] },
+      payload: { chain: 'base', items: [{ type: 'mystery' }] },
     });
 
     expect(response.statusCode).toBe(400);
@@ -180,7 +187,7 @@ describe('POST /v1/dispatch', () => {
   it('resubmitting the same Idempotency-Key returns the original Dispatch, not a new one', async () => {
     const { app } = await buildTestApp();
     const payload = {
-      chain: 'evm',
+      chain: 'base',
       items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }],
     };
 
@@ -209,7 +216,7 @@ describe('POST /v1/dispatch', () => {
       method: 'POST',
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
-      payload: { chain: 'evm', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
+      payload: { chain: 'base', items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }] },
     });
 
     const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
@@ -224,7 +231,7 @@ describe('POST /v1/dispatch', () => {
       url: '/v1/dispatch',
       headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
       payload: {
-        chain: 'evm',
+        chain: 'base',
         retryPolicy: false,
         items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }],
       },
@@ -242,7 +249,7 @@ describe('POST /v1/dispatch', () => {
         method: 'POST',
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
-        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+        payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
       });
 
       expect(response.statusCode).toBe(202);
@@ -251,7 +258,7 @@ describe('POST /v1/dispatch', () => {
 
       const relayDispatch = await store.getRelayDispatch(body.dispatchId);
       expect(relayDispatch).toMatchObject({
-        chain: 'evm',
+        chain: 'base',
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
         status: 'queued',
@@ -266,7 +273,7 @@ describe('POST /v1/dispatch', () => {
         method: 'POST',
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
-        payload: { chain: 'evm', mode: 'relay' },
+        payload: { chain: 'base', mode: 'relay' },
       });
 
       expect(response.statusCode).toBe(400);
@@ -281,7 +288,7 @@ describe('POST /v1/dispatch', () => {
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
         payload: {
-          chain: 'evm',
+          chain: 'base',
           mode: 'relay',
           signedTransaction: 'externally-signed-bytes',
           items: [{ type: 'call', to: '0xabc', data: '0x', value: '0' }],
@@ -295,7 +302,7 @@ describe('POST /v1/dispatch', () => {
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-2' },
         payload: {
-          chain: 'evm',
+          chain: 'base',
           mode: 'relay',
           signedTransaction: 'externally-signed-bytes',
           retryPolicy: true,
@@ -313,7 +320,7 @@ describe('POST /v1/dispatch', () => {
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
         // StubChainHandler.validateSignedTransaction rejects this exact sentinel.
-        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'force-failure' },
+        payload: { chain: 'base', mode: 'relay', signedTransaction: 'force-failure' },
       });
 
       expect(rejected.statusCode).toBe(400);
@@ -327,7 +334,7 @@ describe('POST /v1/dispatch', () => {
         method: 'POST',
         url: '/v1/dispatch',
         headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-key-1' },
-        payload: { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+        payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
       });
       expect(accepted.statusCode).toBe(202);
       expect(accepted.json<PostResponseBody>().status).toBe('queued');
@@ -335,7 +342,11 @@ describe('POST /v1/dispatch', () => {
 
     it('resubmitting the same Idempotency-Key returns the original RelayDispatch, not a new one', async () => {
       const { app } = await buildTestApp();
-      const payload = { chain: 'evm', mode: 'relay', signedTransaction: 'externally-signed-bytes' };
+      const payload = {
+        chain: 'base',
+        mode: 'relay',
+        signedTransaction: 'externally-signed-bytes',
+      };
 
       const first = await app.inject({
         method: 'POST',
@@ -354,6 +365,110 @@ describe('POST /v1/dispatch', () => {
         first.json<PostResponseBody>().dispatchId,
       );
     });
+  });
+});
+
+/** A stub for a chain with Bulk Call (#11): funds the second item from the aggregator, rejects the aggregator "0xbad". */
+class BulkCapableStub extends StubChainHandler {
+  validateBulkCall(
+    request: BulkCallRequest,
+    items: DispatchItem[],
+  ): Promise<Result<BulkCallPlan, DispatchError>> {
+    if (request.aggregator === '0xbad') {
+      return Promise.resolve(err({ code: 'CHAIN_REJECTED', message: 'bad aggregator' }));
+    }
+    return Promise.resolve(
+      ok({
+        bulkCall: {
+          aggregator: request.aggregator,
+          maxBatchSize: request.maxBatchSize ?? 50,
+          allowFailure: request.allowFailure ?? false,
+        },
+        fundedBy: items.map((_, i) => (i === 1 ? request.aggregator : null)),
+      }),
+    );
+  }
+}
+
+describe('POST /v1/dispatch with bulkCall (#11)', () => {
+  const items = [
+    { type: 'call', to: '0xa', data: '0x', value: '1' },
+    { type: 'call', to: '0xb', data: '0x', value: '0' },
+  ];
+
+  async function post(app: Awaited<ReturnType<typeof buildTestApp>>['app'], payload: object) {
+    return app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': `bulk-${Math.random()}` },
+      payload,
+    });
+  }
+
+  it("persists the resolved bulkCall and each item's fundedBy from the Chain Handler's plan", async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xagg' } });
+
+    expect(response.statusCode).toBe(202);
+    const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
+    expect(dispatch?.bulkCall).toEqual({
+      aggregator: '0xagg',
+      maxBatchSize: 50,
+      allowFailure: false,
+    });
+    expect(dispatch?.items.map((i) => i.fundedBy ?? null)).toEqual([null, '0xagg']);
+  });
+
+  it('passes an explicit allowFailure: true through to the Chain Handler', async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+
+    const response = await post(app, {
+      chain: 'base',
+      items,
+      bulkCall: { aggregator: '0xagg', allowFailure: true },
+    });
+
+    const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
+    expect(dispatch?.bulkCall?.allowFailure).toBe(true);
+  });
+
+  it('rejects bulkCall with 400 on a chain whose handler has no Bulk Call', async () => {
+    const { app } = await buildTestApp();
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xagg' } });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("answers the Chain Handler's own rejection with 400 and persists nothing", async () => {
+    const { app, store } = await buildTestApp({ handler: new BulkCapableStub() });
+    const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xbad' } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorResponseBody>().message).toBe('bad aggregator');
+    expect(await store.claimQueued(10)).toEqual([]);
+  });
+
+  it('rejects bulkCall on a relay dispatch with 400', async () => {
+    const { app } = await buildTestApp({ handler: new BulkCapableStub() });
+    const response = await post(app, {
+      chain: 'base',
+      mode: 'relay',
+      signedTransaction: 'stub-signed-transaction',
+      bulkCall: { aggregator: '0xagg' },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('rejects a malformed bulkCall shape with 400', async () => {
+    const { app } = await buildTestApp({ handler: new BulkCapableStub() });
+    for (const bulkCall of [
+      {},
+      { aggregator: '' },
+      { aggregator: '0xagg', maxBatchSize: 0 },
+      { aggregator: '0xagg', maxBatchSize: 'many' },
+    ]) {
+      const response = await post(app, { chain: 'base', items, bulkCall });
+      expect(response.statusCode).toBe(400);
+    }
   });
 });
 
@@ -381,7 +496,7 @@ describe('GET /v1/dispatch/:id', () => {
 
   it('reports a freshly-created Dispatch as queued, with each item queued and no hash yet', async () => {
     const dispatch = await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
@@ -403,7 +518,7 @@ describe('GET /v1/dispatch/:id', () => {
 
   it('reports confirmed once every item is confirmed', async () => {
     const dispatch = await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
@@ -412,7 +527,7 @@ describe('GET /v1/dispatch/:id', () => {
     const transaction = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
-      chain: 'evm',
+      chain: 'base',
       signedBytes: 'bytes',
       hash: 'hash-1',
     });
@@ -432,9 +547,62 @@ describe('GET /v1/dispatch/:id', () => {
     });
   });
 
+  describe('a fee-bumped item (#9)', () => {
+    async function bumpedDispatch() {
+      const dispatch = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: 'key-1',
+        items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+        retryPolicy: true,
+      });
+      await store.claimQueued(10);
+      const original = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'base',
+        signedBytes: 'bytes',
+        hash: 'hash-original',
+      });
+      const replacement = await store.createReplacementTransaction(original.id, {
+        signedBytes: 'bumped',
+        hash: 'hash-bumped',
+      });
+      return { dispatch, original, replacement };
+    }
+
+    async function get(dispatchId: string) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${dispatchId}`,
+        headers: AUTH_HEADERS,
+      });
+      return response.json<GetResponseBody>();
+    }
+
+    it('reports the latest version while it is still pending', async () => {
+      const { dispatch } = await bumpedDispatch();
+
+      expect(await get(dispatch.id)).toMatchObject({
+        status: 'broadcasting',
+        items: [{ status: 'broadcasting', transactionHash: 'hash-bumped', error: null }],
+      });
+    });
+
+    it('reports the version that landed, even when it is the original', async () => {
+      const { dispatch, original, replacement } = await bumpedDispatch();
+      await store.markConfirmed(original.id);
+      await store.markDropped(replacement.id);
+
+      expect(await get(dispatch.id)).toMatchObject({
+        status: 'confirmed',
+        items: [{ status: 'confirmed', transactionHash: 'hash-original', error: null }],
+      });
+    });
+  });
+
   it('reports partial when some items confirm and others fail or are abandoned', async () => {
     const dispatch = await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [
         { call: { to: '0xa', data: '0x', value: '0' }, payment: null },
@@ -446,7 +614,7 @@ describe('GET /v1/dispatch/:id', () => {
     const confirmed = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
-      chain: 'evm',
+      chain: 'base',
       signedBytes: 'bytes',
       hash: 'hash-1',
     });
@@ -454,7 +622,7 @@ describe('GET /v1/dispatch/:id', () => {
     await store.recordCallFailure({
       dispatchId: dispatch.id,
       callIndex: 1,
-      chain: 'evm',
+      chain: 'base',
       error: { code: 'INSUFFICIENT_FUNDS', message: 'short' },
     });
 
@@ -478,7 +646,7 @@ describe('GET /v1/dispatch/:id', () => {
 
   it('reports broadcasting while a transaction is still PENDING', async () => {
     const dispatch = await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
@@ -487,7 +655,7 @@ describe('GET /v1/dispatch/:id', () => {
     await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
-      chain: 'evm',
+      chain: 'base',
       signedBytes: 'bytes',
       hash: 'hash-1',
     });
@@ -505,7 +673,7 @@ describe('GET /v1/dispatch/:id', () => {
 
   it('surfaces an ABANDONED transaction distinctly at the item level', async () => {
     const dispatch = await store.createDispatch({
-      chain: 'evm',
+      chain: 'base',
       idempotencyKey: 'key-1',
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
@@ -514,7 +682,7 @@ describe('GET /v1/dispatch/:id', () => {
     const transaction = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
-      chain: 'evm',
+      chain: 'base',
       signedBytes: 'bytes',
       hash: 'hash-1',
     });
@@ -534,7 +702,7 @@ describe('GET /v1/dispatch/:id', () => {
   describe('a Relay Dispatch', () => {
     it('reports a freshly-created RelayDispatch as queued, with mode relay and no hash yet', async () => {
       const relayDispatch = await store.createRelayDispatch({
-        chain: 'evm',
+        chain: 'base',
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
@@ -556,7 +724,7 @@ describe('GET /v1/dispatch/:id', () => {
 
     it("reports broadcasting while the RelayDispatch's Transaction is still PENDING", async () => {
       const relayDispatch = await store.createRelayDispatch({
-        chain: 'evm',
+        chain: 'base',
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
@@ -564,7 +732,7 @@ describe('GET /v1/dispatch/:id', () => {
       const transaction = await store.createTransaction({
         dispatchId: relayDispatch.id,
         callIndex: 0,
-        chain: 'evm',
+        chain: 'base',
         signedBytes: 'externally-signed-bytes',
         hash: 'relay-hash-1',
       });
@@ -587,7 +755,7 @@ describe('GET /v1/dispatch/:id', () => {
 
     it("reports confirmed once the RelayDispatch's Transaction confirms — one transaction, not a fake single-item array", async () => {
       const relayDispatch = await store.createRelayDispatch({
-        chain: 'evm',
+        chain: 'base',
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
@@ -595,7 +763,7 @@ describe('GET /v1/dispatch/:id', () => {
       const transaction = await store.createTransaction({
         dispatchId: relayDispatch.id,
         callIndex: 0,
-        chain: 'evm',
+        chain: 'base',
         signedBytes: 'externally-signed-bytes',
         hash: 'relay-hash-1',
       });
@@ -616,7 +784,7 @@ describe('GET /v1/dispatch/:id', () => {
 
     it('reports failed with the structured error once broadcast never produced a Transaction hash', async () => {
       const relayDispatch = await store.createRelayDispatch({
-        chain: 'evm',
+        chain: 'base',
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
@@ -624,7 +792,7 @@ describe('GET /v1/dispatch/:id', () => {
       const transaction = await store.recordCallFailure({
         dispatchId: relayDispatch.id,
         callIndex: 0,
-        chain: 'evm',
+        chain: 'base',
         error: { code: 'CHAIN_REJECTED', message: 'send failed' },
       });
       await store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);

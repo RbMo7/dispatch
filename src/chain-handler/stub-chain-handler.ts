@@ -11,19 +11,19 @@ import type {
 } from './chain-handler.js';
 
 /**
- * A trivial, no-op `ChainHandler<'evm'>` that never touches a real chain —
+ * A trivial, no-op `ChainHandler<'base'>` that never touches a real chain —
  * it exists solely to prove the conformance suite itself runs and catches
  * what it's supposed to (issue 05: mutated input, a swallowed error,
  * premature CONFIRMED). It is not evidence a real Chain Handler behaves
- * correctly; that's solana-chain-handler's own conformance run, under
- * ADR-0013's real-RPC discipline. `evm` is an arbitrary choice here — this
- * stub asserts nothing about EVM's actual transaction shape.
+ * correctly; that's solana-chain-handler's (and now base-chain-handler's)
+ * own conformance run, under ADR-0013's real-RPC discipline. `base` is an
+ * arbitrary choice here — this stub asserts nothing about EVM's actual
+ * transaction shape.
  */
-export class StubChainHandler implements ChainHandler<'evm'> {
-  readonly chain = 'evm';
+export class StubChainHandler implements ChainHandler<'base'> {
+  readonly chain = 'base';
 
   private readonly broadcastHashes = new Set<string>();
-  private nextHash = 0;
 
   /**
    * A real ChainHandler.paymentToCall does a real native/token-transfer
@@ -88,6 +88,14 @@ export class StubChainHandler implements ChainHandler<'evm'> {
     return Promise.resolve(ok(undefined));
   }
 
+  /** A stub hash derived from the bytes themselves, so `broadcast` reports exactly what this computes — as a real chain does. */
+  transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
+    if (!/^[\w:.-]+$/.test(signed)) {
+      return err({ code: 'CHAIN_REJECTED', message: 'stub: not a well-formed signed transaction' });
+    }
+    return ok(`stub-hash-${signed}`);
+  }
+
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
     if (signed === 'force-failure') {
       return Promise.resolve(
@@ -95,9 +103,10 @@ export class StubChainHandler implements ChainHandler<'evm'> {
       );
     }
 
-    const hash = `stub-hash-${this.nextHash++}`;
-    this.broadcastHashes.add(hash);
-    return Promise.resolve(ok({ hash }));
+    const hashResult = this.transactionHash(signed);
+    if (!hashResult.ok) return Promise.resolve(hashResult);
+    this.broadcastHashes.add(hashResult.value);
+    return Promise.resolve(ok({ hash: hashResult.value }));
   }
 
   getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {

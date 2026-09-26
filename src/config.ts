@@ -21,4 +21,24 @@ export const config = {
     /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
     knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
   },
+  /** Base Chain Handler config — only consulted when 'base' is actually in enabledChains (ADR-0019). Same shape as config.solana (base-chain-handler spec's own maintainer-facing decision). */
+  base: {
+    rpcUrl: process.env.BASE_RPC_URL ?? 'https://sepolia.base.org',
+    /** Verified against the connected RPC's own eth_chainId at construction — refuses to start on mismatch. Base mainnet 8453, Base Sepolia 84532. */
+    chainId: Number(process.env.BASE_CHAIN_ID ?? 84532),
+    /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. */
+    senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
+    /** Comma-separated `SYMBOL:contractAddress:decimals` list — parsed via known-tokens.ts's parseBaseKnownTokens. */
+    knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
+    /** Minimum percentage both maxFeePerGas and maxPriorityFeePerGas must be bumped by on a Retry Policy fee-bump replacement (issue 09) — go-ethereum/op-geth's own inherited PriceBump floor is 10%; a documented default with margin above that, not a verified Base-sequencer guarantee. */
+    feeBumpPercent: Number(process.env.BASE_FEE_BUMP_PERCENT ?? 15),
+    /** #9 (ADR-0037): how long a transaction may stay pending after its latest broadcast before it counts as stuck — fee-bumped (Retry Policy on) or else rebroadcast. */
+    stuckAfterMs: Number(process.env.BASE_STUCK_AFTER_MS ?? 60_000),
+    /** #9 (ADR-0037): the most fee-bump attempts (failed ones included) a Call gets before its latest version just waits out the ABANDONED timeout. */
+    maxFeeBumps: Number(process.env.BASE_MAX_FEE_BUMPS ?? 5),
+    /** Max items per Bulk Call transaction (issue 11) before the engine splits a request across multiple aggregate3Value transactions. */
+    bulkCallMaxBatchSize: Number(process.env.BASE_BULK_CALL_MAX_BATCH_SIZE ?? 50),
+    /** #11 (ADR-0038): a tracing-capable RPC (`debug_traceTransaction`) — Bulk Call's per-item outcomes are only visible in a trace. Bulk Call is off without one. */
+    traceRpcUrl: process.env.BASE_TRACE_RPC_URL ?? '',
+  },
 };

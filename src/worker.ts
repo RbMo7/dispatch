@@ -1,4 +1,8 @@
-import { loadChainRegistry, coordinatorConfigFor } from './chain-loaders.js';
+import {
+  loadChainRegistry,
+  coordinatorConfigFor,
+  REORG_RECHECK_INTERVAL_MS,
+} from './chain-loaders.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
 import { logger } from './logger.js';
@@ -32,14 +36,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 const chainRegistry = await loadChainRegistry();
-const { senderAddresses, abandonmentTimeoutMs } = coordinatorConfigFor(chainRegistry);
+const { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling } =
+  coordinatorConfigFor(chainRegistry);
 
 const coordinator = new Coordinator({
   store: new PostgresDispatchStore(db),
   chainHandlers: chainRegistry.handlers,
   senderAddresses,
   abandonmentTimeoutMs,
+  reorgRecheckWindowMs,
+  stuckHandling,
 });
+
+// #20 review (ADR-0041): before anything is signed, reserve every nonce the
+// engine's in-flight Transactions hold — including one written down but never
+// sent before a crash, which recovery will send.
+await coordinator.restoreReservations();
 
 let running = true;
 
@@ -96,13 +108,50 @@ async function rewatchLoop(): Promise<void> {
   }
 }
 
+/**
+ * base-chain-handler issue 07: the reorg safety net's own separate,
+ * low-frequency self-scheduling loop — mirrors rewatchLoop's shape
+ * exactly, for the same reason (a genuinely different, much slower
+ * cadence than the main poll loop).
+ */
+/**
+ * #20 (ADR-0041): resumes claims a crashed worker left half-done — a
+ * claim counts as stale after 5 minutes, so checking once a minute is
+ * plenty.
+ */
+const RECLAIM_INTERVAL_MS = 60_000;
+
+async function reclaimLoop(): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.reclaimStaleClaims(BATCH_LIMIT);
+    } catch (cause) {
+      logger.error({ cause }, 'worker reclaim tick failed');
+    }
+    if (!running) break;
+    await sleep(RECLAIM_INTERVAL_MS);
+  }
+}
+
+async function reorgRecheckLoop(): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.recheckRecentlyConfirmedTransactions(BATCH_LIMIT);
+    } catch (cause) {
+      logger.error({ cause }, 'worker reorg-recheck tick failed');
+    }
+    if (!running) break;
+    await sleep(REORG_RECHECK_INTERVAL_MS);
+  }
+}
+
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// Both are self-scheduling loops, not setInterval: each only schedules its
-// own next tick once its current one (and everything it awaited) has
-// actually finished, so a slow tick can never overlap the next one — and
-// the two loops run fully independently of each other.
-await Promise.all([mainLoop(), rewatchLoop()]);
+// All four are self-scheduling loops, not setInterval: each only
+// schedules its own next tick once its current one (and everything it
+// awaited) has actually finished, so a slow tick can never overlap the
+// next one — and the loops run fully independently of each other.
+await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop()]);
 
 logger.info('worker stopped');
 process.exit(0);

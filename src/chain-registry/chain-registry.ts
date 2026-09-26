@@ -3,7 +3,7 @@ import type { Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 
-const KNOWN_CHAINS: readonly Chain[] = ['evm', 'solana'];
+const KNOWN_CHAINS: readonly Chain[] = ['base', 'solana'];
 
 function isChain(value: string): value is Chain {
   return (KNOWN_CHAINS as readonly string[]).includes(value);

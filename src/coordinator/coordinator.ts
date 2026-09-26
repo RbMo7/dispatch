@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 
 import type {
+  BundleSlotStatus,
   ChainHandler,
   PreparedTransaction,
   UnsignedTransaction,
@@ -10,6 +11,7 @@ import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
@@ -30,8 +32,20 @@ const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
  */
 const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** #20 (ADR-0041): how long a claim may stay `broadcasting` with unsent items before another tick resumes it. */
+const STALE_CLAIM_MS = 5 * 60 * 1000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * #20 (ADR-0041): the send may have reached the node — or it's already
+ * pooled — so the Transaction stays PENDING for polling and rebroadcast to
+ * resolve. Never a FAILED.
+ */
+function isAmbiguousBroadcastFailure(error: DispatchError): boolean {
+  return error.code === 'RPC_UNAVAILABLE' || error.code === 'ALREADY_KNOWN';
 }
 
 /** Only a send-layer hiccup is worth retrying with identical bytes — a genuine on-chain rejection (CHAIN_REJECTED) never becomes true by resending the exact same bytes again. */
@@ -44,10 +58,14 @@ type CallRef = { dispatch: Dispatch; callIndex: number };
 
 type FundingRequirement = {
   chain: Chain;
+  /** Who holds the funds, when not the Sender (#11). */
+  fundedBy: string | null;
   asset: string;
   required: bigint;
   items: CallRef[];
 };
+
+export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
 
 export type CoordinatorDeps = {
   store: DispatchStore;
@@ -59,6 +77,26 @@ export type CoordinatorDeps = {
   abandonmentTimeoutMs: Map<Chain, number>;
   /** issue 10: how long after being marked ABANDONED a Transaction is still eligible for the low-frequency re-watch (see rewatchAbandonedTransactions). Defaults to DEFAULT_ABANDONED_REWATCH_WINDOW_MS. */
   abandonedRewatchWindowMs?: number;
+  /**
+   * base-chain-handler issue 07: how long after being marked CONFIRMED a
+   * Transaction stays eligible for the reorg safety net's low-frequency
+   * re-check (see recheckRecentlyConfirmedTransactions) — a fixed,
+   * chain-agnostic proxy for "past the point a reorg is credible," rather
+   * than any chain-specific "safe head" concept the Coordinator would
+   * otherwise need to know about. A chain simply absent from this map
+   * (e.g. 'solana', whose own getStatus commitment levels already cover
+   * this) is never re-checked at all — defaults to an empty map.
+   */
+  reorgRecheckWindowMs?: Map<Chain, number>;
+  /**
+   * #9 (ADR-0037): the chains that opt into stuck-transaction handling, and
+   * how. A transaction still PENDING `stuckAfterMs` after its latest
+   * broadcast is fee-bumped (Managed Dispatch, Retry Policy on, a handler
+   * with `prepareReplacement`, fewer than `maxFeeBumps` attempts so far) or
+   * otherwise rebroadcast as identical bytes. A chain absent here (e.g.
+   * 'solana') is never touched. Defaults to an empty map.
+   */
+  stuckHandling?: Map<Chain, StuckHandlingConfig>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -82,9 +120,15 @@ export class Coordinator {
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
+  private readonly reorgRecheckWindowMs: Map<Chain, number>;
+  private readonly stuckHandling: Map<Chain, StuckHandlingConfig>;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
+  /** #20 review: Dispatches this Coordinator is processing right now — never reclaimed out from under itself. */
+  private readonly inFlight = new Set<string>();
+  /** #11: one bundle trace per hash per poll tick — cleared at the start of every tick. */
+  private bundleStatusCache = new Map<string, Promise<Result<BundleSlotStatus[], DispatchError>>>();
 
   constructor(deps: CoordinatorDeps) {
     this.store = deps.store;
@@ -92,6 +136,8 @@ export class Coordinator {
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs = deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
+    this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
+    this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
@@ -123,6 +169,15 @@ export class Coordinator {
       'claimed queued dispatches',
     );
 
+    for (const dispatch of dispatches) this.inFlight.add(dispatch.id);
+    try {
+      await this.processClaimedDispatches(dispatches);
+    } finally {
+      for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+    }
+  }
+
+  private async processClaimedDispatches(dispatches: Dispatch[]): Promise<void> {
     const fundingFailed = await this.runFundingCheck(dispatches);
 
     const itemsByChain = new Map<Chain, CallRef[]>();
@@ -182,10 +237,32 @@ export class Coordinator {
     }
     if (valid.length === 0) return;
 
-    const prepareResult = await handler.prepare(
-      valid.map((v) => v.call),
-      senderAddress,
-    );
+    // #11 (ADR-0038): a Bulk Dispatch is prepared on its own, with its
+    // bulkCall — its chunks must never mix with other requests' items.
+    // Everything else is prepared together, as before.
+    const groups = new Map<string, (CallRef & { call: Call })[]>();
+    for (const v of valid) {
+      const key = v.dispatch.bulkCall ? v.dispatch.id : '';
+      const group = groups.get(key);
+      if (group) group.push(v);
+      else groups.set(key, [v]);
+    }
+    for (const group of groups.values()) {
+      await this.prepareAndSend(handler, senderAddress, chain, group);
+    }
+  }
+
+  private async prepareAndSend(
+    handler: ChainHandler,
+    senderAddress: string,
+    chain: Chain,
+    valid: (CallRef & { call: Call })[],
+  ): Promise<void> {
+    const bulkCall = valid[0]?.dispatch.bulkCall;
+    const calls = valid.map((v) => v.call);
+    const prepareResult = bulkCall
+      ? await handler.prepare(calls, senderAddress, { bulkCall })
+      : await handler.prepare(calls, senderAddress);
     if (!prepareResult.ok) {
       this.logger.warn(
         { chain, count: valid.length, error: prepareResult.error },
@@ -239,6 +316,8 @@ export class Coordinator {
     members: CallRef[],
   ): Promise<void> {
     const log = this.logger.child({ chain, bundleSize: members.length });
+    // #20 review: a heartbeat — this claim is alive, however slow the batch.
+    await this.store.touchClaims([...new Set(members.map(({ dispatch }) => dispatch.id))]);
 
     const signResult = await handler.sign(prepared, senderAddress);
     if (!signResult.ok) {
@@ -254,30 +333,44 @@ export class Coordinator {
       return;
     }
 
-    const broadcastResult = await handler.broadcast(signResult.value);
-    if (!broadcastResult.ok) {
-      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
+    // #20 (ADR-0041): write every member's Transaction down *before*
+    // sending, under the hash the chain will report — so a crash or an
+    // ambiguous failure after this point can never lose track of a
+    // transaction that may land.
+    const hashResult = handler.transactionHash(signResult.value);
+    if (!hashResult.ok) {
+      log.warn({ stage: 'transactionHash', error: hashResult.error }, 'call(s) failed');
       for (const { dispatch, callIndex } of members) {
-        await this.store.recordCallFailure({
-          dispatchId: dispatch.id,
-          callIndex,
-          chain,
-          error: broadcastResult.error,
-        });
+        await this.store.recordCallFailure({ dispatchId: dispatch.id, callIndex, chain, error: hashResult.error });
       }
       return;
     }
-
-    log.info({ hash: broadcastResult.value.hash }, 'call(s) broadcast succeeded');
-    for (const { dispatch, callIndex } of members) {
-      await this.store.createTransaction({
+    // One atomic write for every member: a crash can never leave a bundle half-recorded.
+    const noted = await this.store.createTransactions(
+      members.map(({ dispatch, callIndex }) => ({
         dispatchId: dispatch.id,
         callIndex,
         chain,
         signedBytes: signResult.value,
-        hash: broadcastResult.value.hash,
-      });
+        hash: hashResult.value,
+      })),
+    );
+
+    const broadcastResult = await handler.broadcast(signResult.value);
+    if (!broadcastResult.ok) {
+      if (isAmbiguousBroadcastFailure(broadcastResult.error)) {
+        // It may have reached the node: stays PENDING — polling, Base's
+        // rebroadcast of the identical bytes, and abandonment resolve it.
+        log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'broadcast ambiguous — left PENDING');
+        return;
+      }
+      log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
+      for (const row of noted) await this.store.markFailed(row.id, broadcastResult.error);
+      return;
     }
+
+    log.info({ hash: broadcastResult.value.hash }, 'call(s) broadcast succeeded');
+    for (const row of noted) await this.store.recordSent(row.id, broadcastResult.value.hash);
   }
 
   /**
@@ -303,8 +396,10 @@ export class Coordinator {
       dispatch.items.forEach((item, callIndex) => {
         if (!item.payment) return;
         const { asset, amount } = item.payment;
+        // #11: a Bulk Call ERC-20 item spends its aggregator's balance, not the Sender's.
+        const fundedBy = item.fundedBy ?? null;
         // A control character, not a real asset symbol, so an asset name can never collide with the delimiter.
-        const key = `${dispatch.chain}\u0000${asset}`;
+        const key = `${dispatch.chain}\u0000${fundedBy ?? ''}\u0000${asset}`;
         const existing = requirements.get(key);
         if (existing) {
           existing.required += BigInt(amount);
@@ -312,6 +407,7 @@ export class Coordinator {
         } else {
           requirements.set(key, {
             chain: dispatch.chain,
+            fundedBy,
             asset,
             required: BigInt(amount),
             items: [{ dispatch, callIndex }],
@@ -320,11 +416,11 @@ export class Coordinator {
       });
     }
 
-    for (const { chain, asset, required, items } of requirements.values()) {
+    for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
 
-      const balanceResult = await handler.getBalance(senderAddress, asset);
+      const balanceResult = await handler.getBalance(fundedBy ?? senderAddress, asset);
       if (!balanceResult.ok) {
         this.logger.warn(
           { chain, asset, error: balanceResult.error },
@@ -346,7 +442,7 @@ export class Coordinator {
           {
             code: 'INSUFFICIENT_FUNDS',
             message: `insufficient ${asset} balance`,
-            chainDetail: { asset, short },
+            chainDetail: fundedBy ? { asset, short, fundedBy } : { asset, short },
           },
           failedKeys,
         );
@@ -382,6 +478,58 @@ export class Coordinator {
    * need one). `pollPendingTransactions` below then tracks the resulting
    * Transaction to a terminal state exactly like a Managed Dispatch one.
    */
+  /**
+   * #20 (ADR-0041): resumes work a crashed worker claimed but never
+   * finished. Only items with no Transaction are processed again — and
+   * since nothing is ever sent without its Transaction written down first,
+   * such an item was never sent, so this can't pay twice. Reclaimed items
+   * skip the Funding Check (it ran at the original claim).
+   */
+  async reclaimStaleClaims(limit: number): Promise<void> {
+    const claimedBefore = new Date(this.now().getTime() - STALE_CLAIM_MS);
+
+    for (const dispatch of await this.store.reclaimStaleDispatches(claimedBefore, limit)) {
+      if (this.inFlight.has(dispatch.id)) continue; // merely slow, not crashed: this Coordinator is still on it
+      const sent = new Set((await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex));
+      const unsent = dispatch.items
+        .map((_, callIndex) => ({ dispatch, callIndex }))
+        .filter(({ callIndex }) => !sent.has(callIndex));
+      this.logger.warn({ dispatchId: dispatch.id, unsent: unsent.length }, 'reclaiming a stale claim');
+      this.inFlight.add(dispatch.id);
+      try {
+        await this.processChainBatch(
+          this.requireChainHandler(dispatch.chain),
+          this.requireSenderAddress(dispatch.chain),
+          dispatch.chain,
+          unsent,
+        );
+      } finally {
+        this.inFlight.delete(dispatch.id);
+      }
+    }
+
+    for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(claimedBefore, limit)) {
+      this.logger.warn({ relayDispatchId: relayDispatch.id }, 'reclaiming a stale relay dispatch claim');
+      await this.processRelayDispatch(relayDispatch);
+    }
+  }
+
+  /**
+   * #20 review (ADR-0041): once, at worker start — hands each Chain
+   * Handler that keeps an in-memory nonce counter the signed bytes of every
+   * Transaction still in flight on its chain, so a restart never hands out
+   * a nonce one of them (possibly written down but never sent) holds.
+   */
+  async restoreReservations(): Promise<void> {
+    for (const [chain, handler] of this.chainHandlers) {
+      if (!handler.reserveNonces) continue;
+      const unsettled = await this.store.listUnsettledTransactions(chain);
+      const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
+      await handler.reserveNonces(signed);
+      this.logger.info({ chain, reserved: signed.length }, 'restored nonce reservations from in-flight transactions');
+    }
+  }
+
   async processQueuedRelayDispatches(limit: number): Promise<void> {
     const relayDispatches = await this.store.claimQueuedRelayDispatches(limit);
     if (relayDispatches.length === 0) {
@@ -405,11 +553,37 @@ export class Coordinator {
       chain: relayDispatch.chain,
     });
 
+    // #20 (ADR-0041): written down (and linked) before it is ever sent.
+    const hashResult = handler.transactionHash(relayDispatch.signedTransaction);
+    if (!hashResult.ok) {
+      log.warn({ error: hashResult.error }, 'relay dispatch hash failed');
+      const failed = await this.store.recordCallFailure({
+        dispatchId: relayDispatch.id,
+        callIndex: 0,
+        chain: relayDispatch.chain,
+        error: hashResult.error,
+      });
+      await this.store.setRelayDispatchTransaction(relayDispatch.id, failed.id);
+      return;
+    }
+    const transaction = await this.store.createTransaction({
+      dispatchId: relayDispatch.id,
+      callIndex: 0,
+      chain: relayDispatch.chain,
+      signedBytes: relayDispatch.signedTransaction,
+      hash: hashResult.value,
+    });
+    await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+
     let broadcastResult: Awaited<ReturnType<ChainHandler['broadcast']>> | undefined;
+    // Once any attempt may have reached the node, a later refusal can mean
+    // "it already arrived" ("already known", "nonce too low").
+    let sawAmbiguous = false;
     for (let attempt = 0; attempt < RELAY_BROADCAST_MAX_ATTEMPTS; attempt++) {
       log.debug({ attempt }, 'broadcasting relay dispatch');
       broadcastResult = await handler.broadcast(relayDispatch.signedTransaction);
       if (broadcastResult.ok) break;
+      if (isAmbiguousBroadcastFailure(broadcastResult.error)) sawAmbiguous = true;
       if (
         attempt === RELAY_BROADCAST_MAX_ATTEMPTS - 1 ||
         !isTransientBroadcastFailure(broadcastResult.error)
@@ -423,35 +597,21 @@ export class Coordinator {
       await this.sleep(RELAY_BROADCAST_RETRY_BASE_DELAY_MS * 2 ** attempt);
     }
 
-    // A single item, always at callIndex 0 (RelayDispatch is never a batch,
-    // ADR-0031) — createTransaction/recordCallFailure are the exact same
-    // DispatchStore methods Managed Dispatch's processCall already uses, so
-    // Transaction/Attempt records are reused completely unchanged.
-    let transaction;
     if (broadcastResult?.ok === true) {
       log.info({ hash: broadcastResult.value.hash }, 'relay dispatch broadcast succeeded');
-      transaction = await this.store.createTransaction({
-        dispatchId: relayDispatch.id,
-        callIndex: 0,
-        chain: relayDispatch.chain,
-        signedBytes: relayDispatch.signedTransaction,
-        hash: broadcastResult.value.hash,
-      });
-    } else {
-      const error = broadcastResult?.error ?? {
-        code: 'RPC_UNAVAILABLE' as const,
-        message: 'broadcast was never attempted',
-      };
-      log.warn({ error }, 'relay dispatch broadcast failed');
-      transaction = await this.store.recordCallFailure({
-        dispatchId: relayDispatch.id,
-        callIndex: 0,
-        chain: relayDispatch.chain,
-        error,
-      });
+      await this.store.recordSent(transaction.id, broadcastResult.value.hash);
+      return;
     }
-
-    await this.store.setRelayDispatchTransaction(relayDispatch.id, transaction.id);
+    const error = broadcastResult?.error ?? {
+      code: 'RPC_UNAVAILABLE' as const,
+      message: 'broadcast was never attempted',
+    };
+    if (sawAmbiguous || isAmbiguousBroadcastFailure(error)) {
+      log.warn({ error }, 'relay dispatch broadcast ambiguous — left PENDING');
+      return;
+    }
+    log.warn({ error }, 'relay dispatch broadcast failed');
+    await this.store.markFailed(transaction.id, error);
   }
 
   /**
@@ -461,16 +621,24 @@ export class Coordinator {
    * timeout applies even when the status check itself fails (e.g. RPC
    * unavailable) — elapsed time is all ADR-0004 measures, so a chain having
    * connectivity trouble must not silently suppress abandonment forever.
-   * Retry Policy on suppresses abandonment entirely; this scaffold doesn't
-   * implement an actual fee-bump retry (no real Chain Handler exists yet
-   * to bump), just the opt-out from the default safety net.
+   * #9 (ADR-0037): on a chain opted into `stuckHandling`, a transaction pending
+   * past `stuckAfterMs` is fee-bumped or rebroadcast first (see
+   * handleIfStuck), and Retry Policy on suppresses abandonment only while
+   * it can still be bumped.
    */
   async pollPendingTransactions(limit: number): Promise<void> {
+    this.bundleStatusCache.clear();
     const pending = await this.store.listPendingTransactions(limit);
     this.logger.debug({ count: pending.length, limit }, 'polling pending transactions');
 
+    // A bundled broadcast's member rows share one hash: once one of them
+    // has been bumped/rebroadcast (for all of them), the rest of this
+    // tick's stale copies must not act on that hash again.
+    const handledHashes = new Set<string>();
     for (const transaction of pending) {
-      await this.resolvePendingTransaction(transaction);
+      if (transaction.hash && handledHashes.has(transaction.hash)) continue;
+      const handledStuck = await this.resolvePendingTransaction(transaction);
+      if (handledStuck && transaction.hash) handledHashes.add(transaction.hash);
     }
   }
 
@@ -488,6 +656,7 @@ export class Coordinator {
    */
   async rewatchAbandonedTransactions(limit: number): Promise<void> {
     const notAbandonedBefore = new Date(this.now().getTime() - this.abandonedRewatchWindowMs);
+    this.bundleStatusCache.clear();
     const abandoned = await this.store.listAbandonedTransactions(limit, notAbandonedBefore);
     this.logger.debug({ count: abandoned.length, limit }, 'rewatching abandoned transactions');
 
@@ -496,10 +665,83 @@ export class Coordinator {
     }
   }
 
-  private async resolvePendingTransaction(transaction: Transaction): Promise<void> {
+  /**
+   * base-chain-handler issue 07: a pure background safety net for a chain
+   * (today, only 'base') whose `getStatus` reports CONFIRMED before real
+   * finality, trading speed for a small reorg window — never gates or
+   * delays the initial CONFIRMED report itself (a wholly separate method,
+   * never called from processChainBatch/resolvePendingTransaction). Chains
+   * absent from `reorgRecheckWindowMs` (e.g. 'solana', whose own commitment
+   * levels already cover this) are never touched by this loop at all. A
+   * Transaction whose `confirmedAt` has aged past its own chain's window is
+   * silently excluded from `listRecentlyConfirmedTransactions` below and
+   * never looked at again — same "stopped watching, finally meaning it"
+   * discipline as `rewatchAbandonedTransactions`.
+   */
+  async recheckRecentlyConfirmedTransactions(limit: number): Promise<void> {
+    for (const [chain, windowMs] of this.reorgRecheckWindowMs) {
+      const notConfirmedBefore = new Date(this.now().getTime() - windowMs);
+      const confirmed = await this.store.listRecentlyConfirmedTransactions(chain, limit, notConfirmedBefore);
+      this.logger.debug({ chain, count: confirmed.length, limit }, 'rechecking recently confirmed transactions');
+
+      for (const transaction of confirmed) {
+        await this.recheckConfirmedTransaction(transaction);
+      }
+    }
+  }
+
+  /**
+   * Re-asks `getStatus` for a hash already persisted as CONFIRMED — the
+   * exact same call `tryResolveByStatus` makes for a PENDING one, just
+   * aimed at a different starting state. Still CONFIRMED: nothing to do,
+   * it'll simply age out of the window above eventually. Now FAILED: a
+   * genuine, if rare, possibility after a reorg re-orders execution: marks
+   * it failed for real. No longer found at all (`getStatus` reports
+   * PENDING again): the receipt is gone — reopens it back to PENDING so it
+   * re-enters the normal poll/abandonment lifecycle rather than being left
+   * silently, permanently wrong. A `getStatus` failure (e.g. RPC hiccup)
+   * is not evidence of a reorg and leaves the Transaction untouched — the
+   * next cadence tries again.
+   */
+  private async recheckConfirmedTransaction(transaction: Transaction): Promise<void> {
+    if (!transaction.hash) {
+      throw new Error(`Transaction ${transaction.id} is CONFIRMED but has no hash.`);
+    }
+    const log = this.transactionLogger(transaction).child({ reorgRecheck: true });
+    const handler = this.requireChainHandler(transaction.chain);
+    const statusResult = await handler.getStatus(transaction.hash);
+
+    if (!statusResult.ok) {
+      log.warn({ error: statusResult.error }, 'reorg recheck: status check failed, leaving as-is');
+      return;
+    }
+    if (statusResult.value === 'CONFIRMED') {
+      log.debug('reorg recheck: still confirmed');
+      return;
+    }
+    if (statusResult.value === 'FAILED') {
+      log.warn('reorg recheck: now reports failed after a reorg — marking failed');
+      await this.store.markFailed(transaction.id, {
+        code: 'CHAIN_REJECTED',
+        message: `${transaction.chain} reported this transaction as failed on reorg re-check`,
+      });
+      return;
+    }
+
+    // statusResult.value === 'PENDING': the receipt this handler once
+    // reported is no longer found — a reorg dropped it.
+    log.warn('reorg recheck: receipt no longer found — reopening');
+    await this.store.reopenTransaction(transaction.id);
+  }
+
+  /** Returns whether stuck handling acted on this transaction's hash (so bundled siblings skip it this tick). */
+  private async resolvePendingTransaction(transaction: Transaction): Promise<boolean> {
     const log = this.transactionLogger(transaction);
-    const resolved = await this.tryResolveByStatus(transaction, log);
-    if (resolved) return;
+    const resolved = await this.tryResolveVersions(transaction, log);
+    if (resolved) return false;
+
+    const stuck = await this.handleIfStuck(transaction, log);
+    if (stuck === 'bumped') return true; // now REPLACED: its replacement carries the clock from here
 
     // Either still PENDING on-chain, or the status check itself failed (e.g.
     // RPC unavailable) — either way, fall through to the ABANDONED timeout.
@@ -509,6 +751,132 @@ export class Coordinator {
     // trouble is exactly a case where the engine should eventually stop
     // watching, not one where the timeout silently never fires.
     await this.maybeAbandon(transaction, log);
+    return stuck === 'handled';
+  }
+
+  /**
+   * #9 (ADR-0037): acts on a transaction still PENDING `stuckAfterMs` after
+   * its latest broadcast, on a chain opted into `stuckHandling`. Bumps it when it
+   * can still be bumped; otherwise (Retry Policy off, a Relay Dispatch, the
+   * cap reached, or a bump attempt that just failed) rebroadcasts its
+   * identical bytes — free, and a no-op for the chain if it already has
+   * them. A `NONCE_ALREADY_USED` bump failure means some version already
+   * landed: stop, and let resolution find it.
+   */
+  private async handleIfStuck(
+    transaction: Transaction,
+    log: Logger,
+  ): Promise<'none' | 'bumped' | 'handled'> {
+    const config = this.stuckHandling.get(transaction.chain);
+    const lastSentAt = transaction.lastBroadcastAt ?? transaction.broadcastAt;
+    if (!config || !lastSentAt) return 'none';
+    if (this.now().getTime() - lastSentAt.getTime() < config.stuckAfterMs) return 'none';
+
+    if (this.canStillBump(transaction) && (await this.retryPolicyFor(transaction))) {
+      const outcome = await this.bump(transaction, config, log);
+      if (outcome !== 'failed') return outcome;
+    }
+    await this.rebroadcast(transaction, log);
+    return 'handled';
+  }
+
+  /** Whether this transaction's chain can bump it and its Call hasn't used up its bump attempts — Retry Policy aside. */
+  private canStillBump(transaction: Transaction): boolean {
+    const config = this.stuckHandling.get(transaction.chain);
+    return (
+      config !== undefined &&
+      this.requireChainHandler(transaction.chain).prepareReplacement !== undefined &&
+      transaction.feeBumpAttempts < config.maxFeeBumps
+    );
+  }
+
+  private async bump(
+    transaction: Transaction,
+    config: StuckHandlingConfig,
+    log: Logger,
+  ): Promise<'bumped' | 'handled' | 'failed'> {
+    const { hash, signedBytes } = this.requireBroadcast(transaction);
+    const handler = this.requireChainHandler(transaction.chain);
+    const senderAddress = this.requireSenderAddress(transaction.chain);
+    const members = await this.pendingMembersOf(hash);
+    const recordAttempts = async (feeBumpAttempts: number) => {
+      for (const member of members) await this.store.setFeeBumpAttempts(member.id, feeBumpAttempts);
+    };
+
+    const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
+    if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
+      log.info({ error: prepared.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+      await recordAttempts(config.maxFeeBumps);
+      return 'handled';
+    }
+    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
+    const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
+    if (!signed.ok || !replacementHash.ok) {
+      const error = !replacementHash.ok ? replacementHash.error : undefined;
+      log.warn({ error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
+      await recordAttempts(transaction.feeBumpAttempts + 1);
+      return 'failed';
+    }
+
+    // #20 (ADR-0041): the replacement is written down before it is sent.
+    const replacements: Transaction[] = [];
+    for (const member of members) {
+      replacements.push(
+        await this.store.createReplacementTransaction(member.id, { signedBytes: signed.value, hash: replacementHash.value }),
+      );
+    }
+    const broadcast = await handler.broadcast(signed.value);
+    if (broadcast.ok) {
+      log.info({ replacementHash: broadcast.value.hash }, 'fee-bump: replacement broadcast at the same nonce');
+      for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
+      return 'bumped';
+    }
+    if (isAmbiguousBroadcastFailure(broadcast.error)) {
+      // It may have reached the node (or is already pooled): the replacement stays written down, PENDING.
+      log.warn({ error: broadcast.error }, 'fee-bump: replacement broadcast ambiguous — left PENDING');
+      return 'bumped';
+    }
+    // Definitely refused: undo it, so the original is the live version again.
+    for (const replacement of replacements) await this.store.undoReplacement(replacement.id);
+    if (broadcast.error.code === 'NONCE_ALREADY_USED') {
+      log.info({ error: broadcast.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+      await recordAttempts(config.maxFeeBumps);
+      return 'handled';
+    }
+    log.warn({ error: broadcast.error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
+    await recordAttempts(transaction.feeBumpAttempts + 1);
+    return 'failed';
+  }
+
+  private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {
+    const { hash, signedBytes } = this.requireBroadcast(transaction);
+    const result = await this.requireChainHandler(transaction.chain).broadcast(signedBytes);
+    // A refused resend — e.g. "already known", or "nonce too low" once some
+    // version landed — is never evidence against the transaction
+    // (resolution/timeout decide), but it's still recorded as an Attempt:
+    // that's what restarts the stuck clock, so a stuck transaction is
+    // resent once per stuckAfterMs, never once per tick.
+    if (result.ok) log.debug('rebroadcast identical bytes');
+    else log.info({ error: result.error }, 'rebroadcast not accepted — still pending');
+    for (const member of await this.pendingMembersOf(hash)) {
+      await this.store.recordBroadcast(
+        member.id,
+        result.ok ? result.value.hash : hash,
+        result.ok ? undefined : result.error,
+      );
+    }
+  }
+
+  /** Every still-PENDING Transaction sharing `hash` — several when one bundled broadcast covered several Calls. */
+  private async pendingMembersOf(hash: string): Promise<Transaction[]> {
+    return (await this.store.listTransactionsByHash(hash)).filter((t) => t.status === 'PENDING');
+  }
+
+  private requireBroadcast(transaction: Transaction): { hash: string; signedBytes: string } {
+    if (!transaction.hash || !transaction.signedBytes) {
+      throw new Error(`Transaction ${transaction.id} is PENDING but was never broadcast.`);
+    }
+    return { hash: transaction.hash, signedBytes: transaction.signedBytes };
   }
 
   /**
@@ -525,7 +893,7 @@ export class Coordinator {
    */
   private async resolveAbandonedTransaction(transaction: Transaction): Promise<void> {
     const log = this.transactionLogger(transaction).child({ rewatch: true });
-    const resolved = await this.tryResolveByStatus(transaction, log);
+    const resolved = await this.tryResolveVersions(transaction, log);
     if (resolved) {
       log.info('previously-ABANDONED transaction resolved after all');
     }
@@ -546,7 +914,33 @@ export class Coordinator {
    * PENDING on-chain, or the status check itself failed) — each caller
    * decides what "still unresolved" means for its own transaction (start
    * the ABANDONED clock; or, for one already ABANDONED, nothing at all).
+   * #9 (ADR-0037): a fee-bumped Call has several versions at one nonce and
+   * any of them may be the one that lands, so every REPLACED ancestor is
+   * checked too; whichever reports a definitive outcome settles the Call
+   * and the others become DROPPED.
    */
+  private async tryResolveVersions(transaction: Transaction, log: Logger): Promise<boolean> {
+    const versions =
+      transaction.replacesTransactionId === null
+        ? [transaction]
+        : [
+            transaction,
+            ...(await this.store.listTransactions(transaction.dispatchId)).filter(
+              (t) => t.callIndex === transaction.callIndex && t.status === 'REPLACED',
+            ),
+          ];
+
+    for (const version of versions) {
+      const settled = await this.tryResolveByStatus(version, log);
+      if (!settled) continue;
+      for (const other of versions) {
+        if (other.id !== version.id) await this.store.markDropped(other.id);
+      }
+      return true;
+    }
+    return false;
+  }
+
   private async tryResolveByStatus(transaction: Transaction, log: Logger): Promise<boolean> {
     if (!transaction.hash) {
       throw new Error(
@@ -555,16 +949,31 @@ export class Coordinator {
     }
 
     const handler = this.requireChainHandler(transaction.chain);
-    const statusResult = await handler.getStatus(transaction.hash);
+    const bundled = await this.bundleSlotStatus(handler, transaction, transaction.hash);
+    if (bundled?.ok && bundled.value.slotStatus.status === 'FAILED') {
+      const { slot, slotStatus } = bundled.value;
+      log.info({ settledHash: transaction.hash, slot }, 'bundled item failed');
+      await this.store.markFailed(transaction.id, {
+        code: 'CHAIN_REJECTED',
+        message: `${transaction.chain} reported bundled item ${slot} as failed`,
+        chainDetail: { slot, ...(slotStatus.detail as object | undefined) },
+      });
+      return true;
+    }
+    const statusResult = bundled
+      ? bundled.ok
+        ? ok(bundled.value.slotStatus.status)
+        : bundled
+      : await handler.getStatus(transaction.hash);
 
     if (statusResult.ok && statusResult.value === 'CONFIRMED') {
-      log.info('transaction confirmed');
+      log.info({ settledHash: transaction.hash }, 'transaction confirmed');
       await this.store.markConfirmed(transaction.id);
       return true;
     }
 
     if (statusResult.ok && statusResult.value === 'FAILED') {
-      log.info('transaction failed');
+      log.info({ settledHash: transaction.hash }, 'transaction failed');
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',
         message: `${transaction.chain} reported this transaction as failed`,
@@ -580,27 +989,80 @@ export class Coordinator {
     return false;
   }
 
-  private async maybeAbandon(transaction: Transaction, log: Logger): Promise<void> {
+  /**
+   * #11 (ADR-0038): a Bulk Dispatch member's own outcome — its slot in the
+   * bundle is its rank by callIndex among the rows sharing the chunk's hash
+   * (chunks never span Dispatches, and prepare keeps order). Undefined for
+   * anything that isn't a bundled member. Traces are cached for the poll
+   * tick: every member of a chunk asks about the same hash.
+   */
+  private async bundleSlotStatus(
+    handler: ChainHandler,
+    transaction: Transaction,
+    hash: string,
+  ): Promise<Result<{ slot: number; slotStatus: BundleSlotStatus }, DispatchError> | undefined> {
+    if (!handler.getBundleStatus) return undefined;
     const dispatch = await this.store.getDispatch(transaction.dispatchId);
-    if (dispatch) {
-      if (dispatch.retryPolicy) return; // opted in: never auto-abandon (ADR-0003)
-    } else {
-      // relay-dispatch issue 01: a RelayDispatch's Transaction.dispatchId
-      // points at its own (non-Dispatch) row, so getDispatch legitimately
-      // finds nothing for it — confirm that's actually why before treating
-      // the miss as harmless, so a genuinely orphaned Managed Dispatch
-      // Transaction (a real data-integrity bug) still throws loudly instead
-      // of silently degrading into "abandon on timeout." RelayDispatch has
-      // no retryPolicy concept at all (nothing for the engine to fee-bump,
-      // ADR-0031), which is exactly the same as `retryPolicy: false` here:
-      // never suppress the default ABANDONED-after-timeout path.
-      const relayDispatch = await this.store.getRelayDispatch(transaction.dispatchId);
-      if (!relayDispatch) {
-        throw new Error(
-          `Transaction ${transaction.id} references unknown Dispatch ${transaction.dispatchId}.`,
-        );
-      }
+    // allowFailure false (the default): the transaction's own status is
+    // every member's status — a revert fails them all, no trace needed.
+    if (!dispatch?.bulkCall?.allowFailure) return undefined;
+
+    const members = (await this.store.listTransactionsByHash(hash))
+      .filter((t) => t.dispatchId === transaction.dispatchId)
+      .sort((a, b) => a.callIndex - b.callIndex);
+    const slot = members.findIndex((t) => t.callIndex === transaction.callIndex);
+
+    let pending = this.bundleStatusCache.get(hash);
+    if (!pending) {
+      pending = handler.getBundleStatus(hash);
+      this.bundleStatusCache.set(hash, pending);
     }
+    const result = await pending;
+    if (!result.ok) return result;
+    // Empty: the chain doesn't know the transaction yet — still pending.
+    if (result.value.length === 0) return ok({ slot, slotStatus: { status: 'PENDING' } });
+    const slotStatus = result.value[slot];
+    if (!slotStatus) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `bundle ${hash} has no slot ${slot}`,
+        chainDetail: { slots: result.value.length },
+      });
+    }
+    return ok({ slot, slotStatus });
+  }
+
+  /**
+   * Whether this Transaction's Call opted into Retry Policy. A RelayDispatch
+   * has no retryPolicy concept at all (nothing for the engine to fee-bump
+   * with, ADR-0031) — the same as `false`.
+   */
+  private async retryPolicyFor(transaction: Transaction): Promise<boolean> {
+    const dispatch = await this.store.getDispatch(transaction.dispatchId);
+    if (dispatch) return dispatch.retryPolicy;
+
+    // relay-dispatch issue 01: a RelayDispatch's Transaction.dispatchId
+    // points at its own (non-Dispatch) row, so getDispatch legitimately
+    // finds nothing for it — confirm that's actually why before treating
+    // the miss as harmless, so a genuinely orphaned Managed Dispatch
+    // Transaction (a real data-integrity bug) still throws loudly instead
+    // of silently degrading into "abandon on timeout."
+    const relayDispatch = await this.store.getRelayDispatch(transaction.dispatchId);
+    if (!relayDispatch) {
+      throw new Error(
+        `Transaction ${transaction.id} references unknown Dispatch ${transaction.dispatchId}.`,
+      );
+    }
+    return false;
+  }
+
+  private async maybeAbandon(transaction: Transaction, log: Logger): Promise<void> {
+    // Opted in and still bumpable: fee-bumping, not abandonment, is this
+    // transaction's way out (ADR-0003/0037). Anywhere it can't be bumped —
+    // a chain without fee-bump, or the cap reached — Retry Policy on means
+    // nothing more than off does, so the normal timeout applies.
+    const retryPolicy = await this.retryPolicyFor(transaction);
+    if (retryPolicy && this.canStillBump(transaction)) return;
 
     if (!transaction.broadcastAt) {
       throw new Error(

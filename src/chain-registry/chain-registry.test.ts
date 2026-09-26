@@ -5,7 +5,7 @@ import { ChainRegistry, parseEnabledChains } from './chain-registry.js';
 
 describe('parseEnabledChains', () => {
   it('parses a comma-separated list, trimming whitespace', () => {
-    expect(parseEnabledChains('solana, evm')).toEqual(['solana', 'evm']);
+    expect(parseEnabledChains('solana, base')).toEqual(['solana', 'base']);
   });
 
   it('returns an empty list for an empty string', () => {
@@ -13,7 +13,7 @@ describe('parseEnabledChains', () => {
   });
 
   it('ignores empty entries from stray commas', () => {
-    expect(parseEnabledChains('solana,,evm,')).toEqual(['solana', 'evm']);
+    expect(parseEnabledChains('solana,,base,')).toEqual(['solana', 'base']);
   });
 
   it('throws for an unknown chain name', () => {
@@ -24,17 +24,17 @@ describe('parseEnabledChains', () => {
 describe('ChainRegistry', () => {
   it('loads a handler only for each enabled chain, never calling a disabled chain’s loader', async () => {
     const solanaLoader = vi.fn(() => Promise.resolve(new StubChainHandler()));
-    const evmLoader = vi.fn(() => Promise.resolve(new StubChainHandler()));
+    const baseLoader = vi.fn(() => Promise.resolve(new StubChainHandler()));
 
     const registry = await ChainRegistry.load(['solana'], {
       solana: solanaLoader,
-      evm: evmLoader,
+      base: baseLoader,
     });
 
     expect(solanaLoader).toHaveBeenCalledTimes(1);
-    expect(evmLoader).not.toHaveBeenCalled();
+    expect(baseLoader).not.toHaveBeenCalled();
     expect(registry.isEnabled('solana')).toBe(true);
-    expect(registry.isEnabled('evm')).toBe(false);
+    expect(registry.isEnabled('base')).toBe(false);
   });
 
   it('get() returns the registered handler for an enabled chain', async () => {

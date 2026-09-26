@@ -29,7 +29,7 @@ export type SolanaCall = {
 export type Call = EvmCall | SolanaCall;
 
 /** Which Call shape a given chain family uses — distributes over a Chain union. */
-export type CallForChain<C extends Chain> = C extends 'evm' ? EvmCall : SolanaCall;
+export type CallForChain<C extends Chain> = C extends 'base' ? EvmCall : SolanaCall;
 
 export type Payment = {
   recipient: string;
@@ -48,4 +48,6 @@ export type Payment = {
 export type DispatchItem<C extends Chain = Chain> = {
   call: CallForChain<C>;
   payment: Payment | null;
+  /** #11 (ADR-0038): who holds the funds this item spends, when that isn't the Sender — a Bulk Call ERC-20 item spends its aggregator's own balance. Set at the API edge from the Chain Handler's own answer; the Funding Check reads it. */
+  fundedBy?: string;
 };

@@ -8,5 +8,6 @@ runChainHandlerConformanceSuite('stub', () => new StubChainHandler(), {
   validCall: { to: '0xrecipient', data: '0x', value: '0' },
   invalidCall: { to: 'not-an-address', data: '0x', value: '0' },
   validSignedTransaction: 'stub-signed-transaction',
+  neverBroadcastHash: 'stub-hash-never-broadcast',
   invalidSignedTransaction: 'force-failure',
 });

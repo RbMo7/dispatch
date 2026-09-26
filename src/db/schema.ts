@@ -10,6 +10,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import type { DispatchItem } from '../domain/call.js';
+import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 
 export const dispatches = pgTable(
@@ -21,6 +22,10 @@ export const dispatches = pgTable(
     items: jsonb('items').notNull().$type<DispatchItem[]>(),
     status: text('status').notNull().default('queued'),
     retryPolicy: boolean('retry_policy').notNull().default(false),
+    /** #11 (ADR-0038): the Bulk Call opt-in, null for the default mode. */
+    bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
+    /** #20 (ADR-0041): when a worker last claimed this row — a claim still `broadcasting` long after is reclaimed. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],
@@ -51,6 +56,16 @@ export const transactions = pgTable('transactions', {
   broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
   /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
   abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+  /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
+  lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+  /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
+  replacesTransactionId: uuid('replaces_transaction_id'),
+  /** #9: fee-bump attempts made for this Call so far, failed ones included. */
+  feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
 });
 
 export const attempts = pgTable('attempts', {
@@ -61,6 +76,37 @@ export const attempts = pgTable('attempts', {
   broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
   error: jsonb('error').$type<DispatchError | null>(),
 });
+
+/**
+ * base-chain-handler issue 02: a persisted per-(chain, Sender) nonce->hash
+ * history, populated on every successful broadcast (issue 03) but consumed
+ * by no logic yet — groundwork for the deferred EVM analogue of ADR-0030
+ * (a future issue proving a lower-nonce transaction dead once a
+ * higher-nonce one from the same Sender confirms), which needs this
+ * history to survive a process restart. `(chain, sender_address, nonce)`
+ * is unique: a nonce is only ever assigned once per Sender, even across a
+ * fee-bump replacement (CONTEXT.md's Attempt-vs-Transaction split — a
+ * fee-bump is a new Transaction, but never a new nonce), so only the
+ * account's own next-nonce counter (issue 02) ever appends new rows.
+ */
+export const nonceHistory = pgTable(
+  'nonce_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    senderAddress: text('sender_address').notNull(),
+    nonce: integer('nonce').notNull(),
+    hash: text('hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('nonce_history_chain_sender_nonce_idx').on(
+      table.chain,
+      table.senderAddress,
+      table.nonce,
+    ),
+  ],
+);
 
 /** ADR-0031: Relay Dispatch's own table — never squeezed into `dispatches`, which has no meaningful `items`/`retryPolicy` for this shape. */
 export const relayDispatches = pgTable(
@@ -73,6 +119,8 @@ export const relayDispatches = pgTable(
     status: text('status').notNull().default('queued'),
     transactionId: uuid('transaction_id').references(() => transactions.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** #20: when a worker last claimed this row. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
   },
   (table) => [uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey)],
 );
