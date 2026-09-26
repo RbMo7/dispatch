@@ -51,6 +51,8 @@ const NATIVE_AMOUNT = 1000n; // wei
 const TOKEN_AMOUNT = 1n; // smallest TestToken unit
 /** Short, so the underpriced transaction is judged stuck within the run rather than after the production 60s. */
 const STUCK_AFTER_MS = 10_000;
+/** How long to wait for an on-chain read (a balance, the nonce) to catch up with a confirmed receipt. */
+const SETTLE_MS = 60_000;
 
 type ItemBody = { status: string; transactionHash: string | null };
 type GetBody = { status: string; items: ItemBody[] };
@@ -112,7 +114,25 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       abandonmentTimeoutMs: new Map([['base', BASE_ABANDONMENT_TIMEOUT_MS]]),
       stuckHandling: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: 3 }]]),
     });
-    startNonce = await client.getTransactionCount({ address: sender.address, blockTag: 'latest' });
+    // The audit accounts for every nonce from here on, so start from a Sender
+    // with nothing pending — e.g. no leftover from a crashed earlier run.
+    const settled = await eventually(
+      async () => {
+        const [latest, pending] = await Promise.all([
+          client.getTransactionCount({ address: sender.address, blockTag: 'latest' }),
+          client.getTransactionCount({ address: sender.address, blockTag: 'pending' }),
+        ]);
+        return { latest, pending };
+      },
+      ({ latest, pending }) => latest === pending,
+      SETTLE_MS,
+    );
+    if (settled.latest !== settled.pending) {
+      throw new Error(
+        `dev-sender has ${settled.pending - settled.latest} transaction(s) still pending — the nonce audit can't start until they land`,
+      );
+    }
+    startNonce = settled.latest;
   }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -157,8 +177,19 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
     }
   }
 
+  // Shared across the ordered steps below: what each produced, for the final audit.
+  const dispatchIds: string[] = [];
+  const directHashes: string[] = [];
+  const balanceOf = (address: `0x${string}`) =>
+    client.readContract({
+      address: token.address,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [address],
+    });
+
   it(
-    `${NATIVE_COUNT + ERC20_COUNT + RAW_CALL_COUNT} sequential payments, Bulk Call bundles and a real fee-bump — every item correct, every nonce accounted for on-chain`,
+    `step 1: ${NATIVE_COUNT + ERC20_COUNT + RAW_CALL_COUNT} sequential payments and two default Bulk Call bundles, through the real API — every item correct on-chain`,
     async () => {
       // --- 1. A large sequential Managed Dispatch: native, ERC-20, raw calls ---
       const nativeRecipients = Array.from({ length: NATIVE_COUNT }, () =>
@@ -271,7 +302,56 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       expect(bulkReverted?.items.map((i) => i.status)).toEqual(['failed', 'failed']);
       if (bulkIsolated)
         expect(bulkIsolated.items.map((i) => i.status)).toEqual(['confirmed', 'failed']);
+      dispatchIds.push(...ids);
 
+      for (const recipient of [...nativeRecipients, bulkNative]) {
+        expect(
+          await eventually(
+            () => client.getBalance({ address: recipient }),
+            (b) => b === NATIVE_AMOUNT,
+            SETTLE_MS,
+          ),
+        ).toBe(NATIVE_AMOUNT);
+      }
+      for (const recipient of [...tokenRecipients, bulkToken]) {
+        expect(
+          await eventually(
+            () => balanceOf(recipient),
+            (b) => b === TOKEN_AMOUNT,
+            SETTLE_MS,
+          ),
+        ).toBe(TOKEN_AMOUNT);
+      }
+      expect(await client.getBalance({ address: bulkRevertedNative })).toBe(0n);
+      const [revertedRow] = await store.listTransactions(bulkRevertedId);
+      expect((await client.getTransactionReceipt({ hash: revertedRow!.hash as Hex })).status).toBe(
+        'reverted',
+      );
+      if (bulkIsolatedId) {
+        expect(
+          await eventually(
+            () => client.getBalance({ address: isolatedNative }),
+            (b) => b === NATIVE_AMOUNT,
+            SETTLE_MS,
+          ),
+        ).toBe(NATIVE_AMOUNT);
+      }
+      expect(
+        await client.readContract({
+          address: token.address,
+          abi: token.abi,
+          functionName: 'count',
+        }),
+      ).toBe(
+        countBefore + BigInt(RAW_CALL_COUNT) + 1n, // + the whole-bundle's increment
+      );
+    },
+    10 * 60_000,
+  );
+
+  it(
+    'step 2: an allowFailure: true bundle with a mixed outcome — one slot lands, one fails, the bundle stands (on-chain)',
+    async () => {
       // A mixed-outcome bundle — one item lands, one fails, the bundle stands
       // (allowFailure: true) — sent straight through the handler, so its
       // outcome is proven on-chain without needing a tracing RPC.
@@ -306,11 +386,28 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
         hash: mixedSent.value.hash as Hex,
       });
       expect(mixedReceipt.status).toBe('success'); // the failing slot didn't take the bundle down
+      directHashes.push(mixedSent.value.hash);
+      expect(
+        await eventually(
+          () => client.getBalance({ address: mixedNative }),
+          (b) => b === NATIVE_AMOUNT,
+          SETTLE_MS,
+        ),
+      ).toBe(NATIVE_AMOUNT); // the mixed bundle's succeeding slot landed…
+      expect(await balanceOf(mixedToken)).toBe(0n); // …and its failing slot did not
+    },
+    3 * 60_000,
+  );
 
+  it(
+    'step 3: a deliberately underpriced transaction is judged stuck, fee-bumped at the same nonce, and the replacement confirms',
+    async () => {
       // --- 3. A real fee-bump: an underpriced transaction, bumped by the Coordinator ---
       // Last in the run: while it's stuck, nothing later from the Sender could land.
       const block = await client.getBlock();
-      const underpricedCap = block.baseFeePerGas! / 2n;
+      // Just below the base fee: never mineable, yet as close to a normal fee
+      // as possible so a node at its fee floor doesn't refuse it outright.
+      const underpricedCap = block.baseFeePerGas! > 1n ? block.baseFeePerGas! - 1n : 1n;
       const bumpRecipient = privateKeyToAddress(generatePrivateKey());
       const bumpCall = { to: bumpRecipient, data: '0x', value: NATIVE_AMOUNT.toString() };
       const prepared = await handler.prepare([bumpCall], sender.address);
@@ -351,84 +448,32 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       );
       expect(bumpRows.length).toBeGreaterThan(1); // at least one real replacement
       expect(store.getTransaction(original.id)?.status).toBe('DROPPED');
-
-      // --- Independent, on-chain verification of every effect ---
-      const balanceOf = (address: `0x${string}`) =>
-        client.readContract({
-          address: token.address,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [address],
-        });
-      for (const recipient of [...nativeRecipients, bulkNative]) {
-        expect(
-          await eventually(
-            () => client.getBalance({ address: recipient }),
-            (b) => b === NATIVE_AMOUNT,
-            15_000,
-          ),
-        ).toBe(NATIVE_AMOUNT);
-      }
-      for (const recipient of [...tokenRecipients, bulkToken]) {
-        expect(
-          await eventually(
-            () => balanceOf(recipient),
-            (b) => b === TOKEN_AMOUNT,
-            15_000,
-          ),
-        ).toBe(TOKEN_AMOUNT);
-      }
-      expect(await client.getBalance({ address: bulkRevertedNative })).toBe(0n);
-      const [revertedRow] = await store.listTransactions(bulkRevertedId);
-      expect((await client.getTransactionReceipt({ hash: revertedRow!.hash as Hex })).status).toBe(
-        'reverted',
-      );
-      expect(
-        await eventually(
-          () => client.getBalance({ address: mixedNative }),
-          (b) => b === NATIVE_AMOUNT,
-          15_000,
-        ),
-      ).toBe(NATIVE_AMOUNT); // the mixed bundle's succeeding slot landed…
-      expect(await balanceOf(mixedToken)).toBe(0n); // …and its failing slot did not
+      dispatchIds.push(bumpDispatch.id);
       expect(
         await eventually(
           () => client.getBalance({ address: bumpRecipient }),
           (b) => b === NATIVE_AMOUNT,
-          15_000,
+          SETTLE_MS,
         ),
       ).toBe(NATIVE_AMOUNT); // the fee-bumped payment itself arrived
-      if (bulkIsolatedId) {
-        expect(
-          await eventually(
-            () => client.getBalance({ address: isolatedNative }),
-            (b) => b === NATIVE_AMOUNT,
-            15_000,
-          ),
-        ).toBe(NATIVE_AMOUNT);
-      }
-      expect(
-        await client.readContract({
-          address: token.address,
-          abi: token.abi,
-          functionName: 'count',
-        }),
-      ).toBe(
-        countBefore + BigInt(RAW_CALL_COUNT) + 1n, // + the whole-bundle's increment
-      );
+    },
+    5 * 60_000,
+  );
 
-      // --- The Sender's nonce sequence, audited against the chain itself ---
+  it(
+    "step 4: the Sender's whole nonce sequence is gapless and collision-free against the chain itself",
+    async () => {
       // Everything the handler ever assigned must be mined: the chain's count
       // has to reach the handler's own next nonce — a tail gap would stop it short.
       const expectedEnd = handler.peekNextNonce();
       const endNonce = await eventually(
         () => client.getTransactionCount({ address: sender.address, blockTag: 'latest' }),
         (n) => n >= expectedEnd,
-        60_000,
+        SETTLE_MS,
       );
       expect(endNonce).toBe(expectedEnd);
-      const hashes = new Set<string>([mixedSent.value.hash]);
-      for (const id of [...ids, bumpDispatch.id]) {
+      const hashes = new Set<string>(directHashes);
+      for (const id of dispatchIds) {
         for (const t of await store.listTransactions(id)) if (t.hash) hashes.add(t.hash);
       }
       const landedNonces: number[] = [];
@@ -450,6 +495,6 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
         Array.from({ length: endNonce - startNonce }, (_, i) => startNonce + i),
       );
     },
-    15 * 60_000,
+    3 * 60_000,
   );
 });
