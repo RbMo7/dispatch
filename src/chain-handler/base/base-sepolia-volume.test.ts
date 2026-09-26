@@ -1,4 +1,11 @@
-import { createPublicClient, encodeFunctionData, erc20Abi, http, type Hex } from 'viem';
+import {
+  TransactionReceiptNotFoundError,
+  createPublicClient,
+  encodeFunctionData,
+  erc20Abi,
+  http,
+  type Hex,
+} from 'viem';
 import { generatePrivateKey, privateKeyToAddress } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -31,7 +38,7 @@ import { decodeUnsignedTransaction, encodeUnsignedTransaction } from './transact
  * auditing the Sender's whole nonce sequence against the chain itself.
  *
  * Unlike Solana's devnet run this spends real (testnet) ETH, so it only
- * runs when asked: RUN_BASE_VOLUME=1.
+ * runs when asked: RUN_BASE_VOLUME=1 (ADR-0040).
  */
 const RUN = process.env.RUN_BASE_VOLUME === '1';
 const TRACE_RPC_URL = process.env.BASE_TRACE_RPC_URL ?? '';
@@ -265,20 +272,48 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       if (bulkIsolated)
         expect(bulkIsolated.items.map((i) => i.status)).toEqual(['confirmed', 'failed']);
 
+      // A mixed-outcome bundle — one item lands, one fails, the bundle stands
+      // (allowFailure: true) — sent straight through the handler, so its
+      // outcome is proven on-chain without needing a tracing RPC.
+      const mixedNative = privateKeyToAddress(generatePrivateKey());
+      const mixedToken = privateKeyToAddress(generatePrivateKey());
+      const mixedPrepared = await handler.prepare(
+        [
+          { to: mixedNative, data: '0x', value: NATIVE_AMOUNT.toString() },
+          {
+            to: token.address,
+            // More than the aggregator holds: this slot must fail.
+            data: encodeFunctionData({
+              abi: erc20Abi,
+              functionName: 'transfer',
+              args: [mixedToken, 10n ** 30n],
+            }),
+            value: '0',
+          },
+        ],
+        sender.address,
+        { bulkCall: { aggregator, maxBatchSize: 50, allowFailure: true } },
+      );
+      if (!mixedPrepared.ok || !mixedPrepared.value[0])
+        throw new Error('mixed bundle prepare failed');
+      const mixedSigned = await handler.sign(mixedPrepared.value[0], sender.address);
+      if (!mixedSigned.ok)
+        throw new Error(`mixed bundle sign failed: ${JSON.stringify(mixedSigned.error)}`);
+      const mixedSent = await handler.broadcast(mixedSigned.value);
+      if (!mixedSent.ok)
+        throw new Error(`mixed bundle broadcast failed: ${JSON.stringify(mixedSent.error)}`);
+      const mixedReceipt = await client.waitForTransactionReceipt({
+        hash: mixedSent.value.hash as Hex,
+      });
+      expect(mixedReceipt.status).toBe('success'); // the failing slot didn't take the bundle down
+
       // --- 3. A real fee-bump: an underpriced transaction, bumped by the Coordinator ---
       // Last in the run: while it's stuck, nothing later from the Sender could land.
       const block = await client.getBlock();
       const underpricedCap = block.baseFeePerGas! / 2n;
-      const prepared = await handler.prepare(
-        [
-          {
-            to: privateKeyToAddress(generatePrivateKey()),
-            data: '0x',
-            value: NATIVE_AMOUNT.toString(),
-          },
-        ],
-        sender.address,
-      );
+      const bumpRecipient = privateKeyToAddress(generatePrivateKey());
+      const bumpCall = { to: bumpRecipient, data: '0x', value: NATIVE_AMOUNT.toString() };
+      const prepared = await handler.prepare([bumpCall], sender.address);
       if (!prepared.ok || !prepared.value[0]) throw new Error('prepare failed');
       const underpricedUnsigned = encodeUnsignedTransaction({
         ...decodeUnsignedTransaction(prepared.value[0].unsignedTransaction),
@@ -298,7 +333,7 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       const bumpDispatch = await store.createDispatch({
         chain: 'base',
         idempotencyKey: `volume-bump-${Date.now()}`,
-        items: [{ call: { to: sender.address, data: '0x', value: '0' }, payment: null }],
+        items: [{ call: bumpCall, payment: null }], // the very Call the underpriced transaction carries
         retryPolicy: true,
       });
       await store.claimQueued(10);
@@ -344,6 +379,25 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
         ).toBe(TOKEN_AMOUNT);
       }
       expect(await client.getBalance({ address: bulkRevertedNative })).toBe(0n);
+      const [revertedRow] = await store.listTransactions(bulkRevertedId);
+      expect((await client.getTransactionReceipt({ hash: revertedRow!.hash as Hex })).status).toBe(
+        'reverted',
+      );
+      expect(
+        await eventually(
+          () => client.getBalance({ address: mixedNative }),
+          (b) => b === NATIVE_AMOUNT,
+          15_000,
+        ),
+      ).toBe(NATIVE_AMOUNT); // the mixed bundle's succeeding slot landed…
+      expect(await balanceOf(mixedToken)).toBe(0n); // …and its failing slot did not
+      expect(
+        await eventually(
+          () => client.getBalance({ address: bumpRecipient }),
+          (b) => b === NATIVE_AMOUNT,
+          15_000,
+        ),
+      ).toBe(NATIVE_AMOUNT); // the fee-bumped payment itself arrived
       if (bulkIsolatedId) {
         expect(
           await eventually(
@@ -364,19 +418,28 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       );
 
       // --- The Sender's nonce sequence, audited against the chain itself ---
+      // Everything the handler ever assigned must be mined: the chain's count
+      // has to reach the handler's own next nonce — a tail gap would stop it short.
+      const expectedEnd = handler.peekNextNonce();
       const endNonce = await eventually(
         () => client.getTransactionCount({ address: sender.address, blockTag: 'latest' }),
-        (n) => n > startNonce,
-        15_000,
+        (n) => n >= expectedEnd,
+        60_000,
       );
-      const hashes = new Set<string>();
+      expect(endNonce).toBe(expectedEnd);
+      const hashes = new Set<string>([mixedSent.value.hash]);
       for (const id of [...ids, bumpDispatch.id]) {
         for (const t of await store.listTransactions(id)) if (t.hash) hashes.add(t.hash);
       }
       const landedNonces: number[] = [];
       for (const hash of hashes) {
-        const receipt = await client.getTransactionReceipt({ hash: hash as Hex }).catch(() => null);
-        if (!receipt) continue; // a fee-bump version that never landed
+        const receipt = await client
+          .getTransactionReceipt({ hash: hash as Hex })
+          .catch((cause: unknown) => {
+            if (cause instanceof TransactionReceiptNotFoundError) return null; // a fee-bump version that never landed
+            throw cause; // anything else is an RPC problem, not evidence
+          });
+        if (!receipt) continue;
         const tx = await client.getTransaction({ hash: hash as Hex });
         expect(tx.from.toLowerCase()).toBe(sender.address.toLowerCase());
         landedNonces.push(tx.nonce);
