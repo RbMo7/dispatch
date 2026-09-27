@@ -13,6 +13,15 @@ describe('parseSolanaKnownTokens', () => {
     });
   });
 
+  it('parses an optional token-2022 program, and refuses any other (#41)', () => {
+    expect(parseSolanaKnownTokens('PYUSD:mintP:6:token-2022,USDC:mintU:6')).toEqual({
+      PYUSD: { mint: 'mintP', decimals: 6, tokenProgram: 'token-2022' },
+      USDC: { mint: 'mintU', decimals: 6 },
+    });
+    expect(() => parseSolanaKnownTokens('X:mint:6:token-2023')).toThrow(/malformed/);
+    expect(() => parseSolanaKnownTokens('X:mint:6:token-2022:extra')).toThrow(/malformed/);
+  });
+
   it('returns an empty registry for an empty string', () => {
     expect(parseSolanaKnownTokens('')).toEqual({});
   });

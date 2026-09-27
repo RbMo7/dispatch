@@ -81,6 +81,13 @@ export interface ChainHandler<C extends Chain = Chain> {
   readonly chain: C;
 
   /**
+   * #42 (ADR-0044), optional: how many of a batch's transactions the
+   * Coordinator may send at once. Absent means 1 — one after another, as a
+   * chain whose nonces must land in order (Base) needs.
+   */
+  readonly maxConcurrentSends?: number;
+
+  /**
    * Turns a Payment (ADR-0018's convenience shape) into this chain's Call —
    * a native transfer or a known token-transfer encoding (CONTEXT.md's
    * Payment entry). This is the one piece of real chain-specific knowledge
@@ -149,6 +156,18 @@ export interface ChainHandler<C extends Chain = Chain> {
    * re-learns their blockhashes, so expiry stays provable.
    */
   restoreInFlight?(signed: SignedTransaction[]): Promise<void>;
+
+  /**
+   * #40 (ADR-0043), optional: the native-asset cost of sending these Calls
+   * beyond what their payments themselves move — network fees, and on
+   * Solana rent for accounts the transactions create. The Funding Check
+   * adds it to the Sender's requirement. Estimates may over-ask, never
+   * under-ask.
+   */
+  networkCost?(
+    calls: CallForChain<C>[],
+    senderAddress: string,
+  ): Promise<Result<Balance, DispatchError>>;
 
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;

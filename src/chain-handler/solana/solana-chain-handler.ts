@@ -1,10 +1,22 @@
 import { createPublicKey, randomUUID, verify as verifySignature } from 'node:crypto';
 
-import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
+import {
+  ACCOUNT_SIZE,
+  ExtensionType,
+  getAccount,
+  getAccountLen,
+  getAccountTypeOfMintType,
+  getExtensionTypes,
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  TokenAccountNotFoundError,
+} from '@solana/spl-token';
 import bs58 from 'bs58';
 import {
   ComputeBudgetProgram,
   Connection,
+  type Message,
   PACKET_DATA_SIZE,
   PublicKey,
   Transaction,
@@ -30,10 +42,15 @@ import type {
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
 import { validateGenericCall } from './contract-call.js';
-import { isNativeTransferCall, toTransactionInstructions } from './instruction-codec.js';
+import {
+  createdTokenAccount,
+  isNativeTransferCall,
+  toTransactionInstructions,
+} from './instruction-codec.js';
 import {
   NATIVE_ASSET_SYMBOL,
   resolveKnownToken,
+  type KnownToken,
   type SolanaTokenRegistry,
 } from './known-tokens.js';
 import {
@@ -76,10 +93,38 @@ const MAX_BUNDLE_SIZE = 8;
 
 /** Solana's per-transaction compute ceiling: the placeholder limit `prepare` reserves room for, and what `sign` simulates under (#37). */
 const MAX_COMPUTE_UNITS = 1_400_000;
+/** The base fee per signature; every transaction the engine builds has exactly one (the Sender's). */
+const LAMPORTS_PER_SIGNATURE = 5_000;
+/** `getMultipleAccountsInfo`'s per-call cap. */
+const MAX_ACCOUNTS_PER_LOOKUP = 100;
 /** Headroom over simulated usage (#37): real execution can differ slightly from the simulation, and running out fails the transaction. */
 const COMPUTE_UNIT_MARGIN = 1.1;
-/** ComputeBudget's SetComputeUnitLimit instruction discriminator. */
+/** ComputeBudget's SetComputeUnitLimit and SetComputeUnitPrice instruction discriminators. */
 const SET_COMPUTE_UNIT_LIMIT = 2;
+const SET_COMPUTE_UNIT_PRICE = 3;
+/** #43: `getRecentPrioritizationFees` takes at most this many accounts. */
+const MAX_FEE_LOOKUP_ACCOUNTS = 128;
+
+/**
+ * #43: an `'auto'` price — the 75th percentile of recent prioritization
+ * fees paid for the transaction's writable accounts (so it outbids most
+ * recent competition for them), never above `ceiling`.
+ */
+export function priorityFeeEstimate(recentFees: number[], ceiling: number): number {
+  if (recentFees.length === 0) return 0;
+  const sorted = [...recentFees].sort((a, b) => a - b);
+  return Math.min(ceiling, sorted[Math.ceil(sorted.length * 0.75) - 1]!);
+}
+
+function isComputeBudget(
+  instruction: TransactionInstruction | undefined,
+  discriminator: number,
+): boolean {
+  return (
+    !!instruction?.programId.equals(ComputeBudgetProgram.programId) &&
+    instruction.data[0] === discriminator
+  );
+}
 
 /** How often `broadcast` resends the identical signed bytes while it waits: leaders drop transactions under load, and resending the same bytes can never execute them twice. */
 const RESEND_INTERVAL_MS = 2_000;
@@ -101,7 +146,11 @@ type EncodedTransaction = {
 
 /** Bytes these instructions take as a signed, single-signer legacy transaction — the blockhash is 32 bytes whatever its value. */
 function signedSize(feePayer: PublicKey, instructions: TransactionInstruction[]): number {
-  const tx = new Transaction({ feePayer, blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 0 });
+  const tx = new Transaction({
+    feePayer,
+    blockhash: PublicKey.default.toBase58(),
+    lastValidBlockHeight: 0,
+  });
   tx.add(...instructions);
   try {
     return 1 + 64 + tx.compileMessage().serialize().length; // signature count + one signature + message
@@ -133,6 +182,11 @@ function allSignaturesVerify(tx: VersionedTransaction): boolean {
     });
     return verifySignature(null, message, key, signature);
   });
+}
+
+/** #41: the program a known token's mint lives under. */
+function tokenProgramOf(token: KnownToken): PublicKey {
+  return token.tokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
 
 function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
@@ -167,7 +221,6 @@ function decodeUnsignedTransaction(unsigned: UnsignedTransaction): EncodedTransa
   return JSON.parse(Buffer.from(unsigned, 'base64').toString('utf8')) as EncodedTransaction;
 }
 
-
 export type SolanaChainHandlerDeps = {
   connection: Connection;
   /**
@@ -186,8 +239,14 @@ export type SolanaChainHandlerDeps = {
    * #34: priority fee, in micro-lamports per compute unit, added to every
    * transaction this handler builds. 0 (the default) adds nothing: a
    * priority fee costs more, so it is the operator's opt-in (ADR-0003).
+   * #43: `'auto'` prices each transaction from recent network fees, never
+   * above `maxComputeUnitPriceMicroLamports` (required with it).
    */
-  computeUnitPriceMicroLamports?: number;
+  computeUnitPriceMicroLamports?: number | 'auto';
+  /** #43: the ceiling an `'auto'` price never exceeds — also what the Funding Check budgets for. */
+  maxComputeUnitPriceMicroLamports?: number;
+  /** #42 (ADR-0044): how many transactions the Coordinator may have in flight at once. Solana has no nonces to keep in order. Defaults to 4. */
+  maxConcurrentSends?: number;
   /** Defaults to the shared app logger (src/logger.ts) under a `component: 'solana-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
   logger?: Logger;
 };
@@ -199,12 +258,15 @@ export type SolanaChainHandlerDeps = {
  */
 export class SolanaChainHandler implements ChainHandler<'solana'> {
   readonly chain = 'solana';
+  readonly maxConcurrentSends: number;
 
   private readonly connection: Connection;
   private readonly signerClient: SignerClient | undefined;
   private readonly senderAddress: string;
   private readonly knownTokens: SolanaTokenRegistry;
+  /** The fixed price, or with `'auto'` its ceiling — what `prepare` reserves and `networkCost` budgets for. */
   private readonly computeUnitPriceMicroLamports: number;
+  private readonly autoPrice: boolean;
   /**
    * `getStatus`'s only way to know whether a not-yet-confirmed transaction's
    * blockhash has provably expired (issue 08) — the interface hands it only
@@ -231,8 +293,25 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     this.signerClient = deps.signerClient;
     this.senderAddress = deps.senderAddress;
     this.knownTokens = deps.knownTokens ?? {};
-    this.computeUnitPriceMicroLamports = deps.computeUnitPriceMicroLamports ?? 0;
-    if (!Number.isSafeInteger(this.computeUnitPriceMicroLamports) || this.computeUnitPriceMicroLamports < 0) {
+    this.autoPrice = deps.computeUnitPriceMicroLamports === 'auto';
+    this.computeUnitPriceMicroLamports = this.autoPrice
+      ? (deps.maxComputeUnitPriceMicroLamports ?? 0)
+      : ((deps.computeUnitPriceMicroLamports as number | undefined) ?? 0);
+    if (this.autoPrice && !(this.computeUnitPriceMicroLamports > 0)) {
+      throw new Error(
+        'an auto Solana compute-unit price needs a ceiling (maxComputeUnitPriceMicroLamports) above 0',
+      );
+    }
+    this.maxConcurrentSends = deps.maxConcurrentSends ?? 4;
+    if (!Number.isSafeInteger(this.maxConcurrentSends) || this.maxConcurrentSends < 1) {
+      throw new Error(
+        `Solana send concurrency must be a whole number of at least 1, got ${deps.maxConcurrentSends}`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(this.computeUnitPriceMicroLamports) ||
+      this.computeUnitPriceMicroLamports < 0
+    ) {
       throw new Error(
         `Solana compute-unit price must be a whole, non-negative number of micro-lamports, got ${deps.computeUnitPriceMicroLamports}`,
       );
@@ -266,6 +345,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         token.mint,
         token.decimals,
         BigInt(payment.amount),
+        tokenProgramOf(token),
       ),
     );
   }
@@ -317,7 +397,8 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       const candidate = [...current, call];
       const full =
         candidate.length > MAX_BUNDLE_SIZE ||
-        signedSize(feePayer.value, this.instructionsFor(candidate, feePayer.value)) > PACKET_DATA_SIZE;
+        signedSize(feePayer.value, this.instructionsFor(candidate, feePayer.value)) >
+          PACKET_DATA_SIZE;
       if (current.length > 0 && full) {
         chunks.push(current);
         current = [call];
@@ -352,7 +433,9 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     if (this.computeUnitPriceMicroLamports > 0) {
       instructions.unshift(
         ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNITS }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.computeUnitPriceMicroLamports }),
+        ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: this.computeUnitPriceMicroLamports,
+        }),
       );
     }
     return instructions;
@@ -361,36 +444,85 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   /**
    * #37: replaces `prepare`'s placeholder compute-unit limit with the
    * simulated usage plus margin, so the priority fee is paid on what the
-   * transaction needs. A failed simulation drops the limit instead (the
-   * chain's default applies) and the send's own preflight reports the
-   * real error. Instructions without the placeholder are returned as-is.
+   * transaction needs; a failed simulation drops the limit instead (the
+   * chain's default applies) and the send's own preflight reports the real
+   * error. #43: with an `'auto'` price, also replaces the placeholder price
+   * with the estimate from recent fees. Instructions without the
+   * placeholders (no priority fee) are returned as-is.
    */
-  private async withSimulatedComputeUnitLimit(
+  private async withComputeBudget(
     feePayer: PublicKey,
     instructions: TransactionInstruction[],
     blockhash: string,
     log: Logger,
   ): Promise<TransactionInstruction[]> {
-    const [first, ...rest] = instructions;
-    if (!first?.programId.equals(ComputeBudgetProgram.programId) || first.data[0] !== SET_COMPUTE_UNIT_LIMIT) {
+    const [limit, price, ...body] = instructions;
+    if (
+      !isComputeBudget(limit, SET_COMPUTE_UNIT_LIMIT) ||
+      !price ||
+      !isComputeBudget(price, SET_COMPUTE_UNIT_PRICE)
+    ) {
       return instructions;
     }
+    const message = new Transaction({ feePayer, blockhash, lastValidBlockHeight: 0 })
+      .add(...instructions)
+      .compileMessage();
+
+    const budget: TransactionInstruction[] = [];
+    const units = await this.simulatedComputeUnits(message, log);
+    if (units !== undefined) budget.push(ComputeBudgetProgram.setComputeUnitLimit({ units }));
+    budget.push(
+      this.autoPrice
+        ? ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: await this.estimatedPrice(message, log),
+          })
+        : price,
+    );
+    return [...budget, ...body];
+  }
+
+  private async simulatedComputeUnits(message: Message, log: Logger): Promise<number | undefined> {
     try {
-      const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight: 0 }).add(...instructions);
-      const { value } = await this.connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
-        sigVerify: false,
-        replaceRecentBlockhash: true,
-        commitment: 'confirmed',
-      });
+      const { value } = await this.connection.simulateTransaction(
+        new VersionedTransaction(message),
+        {
+          sigVerify: false,
+          replaceRecentBlockhash: true,
+          commitment: 'confirmed',
+        },
+      );
       if (value.err || !value.unitsConsumed) {
         log.debug({ error: value.err }, 'compute-unit simulation failed — no limit set');
-        return rest;
+        return undefined;
       }
-      const units = Math.min(MAX_COMPUTE_UNITS, Math.ceil(value.unitsConsumed * COMPUTE_UNIT_MARGIN));
-      return [ComputeBudgetProgram.setComputeUnitLimit({ units }), ...rest];
+      return Math.min(MAX_COMPUTE_UNITS, Math.ceil(value.unitsConsumed * COMPUTE_UNIT_MARGIN));
     } catch (cause) {
       log.debug({ error: extractMessage(cause) }, 'compute-unit simulation failed — no limit set');
-      return rest;
+      return undefined;
+    }
+  }
+
+  /** #43: an unreadable fee history falls back to the ceiling — the most the operator agreed to pay, and the likeliest to land. */
+  private async estimatedPrice(message: Message, log: Logger): Promise<number> {
+    const writable = message.accountKeys
+      .filter((_, i) => message.isAccountWritable(i))
+      .slice(0, MAX_FEE_LOOKUP_ACCOUNTS);
+    try {
+      const fees = await this.connection.getRecentPrioritizationFees({
+        lockedWritableAccounts: writable,
+      });
+      const price = priorityFeeEstimate(
+        fees.map((f) => f.prioritizationFee),
+        this.computeUnitPriceMicroLamports,
+      );
+      log.debug({ price }, 'auto priority fee');
+      return price;
+    } catch (cause) {
+      log.warn(
+        { error: extractMessage(cause) },
+        'recent priority fees unavailable — using the ceiling',
+      );
+      return this.computeUnitPriceMicroLamports;
     }
   }
 
@@ -484,7 +616,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight });
-    tx.add(...(await this.withSimulatedComputeUnitLimit(feePayer, instructions, blockhash, log)));
+    tx.add(...(await this.withComputeBudget(feePayer, instructions, blockhash, log)));
 
     const message = tx.compileMessage().serialize();
     const signResult = await this.signerClient.requestSignature({
@@ -600,7 +732,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
     if (outcome.type === 'error') {
-      this.logger.warn({ hash, error: outcome.error }, 'status check failed while awaiting confirmation');
+      this.logger.warn(
+        { hash, error: outcome.error },
+        'status check failed while awaiting confirmation',
+      );
       return err(outcome.error);
     }
     this.logger.warn({ hash }, 'blockhash expired before confirmation — handing off to getStatus');
@@ -811,6 +946,79 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
   }
 
+  /**
+   * #40 (ADR-0043): the SOL these Calls cost the Sender beyond their
+   * payments — the base fee and worst-case priority fee (all 1.4M compute
+   * units at the configured price) per transaction `prepare` would build,
+   * plus rent for every recipient token account a payment creates that
+   * doesn't exist yet. Over-asks rather than under-asks.
+   */
+  async networkCost(
+    calls: SolanaCall[],
+    senderAddress: string,
+  ): Promise<Result<Balance, DispatchError>> {
+    const prepared = await this.prepare(calls, senderAddress);
+    if (!prepared.ok) return prepared;
+    const transactions = BigInt(new Set(prepared.value.map((p) => p.unsignedTransaction)).size);
+    const priorityFee =
+      (BigInt(this.computeUnitPriceMicroLamports) * BigInt(MAX_COMPUTE_UNITS) + 999_999n) /
+      1_000_000n;
+    let lamports = transactions * (BigInt(LAMPORTS_PER_SIGNATURE) + priorityFee);
+
+    const created = new Map<string, { mint: string; tokenProgram: string }>();
+    for (const call of calls) {
+      const account = createdTokenAccount(call);
+      if (account) created.set(account.account, account);
+    }
+    try {
+      const keys = [...created.keys()];
+      const rentByMint = new Map<string, bigint>();
+      for (let i = 0; i < keys.length; i += MAX_ACCOUNTS_PER_LOOKUP) {
+        const batch = keys.slice(i, i + MAX_ACCOUNTS_PER_LOOKUP);
+        const infos = await this.connection.getMultipleAccountsInfo(
+          batch.map((k) => new PublicKey(k)),
+        );
+        for (const [j, info] of infos.entries()) {
+          if (info) continue; // already exists: nothing to create
+          const { mint, tokenProgram } = created.get(batch[j]!)!;
+          let rent = rentByMint.get(mint);
+          if (rent === undefined) {
+            rent = BigInt(
+              await this.tokenAccountRent(new PublicKey(mint), new PublicKey(tokenProgram)),
+            );
+            rentByMint.set(mint, rent);
+          }
+          lamports += rent;
+        }
+      }
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: 'failed to estimate the SOL this batch costs to send',
+        chainDetail: extractMessage(cause),
+      });
+    }
+    return ok({ asset: NATIVE_ASSET_SYMBOL, amount: lamports.toString() });
+  }
+
+  /**
+   * Rent for one recipient token account of `mint`: fixed for classic
+   * Token; for Token-2022 (#41) sized by the account extensions the mint's
+   * own extensions imply, plus ImmutableOwner, which the Associated Token
+   * program always adds to a Token-2022 account.
+   */
+  private async tokenAccountRent(mint: PublicKey, tokenProgram: PublicKey): Promise<number> {
+    let size = ACCOUNT_SIZE;
+    if (tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) {
+      const { tlvData } = await getMint(this.connection, mint, 'confirmed', tokenProgram);
+      const extensions = new Set(getExtensionTypes(tlvData).map(getAccountTypeOfMintType));
+      extensions.delete(ExtensionType.Uninitialized); // mint-only extensions
+      extensions.add(ExtensionType.ImmutableOwner);
+      size = getAccountLen([...extensions]);
+    }
+    return this.connection.getMinimumBalanceForRentExemption(size);
+  }
+
   /** issue for the Funding Check (core-engine-scaffold 09): native lamports, or an SPL token's raw base-unit balance via its ATA. */
   async getBalance(address: string, asset: string): Promise<Result<Balance, DispatchError>> {
     const owner = parsePublicKey(address);
@@ -831,9 +1039,14 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         });
       }
 
-      const ata = deriveAssociatedTokenAddress(owner.value, new PublicKey(token.mint));
+      const tokenProgram = tokenProgramOf(token);
+      const ata = deriveAssociatedTokenAddress(
+        owner.value,
+        new PublicKey(token.mint),
+        tokenProgram,
+      );
       try {
-        const account = await getAccount(this.connection, ata);
+        const account = await getAccount(this.connection, ata, 'confirmed', tokenProgram);
         return ok({ asset, amount: account.amount.toString() });
       } catch (cause) {
         if (cause instanceof TokenAccountNotFoundError) return ok({ asset, amount: '0' });

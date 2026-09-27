@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SolanaCall } from '../../domain/call.js';
 import { SignerClient } from '../../signer/client.js';
-import { SolanaChainHandler } from './solana-chain-handler.js';
+import { priorityFeeEstimate, SolanaChainHandler } from './solana-chain-handler.js';
 import { buildSplTransferCall } from './spl-transfer.js';
 
 const sender = Keypair.generate().publicKey.toBase58();
@@ -129,5 +129,38 @@ describe('SolanaChainHandler priority fee (#34)', () => {
   it('refuses a price that is not a whole, non-negative number of micro-lamports', () => {
     expect(() => handlerWith(1.5)).toThrow(/compute-unit price/);
     expect(() => handlerWith(-1)).toThrow(/compute-unit price/);
+  });
+
+  describe('auto (#43)', () => {
+    it('takes the 75th percentile of recent fees, never above the ceiling', () => {
+      expect(priorityFeeEstimate([0, 10, 20, 30, 40, 50, 60, 70], 1_000)).toBe(50);
+      expect(priorityFeeEstimate([100, 5_000, 9_000, 9_500], 2_000)).toBe(2_000);
+      expect(priorityFeeEstimate([], 2_000)).toBe(0);
+    });
+
+    it('refuses to start without a ceiling', () => {
+      const connection = new Connection('http://127.0.0.1:1');
+      expect(
+        () =>
+          new SolanaChainHandler({
+            connection,
+            senderAddress: sender,
+            computeUnitPriceMicroLamports: 'auto',
+          }),
+      ).toThrow(/ceiling/);
+    });
+
+    it('reserves the ceiling in prepare, like a fixed price', async () => {
+      const handler = new SolanaChainHandler({
+        connection: new Connection('http://127.0.0.1:1'),
+        senderAddress: sender,
+        computeUnitPriceMicroLamports: 'auto',
+        maxComputeUnitPriceMicroLamports: 7_000,
+      });
+      const prepared = await handler.prepare(splCalls(1), sender);
+      if (!prepared.ok || !prepared.value[0]) throw new Error('prepare failed');
+      const price = instructionsOf(prepared.value[0].unsignedTransaction)[1];
+      expect(price?.data.readBigUInt64LE(1)).toBe(7_000n);
+    });
   });
 });

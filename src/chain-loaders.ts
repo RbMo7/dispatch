@@ -48,6 +48,8 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
         senderAddress: config.solana.senderAddress,
         knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
         computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
+        maxComputeUnitPriceMicroLamports: config.solana.maxComputeUnitPriceMicroLamports,
+        maxConcurrentSends: config.solana.sendConcurrency,
       }),
     ),
   base: () =>
