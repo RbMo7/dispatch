@@ -24,14 +24,21 @@ export function mapSolanaFailure(cause: unknown): DispatchError {
 }
 
 function classify(message: string): DispatchErrorCode {
-  if (isRateLimitOrTimeout(message)) return 'RPC_UNAVAILABLE';
+  // A simulation failure is the chain's own verdict, whatever numbers its logs contain.
+  if (!/simulation failed/i.test(message) && isRateLimitOrTimeout(message)) return 'RPC_UNAVAILABLE';
   if (isInsufficientFunds(message)) return 'INSUFFICIENT_FUNDS';
   if (isUnknownOrMissingAccount(message)) return 'INVALID_RECIPIENT';
   return 'CHAIN_REJECTED';
 }
 
+/**
+ * The RPC couldn't answer, so the transaction may or may not have gone
+ * through: rate limits, timeouts, dropped connections, and (mainnet review)
+ * server-side failures — any 5xx from the RPC or a gateway in front of it,
+ * and a node reporting itself behind. None of these is the chain refusing.
+ */
 function isRateLimitOrTimeout(message: string): boolean {
-  return /429|too many requests|rate.?limit|timed? ?out|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
+  return /429|too many requests|rate.?limit|timed? ?out|fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|(responded with|status(code)?:?|HTTP)\s*5\d\d|\b5\d\d (service|bad|gateway|internal)|service unavailable|bad gateway|internal server error|node is (behind|unhealthy)|-32005/i.test(
     message,
   );
 }

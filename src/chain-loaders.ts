@@ -35,23 +35,25 @@ import { SignerClient } from './signer/client.js';
  * silently, for either process.
  */
 const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
-  solana: () =>
-    Promise.resolve(
-      new SolanaChainHandler({
-        connection: new Connection(config.solana.rpcUrl, {
-          commitment: 'confirmed',
-          // issue 15: every RPC call this Connection makes is aborted, not
-          // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
-          fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
-        }),
-        signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
-        senderAddress: config.solana.senderAddress,
-        knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
-        computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
-        maxComputeUnitPriceMicroLamports: config.solana.maxComputeUnitPriceMicroLamports,
-        maxConcurrentSends: config.solana.sendConcurrency,
+  solana: async () => {
+    const handler = new SolanaChainHandler({
+      connection: new Connection(config.solana.rpcUrl, {
+        commitment: 'confirmed',
+        // issue 15: every RPC call this Connection makes is aborted, not
+        // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
+        fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
       }),
-    ),
+      signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
+      senderAddress: config.solana.senderAddress,
+      knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
+      computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
+      maxComputeUnitPriceMicroLamports: config.solana.maxComputeUnitPriceMicroLamports,
+      maxConcurrentSends: config.solana.sendConcurrency,
+    });
+    // Mainnet review: a misconfigured or unpayable token stops startup, not one payment at a time.
+    await handler.verifyKnownTokens();
+    return handler;
+  },
   base: () =>
     BaseChainHandler.create({
       rpcUrl: config.base.rpcUrl,

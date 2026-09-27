@@ -1,13 +1,18 @@
 import {
   ACCOUNT_SIZE,
+  createInitializeMint2Instruction,
+  createInitializeTransferFeeConfigInstruction,
+  ExtensionType,
   getAccount,
   getAssociatedTokenAddressSync,
+  getMintLen,
   TOKEN_2022_PROGRAM_ID,
 } from '@solana/spl-token';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../signer/client.js';
+import type { SolanaTokenRegistry } from './known-tokens.js';
 import { SolanaChainHandler } from './solana-chain-handler.js';
 import {
   getDevnetConnection,
@@ -93,5 +98,75 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
     expect(account.amount).toBe(4200n);
     const balance = await handler.getBalance(recipient.toBase58(), 'T22');
     expect(balance.ok && balance.value.amount).toBe('4200');
+  }, 120_000);
+
+  it('verifies configured tokens against their real mints at startup (mainnet review)', async () => {
+    const sender = await getFundedSenderKeypair();
+    const connection = getDevnetConnection();
+    const classic = (await getTestMint()).toBase58();
+    const t22 = (await getTestMint2022()).toBase58();
+    const decimals = testMintDecimals();
+    const verify = (knownTokens: SolanaTokenRegistry) =>
+      new SolanaChainHandler({
+        connection,
+        senderAddress: sender.publicKey.toBase58(),
+        knownTokens,
+      }).verifyKnownTokens();
+
+    await expect(
+      verify({
+        A: { mint: classic, decimals },
+        B: { mint: t22, decimals, tokenProgram: 'token-2022' },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(verify({ A: { mint: classic, decimals: decimals + 1 } })).rejects.toThrow(
+      /decimals/,
+    );
+    await expect(verify({ B: { mint: t22, decimals } })).rejects.toThrow(
+      /not a classic Token mint/,
+    );
+
+    // A Token-2022 mint charging a 1% transfer fee: recipients would get less than paid.
+    const feeMint = Keypair.generate();
+    const space = getMintLen([ExtensionType.TransferFeeConfig]);
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight }).add(
+      SystemProgram.createAccount({
+        fromPubkey: sender.publicKey,
+        newAccountPubkey: feeMint.publicKey,
+        space,
+        lamports: await connection.getMinimumBalanceForRentExemption(space),
+        programId: TOKEN_2022_PROGRAM_ID,
+      }),
+      createInitializeTransferFeeConfigInstruction(
+        feeMint.publicKey,
+        sender.publicKey,
+        sender.publicKey,
+        100,
+        1_000_000n,
+        TOKEN_2022_PROGRAM_ID,
+      ),
+      createInitializeMint2Instruction(
+        feeMint.publicKey,
+        decimals,
+        sender.publicKey,
+        null,
+        TOKEN_2022_PROGRAM_ID,
+      ),
+    );
+    tx.sign(sender, feeMint);
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    for (let i = 0; i < 30; i++) {
+      const { value } = await connection.getSignatureStatuses([signature]);
+      if (
+        value[0]?.confirmationStatus === 'confirmed' ||
+        value[0]?.confirmationStatus === 'finalized'
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    await expect(
+      verify({ FEE: { mint: feeMint.publicKey.toBase58(), decimals, tokenProgram: 'token-2022' } }),
+    ).rejects.toThrow(/transfer fee/);
   }, 120_000);
 });

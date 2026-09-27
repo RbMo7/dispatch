@@ -75,7 +75,7 @@ describe('SolanaChainHandler.broadcast bookkeeping for externally-signed transac
     const status = await handler.getStatus(hash);
     expect(status.ok).toBe(true);
     expect(status.ok && status.value).toBe('EXPIRED');
-  }, 180_000);
+  }, 600_000); // broadcast waits out a conservative expiry bound for bytes it never signed
 
   it('confirms an externally-signed transaction the same way as a self-signed one, proving bookkeeping was really recorded for bytes this handler never signed', async () => {
     const sender = await getFundedSenderKeypair();
