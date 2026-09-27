@@ -67,7 +67,7 @@ describe('SolanaChainHandler priority fee (#34)', () => {
     expect(programs).not.toContain(ComputeBudgetProgram.programId.toBase58());
   });
 
-  it('prepends one SetComputeUnitPrice to each bundle, and splits a bundle before it would pass 1232 bytes', async () => {
+  it('prepends a compute-unit limit and price to each bundle, and splits a bundle before it would pass 1232 bytes', async () => {
     const prepared = await handlerWith(5_000).prepare(splCalls(8), sender);
     if (!prepared.ok) throw new Error('prepare failed');
     expect(prepared.value.map((p) => p.callIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
@@ -76,10 +76,18 @@ describe('SolanaChainHandler priority fee (#34)', () => {
 
     for (const bundle of bundles) {
       const instructions = instructionsOf(bundle);
-      expect(instructions[0]?.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+      // A placeholder SetComputeUnitLimit (sign swaps in simulated usage, #37), then SetComputeUnitPrice.
+      expect(
+        instructions
+          .slice(0, 2)
+          .map((i) => [i.programId.equals(ComputeBudgetProgram.programId), i.data[0]]),
+      ).toEqual([
+        [true, 2],
+        [true, 3],
+      ]);
       expect(
         instructions.filter((i) => i.programId.equals(ComputeBudgetProgram.programId)),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       const tx = new Transaction({
         feePayer: new PublicKey(sender),
         blockhash: Keypair.generate().publicKey.toBase58(), // any 32 bytes: size only

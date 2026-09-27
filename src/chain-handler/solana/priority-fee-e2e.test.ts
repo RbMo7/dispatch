@@ -19,7 +19,7 @@ describe('SolanaChainHandler priority fee on devnet (#34)', () => {
     signer = undefined;
   });
 
-  it('lands a transfer that carries a SetComputeUnitPrice instruction', async () => {
+  it('lands a transfer carrying its priority fee and a compute-unit limit near its real usage (#34, #37)', async () => {
     const sender = await getFundedSenderKeypair();
     const senderAddress = sender.publicKey.toBase58();
     const recipient = Keypair.generate();
@@ -51,7 +51,20 @@ describe('SolanaChainHandler priority fee on devnet (#34)', () => {
       commitment: 'confirmed',
       maxSupportedTransactionVersion: 0,
     });
-    const keys = landed?.transaction.message.staticAccountKeys ?? [];
-    expect(keys.some((k) => k.equals(ComputeBudgetProgram.programId))).toBe(true);
+    if (!landed) throw new Error('landed transaction not found');
+    const { message } = landed.transaction;
+    const budget = message.compiledInstructions
+      .filter((i) =>
+        message.staticAccountKeys[i.programIdIndex]?.equals(ComputeBudgetProgram.programId),
+      )
+      .map((i) => Buffer.from(i.data));
+    expect(budget.map((data) => data[0])).toEqual([2, 3]); // SetComputeUnitLimit, SetComputeUnitPrice
+
+    // #37: the limit is the simulated usage plus margin, not the 200k-per-instruction default.
+    const limit = budget[0]!.readUInt32LE(1);
+    const used = landed.meta?.computeUnitsConsumed ?? 0;
+    expect(limit).toBeGreaterThanOrEqual(used);
+    expect(limit).toBeLessThan(used * 1.5);
+    expect(limit).toBeLessThan(10_000); // a plain transfer uses a few hundred units
   }, 120_000);
 });

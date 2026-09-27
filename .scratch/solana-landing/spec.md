@@ -48,9 +48,15 @@ Resubmitting after expiry is on regardless of Retry Policy: an expired Solana tr
 - Coordinator (fake store, stub handler, offline tier): expired → resubmitted, written down before send, predecessor `DROPPED`; bundle members resubmitted as one; cap reached → `FAILED`; Relay → `FAILED`; sign failure → stays `PENDING`; restart hook renamed.
 - Solana handler, live devnet (ADR-0013): `blockhash-retry.test.ts` rewritten — bytes held past expiry are handed off (same hash) and `getStatus` reports `EXPIRED`; a priority-fee transaction lands and carries the compute-budget instruction; `restoreInFlight` lets a fresh handler instance prove expiry.
 
+## Follow-ups in the same PR
+
+- **v0 Relay Dispatch (#36).** Signed bytes are decoded with `VersionedTransaction.deserialize` (legacy and v0), and every required signature is verified over the serialized message. Most wallets now produce v0, which legacy `Transaction.from` refused with a 400.
+- **Compute-unit limit (#37).** With a priority fee on, `prepare` reserves a placeholder `SetComputeUnitLimit`, and `sign` replaces it with the simulated usage plus 10%, since the fee is charged on the requested limit (default 200k per instruction). A failed simulation drops the limit; the send's preflight reports the real error.
+- **Test-mint fixture (#38).** Created in one transaction confirmed by HTTP polling, never spl-token's websocket-confirmed helpers.
+
 ## Out of Scope
 
 - Escalating the priority fee on resubmission (cost-increasing; would follow ADR-0037's Retry Policy gating).
-- Dynamic priority-fee estimation (`getRecentPrioritizationFees`), `SetComputeUnitLimit`, Jito bundles.
+- Dynamic priority-fee estimation (`getRecentPrioritizationFees`), Jito bundles.
 - Durable Nonce Execution (ADR-0007, still opt-in and unbuilt).
 - Worker throughput: `broadcast` still waits for confirmation, so Solana sends stay sequential per worker.

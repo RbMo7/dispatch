@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createPublicKey, randomUUID, verify as verifySignature } from 'node:crypto';
 
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
@@ -9,6 +9,7 @@ import {
   PublicKey,
   Transaction,
   TransactionInstruction,
+  VersionedTransaction,
 } from '@solana/web3.js';
 import type { Logger } from 'pino';
 
@@ -73,6 +74,13 @@ export const SOLANA_ABANDONMENT_TIMEOUT_MS = 120_000;
  */
 const MAX_BUNDLE_SIZE = 8;
 
+/** Solana's per-transaction compute ceiling: the placeholder limit `prepare` reserves room for, and what `sign` simulates under (#37). */
+const MAX_COMPUTE_UNITS = 1_400_000;
+/** Headroom over simulated usage (#37): real execution can differ slightly from the simulation, and running out fails the transaction. */
+const COMPUTE_UNIT_MARGIN = 1.1;
+/** ComputeBudget's SetComputeUnitLimit instruction discriminator. */
+const SET_COMPUTE_UNIT_LIMIT = 2;
+
 /** How often `broadcast` resends the identical signed bytes while it waits: leaders drop transactions under load, and resending the same bytes can never execute them twice. */
 const RESEND_INTERVAL_MS = 2_000;
 
@@ -100,6 +108,31 @@ function signedSize(feePayer: PublicKey, instructions: TransactionInstruction[])
   } catch {
     return Infinity; // web3.js throws outright once the instructions alone pass the limit
   }
+}
+
+// RFC 8410 SPKI wrapper for a raw 32-byte Ed25519 public key.
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+/** The fee payer's signature — the transaction's id — or undefined when that slot is unsigned (all zeroes). */
+function feePayerSignature(tx: VersionedTransaction): Uint8Array | undefined {
+  const signature = tx.signatures[0];
+  return signature && signature.some((byte) => byte !== 0) ? signature : undefined;
+}
+
+/** Every required signer's signature verifies over the message — legacy and v0 alike. */
+function allSignaturesVerify(tx: VersionedTransaction): boolean {
+  const message = tx.message.serialize();
+  const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+  return signers.every((signer, i) => {
+    const signature = tx.signatures[i];
+    if (!signature) return false;
+    const key = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, signer.toBuffer()]),
+      format: 'der',
+      type: 'spki',
+    });
+    return verifySignature(null, message, key, signature);
+  });
 }
 
 function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
@@ -308,15 +341,57 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     return Promise.resolve(ok(prepared));
   }
 
-  /** One transaction's instructions for `calls`: the priority fee first when configured (#34), then each Call's own. */
+  /**
+   * One transaction's instructions for `calls`, each Call's own after, when
+   * a priority fee is configured (#34), a placeholder compute-unit limit
+   * and the price. `sign` swaps the placeholder for the simulated usage
+   * (#37): the fee is charged on the requested limit, not what's used.
+   */
   private instructionsFor(calls: SolanaCall[], feePayer: PublicKey): TransactionInstruction[] {
     const instructions = calls.flatMap((call) => toTransactionInstructions(call, feePayer));
     if (this.computeUnitPriceMicroLamports > 0) {
       instructions.unshift(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNITS }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.computeUnitPriceMicroLamports }),
       );
     }
     return instructions;
+  }
+
+  /**
+   * #37: replaces `prepare`'s placeholder compute-unit limit with the
+   * simulated usage plus margin, so the priority fee is paid on what the
+   * transaction needs. A failed simulation drops the limit instead (the
+   * chain's default applies) and the send's own preflight reports the
+   * real error. Instructions without the placeholder are returned as-is.
+   */
+  private async withSimulatedComputeUnitLimit(
+    feePayer: PublicKey,
+    instructions: TransactionInstruction[],
+    blockhash: string,
+    log: Logger,
+  ): Promise<TransactionInstruction[]> {
+    const [first, ...rest] = instructions;
+    if (!first?.programId.equals(ComputeBudgetProgram.programId) || first.data[0] !== SET_COMPUTE_UNIT_LIMIT) {
+      return instructions;
+    }
+    try {
+      const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight: 0 }).add(...instructions);
+      const { value } = await this.connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: 'confirmed',
+      });
+      if (value.err || !value.unitsConsumed) {
+        log.debug({ error: value.err }, 'compute-unit simulation failed — no limit set');
+        return rest;
+      }
+      const units = Math.min(MAX_COMPUTE_UNITS, Math.ceil(value.unitsConsumed * COMPUTE_UNIT_MARGIN));
+      return [ComputeBudgetProgram.setComputeUnitLimit({ units }), ...rest];
+    } catch (cause) {
+      log.debug({ error: extractMessage(cause) }, 'compute-unit simulation failed — no limit set');
+      return rest;
+    }
   }
 
   /**
@@ -409,7 +484,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight });
-    tx.add(...instructions);
+    tx.add(...(await this.withSimulatedComputeUnitLimit(feePayer, instructions, blockhash, log)));
 
     const message = tx.compileMessage().serialize();
     const signResult = await this.signerClient.requestSignature({
@@ -457,17 +532,17 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     if (!decodedResult.ok) return Promise.resolve(decodedResult);
     const tx = decodedResult.value;
 
-    if (!tx.feePayer) {
+    if (tx.message.header.numRequiredSignatures === 0) {
       return Promise.resolve(
         err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no fee payer' }),
       );
     }
-    if (tx.signatures.length === 0 || tx.signatures.every((sig) => sig.signature === null)) {
+    if (!feePayerSignature(tx)) {
       return Promise.resolve(
         err({ code: 'CHAIN_REJECTED', message: 'signed transaction has no signature' }),
       );
     }
-    if (!tx.verifySignatures()) {
+    if (!allSignaturesVerify(tx)) {
       return Promise.resolve(
         err({
           code: 'CHAIN_REJECTED',
@@ -607,17 +682,22 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
     const decoded = this.decodeSignedTransaction(Buffer.from(signed, 'base64'));
     if (!decoded.ok) return decoded;
-    const signature = decoded.value.signature;
+    const signature = feePayerSignature(decoded.value);
     if (!signature) {
       return err({ code: 'CHAIN_REJECTED', message: 'signed transaction carries no signature' });
     }
     return ok(bs58.encode(signature));
   }
 
-  /** The one place this handler turns opaque signed bytes back into a decoded `Transaction`, or a structured `CHAIN_REJECTED` if they aren't one (ADR-0032). */
-  private decodeSignedTransaction(raw: Buffer): Result<Transaction, DispatchError> {
+  /**
+   * The one place this handler turns opaque signed bytes back into a decoded
+   * transaction, or a structured `CHAIN_REJECTED` if they aren't one
+   * (ADR-0032). #36: legacy and versioned (v0) alike — most wallets now
+   * produce v0, which legacy `Transaction.from` refuses.
+   */
+  private decodeSignedTransaction(raw: Buffer): Result<VersionedTransaction, DispatchError> {
     try {
-      return ok(Transaction.from(raw));
+      return ok(VersionedTransaction.deserialize(raw));
     } catch (cause) {
       return err({
         code: 'CHAIN_REJECTED',
@@ -638,11 +718,12 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   private ensureBlockhashRecord(raw: Buffer): string | undefined {
     const decodedResult = this.decodeSignedTransaction(raw);
     if (!decodedResult.ok) return undefined;
-    const tx = decodedResult.value;
-    if (!tx.signature || !tx.recentBlockhash) return undefined;
+    const signature = feePayerSignature(decodedResult.value);
+    const blockhash = decodedResult.value.message.recentBlockhash;
+    if (!signature || !blockhash) return undefined;
 
-    this.blockhashByHash.set(bs58.encode(tx.signature), tx.recentBlockhash);
-    return tx.recentBlockhash;
+    this.blockhashByHash.set(bs58.encode(signature), blockhash);
+    return blockhash;
   }
 
   /** ADR-0042: at worker start, re-learns the blockhash of every in-flight transaction, so `getStatus` can still prove expiry after a restart. */
