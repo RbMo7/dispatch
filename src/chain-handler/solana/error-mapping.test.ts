@@ -17,6 +17,23 @@ describe('mapSolanaFailure', () => {
     expect(mapped.code).toBe('RPC_UNAVAILABLE');
   });
 
+  it('maps an RPC or gateway server error, or a node behind, to RPC_UNAVAILABLE — may have gone through (mainnet review)', () => {
+    for (const message of [
+      'failed to send transaction: 503 Service Unavailable',
+      'server responded with 502 Bad Gateway',
+      'failed to get signature status: Node is behind by 42 slots',
+      'HTTP 500 Internal Server Error',
+    ]) {
+      expect(mapSolanaFailure(new Error(message)).code).toBe('RPC_UNAVAILABLE');
+    }
+  });
+
+  it('keeps a simulation failure CHAIN_REJECTED even when its logs contain 5xx-looking numbers', () => {
+    const message =
+      'Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1. Program consumed 503 of 200000 compute units';
+    expect(mapSolanaFailure(new Error(message)).code).toBe('CHAIN_REJECTED');
+  });
+
   it('maps a missing-account error to INVALID_RECIPIENT', () => {
     const mapped = mapSolanaFailure(new Error('TokenAccountNotFoundError: could not find account'));
     expect(mapped.code).toBe('INVALID_RECIPIENT');

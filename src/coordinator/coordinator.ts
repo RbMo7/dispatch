@@ -138,7 +138,8 @@ export class Coordinator {
     this.chainHandlers = deps.chainHandlers;
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
-    this.abandonedRewatchWindowMs = deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
+    this.abandonedRewatchWindowMs =
+      deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
     this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
     this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
@@ -282,7 +283,10 @@ export class Coordinator {
       return;
     }
 
-    const chunks = new Map<UnsignedTransaction, { prepared: PreparedTransaction; members: CallRef[] }>();
+    const chunks = new Map<
+      UnsignedTransaction,
+      { prepared: PreparedTransaction; members: CallRef[] }
+    >();
     prepareResult.value.forEach((prepared, i) => {
       const source = valid[i];
       if (!source) {
@@ -299,9 +303,9 @@ export class Coordinator {
         });
     });
 
-    for (const { prepared, members } of chunks.values()) {
-      await this.processChunk(handler, senderAddress, chain, prepared, members);
-    }
+    await inPool([...chunks.values()], handler.maxConcurrentSends, (chunk) =>
+      this.processChunk(handler, senderAddress, chain, chunk.prepared, chunk.members),
+    );
   }
 
   /**
@@ -344,7 +348,12 @@ export class Coordinator {
     if (!hashResult.ok) {
       log.warn({ stage: 'transactionHash', error: hashResult.error }, 'call(s) failed');
       for (const { dispatch, callIndex } of members) {
-        await this.store.recordCallFailure({ dispatchId: dispatch.id, callIndex, chain, error: hashResult.error });
+        await this.store.recordCallFailure({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain,
+          error: hashResult.error,
+        });
       }
       return;
     }
@@ -364,7 +373,10 @@ export class Coordinator {
       if (isAmbiguousBroadcastFailure(broadcastResult.error)) {
         // It may have reached the node: stays PENDING — polling, Base's
         // rebroadcast of the identical bytes, and abandonment resolve it.
-        log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'broadcast ambiguous — left PENDING');
+        log.warn(
+          { stage: 'broadcast', error: broadcastResult.error },
+          'broadcast ambiguous — left PENDING',
+        );
         return;
       }
       log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
@@ -419,6 +431,42 @@ export class Coordinator {
       });
     }
 
+    // #40 (ADR-0043): what sending costs beyond the payments themselves
+    // (fees, rent), paid by the Sender in the chain's native asset. Shared
+    // by every Call of the chain, so a shortfall fails them all.
+    const refsByChain = new Map<Chain, CallRef[]>();
+    for (const dispatch of dispatches) {
+      const refs = refsByChain.get(dispatch.chain) ?? [];
+      dispatch.items.forEach((_item, callIndex) => refs.push({ dispatch, callIndex }));
+      refsByChain.set(dispatch.chain, refs);
+    }
+    for (const [chain, refs] of refsByChain) {
+      const handler = this.requireChainHandler(chain);
+      if (!handler.networkCost) continue;
+      const calls = refs.flatMap(({ dispatch, callIndex }) => {
+        const call = dispatch.items[callIndex]?.call;
+        return call ? [call] : [];
+      });
+      const cost = await handler.networkCost(calls, this.requireSenderAddress(chain));
+      if (!cost.ok) {
+        this.logger.warn(
+          { chain, error: cost.error },
+          'funding check: networkCost failed, failing affected calls',
+        );
+        await this.failFundingItems(refs, cost.error, failedKeys);
+        continue;
+      }
+      const key = `${chain}\u0000\u0000${cost.value.asset}`;
+      const existing = requirements.get(key);
+      requirements.set(key, {
+        chain,
+        fundedBy: null,
+        asset: cost.value.asset,
+        required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
+        items: refs,
+      });
+    }
+
     for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
@@ -462,6 +510,7 @@ export class Coordinator {
     failedKeys: Set<string>,
   ): Promise<void> {
     for (const { dispatch, callIndex } of items) {
+      if (failedKeys.has(callKey(dispatch.id, callIndex))) continue; // already failed by another requirement
       await this.store.recordCallFailure({
         dispatchId: dispatch.id,
         callIndex,
@@ -493,11 +542,16 @@ export class Coordinator {
 
     for (const dispatch of await this.store.reclaimStaleDispatches(claimedBefore, limit)) {
       if (this.inFlight.has(dispatch.id)) continue; // merely slow, not crashed: this Coordinator is still on it
-      const sent = new Set((await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex));
+      const sent = new Set(
+        (await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex),
+      );
       const unsent = dispatch.items
         .map((_, callIndex) => ({ dispatch, callIndex }))
         .filter(({ callIndex }) => !sent.has(callIndex));
-      this.logger.warn({ dispatchId: dispatch.id, unsent: unsent.length }, 'reclaiming a stale claim');
+      this.logger.warn(
+        { dispatchId: dispatch.id, unsent: unsent.length },
+        'reclaiming a stale claim',
+      );
       this.inFlight.add(dispatch.id);
       try {
         await this.processChainBatch(
@@ -511,8 +565,14 @@ export class Coordinator {
       }
     }
 
-    for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(claimedBefore, limit)) {
-      this.logger.warn({ relayDispatchId: relayDispatch.id }, 'reclaiming a stale relay dispatch claim');
+    for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(
+      claimedBefore,
+      limit,
+    )) {
+      this.logger.warn(
+        { relayDispatchId: relayDispatch.id },
+        'reclaiming a stale relay dispatch claim',
+      );
       await this.processRelayDispatch(relayDispatch);
     }
   }
@@ -529,7 +589,10 @@ export class Coordinator {
       const unsettled = await this.store.listUnsettledTransactions(chain);
       const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
       await handler.restoreInFlight(signed);
-      this.logger.info({ chain, restored: signed.length }, 'restored handler state from in-flight transactions');
+      this.logger.info(
+        { chain, restored: signed.length },
+        'restored handler state from in-flight transactions',
+      );
     }
   }
 
@@ -638,10 +701,25 @@ export class Coordinator {
     // has been bumped/rebroadcast (for all of them), the rest of this
     // tick's stale copies must not act on that hash again.
     const handledHashes = new Set<string>();
+    const expired = new Map<Chain, Transaction[]>();
     for (const transaction of pending) {
       if (transaction.hash && handledHashes.has(transaction.hash)) continue;
-      const handledStuck = await this.resolvePendingTransaction(transaction);
-      if (handledStuck && transaction.hash) handledHashes.add(transaction.hash);
+      const outcome = await this.resolvePendingTransaction(transaction);
+      if (outcome === 'expired') {
+        expired.set(transaction.chain, [...(expired.get(transaction.chain) ?? []), transaction]);
+      }
+      if (outcome && transaction.hash) handledHashes.add(transaction.hash);
+    }
+
+    // ADR-0042, mainnet review: each resubmission's send can wait out a
+    // whole validity window, so they share the chain's send pool (ADR-0044)
+    // rather than stalling the tick one by one.
+    for (const [chain, transactions] of expired) {
+      await inPool(
+        transactions,
+        this.requireChainHandler(chain).maxConcurrentSends,
+        (transaction) => this.resubmitExpired(transaction, this.transactionLogger(transaction)),
+      );
     }
   }
 
@@ -684,8 +762,15 @@ export class Coordinator {
   async recheckRecentlyConfirmedTransactions(limit: number): Promise<void> {
     for (const [chain, windowMs] of this.reorgRecheckWindowMs) {
       const notConfirmedBefore = new Date(this.now().getTime() - windowMs);
-      const confirmed = await this.store.listRecentlyConfirmedTransactions(chain, limit, notConfirmedBefore);
-      this.logger.debug({ chain, count: confirmed.length, limit }, 'rechecking recently confirmed transactions');
+      const confirmed = await this.store.listRecentlyConfirmedTransactions(
+        chain,
+        limit,
+        notConfirmedBefore,
+      );
+      this.logger.debug(
+        { chain, count: confirmed.length, limit },
+        'rechecking recently confirmed transactions',
+      );
 
       for (const transaction of confirmed) {
         await this.recheckConfirmedTransaction(transaction);
@@ -737,14 +822,11 @@ export class Coordinator {
     await this.store.reopenTransaction(transaction.id);
   }
 
-  /** Returns whether stuck handling acted on this transaction's hash (so bundled siblings skip it this tick). */
-  private async resolvePendingTransaction(transaction: Transaction): Promise<boolean> {
+  /** Returns whether stuck handling acted on this transaction's hash, or `'expired'` for the caller to resubmit — either way its bundled siblings skip it this tick. */
+  private async resolvePendingTransaction(transaction: Transaction): Promise<boolean | 'expired'> {
     const log = this.transactionLogger(transaction);
     const resolved = await this.tryResolveVersions(transaction, log);
-    if (resolved === 'expired') {
-      await this.resubmitExpired(transaction, log);
-      return true; // bundled siblings share the hash and were resubmitted with it
-    }
+    if (resolved === 'expired') return 'expired';
     if (resolved) return false;
 
     const stuck = await this.handleIfStuck(transaction, log);
@@ -812,7 +894,10 @@ export class Coordinator {
 
     const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
     if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
-      log.info({ error: prepared.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+      log.info(
+        { error: prepared.error },
+        'fee-bump: nonce already used on-chain — some version landed, bumping stops',
+      );
       await recordAttempts(config.maxFeeBumps);
       return 'handled';
     }
@@ -820,7 +905,10 @@ export class Coordinator {
     const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
     if (!signed.ok || !replacementHash.ok) {
       const error = !replacementHash.ok ? replacementHash.error : undefined;
-      log.warn({ error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
+      log.warn(
+        { error, feeBumpAttempts: transaction.feeBumpAttempts + 1 },
+        'fee-bump attempt failed — counted against the cap, retried next time it is stuck',
+      );
       await recordAttempts(transaction.feeBumpAttempts + 1);
       return 'failed';
     }
@@ -829,28 +917,44 @@ export class Coordinator {
     const replacements: Transaction[] = [];
     for (const member of members) {
       replacements.push(
-        await this.store.createReplacementTransaction(member.id, { signedBytes: signed.value, hash: replacementHash.value }),
+        await this.store.createReplacementTransaction(member.id, {
+          signedBytes: signed.value,
+          hash: replacementHash.value,
+        }),
       );
     }
     const broadcast = await handler.broadcast(signed.value);
     if (broadcast.ok) {
-      log.info({ replacementHash: broadcast.value.hash }, 'fee-bump: replacement broadcast at the same nonce');
-      for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
+      log.info(
+        { replacementHash: broadcast.value.hash },
+        'fee-bump: replacement broadcast at the same nonce',
+      );
+      for (const replacement of replacements)
+        await this.store.recordSent(replacement.id, broadcast.value.hash);
       return 'bumped';
     }
     if (isAmbiguousBroadcastFailure(broadcast.error)) {
       // It may have reached the node (or is already pooled): the replacement stays written down, PENDING.
-      log.warn({ error: broadcast.error }, 'fee-bump: replacement broadcast ambiguous — left PENDING');
+      log.warn(
+        { error: broadcast.error },
+        'fee-bump: replacement broadcast ambiguous — left PENDING',
+      );
       return 'bumped';
     }
     // Definitely refused: undo it, so the original is the live version again.
     for (const replacement of replacements) await this.store.undoReplacement(replacement.id);
     if (broadcast.error.code === 'NONCE_ALREADY_USED') {
-      log.info({ error: broadcast.error }, 'fee-bump: nonce already used on-chain — some version landed, bumping stops');
+      log.info(
+        { error: broadcast.error },
+        'fee-bump: nonce already used on-chain — some version landed, bumping stops',
+      );
       await recordAttempts(config.maxFeeBumps);
       return 'handled';
     }
-    log.warn({ error: broadcast.error, feeBumpAttempts: transaction.feeBumpAttempts + 1 }, 'fee-bump attempt failed — counted against the cap, retried next time it is stuck');
+    log.warn(
+      { error: broadcast.error, feeBumpAttempts: transaction.feeBumpAttempts + 1 },
+      'fee-bump attempt failed — counted against the cap, retried next time it is stuck',
+    );
     await recordAttempts(transaction.feeBumpAttempts + 1);
     return 'failed';
   }
@@ -872,7 +976,10 @@ export class Coordinator {
       const call = (await this.store.getDispatch(member.dispatchId))?.items[member.callIndex]?.call;
       // No Dispatch: a Relay Dispatch — only its own signer could re-sign it.
       if (!call || member.feeBumpAttempts >= MAX_EXPIRY_RESUBMISSIONS) {
-        log.warn({ transactionId: member.id, resubmissions: member.feeBumpAttempts }, 'expired transaction not resubmitted — failed');
+        log.warn(
+          { transactionId: member.id, resubmissions: member.feeBumpAttempts },
+          'expired transaction not resubmitted — failed',
+        );
         await this.store.markFailed(member.id, expiredError(chain));
         continue;
       }
@@ -882,17 +989,26 @@ export class Coordinator {
 
     const handler = this.requireChainHandler(chain);
     const senderAddress = this.requireSenderAddress(chain);
-    const prepared = await handler.prepare(refs.map((r) => r.call), senderAddress);
+    const prepared = await handler.prepare(
+      refs.map((r) => r.call),
+      senderAddress,
+    );
     if (!prepared.ok) {
       log.warn({ error: prepared.error }, 'resubmission prepare failed — failed');
       for (const { member } of refs) await this.store.markFailed(member.id, prepared.error);
       return;
     }
 
-    const chunks = new Map<UnsignedTransaction, { prepared: PreparedTransaction; members: Transaction[] }>();
+    const chunks = new Map<
+      UnsignedTransaction,
+      { prepared: PreparedTransaction; members: Transaction[] }
+    >();
     prepared.value.forEach((p, i) => {
       const member = refs[i]?.member;
-      if (!member) throw new Error(`prepare() returned more PreparedTransactions than Calls for chain ${chain}.`);
+      if (!member)
+        throw new Error(
+          `prepare() returned more PreparedTransactions than Calls for chain ${chain}.`,
+        );
       const chunk = chunks.get(p.unsignedTransaction);
       if (chunk) chunk.members.push(member);
       else chunks.set(p.unsignedTransaction, { prepared: p, members: [member] });
@@ -903,7 +1019,10 @@ export class Coordinator {
       const newHash = signed.ok ? handler.transactionHash(signed.value) : signed;
       if (!signed.ok || !newHash.ok) {
         // The original can't land, so nothing is lost: retried next tick.
-        log.warn({ error: newHash.ok ? undefined : newHash.error }, 'resubmission signing failed — still pending, retried next tick');
+        log.warn(
+          { error: newHash.ok ? undefined : newHash.error },
+          'resubmission signing failed — still pending, retried next tick',
+        );
         continue;
       }
 
@@ -911,19 +1030,24 @@ export class Coordinator {
       const replacements: Transaction[] = [];
       for (const member of chunk.members) {
         replacements.push(
-          await this.store.createReplacementTransaction(member.id, { signedBytes: signed.value, hash: newHash.value }),
+          await this.store.createReplacementTransaction(member.id, {
+            signedBytes: signed.value,
+            hash: newHash.value,
+          }),
         );
         await this.store.markDropped(member.id);
       }
       const broadcast = await handler.broadcast(signed.value);
       if (broadcast.ok) {
         log.info({ resubmittedHash: broadcast.value.hash }, 'expired transaction resubmitted');
-        for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
+        for (const replacement of replacements)
+          await this.store.recordSent(replacement.id, broadcast.value.hash);
       } else if (isAmbiguousBroadcastFailure(broadcast.error)) {
         log.warn({ error: broadcast.error }, 'resubmission broadcast ambiguous — left PENDING');
       } else {
         log.warn({ error: broadcast.error }, 'resubmission refused — failed');
-        for (const replacement of replacements) await this.store.markFailed(replacement.id, broadcast.error);
+        for (const replacement of replacements)
+          await this.store.markFailed(replacement.id, broadcast.error);
       }
     }
   }
@@ -1004,7 +1128,10 @@ export class Coordinator {
    * and the others become DROPPED. ADR-0042: `'expired'` when nothing
    * settled and the latest version provably can never land.
    */
-  private async tryResolveVersions(transaction: Transaction, log: Logger): Promise<boolean | 'expired'> {
+  private async tryResolveVersions(
+    transaction: Transaction,
+    log: Logger,
+  ): Promise<boolean | 'expired'> {
     const versions =
       transaction.replacesTransactionId === null
         ? [transaction]
@@ -1031,7 +1158,10 @@ export class Coordinator {
     return latestExpired ? 'expired' : false;
   }
 
-  private async tryResolveByStatus(transaction: Transaction, log: Logger): Promise<boolean | 'expired'> {
+  private async tryResolveByStatus(
+    transaction: Transaction,
+    log: Logger,
+  ): Promise<boolean | 'expired'> {
     if (!transaction.hash) {
       throw new Error(
         `Transaction ${transaction.id} has no hash — only a broadcast Transaction should ever reach status resolution.`,
@@ -1197,6 +1327,21 @@ export class Coordinator {
     }
     return senderAddress;
   }
+}
+
+/** #42 (ADR-0044): runs `task` over `items`, at most `limit` at a time (one when unset). */
+async function inPool<T>(
+  items: T[],
+  limit: number | undefined,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
+  const queue = [...items];
+  const workers = Math.min(queue.length, Math.max(1, limit ?? 1));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (let item = queue.shift(); item !== undefined; item = queue.shift()) await task(item);
+    }),
+  );
 }
 
 function expiredError(chain: Chain): DispatchError {

@@ -1,8 +1,7 @@
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 
 import type { SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
-import { idempotentCreateAtaInstruction } from './account-resolution.js';
+import { idempotentCreateAtaInstruction, isTokenProgram } from './account-resolution.js';
 
 /**
  * Translates between the engine-core-opaque `SolanaCall` shape
@@ -52,7 +51,7 @@ const TRANSFER_CHECKED_DISCRIMINANT = 12;
  * caller already encoded, the engine doesn't second-guess it).
  */
 function isSplTransferWithRecipientBookkeeping(call: SolanaCall): boolean {
-  if (call.programId !== TOKEN_PROGRAM_ID.toBase58()) return false;
+  if (!isTokenProgram(call.programId)) return false;
   if (call.accounts.length !== 5) return false;
   const data = Buffer.from(call.data, 'base64');
   return data.length > 0 && data[0] === TRANSFER_CHECKED_DISCRIMINANT;
@@ -76,10 +75,24 @@ export function toTransactionInstructions(
       ...call,
       accounts: call.accounts.slice(0, 4),
     });
-    return [idempotentCreateAtaInstruction(payer, recipientWallet, mint), transfer];
+    return [
+      idempotentCreateAtaInstruction(payer, recipientWallet, mint, new PublicKey(call.programId)),
+      transfer,
+    ];
   }
 
   return [toTransactionInstruction(call)];
+}
+
+/**
+ * #40: the recipient token account a payment-built SPL transfer creates if
+ * missing (its rent is the Sender's cost), or undefined for any other Call.
+ */
+export function createdTokenAccount(
+  call: SolanaCall,
+): { account: string; mint: string; tokenProgram: string } | undefined {
+  if (!isSplTransferWithRecipientBookkeeping(call)) return undefined;
+  return { account: call.accounts[2]!.pubkey, mint: call.accounts[1]!.pubkey, tokenProgram: call.programId };
 }
 
 export function isNativeTransferCall(call: SolanaCall): boolean {

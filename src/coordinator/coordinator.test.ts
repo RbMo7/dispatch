@@ -426,7 +426,143 @@ function paymentItem(asset: string, amount: string): DispatchItem<'solana'> {
   return { call: solanaCall, payment: { recipient: 'recipient', asset, amount } };
 }
 
+describe('Coordinator concurrent sends (#42, ADR-0044)', () => {
+  async function peakInFlight(maxConcurrentSends: number | undefined, chunks: number) {
+    const { store, handler, coordinator } = setup();
+    if (maxConcurrentSends !== undefined) Object.assign(handler, { maxConcurrentSends });
+    handler.prepare.mockImplementation((items: Call[]) =>
+      Promise.resolve(
+        ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: `tx-${callIndex}` }))),
+      ),
+    );
+    let n = 0;
+    handler.transactionHash.mockImplementation(() => ok(`hash-${n++}`));
+    let inFlight = 0;
+    let peak = 0;
+    handler.broadcast.mockImplementation(async (signed) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return ok({ hash: signed });
+    });
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: `cc-${Math.random()}`,
+      items: Array.from({ length: chunks }, () => solanaItem),
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(chunks);
+    expect((await store.listTransactions(dispatch.id)).every((t) => t.status === 'PENDING')).toBe(
+      true,
+    );
+    return peak;
+  }
+
+  it('sends up to the handler’s limit at once, never more', async () => {
+    expect(await peakInFlight(3, 7)).toBe(3);
+  });
+
+  it('sends one at a time for a handler that declares no limit', async () => {
+    expect(await peakInFlight(undefined, 4)).toBe(1);
+  });
+});
+
 describe('Coordinator Funding Check', () => {
+  describe('network cost (#40, ADR-0043)', () => {
+    function withNetworkCost(amount: string) {
+      const ctx = setup();
+      const networkCost = vi.fn(
+        (_calls: Call[], _sender: string): Promise<Result<Balance, DispatchError>> =>
+          Promise.resolve(ok({ asset: 'SOL', amount })),
+      );
+      Object.assign(ctx.handler, { networkCost });
+      ctx.handler.getBalance.mockImplementation((_address: string, asset: string) =>
+        Promise.resolve(ok({ asset, amount: asset === 'SOL' ? '1000' : '100' })),
+      );
+      return { ...ctx, networkCost };
+    }
+
+    it('refuses the batch when the SOL covers the payments but not the cost of sending them', async () => {
+      const { store, handler, coordinator, networkCost } = withNetworkCost('600');
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'nc-1',
+        items: [paymentItem('SOL', '500'), paymentItem('USDC', '100'), solanaItem],
+        retryPolicy: false,
+      });
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(networkCost).toHaveBeenCalledWith(
+        dispatch.items.map((i) => i.call),
+        'sender-address',
+      );
+      expect(handler.sign).not.toHaveBeenCalled();
+      const rows = await store.listTransactions(dispatch.id);
+      expect(rows).toHaveLength(3); // each Call failed exactly once
+      for (const row of rows) {
+        expect(row.error).toEqual({
+          code: 'INSUFFICIENT_FUNDS',
+          message: 'insufficient SOL balance',
+          chainDetail: { asset: 'SOL', short: '100' },
+        });
+      }
+    });
+
+    it('proceeds when the SOL covers payments and cost together', async () => {
+      const { store, handler, coordinator } = withNetworkCost('500');
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'nc-2',
+        items: [paymentItem('SOL', '500'), solanaItem],
+        retryPolicy: false,
+      });
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(handler.validateCall).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails a Call short of its own token only once, even when the SOL is short too', async () => {
+      const { store, coordinator } = withNetworkCost('2000');
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'nc-3',
+        items: [paymentItem('USDC', '101')],
+        retryPolicy: false,
+      });
+
+      await coordinator.processQueuedDispatches(10);
+
+      const rows = await store.listTransactions(dispatch.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.error?.chainDetail).toEqual({ asset: 'USDC', short: '1' });
+    });
+
+    it('fails every Call of the chain when the cost itself cannot be estimated', async () => {
+      const { store, handler, coordinator, networkCost } = withNetworkCost('0');
+      networkCost.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'nc-4',
+        items: [solanaItem, solanaItem],
+        retryPolicy: false,
+      });
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(handler.validateCall).not.toHaveBeenCalled();
+      expect((await store.listTransactions(dispatch.id)).map((t) => t.error?.code)).toEqual([
+        'RPC_UNAVAILABLE',
+        'RPC_UNAVAILABLE',
+      ]);
+    });
+  });
+
   it('fails a Call with INSUFFICIENT_FUNDS when the required amount exceeds the Sender balance, without ever calling validateCall', async () => {
     const { store, handler, coordinator } = setup();
     handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '40' }));
@@ -1233,7 +1369,9 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
     const { store, handler, coordinator } = setup();
     await queueOne(store, [solanaItem, solanaItem]);
     handler.prepare.mockImplementation((items: Call[]) =>
-      Promise.resolve(ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'one-bundle' })))),
+      Promise.resolve(
+        ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'one-bundle' }))),
+      ),
     );
     const createTransactions = vi.spyOn(store, 'createTransactions');
 
@@ -1248,7 +1386,11 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
     handler.broadcast
       .mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'timed out' }))
       .mockResolvedValueOnce(err({ code: 'NONCE_ALREADY_USED', message: 'nonce too low' }));
-    const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `amb-${Math.random()}`, signedTransaction: 'relay-bytes' });
+    const relay = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: `amb-${Math.random()}`,
+      signedTransaction: 'relay-bytes',
+    });
 
     await coordinator.processQueuedRelayDispatches(10);
 
@@ -1259,7 +1401,9 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
   it('treats ALREADY_KNOWN as ambiguous — the bytes are pooled, never FAILED (#20 review)', async () => {
     const { store, handler, coordinator } = setup();
     const dispatch = await queueOne(store);
-    handler.broadcast.mockResolvedValueOnce(err({ code: 'ALREADY_KNOWN', message: 'already known' }));
+    handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'ALREADY_KNOWN', message: 'already known' }),
+    );
 
     await coordinator.processQueuedDispatches(10);
 
@@ -1267,13 +1411,27 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
     expect(row?.status).toBe('PENDING');
   });
 
-  it('hands every unsettled Transaction\'s signed bytes to the Chain Handler on restoreReservations (#20 review)', async () => {
+  it("hands every unsettled Transaction's signed bytes to the Chain Handler on restoreReservations (#20 review)", async () => {
     const { store, handler, coordinator } = setup();
     const reserve = vi.fn();
-    (handler as FakeChainHandler & { restoreInFlight?: (signed: string[]) => void }).restoreInFlight = reserve;
+    (
+      handler as FakeChainHandler & { restoreInFlight?: (signed: string[]) => void }
+    ).restoreInFlight = reserve;
     const dispatch = await queueOne(store, [solanaItem, solanaItem]);
-    const pendingRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 0, chain: 'solana', signedBytes: 'pending-bytes', hash: 'p' });
-    const confirmedRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 1, chain: 'solana', signedBytes: 'confirmed-bytes', hash: 'c' });
+    const pendingRow = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'pending-bytes',
+      hash: 'p',
+    });
+    const confirmedRow = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 1,
+      chain: 'solana',
+      signedBytes: 'confirmed-bytes',
+      hash: 'c',
+    });
     await store.markConfirmed(confirmedRow.id);
 
     await coordinator.restoreReservations();
@@ -1333,7 +1491,12 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
 
     it('never reclaims a Dispatch this Coordinator is itself still processing — a slow batch is not a crash (#20 review)', async () => {
       const { store, handler, coordinator, advance } = setupClocked();
-      await store.createDispatch({ chain: 'solana', idempotencyKey: 'slow-1', items: [solanaItem], retryPolicy: false });
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'slow-1',
+        items: [solanaItem],
+        retryPolicy: false,
+      });
       let reclaimDuringSend: Promise<void> | undefined;
       handler.sign.mockImplementationOnce(async () => {
         advance(5 * 60_000 + 1); // the batch is slow: its claim looks stale mid-flight
@@ -1562,7 +1725,10 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
     handler.sign.mockResolvedValue(ok('resigned-bytes'));
     handler.broadcast.mockImplementation(async () => {
       const rows = await store.listTransactions(dispatch.id);
-      expect(rows.find((t) => t.hash === 'hash-2')).toMatchObject({ status: 'PENDING', signedBytes: 'resigned-bytes' });
+      expect(rows.find((t) => t.hash === 'hash-2')).toMatchObject({
+        status: 'PENDING',
+        signedBytes: 'resigned-bytes',
+      });
       return ok({ hash: 'hash-2' });
     });
 
@@ -1580,7 +1746,9 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
   it('resubmits a bundle as one transaction for all its members', async () => {
     const { store, handler, coordinator, dispatch } = await sendOne([solanaItem, solanaItem]);
     handler.prepare.mockImplementation((items: Call[]) =>
-      Promise.resolve(ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'bundle' })))),
+      Promise.resolve(
+        ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'bundle' }))),
+      ),
     );
     handler.sign.mockClear();
     handler.broadcast.mockClear();
@@ -1612,9 +1780,53 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
     expect(rows.slice(0, 3).every((t) => t.status === 'DROPPED')).toBe(true);
   });
 
+  it("resubmits several expired transactions through the chain's send pool, not one by one (mainnet review)", async () => {
+    const { store, handler, coordinator } = setup();
+    Object.assign(handler, { maxConcurrentSends: 3 });
+    for (let i = 0; i < 3; i++) {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: `pool-${i}`,
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      const row = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: `old-${i}`,
+        hash: `old-${i}`,
+      });
+      await store.recordSent(row.id, `old-${i}`);
+    }
+    handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash.startsWith('old') ? 'EXPIRED' : 'PENDING')),
+    );
+    let n = 0;
+    handler.transactionHash.mockImplementation(() => ok(`new-${n++}`));
+    let inFlight = 0;
+    let peak = 0;
+    handler.broadcast.mockImplementation(async (signed) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return ok({ hash: signed });
+    });
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(3);
+    expect(peak).toBe(3);
+  });
+
   it('fails an expired Relay Dispatch — there is no key to re-sign it', async () => {
     const { store, handler, coordinator } = setup();
-    const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `exp-r-${Math.random()}`, signedTransaction: 'relay-bytes' });
+    const relay = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: `exp-r-${Math.random()}`,
+      signedTransaction: 'relay-bytes',
+    });
     await coordinator.processQueuedRelayDispatches(10);
     handler.getStatus.mockResolvedValue(ok('EXPIRED'));
     handler.sign.mockClear();
@@ -1634,16 +1846,24 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
     expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['PENDING']);
 
     await coordinator.pollPendingTransactions(10);
-    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['DROPPED', 'PENDING']);
+    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual([
+      'DROPPED',
+      'PENDING',
+    ]);
   });
 
   it('marks the resubmission FAILED when the node definitely refuses it', async () => {
     const { store, handler, coordinator, dispatch } = await sendOne();
-    handler.broadcast.mockResolvedValue(err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient lamports' }));
+    handler.broadcast.mockResolvedValue(
+      err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient lamports' }),
+    );
 
     await coordinator.pollPendingTransactions(10);
 
-    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['DROPPED', 'FAILED']);
+    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual([
+      'DROPPED',
+      'FAILED',
+    ]);
   });
 });
 
@@ -1695,7 +1915,10 @@ describe('Coordinator.rewatchAbandonedTransactions', () => {
 
     await coordinator.rewatchAbandonedTransactions(10);
 
-    expect(store.getTransaction(transactionId)).toMatchObject({ status: 'FAILED', error: { code: 'CHAIN_REJECTED' } });
+    expect(store.getTransaction(transactionId)).toMatchObject({
+      status: 'FAILED',
+      error: { code: 'CHAIN_REJECTED' },
+    });
   });
 
   it('leaves a Transaction ABANDONED when the chain still reports it as PENDING', async () => {

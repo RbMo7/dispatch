@@ -10,6 +10,7 @@ import {
   getAssociatedTokenAddressSync,
   getMinimumBalanceForRentExemptMint,
   MINT_SIZE,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import {
@@ -35,6 +36,7 @@ export const DEVNET_RPC_URL = process.env.SOLANA_DEVNET_RPC_URL ?? 'https://api.
 const FIXTURES_DIR = path.resolve(process.cwd(), '.devnet-fixtures');
 const SENDER_KEYPAIR_PATH = path.join(FIXTURES_DIR, 'sender-keypair.json');
 const MINT_PATH = path.join(FIXTURES_DIR, 'test-mint.json');
+const MINT_2022_PATH = path.join(FIXTURES_DIR, 'test-mint-2022.json');
 
 const MIN_SENDER_BALANCE_LAMPORTS = 1.5 * LAMPORTS_PER_SOL;
 const TEST_MINT_DECIMALS = 6;
@@ -125,6 +127,7 @@ export function getFundedSenderKeypair(): Promise<Keypair> {
 type CachedMint = { mint: string };
 
 let testMintPromise: Promise<PublicKey> | undefined;
+let testMint2022Promise: Promise<PublicKey> | undefined;
 
 /**
  * A devnet SPL token mint owned by the test Sender, used as the "USDC-like"
@@ -134,54 +137,71 @@ let testMintPromise: Promise<PublicKey> | undefined;
  * modes (decimals mismatch, insufficient balance) that a real token would.
  */
 export function getTestMint(): Promise<PublicKey> {
-  testMintPromise ??= (async () => {
-    const sender = await getFundedSenderKeypair();
-    const connection = getDevnetConnection();
-
-    if (existsSync(MINT_PATH)) {
-      const cached = JSON.parse(readFileSync(MINT_PATH, 'utf8')) as CachedMint;
-      return new PublicKey(cached.mint);
-    }
-
-    // #38: one transaction — create the mint, the sender's ATA, and its
-    // supply — confirmed by HTTP polling (see waitForConfirmation).
-    const mintKeypair = Keypair.generate();
-    const mint = mintKeypair.publicKey;
-    const senderAta = getAssociatedTokenAddressSync(mint, sender.publicKey);
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-    const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight }).add(
-      SystemProgram.createAccount({
-        fromPubkey: sender.publicKey,
-        newAccountPubkey: mint,
-        space: MINT_SIZE,
-        lamports: await getMinimumBalanceForRentExemptMint(connection),
-        programId: TOKEN_PROGRAM_ID,
-      }),
-      createInitializeMint2Instruction(mint, TEST_MINT_DECIMALS, sender.publicKey, null),
-      createAssociatedTokenAccountIdempotentInstruction(
-        sender.publicKey,
-        senderAta,
-        sender.publicKey,
-        mint,
-      ),
-      createMintToInstruction(
-        mint,
-        senderAta,
-        sender.publicKey,
-        1_000_000_000 * 10 ** TEST_MINT_DECIMALS,
-      ),
-    );
-    tx.sign(sender, mintKeypair);
-    const signature = await connection.sendRawTransaction(tx.serialize());
-    if (!(await waitForConfirmation(connection, signature))) {
-      throw new Error(`test mint creation ${signature} did not confirm within 30s`);
-    }
-
-    mkdirSync(path.dirname(MINT_PATH), { recursive: true });
-    writeFileSync(MINT_PATH, JSON.stringify({ mint: mint.toBase58() } satisfies CachedMint));
-    return mint;
-  })();
+  testMintPromise ??= getOrCreateMint(MINT_PATH, TOKEN_PROGRAM_ID);
   return testMintPromise;
+}
+
+/** #41: the same, under the Token-2022 program — the program PYUSD-style tokens live under. */
+export function getTestMint2022(): Promise<PublicKey> {
+  testMint2022Promise ??= getOrCreateMint(MINT_2022_PATH, TOKEN_2022_PROGRAM_ID);
+  return testMint2022Promise;
+}
+
+async function getOrCreateMint(cachePath: string, tokenProgram: PublicKey): Promise<PublicKey> {
+  const sender = await getFundedSenderKeypair();
+  const connection = getDevnetConnection();
+
+  if (existsSync(cachePath)) {
+    const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as CachedMint;
+    return new PublicKey(cached.mint);
+  }
+
+  // #38: one transaction — create the mint, the sender's ATA, and its
+  // supply — confirmed by HTTP polling (see waitForConfirmation).
+  const mintKeypair = Keypair.generate();
+  const mint = mintKeypair.publicKey;
+  const senderAta = getAssociatedTokenAddressSync(mint, sender.publicKey, false, tokenProgram);
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight }).add(
+    SystemProgram.createAccount({
+      fromPubkey: sender.publicKey,
+      newAccountPubkey: mint,
+      space: MINT_SIZE,
+      lamports: await getMinimumBalanceForRentExemptMint(connection),
+      programId: tokenProgram,
+    }),
+    createInitializeMint2Instruction(
+      mint,
+      TEST_MINT_DECIMALS,
+      sender.publicKey,
+      null,
+      tokenProgram,
+    ),
+    createAssociatedTokenAccountIdempotentInstruction(
+      sender.publicKey,
+      senderAta,
+      sender.publicKey,
+      mint,
+      tokenProgram,
+    ),
+    createMintToInstruction(
+      mint,
+      senderAta,
+      sender.publicKey,
+      1_000_000_000 * 10 ** TEST_MINT_DECIMALS,
+      [],
+      tokenProgram,
+    ),
+  );
+  tx.sign(sender, mintKeypair);
+  const signature = await connection.sendRawTransaction(tx.serialize());
+  if (!(await waitForConfirmation(connection, signature))) {
+    throw new Error(`test mint creation ${signature} did not confirm within 30s`);
+  }
+
+  mkdirSync(path.dirname(cachePath), { recursive: true });
+  writeFileSync(cachePath, JSON.stringify({ mint: mint.toBase58() } satisfies CachedMint));
+  return mint;
 }
 
 export function testMintDecimals(): number {

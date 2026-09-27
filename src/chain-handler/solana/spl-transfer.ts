@@ -1,9 +1,10 @@
 import { createTransferCheckedInstruction, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import type { PublicKey } from '@solana/web3.js';
 
 import type { SolanaCall } from '../../domain/call.js';
 import type { DispatchError } from '../../domain/errors.js';
 import { err, ok, type Result } from '../../domain/result.js';
-import { deriveAssociatedTokenAddress } from './account-resolution.js';
+import { deriveAssociatedTokenAddress, isTokenProgram } from './account-resolution.js';
 import { fromTransactionInstruction } from './instruction-codec.js';
 import { parsePublicKey } from './native-transfer.js';
 
@@ -23,6 +24,7 @@ export function buildSplTransferCall(
   mint: string,
   decimals: number,
   rawAmount: bigint,
+  tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
 ): Result<SolanaCall, DispatchError> {
   const owner = parsePublicKey(senderAddress);
   if (!owner.ok) return owner;
@@ -35,8 +37,8 @@ export function buildSplTransferCall(
     return err({ ...mintKey.error, message: `not a well-formed mint address: ${mint}` });
   }
 
-  const sourceAta = deriveAssociatedTokenAddress(owner.value, mintKey.value);
-  const destinationAta = deriveAssociatedTokenAddress(recipientOwner.value, mintKey.value);
+  const sourceAta = deriveAssociatedTokenAddress(owner.value, mintKey.value, tokenProgram);
+  const destinationAta = deriveAssociatedTokenAddress(recipientOwner.value, mintKey.value, tokenProgram);
 
   const instruction = createTransferCheckedInstruction(
     sourceAta,
@@ -46,7 +48,7 @@ export function buildSplTransferCall(
     rawAmount,
     decimals,
     [],
-    TOKEN_PROGRAM_ID,
+    tokenProgram,
   );
   const call = fromTransactionInstruction(instruction);
 
@@ -61,7 +63,7 @@ export function buildSplTransferCall(
 
 /** Cheap shape validation only — a real amount/decimals/balance mismatch surfaces as CHAIN_REJECTED at broadcast (issue 09), never here. */
 export function validateSplTransferCall(call: SolanaCall): Result<void, DispatchError> {
-  if (call.programId !== TOKEN_PROGRAM_ID.toBase58()) {
+  if (!isTokenProgram(call.programId)) {
     return err({
       code: 'INVALID_RECIPIENT',
       message: `not an SPL Token program call: ${call.programId}`,
@@ -87,5 +89,5 @@ export function validateSplTransferCall(call: SolanaCall): Result<void, Dispatch
 }
 
 export function isSplTransferCall(call: SolanaCall): boolean {
-  return call.programId === TOKEN_PROGRAM_ID.toBase58();
+  return isTokenProgram(call.programId);
 }

@@ -92,12 +92,19 @@ describe('Solana resubmission of a provably expired transaction after a restart 
       abandonmentTimeoutMs: new Map([['solana', SOLANA_ABANDONMENT_TIMEOUT_MS]]),
     });
     await coordinator.restoreReservations();
-    await coordinator.pollPendingTransactions(10); // EXPIRED -> resubmitted; broadcast waits for confirmation
-    await coordinator.pollPendingTransactions(10); // the resubmission confirms
+    // A restored expiry bound is conservative, so poll until the resubmission has confirmed.
+    const pollDeadline = Date.now() + 480_000;
+    let statuses: string[] = [];
+    while (Date.now() < pollDeadline) {
+      await coordinator.pollPendingTransactions(10);
+      statuses = (await store.listTransactions(dispatch.id)).map((t) => t.status);
+      if (statuses.includes('CONFIRMED')) break;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
 
     const rows = await store.listTransactions(dispatch.id);
     expect(rows.map((t) => t.status)).toEqual(['DROPPED', 'CONFIRMED']);
     expect(rows[1]?.hash).not.toBe(originalHash);
     expect(await connection.getBalance(recipient.publicKey)).toBe(2_000_000);
-  }, 240_000);
+  }, 720_000);
 });
