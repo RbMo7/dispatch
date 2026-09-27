@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: implemented — merged to main 2026-09-27 in PR #45 (GitHub issues #39–#43), with the mainnet-readiness review fixes (ADR-0045). #44 (durable nonces) is still open, waiting on a design decision.
 
 # Solana hardening
 

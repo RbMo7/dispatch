@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: implemented — Relay Dispatch ships on Solana (legacy and v0 transactions) and Base (EIP-1559). Where later work differs, the ADRs win (ADR-0031, ADR-0033, ADR-0045).
 
 # Relay Dispatch
 

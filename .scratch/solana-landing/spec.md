@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: implemented — merged to main 2026-09-27 in PR #35 (GitHub issues #32–#34, #36–#38). Where the shipped design differs from this spec, the ADRs win: expiry is proven by block height with a lag margin (ADR-0045), not `isBlockhashValid`.
 
 # Solana landing
 

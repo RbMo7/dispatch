@@ -13,7 +13,8 @@ Sending a blockchain transaction reliably is harder than it looks: nonce sequenc
 
 Chain by chain, not all at once: each Chain Handler is built, tested, and hardened against its own real failure modes (see `docs/adr/`) before the next chain starts.
 
-- **Shipped:** Solana (proven against devnet) and Base (proven against Base Sepolia, including a 100+ transaction volume run with a real fee-bump and an on-chain nonce audit). Both support Managed Dispatch and Relay Dispatch. The README has a feature table.
+- **Shipped:** Solana (proven against devnet, including a 500-payment volume run, and reviewed for mainnet readiness) and Base (proven against Base Sepolia, including a 100+ transaction volume run with a real fee-bump and an on-chain nonce audit). Both support Managed Dispatch and Relay Dispatch. The README has a feature table.
+- **Before mainnet:** a production Signer backed by a real key store. The reference Signer is development-only (ADR-0002).
 - **Next, not yet designed:** webhooks instead of polling (ADR-0023), Ethereum L1 as its own chain (ADR-0035), and a Sender Pool for fault isolation across several sending wallets (ADR-0016).
 
 See `CONTEXT.md` for vocabulary and `docs/adr/` for the specific decisions and their reasoning.

@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: implemented — issues 01–15 (local files under issues/, the pre-GitHub record). Where later work differs, the ADRs win.
 
 # Core engine scaffold
 

@@ -64,9 +64,9 @@ An EVM Managed Dispatch batching mode, opt-in per request, where multiple paymen
 _Avoid_: Multicall (that's the caller's contract pattern, not the engine's concept), Batch Transaction
 
 **Stuck Transaction**:
-A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`, 60s on Base) after its latest send (ADR-0037). Stuck handling rebroadcasts its identical bytes, or fee-bumps it when Retry Policy allows. Only chains that opt in get stuck handling; Solana's expiring blockhash resolves stuck transactions on its own.
+A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`, 60s on Base) after its latest send (ADR-0037). Stuck handling rebroadcasts its identical bytes, or fee-bumps it when Retry Policy allows. Only chains that opt in get stuck handling. Solana has none: `broadcast` resends the identical bytes while the blockhash is valid, and once it has provably expired the Coordinator resubmits the Calls as a new Transaction (ADR-0042, ADR-0045).
 _Avoid_: Dropped (a mempool eviction is one possible cause, not the state), Failed
 
 **Durable Nonce Execution**:
-An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is blockhash-refresh-and-resubmit.
+An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Not built yet (#44): without expiry, safe resubmission would first have to cancel the original.
 _Avoid_: Nonce Account (the on-chain object the mode depends on, not the mode itself)

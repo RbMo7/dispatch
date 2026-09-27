@@ -114,7 +114,7 @@ Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the 
 
 | `code` | Meaning |
 |---|---|
-| `INSUFFICIENT_FUNDS` | The payer's balance can't cover it: caught up front by the Funding Check, or refused by the chain |
+| `INSUFFICIENT_FUNDS` | The payer's balance can't cover it: caught up front by the Funding Check (on Solana, including the SOL for fees and new token-account rent, ADR-0043), or refused by the chain |
 | `INVALID_RECIPIENT` | A malformed or unusable address (a recipient, a Bulk Call aggregator with no contract code) |
 | `UNKNOWN_ASSET` | A `payment`'s `asset` has no configured encoding on this chain (ADR-0029) |
 | `CHAIN_REJECTED` | The chain definitely refused or reverted it, or a request was invalid for this chain (wrong chain ID, bad signature, …) |
