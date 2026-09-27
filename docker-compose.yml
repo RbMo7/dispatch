@@ -21,6 +21,10 @@ services:
   api:
     build: .
     command: ['node', 'dist/index.js']
+    # Chain, auth and RPC settings (.env.example); the lines below override what they must.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: 8420
       DATABASE_URL: *database-url
@@ -34,6 +38,10 @@ services:
   worker:
     build: .
     command: ['node', 'dist/worker.js']
+    # Chain, auth and RPC settings (.env.example); the lines below override what they must.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: *database-url
       SIGNER_URL: *signer-url
