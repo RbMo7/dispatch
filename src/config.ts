@@ -1,4 +1,11 @@
+import { existsSync } from 'node:fs';
+
 import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
+
+// A local, gitignored .env (RPC URLs, keys) for the API, the worker and
+// drizzle-kit alike — real environment variables always win, and a deploy
+// without one is unaffected.
+if (existsSync('.env')) process.loadEnvFile('.env');
 
 export const config = {
   port: Number(process.env.PORT ?? 8420),
