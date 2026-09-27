@@ -4,7 +4,7 @@ Solana's `broadcast` used to re-sign an expired transaction with a fresh blockha
 
 ## Decision
 
-- `ChainStatus` gains `EXPIRED`: the transaction provably can never land. Solana reports it once the blockhash has passed its validity window with no status recorded (ADR-0030's proof). A chain without such a proof never reports it.
+- `ChainStatus` gains `EXPIRED`: the transaction provably can never land. Solana reports it once the blockhash has passed its validity window with no status recorded (ADR-0030's proof, made safe for mainnet by ADR-0045). A chain without such a proof never reports it.
 - On `EXPIRED`, the Coordinator resubmits a Managed Dispatch's Calls: it re-`prepare`s the stored Calls of every pending row sharing the hash, signs, and writes the new Transaction down (`createReplacementTransaction`) before sending. The predecessor is marked `DROPPED` right away, since it can never land. No new handler method: re-preparing the Calls is enough.
 - At most 3 resubmissions, counted by the replacement counter. After that, and always for a Relay Dispatch (no key), the Call is `FAILED`, which is what ADR-0030 reports.
 - Resubmission does not need Retry Policy. An expired Solana transaction was never included, so it was never charged: resubmitting costs no more than the original was authorized to (ADR-0003). Raising the price on resubmission would be cost-increasing and would need Retry Policy.

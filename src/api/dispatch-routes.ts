@@ -81,8 +81,9 @@ const INTEGER_STRING = /^\d+$/;
  * Payment kept alongside the resulting Call so the Funding Check (ADR-0024)
  * can aggregate required funds later without decoding an opaque Call. A
  * `call` item's fields beyond `type` are already chain-shaped and
- * caller-owned (ADR-0018), so they pass through untouched rather than being
- * deeply validated here, and carry no Payment.
+ * caller-owned (ADR-0018): they pass through untouched and carry no
+ * Payment, but get the Chain Handler's cheap `validateCall` here, so a
+ * malformed one is a 400 now rather than a failed item later.
  */
 async function translateItem(
   handler: ChainHandler,
@@ -110,7 +111,10 @@ async function translateItem(
   }
 
   if (type === 'call') {
-    return ok({ call: rest as Call, payment: null });
+    const call = rest as Call;
+    const valid = await handler.validateCall(call);
+    if (!valid.ok) return err({ status: 400, body: valid.error });
+    return ok({ call, payment: null });
   }
 
   return err(

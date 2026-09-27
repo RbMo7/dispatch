@@ -94,6 +94,24 @@ describe('POST /v1/dispatch', () => {
     });
   });
 
+  it("refuses a call item the Chain Handler's validateCall rejects with 400, never queuing it (mainnet review)", async () => {
+    const handler = new StubChainHandler();
+    handler.validateCall = () =>
+      Promise.resolve(err({ code: 'CHAIN_REJECTED', message: 'malformed call' }));
+    const { app, store } = await buildTestApp({ handler });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'bad-call' },
+      payload: { chain: 'base', items: [{ type: 'call', to: 42 }] },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorResponseBody>()).toMatchObject({ code: 'CHAIN_REJECTED' });
+    expect(await store.claimQueued(10)).toEqual([]);
+  });
+
   it('accepts a call item as-is and returns 202 with the queued Dispatch', async () => {
     const { app, store } = await buildTestApp();
 

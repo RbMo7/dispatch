@@ -2,7 +2,12 @@ import { createPublicKey, randomUUID, verify as verifySignature } from 'node:cry
 
 import {
   ACCOUNT_SIZE,
+  AccountState,
   ExtensionType,
+  getDefaultAccountState,
+  getNonTransferable,
+  getTransferFeeConfig,
+  getTransferHook,
   getAccount,
   getAccountLen,
   getAccountTypeOfMintType,
@@ -18,7 +23,9 @@ import {
   Connection,
   type Message,
   PACKET_DATA_SIZE,
+  type SignatureStatus,
   PublicKey,
+  SystemProgram,
   Transaction,
   TransactionInstruction,
   VersionedTransaction,
@@ -70,14 +77,24 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * The Coordinator's `abandonmentTimeoutMs` config value for `'solana'`
- * (ADR-0030) — a fallback safety net only, comfortably past a blockhash's
- * ~60-90s validity window, for the one case `getStatus`'s own
- * provable-expiry check can't cover (no `blockhashByHash` record for the
- * hash). In ordinary operation `getStatus` itself reports EXPIRED well
- * before this fires, and `restoreInFlight` rebuilds the records after a
- * restart (ADR-0042).
+ * (ADR-0030) — a fallback only, for a transaction `getStatus` can't prove
+ * expired: one with no expiry record, such as a durable-nonce Relay
+ * transaction, which never expires. Anything with a record is reported
+ * EXPIRED within a few minutes, so this sits well past that: a restart's
+ * restored records (ADR-0042) need up to ~2 minutes more to prove.
  */
-export const SOLANA_ABANDONMENT_TIMEOUT_MS = 120_000;
+export const SOLANA_ABANDONMENT_TIMEOUT_MS = 15 * 60_000;
+
+/** A blockhash is valid for this many blocks past the one it names (`lastValidBlockHeight`). */
+const BLOCKHASH_VALIDITY_BLOCKS = 150;
+/**
+ * Mainnet review: expiry is proven by block height, never `isBlockhashValid`
+ * (a lagging node answers "invalid" for a blockhash it hasn't seen yet),
+ * and only this many blocks (~60s) past the last valid one — so a node up
+ * to that far behind has seen any block the transaction could have landed
+ * in before its status is re-checked.
+ */
+const EXPIRY_MARGIN_BLOCKS = 150;
 
 /**
  * issue 10: bundles multiple Calls into one transaction via Solana's native
@@ -184,6 +201,40 @@ function allSignaturesVerify(tx: VersionedTransaction): boolean {
   });
 }
 
+/**
+ * The highest block height a transaction can land at: exact when this
+ * handler fetched its blockhash, otherwise an upper bound (the tip when
+ * first seen, plus the validity window).
+ */
+type ExpiryRecord = { lastValidBlockHeight: number };
+
+/** A durable-nonce transaction (AdvanceNonceAccount first) never expires: its "blockhash" is the nonce value. */
+function usesDurableNonce(tx: VersionedTransaction): boolean {
+  const first = tx.message.compiledInstructions[0];
+  if (!first) return false;
+  const program = tx.message.staticAccountKeys[first.programIdIndex];
+  return (
+    !!program?.equals(SystemProgram.programId) &&
+    first.data.length >= 4 &&
+    Buffer.from(first.data).readUInt32LE(0) === 4
+  );
+}
+
+function isSolanaCallShape(call: unknown): call is SolanaCall {
+  const c = call as Partial<SolanaCall> | null | undefined;
+  return (
+    typeof c?.programId === 'string' &&
+    typeof c.data === 'string' &&
+    Array.isArray(c.accounts) &&
+    c.accounts.every(
+      (a: Partial<SolanaAccountMeta> | null | undefined) =>
+        typeof a?.pubkey === 'string' &&
+        typeof a.isSigner === 'boolean' &&
+        typeof a.isWritable === 'boolean',
+    )
+  );
+}
+
 /** #41: the program a known token's mint lives under. */
 function tokenProgramOf(token: KnownToken): PublicKey {
   return token.tokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
@@ -273,7 +324,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * a hash, so `sign`/`broadcast` record hash -> blockhash here the moment
    * they know it, and `restoreInFlight` rebuilds it after a restart.
    */
-  private readonly blockhashByHash = new Map<string, string>();
+  private readonly expiryByHash = new Map<string, ExpiryRecord>();
   /**
    * issue 10: one signature per bundle chunk, however many Calls share it —
    * see `sign`. Caches the in-flight *promise*, not just its resolved
@@ -365,6 +416,16 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * semantics-free fallback for everything that isn't System or Token.
    */
   validateCall(call: SolanaCall): Promise<Result<void, DispatchError>> {
+    // Mainnet review: a caller's `call` item arrives unchecked from JSON — refuse, never throw on, a wrong shape.
+    if (!isSolanaCallShape(call)) {
+      return Promise.resolve(
+        err({
+          code: 'CHAIN_REJECTED',
+          message:
+            'malformed Solana call: expected { programId: string, accounts: { pubkey: string, isSigner: boolean, isWritable: boolean }[], data: string }',
+        }),
+      );
+    }
     if (isSplTransferCall(call)) return Promise.resolve(validateSplTransferCall(call));
     if (isNativeTransferCall(call)) return Promise.resolve(validateNativeTransferCall(call));
     return Promise.resolve(validateGenericCall(call));
@@ -641,7 +702,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const hash = bs58.encode(signatureBytes);
-    this.blockhashByHash.set(hash, blockhash);
+    this.expiryByHash.set(hash, { lastValidBlockHeight });
     log.debug({ hash }, 'signed transaction');
 
     return ok(
@@ -704,21 +765,31 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const hashResult = this.transactionHash(signed);
     if (!hashResult.ok) return hashResult;
     const hash = hashResult.value;
-    const blockhash = this.ensureBlockhashRecord(raw);
+    let record: ExpiryRecord | undefined;
+    try {
+      record = await this.ensureExpiryRecord(raw);
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: 'failed to read the block height before sending',
+        chainDetail: extractMessage(cause),
+      });
+    }
 
     try {
       await this.send(raw);
       this.logger.debug({ hash }, 'sendRawTransaction accepted');
     } catch (cause) {
-      if (!blockhash || !isBlockhashExpiryMessage(extractMessage(cause))) {
+      if (!record || !isBlockhashExpiryMessage(extractMessage(cause))) {
         this.logger.warn({ hash, error: extractMessage(cause) }, 'sendRawTransaction failed');
         return err(mapSolanaFailure(cause));
       }
       this.logger.warn({ hash }, 'blockhash not found at send — waiting on its validity window');
     }
-    if (!blockhash) return ok({ hash }); // defensive only — any decodable signed transaction has one
+    // A durable-nonce transaction never expires: polling, not this wait, resolves it.
+    if (!record) return ok({ hash });
 
-    const outcome = await this.waitUntilConfirmedOrExpired(hash, blockhash, raw);
+    const outcome = await this.waitUntilConfirmedOrExpired(hash, record, raw);
     if (outcome.type === 'confirmed') {
       this.logger.info({ hash }, 'transaction confirmed');
       return ok({ hash });
@@ -755,12 +826,12 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * itself fails — it retries the broken subscribe call forever and never
    * resolves, hanging `broadcast` indefinitely on any RPC provider without
    * WebSocket support. `getSignatureStatuses` (already `getStatus`'s own
-   * mechanism, issue 07) and `isBlockhashValid` (issue 08) are both plain
-   * HTTP and work everywhere.
+   * mechanism, issue 07) and `getBlockHeight` are both plain HTTP and work
+   * everywhere.
    */
   private async waitUntilConfirmedOrExpired(
     hash: string,
-    blockhash: string,
+    record: ExpiryRecord,
     raw: Buffer,
   ): Promise<
     | { type: 'confirmed' }
@@ -771,34 +842,27 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const pollIntervalMs = 1_000;
     let lastSentAt = Date.now();
     for (;;) {
-      let statuses: Awaited<ReturnType<Connection['getSignatureStatuses']>>;
+      let status: SignatureStatus | null;
+      let expired = false;
       try {
-        statuses = await this.connection.getSignatureStatuses([hash], {
-          searchTransactionHistory: true,
-        });
-      } catch (cause) {
-        return { type: 'error', error: mapSolanaFailure(cause) };
-      }
-      const status = statuses.value[0];
-      if (status) {
-        if (status.err) return { type: 'failed', chainDetail: status.err };
-        if (
-          status.confirmationStatus === 'confirmed' ||
-          status.confirmationStatus === 'finalized'
-        ) {
-          return { type: 'confirmed' };
+        status = await this.signatureStatus(hash);
+        if (!status && (await this.isProvablyExpired(record))) {
+          // Re-checked after the proof: one that landed in its last valid blocks shows now.
+          status = await this.signatureStatus(hash);
+          expired = !status;
         }
-      }
-
-      let stillValid: boolean;
-      try {
-        ({ value: stillValid } = await this.connection.isBlockhashValid(blockhash, {
-          commitment: 'confirmed',
-        }));
       } catch (cause) {
-        return { type: 'error', error: mapSolanaFailure(cause) };
+        // Already sent: an unreadable status is never evidence against it (mainnet review).
+        return { type: 'error', error: { ...mapSolanaFailure(cause), code: 'RPC_UNAVAILABLE' } };
       }
-      if (!stillValid) return { type: 'expired' };
+      if (expired) return { type: 'expired' };
+      if (status?.err) return { type: 'failed', chainDetail: status.err };
+      if (
+        status?.confirmationStatus === 'confirmed' ||
+        status?.confirmationStatus === 'finalized'
+      ) {
+        return { type: 'confirmed' };
+      }
 
       // Not seen yet: resend. A refusal ("already processed", a lagging
       // node's "Blockhash not found") changes nothing — status decides.
@@ -811,6 +875,19 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
       await sleep(pollIntervalMs);
     }
+  }
+
+  private async signatureStatus(hash: string): Promise<SignatureStatus | null> {
+    const { value } = await this.connection.getSignatureStatuses([hash], {
+      searchTransactionHistory: true,
+    });
+    return value[0] ?? null;
+  }
+
+  /** Proven by block height, with a margin for lagging nodes — see EXPIRY_MARGIN_BLOCKS. */
+  private async isProvablyExpired(record: ExpiryRecord): Promise<boolean> {
+    const height = await this.connection.getBlockHeight('confirmed');
+    return height > record.lastValidBlockHeight + EXPIRY_MARGIN_BLOCKS;
   }
 
   /** #20 (ADR-0041): a Solana transaction's id is its first (fee payer's) signature, base58 — exactly what sendRawTransaction reports. */
@@ -843,28 +920,34 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issue 15/ADR-0033: records the blockhash signed bytes carry — public,
-   * embedded in the bytes themselves, so no RPC is needed — and returns it.
-   * The only bookkeeping source for bytes this handler never signed (a
-   * Relay Dispatch), and for any in flight across a restart
-   * (`restoreInFlight`). `undefined` for bytes that don't decode or lack a
-   * signature/blockhash.
+   * issue 15/ADR-0033: the expiry record for signed bytes this handler
+   * didn't sign itself (a Relay Dispatch) or knew before a restart
+   * (`restoreInFlight`). Their blockhash can't be newer than the chain's
+   * tip, so the tip now plus the validity window bounds its last valid
+   * height from above: expiry may be proven late, never early. `undefined`
+   * for undecodable bytes and for a durable-nonce transaction, which never
+   * expires.
    */
-  private ensureBlockhashRecord(raw: Buffer): string | undefined {
-    const decodedResult = this.decodeSignedTransaction(raw);
-    if (!decodedResult.ok) return undefined;
-    const signature = feePayerSignature(decodedResult.value);
-    const blockhash = decodedResult.value.message.recentBlockhash;
-    if (!signature || !blockhash) return undefined;
+  private async ensureExpiryRecord(raw: Buffer): Promise<ExpiryRecord | undefined> {
+    const decoded = this.decodeSignedTransaction(raw);
+    if (!decoded.ok || usesDurableNonce(decoded.value)) return undefined;
+    const signature = feePayerSignature(decoded.value);
+    if (!signature) return undefined;
+    const hash = bs58.encode(signature);
+    const existing = this.expiryByHash.get(hash);
+    if (existing) return existing;
 
-    this.blockhashByHash.set(bs58.encode(signature), blockhash);
-    return blockhash;
+    const record = {
+      lastValidBlockHeight:
+        (await this.connection.getBlockHeight('confirmed')) + BLOCKHASH_VALIDITY_BLOCKS,
+    };
+    this.expiryByHash.set(hash, record);
+    return record;
   }
 
-  /** ADR-0042: at worker start, re-learns the blockhash of every in-flight transaction, so `getStatus` can still prove expiry after a restart. */
-  restoreInFlight(signed: SignedTransaction[]): Promise<void> {
-    for (const bytes of signed) this.ensureBlockhashRecord(Buffer.from(bytes, 'base64'));
-    return Promise.resolve();
+  /** ADR-0042: at worker start, re-learns an expiry bound for every in-flight transaction, so `getStatus` can still prove expiry after a restart. */
+  async restoreInFlight(signed: SignedTransaction[]): Promise<void> {
+    for (const bytes of signed) await this.ensureExpiryRecord(Buffer.from(bytes, 'base64'));
   }
 
   /**
@@ -890,52 +973,36 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * mathematically cannot be included in any future block — a definitive
    * outcome (ADR-0030), not "the engine gave up watching without one"
    * (CONTEXT.md's own definition of ABANDONED). It is reported as EXPIRED,
-   * so the Coordinator can resubmit the Calls or report FAILED (ADR-0042). This
-   * only works because `sign`/`broadcast` (this instance) already recorded
-   * that blockhash in `blockhashByHash` — as of issue 15/ADR-0033, that
-   * includes bytes this handler never itself signed too (`broadcast`'s
-   * `ensureBlockhashRecord` derives the record straight from the bytes), so
-   * a Relay Dispatch transaction gets the identical provable-expiry
-   * resolution a Managed Dispatch one does. A signature with genuinely no
-   * recorded blockhash (every `broadcast` records one, and
-   * `restoreInFlight` rebuilds them at restart) falls back to plain PENDING,
-   * unresolved by `getStatus` itself; the Coordinator's own
-   * `abandonmentTimeoutMs` config for 'solana' is pinned generously past
-   * the blockhash window purely as that fallback's safety net, not the
-   * primary mechanism.
+   * so the Coordinator can resubmit the Calls or report FAILED (ADR-0042).
+   *
+   * Mainnet review: the proof is block height, not `isBlockhashValid`, with
+   * a margin for lagging nodes (EXPIRY_MARGIN_BLOCKS), and the status is
+   * checked again after it, so a transaction that landed in its last valid
+   * blocks is never reported EXPIRED. It needs an expiry record: `sign`
+   * records the exact last valid height, `broadcast` and `restoreInFlight`
+   * an upper bound for bytes signed elsewhere or before a restart. With no
+   * record (a durable-nonce transaction) it stays PENDING, and the
+   * Coordinator's abandonment timeout is the fallback.
    */
   async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
+    const settle = (status: SignatureStatus): ChainStatus => {
+      if (status.err) return 'FAILED';
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+        return 'CONFIRMED';
+      }
+      return 'PENDING';
+    };
     try {
-      const { value } = await this.connection.getSignatureStatuses([hash], {
-        searchTransactionHistory: true,
-      });
-      const status = value[0];
-      if (status) {
-        if (status.err) {
-          this.logger.debug({ hash, chainDetail: status.err }, 'getStatus: FAILED');
-          return ok('FAILED');
-        }
-        if (
-          status.confirmationStatus === 'confirmed' ||
-          status.confirmationStatus === 'finalized'
-        ) {
-          this.logger.debug({ hash }, 'getStatus: CONFIRMED');
-          return ok('CONFIRMED');
-        }
-        return ok('PENDING');
-      }
+      const status = await this.signatureStatus(hash);
+      if (status) return ok(settle(status));
 
-      const blockhash = this.blockhashByHash.get(hash);
-      if (blockhash) {
-        const { value: stillValid } = await this.connection.isBlockhashValid(blockhash, {
-          commitment: 'confirmed',
-        });
-        if (!stillValid) {
-          this.logger.debug({ hash }, 'getStatus: EXPIRED (blockhash provably expired)');
-          return ok('EXPIRED');
-        }
-      }
-      return ok('PENDING');
+      const record = this.expiryByHash.get(hash);
+      if (!record || !(await this.isProvablyExpired(record))) return ok('PENDING');
+      // Re-checked after the proof: one that landed in its last valid blocks shows now.
+      const recheck = await this.signatureStatus(hash);
+      if (recheck) return ok(settle(recheck));
+      this.logger.debug({ hash }, 'getStatus: EXPIRED (past its last valid block height)');
+      return ok('EXPIRED');
     } catch (cause) {
       this.logger.warn({ hash, error: extractMessage(cause) }, 'getStatus failed');
       return err({
@@ -957,6 +1024,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     calls: SolanaCall[],
     senderAddress: string,
   ): Promise<Result<Balance, DispatchError>> {
+    // Runs before the Coordinator validates each Call: an invalid one fails on its own there, and is never priced here.
+    const valid: SolanaCall[] = [];
+    for (const call of calls) if ((await this.validateCall(call)).ok) valid.push(call);
+    calls = valid;
     const prepared = await this.prepare(calls, senderAddress);
     if (!prepared.ok) return prepared;
     const transactions = BigInt(new Set(prepared.value.map((p) => p.unsignedTransaction)).size);
@@ -1017,6 +1088,50 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       size = getAccountLen([...extensions]);
     }
     return this.connection.getMinimumBalanceForRentExemption(size);
+  }
+
+  /**
+   * Mainnet review: checks every configured token against its real mint,
+   * once at startup, so a token that can't be paid out correctly stops the
+   * process instead of failing (or underpaying) one payment at a time:
+   * wrong decimals, the wrong token program, and for Token-2022 a nonzero
+   * transfer fee (the recipient would get less than reported), an active
+   * transfer hook (needs accounts a payment doesn't carry), a
+   * non-transferable mint, or new accounts frozen by default. A fee set
+   * later still slips past this check; its transfers then land short.
+   */
+  async verifyKnownTokens(): Promise<void> {
+    for (const [symbol, token] of Object.entries(this.knownTokens)) {
+      const program = tokenProgramOf(token);
+      let mint: Awaited<ReturnType<typeof getMint>>;
+      try {
+        mint = await getMint(this.connection, new PublicKey(token.mint), 'confirmed', program);
+      } catch (cause) {
+        throw new Error(
+          `known token ${symbol} (${token.mint}) is not a ${token.tokenProgram ?? 'classic Token'} mint on this cluster: ${extractMessage(cause)}`,
+        );
+      }
+      const refuse = (why: string) => {
+        throw new Error(`known token ${symbol} (${token.mint}) can't be paid out: ${why}`);
+      };
+      if (mint.decimals !== token.decimals)
+        refuse(`it has ${mint.decimals} decimals, configured ${token.decimals}`);
+      const fee = getTransferFeeConfig(mint);
+      if (
+        fee &&
+        (fee.olderTransferFee.transferFeeBasisPoints > 0 ||
+          fee.newerTransferFee.transferFeeBasisPoints > 0)
+      ) {
+        refuse('it charges a transfer fee, so recipients would get less than the amount paid');
+      }
+      if (getTransferHook(mint) && !getTransferHook(mint)!.programId.equals(PublicKey.default)) {
+        refuse('it has a transfer hook, which needs accounts a payment does not carry');
+      }
+      if (getNonTransferable(mint)) refuse('it is non-transferable');
+      if (getDefaultAccountState(mint)?.state === AccountState.Frozen) {
+        refuse("new token accounts start frozen, so new recipients couldn't receive it");
+      }
+    }
   }
 
   /** issue for the Funding Check (core-engine-scaffold 09): native lamports, or an SPL token's raw base-unit balance via its ATA. */

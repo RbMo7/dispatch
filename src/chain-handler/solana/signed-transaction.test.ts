@@ -103,4 +103,16 @@ describe('SolanaChainHandler signed-transaction decoding (#36)', () => {
     const result = await handler.validateSignedTransaction(b64(tx.serialize()));
     expect(!result.ok && result.error.message).toMatch(/does not cryptographically verify/);
   });
+
+  it('refuses, never throws on, a call whose shape is wrong (mainnet review)', async () => {
+    for (const call of [
+      {},
+      { programId: 'x', data: 'ZA==' },
+      { programId: 'x', data: 'ZA==', accounts: [{}] },
+      null,
+    ]) {
+      const result = await handler.validateCall(call as never);
+      expect(!result.ok && result.error.message).toMatch(/malformed Solana call/);
+    }
+  });
 });

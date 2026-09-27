@@ -1780,6 +1780,46 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
     expect(rows.slice(0, 3).every((t) => t.status === 'DROPPED')).toBe(true);
   });
 
+  it("resubmits several expired transactions through the chain's send pool, not one by one (mainnet review)", async () => {
+    const { store, handler, coordinator } = setup();
+    Object.assign(handler, { maxConcurrentSends: 3 });
+    for (let i = 0; i < 3; i++) {
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: `pool-${i}`,
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      const row = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: `old-${i}`,
+        hash: `old-${i}`,
+      });
+      await store.recordSent(row.id, `old-${i}`);
+    }
+    handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash.startsWith('old') ? 'EXPIRED' : 'PENDING')),
+    );
+    let n = 0;
+    handler.transactionHash.mockImplementation(() => ok(`new-${n++}`));
+    let inFlight = 0;
+    let peak = 0;
+    handler.broadcast.mockImplementation(async (signed) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return ok({ hash: signed });
+    });
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(3);
+    expect(peak).toBe(3);
+  });
+
   it('fails an expired Relay Dispatch — there is no key to re-sign it', async () => {
     const { store, handler, coordinator } = setup();
     const relay = await store.createRelayDispatch({

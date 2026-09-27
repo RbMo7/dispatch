@@ -74,21 +74,33 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
     expect(stillValid).toBe(false);
 
     // Never broadcast at all — getStatus must still resolve this to
-    // EXPIRED on its own, purely from the provable-expiry check.
-    const status = await handler.getStatus(hash);
+    // EXPIRED on its own, once the block height is past its last valid one
+    // plus the lagging-node margin (a minute or so after isBlockhashValid).
+    const settle = async (h: SolanaChainHandler) => {
+      const deadline = Date.now() + 300_000;
+      for (;;) {
+        const status = await h.getStatus(hash);
+        if (!status.ok || status.value !== 'PENDING' || Date.now() > deadline) return status;
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
+    };
+    const status = await settle(handler);
 
     expect(status.ok).toBe(true);
     expect(status.ok && status.value).toBe('EXPIRED');
 
     // #33 (ADR-0042): a restarted worker's fresh instance has no record
     // until restoreInFlight hands it the in-flight bytes.
-    const restarted = new SolanaChainHandler({ connection, senderAddress: sender.publicKey.toBase58() });
+    const restarted = new SolanaChainHandler({
+      connection,
+      senderAddress: sender.publicKey.toBase58(),
+    });
     const before = await restarted.getStatus(hash);
     expect(before.ok && before.value).toBe('PENDING');
     await restarted.restoreInFlight([signResult.value]);
-    const after = await restarted.getStatus(hash);
+    const after = await settle(restarted); // a restored bound is conservative: proven later, never earlier
     expect(after.ok && after.value).toBe('EXPIRED');
-  }, 180_000);
+  }, 900_000);
 
   it('leaves a hash it has no blockhash bookkeeping for as PENDING rather than guessing FAILED', async () => {
     const handler = new SolanaChainHandler({
