@@ -1,4 +1,10 @@
-import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  Keypair,
+  SystemProgram,
+  Transaction,
+  TransactionMessage,
+  VersionedTransaction,
+} from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
 
 import { buildApp } from '../../app.js';
@@ -67,81 +73,97 @@ async function driveRelayToTerminal(
 }
 
 describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
-  it('broadcasts, confirms, and independently verifies a transaction signed entirely outside the engine', async () => {
-    const sender = await getFundedSenderKeypair();
-    const connection = getDevnetConnection();
+  // #36: v0 is what most wallets (Phantom included) now produce.
+  it.each(['legacy', 'v0'] as const)(
+    'broadcasts, confirms, and independently verifies a %s transaction signed entirely outside the engine',
+    async (format) => {
+      const sender = await getFundedSenderKeypair();
+      const connection = getDevnetConnection();
 
-    // Signed entirely outside the engine: plain web3.js, the cached test
-    // wallet's own secret key, no SolanaChainHandler.sign/SignerClient
-    // involved anywhere in producing these bytes — the engine only ever
-    // sees the resulting signed transaction, exactly as a Relay Dispatch
-    // caller's own wallet would produce it. Reuses the already-funded
-    // shared sender rather than airdropping a fresh keypair, since devnet's
-    // faucet is rate-limited and this suite already funds that one wallet.
-    const recipient = Keypair.generate();
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-    const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight });
-    tx.add(
-      SystemProgram.transfer({
+      // Signed entirely outside the engine: plain web3.js, the cached test
+      // wallet's own secret key, no SolanaChainHandler.sign/SignerClient
+      // involved anywhere in producing these bytes — the engine only ever
+      // sees the resulting signed transaction, exactly as a Relay Dispatch
+      // caller's own wallet would produce it. Reuses the already-funded
+      // shared sender rather than airdropping a fresh keypair, since devnet's
+      // faucet is rate-limited and this suite already funds that one wallet.
+      const recipient = Keypair.generate();
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      const transfer = SystemProgram.transfer({
         fromPubkey: sender.publicKey,
         toPubkey: recipient.publicKey,
         lamports: 1_000_000,
-      }),
-    );
-    tx.sign(sender);
-    const signedTransaction = tx
-      .serialize({ requireAllSignatures: true, verifySignatures: false })
-      .toString('base64');
+      });
+      let signedTransaction: string;
+      if (format === 'legacy') {
+        const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight });
+        tx.add(transfer);
+        tx.sign(sender);
+        signedTransaction = tx
+          .serialize({ requireAllSignatures: true, verifySignatures: false })
+          .toString('base64');
+      } else {
+        const message = new TransactionMessage({
+          payerKey: sender.publicKey,
+          recentBlockhash: blockhash,
+          instructions: [transfer],
+        }).compileToV0Message();
+        const tx = new VersionedTransaction(message);
+        tx.sign([sender]);
+        signedTransaction = Buffer.from(tx.serialize()).toString('base64');
+      }
 
-    const store = new InMemoryDispatchStore();
-    const chainRegistry = await ChainRegistry.load([CHAIN], {
-      solana: () =>
-        Promise.resolve(
-          new SolanaChainHandler({
-            connection,
-            signerClient: new SignerClient('http://127.0.0.1:1'), // never called — Relay Dispatch signs nothing
-            senderAddress: sender.publicKey.toBase58(),
-          }),
-        ),
-    });
-    const app = buildApp({
-      store,
-      chainRegistry,
-      authToken: AUTH_TOKEN,
-      defaultRetryPolicy: false,
-    });
+      const store = new InMemoryDispatchStore();
+      const chainRegistry = await ChainRegistry.load([CHAIN], {
+        solana: () =>
+          Promise.resolve(
+            new SolanaChainHandler({
+              connection,
+              signerClient: new SignerClient('http://127.0.0.1:1'), // never called — Relay Dispatch signs nothing
+              senderAddress: sender.publicKey.toBase58(),
+            }),
+          ),
+      });
+      const app = buildApp({
+        store,
+        chainRegistry,
+        authToken: AUTH_TOKEN,
+        defaultRetryPolicy: false,
+      });
 
-    const postResponse = await app.inject({
-      method: 'POST',
-      url: '/v1/dispatch',
-      headers: {
-        authorization: `Bearer ${AUTH_TOKEN}`,
-        'idempotency-key': `relay-e2e-${Date.now()}`,
-      },
-      payload: { chain: CHAIN, mode: 'relay', signedTransaction },
-    });
+      const postResponse = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: {
+          authorization: `Bearer ${AUTH_TOKEN}`,
+          'idempotency-key': `relay-e2e-${Date.now()}`,
+        },
+        payload: { chain: CHAIN, mode: 'relay', signedTransaction },
+      });
 
-    expect(postResponse.statusCode).toBe(202);
-    const { dispatchId } = postResponse.json<{ dispatchId: string; status: string }>();
+      expect(postResponse.statusCode).toBe(202);
+      const { dispatchId } = postResponse.json<{ dispatchId: string; status: string }>();
 
-    const coordinator = new Coordinator({
-      store,
-      chainHandlers: chainRegistry.handlers,
-      senderAddresses: new Map([[CHAIN, sender.publicKey.toBase58()]]),
-      abandonmentTimeoutMs: new Map([[CHAIN, SOLANA_ABANDONMENT_TIMEOUT_MS]]),
-    });
+      const coordinator = new Coordinator({
+        store,
+        chainHandlers: chainRegistry.handlers,
+        senderAddresses: new Map([[CHAIN, sender.publicKey.toBase58()]]),
+        abandonmentTimeoutMs: new Map([[CHAIN, SOLANA_ABANDONMENT_TIMEOUT_MS]]),
+      });
 
-    const body = await driveRelayToTerminal(coordinator, app, dispatchId);
+      const body = await driveRelayToTerminal(coordinator, app, dispatchId);
 
-    expect(body.mode).toBe('relay');
-    expect(body.status).toBe('confirmed');
-    expect(body.transactionHash).toEqual(expect.any(String));
-    expect(body.error).toBeNull();
+      expect(body.mode).toBe('relay');
+      expect(body.status).toBe('confirmed');
+      expect(body.transactionHash).toEqual(expect.any(String));
+      expect(body.error).toBeNull();
 
-    // Independent, real-chain proof — not just the engine's own bookkeeping.
-    const recipientBalance = await connection.getBalance(recipient.publicKey);
-    expect(recipientBalance).toBe(1_000_000);
-  }, 60_000);
+      // Independent, real-chain proof — not just the engine's own bookkeeping.
+      const recipientBalance = await connection.getBalance(recipient.publicKey);
+      expect(recipientBalance).toBe(1_000_000);
+    },
+    60_000,
+  );
 
   it('rejects a malformed signed transaction with 400 and never persists it', async () => {
     const sender = await getFundedSenderKeypair();

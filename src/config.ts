@@ -27,6 +27,8 @@ export const config = {
     senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
     /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
     knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
+    /** #34: priority fee in micro-lamports per compute unit on every transaction the engine builds. 0 (default) adds none — a priority fee costs more, so it's opt-in (ADR-0003). */
+    computeUnitPriceMicroLamports: Number(process.env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
   },
   /** Base Chain Handler config — only consulted when 'base' is actually in enabledChains (ADR-0019). Same shape as config.solana (base-chain-handler spec's own maintainer-facing decision). */
   base: {

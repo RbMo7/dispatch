@@ -18,6 +18,7 @@
   "include": [
     "src/**/*.ts",
     "demo/solana/demo-internal-asset-relay.ts",
+    "demo/base/*.ts",
     "drizzle.config.ts",
     "vitest.config.ts"
   ]

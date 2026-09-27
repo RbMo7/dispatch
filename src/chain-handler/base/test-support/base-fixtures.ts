@@ -220,7 +220,7 @@ const TEST_TOKEN_INITIAL_SUPPLY = 1_000_000n * 10n ** BigInt(TEST_TOKEN_DECIMALS
 /** `solc` ships no types of its own — this is the one call this file makes into it. */
 const solcCompile = solc.compile as (input: string) => string;
 
-function compileContract(name: string, source: string): { abi: Abi; bytecode: `0x${string}` } {
+export function compileContract(name: string, source: string): { abi: Abi; bytecode: `0x${string}` } {
   const file = `${name}.sol`;
   const input = {
     language: 'Solidity',

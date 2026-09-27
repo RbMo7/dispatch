@@ -32,6 +32,9 @@ const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
  */
 const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** ADR-0042: how many times a Call whose transaction provably expired is resubmitted before it is reported FAILED. */
+const MAX_EXPIRY_RESUBMISSIONS = 3;
+
 /** #20 (ADR-0041): how long a claim may stay `broadcasting` with unsent items before another tick resumes it. */
 const STALE_CLAIM_MS = 5 * 60 * 1000;
 
@@ -522,11 +525,11 @@ export class Coordinator {
    */
   async restoreReservations(): Promise<void> {
     for (const [chain, handler] of this.chainHandlers) {
-      if (!handler.reserveNonces) continue;
+      if (!handler.restoreInFlight) continue;
       const unsettled = await this.store.listUnsettledTransactions(chain);
       const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
-      await handler.reserveNonces(signed);
-      this.logger.info({ chain, reserved: signed.length }, 'restored nonce reservations from in-flight transactions');
+      await handler.restoreInFlight(signed);
+      this.logger.info({ chain, restored: signed.length }, 'restored handler state from in-flight transactions');
     }
   }
 
@@ -738,6 +741,10 @@ export class Coordinator {
   private async resolvePendingTransaction(transaction: Transaction): Promise<boolean> {
     const log = this.transactionLogger(transaction);
     const resolved = await this.tryResolveVersions(transaction, log);
+    if (resolved === 'expired') {
+      await this.resubmitExpired(transaction, log);
+      return true; // bundled siblings share the hash and were resubmitted with it
+    }
     if (resolved) return false;
 
     const stuck = await this.handleIfStuck(transaction, log);
@@ -848,6 +855,79 @@ export class Coordinator {
     return 'failed';
   }
 
+  /**
+   * ADR-0042: this transaction provably can never land, so its Calls are
+   * resubmitted as a new Transaction — every PENDING row sharing the hash
+   * together, since a bundle expires as one. The Calls are re-prepared
+   * from the Dispatch, and each new Transaction is written down before it
+   * is sent (ADR-0041). The dead predecessor is DROPPED at once. A Relay
+   * Dispatch (no key) or a Call out of resubmissions is FAILED instead.
+   */
+  private async resubmitExpired(transaction: Transaction, log: Logger): Promise<void> {
+    const { hash } = this.requireBroadcast(transaction);
+    const chain = transaction.chain;
+    const members = await this.pendingMembersOf(hash);
+    const refs: { member: Transaction; call: Call }[] = [];
+    for (const member of members) {
+      const call = (await this.store.getDispatch(member.dispatchId))?.items[member.callIndex]?.call;
+      // No Dispatch: a Relay Dispatch — only its own signer could re-sign it.
+      if (!call || member.feeBumpAttempts >= MAX_EXPIRY_RESUBMISSIONS) {
+        log.warn({ transactionId: member.id, resubmissions: member.feeBumpAttempts }, 'expired transaction not resubmitted — failed');
+        await this.store.markFailed(member.id, expiredError(chain));
+        continue;
+      }
+      refs.push({ member, call });
+    }
+    if (refs.length === 0) return;
+
+    const handler = this.requireChainHandler(chain);
+    const senderAddress = this.requireSenderAddress(chain);
+    const prepared = await handler.prepare(refs.map((r) => r.call), senderAddress);
+    if (!prepared.ok) {
+      log.warn({ error: prepared.error }, 'resubmission prepare failed — failed');
+      for (const { member } of refs) await this.store.markFailed(member.id, prepared.error);
+      return;
+    }
+
+    const chunks = new Map<UnsignedTransaction, { prepared: PreparedTransaction; members: Transaction[] }>();
+    prepared.value.forEach((p, i) => {
+      const member = refs[i]?.member;
+      if (!member) throw new Error(`prepare() returned more PreparedTransactions than Calls for chain ${chain}.`);
+      const chunk = chunks.get(p.unsignedTransaction);
+      if (chunk) chunk.members.push(member);
+      else chunks.set(p.unsignedTransaction, { prepared: p, members: [member] });
+    });
+
+    for (const chunk of chunks.values()) {
+      const signed = await handler.sign(chunk.prepared, senderAddress);
+      const newHash = signed.ok ? handler.transactionHash(signed.value) : signed;
+      if (!signed.ok || !newHash.ok) {
+        // The original can't land, so nothing is lost: retried next tick.
+        log.warn({ error: newHash.ok ? undefined : newHash.error }, 'resubmission signing failed — still pending, retried next tick');
+        continue;
+      }
+
+      // ADR-0041: written down before it is sent.
+      const replacements: Transaction[] = [];
+      for (const member of chunk.members) {
+        replacements.push(
+          await this.store.createReplacementTransaction(member.id, { signedBytes: signed.value, hash: newHash.value }),
+        );
+        await this.store.markDropped(member.id);
+      }
+      const broadcast = await handler.broadcast(signed.value);
+      if (broadcast.ok) {
+        log.info({ resubmittedHash: broadcast.value.hash }, 'expired transaction resubmitted');
+        for (const replacement of replacements) await this.store.recordSent(replacement.id, broadcast.value.hash);
+      } else if (isAmbiguousBroadcastFailure(broadcast.error)) {
+        log.warn({ error: broadcast.error }, 'resubmission broadcast ambiguous — left PENDING');
+      } else {
+        log.warn({ error: broadcast.error }, 'resubmission refused — failed');
+        for (const replacement of replacements) await this.store.markFailed(replacement.id, broadcast.error);
+      }
+    }
+  }
+
   private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const result = await this.requireChainHandler(transaction.chain).broadcast(signedBytes);
@@ -894,7 +974,11 @@ export class Coordinator {
   private async resolveAbandonedTransaction(transaction: Transaction): Promise<void> {
     const log = this.transactionLogger(transaction).child({ rewatch: true });
     const resolved = await this.tryResolveVersions(transaction, log);
-    if (resolved) {
+    if (resolved === 'expired') {
+      // ADR-0030: provably never landed. Too late to resubmit an abandoned Call.
+      await this.store.markFailed(transaction.id, expiredError(transaction.chain));
+      log.info('previously-ABANDONED transaction provably expired');
+    } else if (resolved) {
       log.info('previously-ABANDONED transaction resolved after all');
     }
   }
@@ -917,9 +1001,10 @@ export class Coordinator {
    * #9 (ADR-0037): a fee-bumped Call has several versions at one nonce and
    * any of them may be the one that lands, so every REPLACED ancestor is
    * checked too; whichever reports a definitive outcome settles the Call
-   * and the others become DROPPED.
+   * and the others become DROPPED. ADR-0042: `'expired'` when nothing
+   * settled and the latest version provably can never land.
    */
-  private async tryResolveVersions(transaction: Transaction, log: Logger): Promise<boolean> {
+  private async tryResolveVersions(transaction: Transaction, log: Logger): Promise<boolean | 'expired'> {
     const versions =
       transaction.replacesTransactionId === null
         ? [transaction]
@@ -930,18 +1015,23 @@ export class Coordinator {
             ),
           ];
 
+    let latestExpired = false;
     for (const version of versions) {
       const settled = await this.tryResolveByStatus(version, log);
+      if (settled === 'expired') {
+        if (version.id === transaction.id) latestExpired = true;
+        continue;
+      }
       if (!settled) continue;
       for (const other of versions) {
         if (other.id !== version.id) await this.store.markDropped(other.id);
       }
       return true;
     }
-    return false;
+    return latestExpired ? 'expired' : false;
   }
 
-  private async tryResolveByStatus(transaction: Transaction, log: Logger): Promise<boolean> {
+  private async tryResolveByStatus(transaction: Transaction, log: Logger): Promise<boolean | 'expired'> {
     if (!transaction.hash) {
       throw new Error(
         `Transaction ${transaction.id} has no hash — only a broadcast Transaction should ever reach status resolution.`,
@@ -970,6 +1060,11 @@ export class Coordinator {
       log.info({ settledHash: transaction.hash }, 'transaction confirmed');
       await this.store.markConfirmed(transaction.id);
       return true;
+    }
+
+    if (statusResult.ok && statusResult.value === 'EXPIRED') {
+      log.info({ expiredHash: transaction.hash }, 'transaction provably expired');
+      return 'expired';
     }
 
     if (statusResult.ok && statusResult.value === 'FAILED') {
@@ -1102,6 +1197,13 @@ export class Coordinator {
     }
     return senderAddress;
   }
+}
+
+function expiredError(chain: Chain): DispatchError {
+  return {
+    code: 'CHAIN_REJECTED',
+    message: `${chain} transaction expired without landing and was not resubmitted`,
+  };
 }
 
 function callKey(dispatchId: string, callIndex: number): string {

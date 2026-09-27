@@ -229,7 +229,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
     // #20 (ADR-0041): never below what this Sender still has in its
     // mempool. Nonces written down but never sent are reserved separately,
-    // from the engine's own rows (reserveNonces), once the worker starts.
+    // from the engine's own rows (restoreInFlight), once the worker starts.
     const [confirmed, pending] = await Promise.all([
       client.getTransactionCount({ address: senderAddress, blockTag: 'latest' }),
       client.getTransactionCount({ address: senderAddress, blockTag: 'pending' }),
@@ -728,7 +728,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    * written down but never sent before a crash, which recovery will send
    * later. Bytes signed by anyone else (Relay Dispatch) are ignored.
    */
-  async reserveNonces(signed: SignedTransaction[]): Promise<void> {
+  async restoreInFlight(signed: SignedTransaction[]): Promise<void> {
     let highest = -1;
     for (const bytes of signed) {
       const decoded = this.decodeSigned(bytes);

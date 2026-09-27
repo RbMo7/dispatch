@@ -60,8 +60,12 @@ export type Balance = {
  * decision about whether the engine is still watching a transaction, never
  * something a Chain Handler observes on-chain, so it isn't a value this
  * interface can return.
+ *
+ * `EXPIRED` (ADR-0042): not yet included, and provably never can be (Solana:
+ * its blockhash passed its validity window). Only a chain with such a proof
+ * reports it; the Coordinator then resubmits the Calls, or reports FAILED.
  */
-export type ChainStatus = 'PENDING' | 'CONFIRMED' | 'FAILED';
+export type ChainStatus = 'PENDING' | 'CONFIRMED' | 'FAILED' | 'EXPIRED';
 
 /**
  * The chain-specific plugin seam (CONTEXT.md, ADR-0015): one implementation
@@ -138,12 +142,13 @@ export interface ChainHandler<C extends Chain = Chain> {
   transactionHash(signed: SignedTransaction): Result<string, DispatchError>;
 
   /**
-   * #20 review (ADR-0041), optional: only a chain whose handler assigns
-   * nonces from an in-memory counter needs it. Called once at worker start
-   * with the signed bytes of every Transaction still in flight, so a
-   * restarted handler never hands out a nonce one of them already holds.
+   * #20 review (ADR-0041, ADR-0042), optional: only a handler keeping
+   * in-memory state about in-flight transactions needs it. Called once at
+   * worker start with the signed bytes of every Transaction still in flight:
+   * Base reserves their nonces, so it never hands one out twice; Solana
+   * re-learns their blockhashes, so expiry stays provable.
    */
-  reserveNonces?(signed: SignedTransaction[]): Promise<void>;
+  restoreInFlight?(signed: SignedTransaction[]): Promise<void>;
 
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;

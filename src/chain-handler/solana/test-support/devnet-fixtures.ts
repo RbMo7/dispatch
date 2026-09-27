@@ -3,8 +3,23 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { createMint, getOrCreateAssociatedTokenAccount, mintTo } from '@solana/spl-token';
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  createInitializeMint2Instruction,
+  createMintToInstruction,
+  getAssociatedTokenAddressSync,
+  getMinimumBalanceForRentExemptMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+} from '@solana/web3.js';
 
 /**
  * Real solana-devnet fixtures for SolanaChainHandler's tests (ADR-0013: no
@@ -47,6 +62,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Plain HTTP polling, never `connection.confirmTransaction` or spl-token's
+ * `createMint`/`mintTo` (which use it): those confirm over a WebSocket
+ * subscription, and hang rather than fall back on an RPC that delivers no
+ * notifications (see solana-chain-handler.ts's waitUntilConfirmedOrExpired).
+ */
+async function waitForConfirmation(connection: Connection, signature: string): Promise<boolean> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const { value } = await connection.getSignatureStatuses([signature]);
+    const status = value[0];
+    if (status?.err)
+      throw new Error(`transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+      return true;
+    }
+    await sleep(1000);
+  }
+  return false;
+}
+
 let fundedSenderPromise: Promise<Keypair> | undefined;
 
 /**
@@ -65,24 +101,7 @@ export function getFundedSenderKeypair(): Promise<Keypair> {
       attempts++;
       try {
         const signature = await connection.requestAirdrop(keypair.publicKey, 2 * LAMPORTS_PER_SOL);
-        // Plain HTTP polling, not connection.confirmTransaction — that
-        // defaults to a WebSocket subscription some RPC providers don't
-        // support, and hangs rather than falling back (see
-        // solana-chain-handler.ts's pollUntilConfirmedOrExpired).
-        const deadline = Date.now() + 30_000;
-        let confirmed = false;
-        while (Date.now() < deadline && !confirmed) {
-          const { value } = await connection.getSignatureStatuses([signature]);
-          const status = value[0];
-          if (
-            status &&
-            (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
-          ) {
-            confirmed = true;
-          } else {
-            await sleep(1000);
-          }
-        }
+        await waitForConfirmation(connection, signature);
       } catch {
         // devnet's faucet is frequently rate-limited or briefly unavailable;
         // back off and re-check the real balance rather than failing fast.
@@ -124,22 +143,39 @@ export function getTestMint(): Promise<PublicKey> {
       return new PublicKey(cached.mint);
     }
 
-    const mint = await createMint(connection, sender, sender.publicKey, null, TEST_MINT_DECIMALS);
-
-    const senderAta = await getOrCreateAssociatedTokenAccount(
-      connection,
-      sender,
-      mint,
-      sender.publicKey,
+    // #38: one transaction — create the mint, the sender's ATA, and its
+    // supply — confirmed by HTTP polling (see waitForConfirmation).
+    const mintKeypair = Keypair.generate();
+    const mint = mintKeypair.publicKey;
+    const senderAta = getAssociatedTokenAddressSync(mint, sender.publicKey);
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const tx = new Transaction({ feePayer: sender.publicKey, blockhash, lastValidBlockHeight }).add(
+      SystemProgram.createAccount({
+        fromPubkey: sender.publicKey,
+        newAccountPubkey: mint,
+        space: MINT_SIZE,
+        lamports: await getMinimumBalanceForRentExemptMint(connection),
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeMint2Instruction(mint, TEST_MINT_DECIMALS, sender.publicKey, null),
+      createAssociatedTokenAccountIdempotentInstruction(
+        sender.publicKey,
+        senderAta,
+        sender.publicKey,
+        mint,
+      ),
+      createMintToInstruction(
+        mint,
+        senderAta,
+        sender.publicKey,
+        1_000_000_000 * 10 ** TEST_MINT_DECIMALS,
+      ),
     );
-    await mintTo(
-      connection,
-      sender,
-      mint,
-      senderAta.address,
-      sender,
-      1_000_000_000 * 10 ** TEST_MINT_DECIMALS,
-    );
+    tx.sign(sender, mintKeypair);
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    if (!(await waitForConfirmation(connection, signature))) {
+      throw new Error(`test mint creation ${signature} did not confirm within 30s`);
+    }
 
     mkdirSync(path.dirname(MINT_PATH), { recursive: true });
     writeFileSync(MINT_PATH, JSON.stringify({ mint: mint.toBase58() } satisfies CachedMint));
