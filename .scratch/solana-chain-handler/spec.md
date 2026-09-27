@@ -1,4 +1,4 @@
-Status: blocked-by-core-scaffold
+Status: implemented — issues 01–15 (local files under issues/). Later Solana work: `.scratch/solana-landing/` and `.scratch/solana-hardening/`; where they differ, the ADRs win (ADR-0042–0045).
 
 # Solana Chain Handler
 

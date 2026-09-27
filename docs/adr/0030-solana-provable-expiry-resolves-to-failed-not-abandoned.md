@@ -1,5 +1,7 @@
 # A stuck Solana transaction resolves to FAILED via provable blockhash expiry, never ABANDONED
 
+> **Updated by ADR-0042 and ADR-0045.** Provable expiry is now its own chain status, `EXPIRED`, which the Coordinator turns into a resubmission (or `FAILED` when it can't resubmit). The proof is block height past the last valid one plus a lag margin, not `isBlockhashValid`. The abandonment fallback is 15 minutes, not 120 seconds. The reasoning below, that a proven dead end is a definitive outcome and not `ABANDONED`, still holds.
+
 `solana-chain-handler` issue 08 asked the question the spec deliberately left open: does Solana even need `ABANDONED` (ADR-0004), or does its provable blockhash expiry (~150 slots, ~60-90s, ADR-0007) mean a clean `FAILED` is honestly available instead?
 
 `FAILED` (ADR-0004) means the chain itself rejected the transaction; `ABANDONED` means the engine stopped watching without ever learning a definitive outcome. Those are genuinely different claims, and which one is true for a non-confirming Solana transaction is knowable, not a judgment call: once a transaction's blockhash has definitively passed its validity window and no signature status was ever recorded for it, Solana's own runtime guarantees that transaction can never be included in any future block. That is a definitive outcome — "this specific signed transaction is dead" — not "we're no longer sure." Reporting `ABANDONED` here would be strictly less honest than the `FAILED` the engine can actually prove.
