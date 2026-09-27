@@ -10,7 +10,8 @@
  * exactly the tokens they actually disburse, mirroring the "activated by
  * config, not by code" discipline this project already applies to chains.
  */
-export type KnownToken = { mint: string; decimals: number };
+/** #41: which token program the mint lives under — classic Token unless configured `token-2022`. */
+export type KnownToken = { mint: string; decimals: number; tokenProgram?: 'token-2022' };
 export type SolanaTokenRegistry = Readonly<Record<string, KnownToken>>;
 
 export const NATIVE_ASSET_SYMBOL = 'SOL';
@@ -35,11 +36,18 @@ export function parseSolanaKnownTokens(raw: string): SolanaTokenRegistry {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)) {
-    const [symbol, mint, decimalsRaw] = entry.split(':');
+    const [symbol, mint, decimalsRaw, program, ...extra] = entry.split(':');
     const decimals = Number(decimalsRaw);
-    if (!symbol || !mint || !decimalsRaw || !Number.isInteger(decimals)) {
+    if (
+      !symbol ||
+      !mint ||
+      !decimalsRaw ||
+      !Number.isInteger(decimals) ||
+      (program !== undefined && program !== 'token-2022') ||
+      extra.length > 0
+    ) {
       throw new Error(
-        `SOLANA_KNOWN_TOKENS entry "${entry}" is malformed — expected SYMBOL:mint:decimals.`,
+        `SOLANA_KNOWN_TOKENS entry "${entry}" is malformed — expected SYMBOL:mint:decimals, or SYMBOL:mint:decimals:token-2022.`,
       );
     }
     if (symbol === NATIVE_ASSET_SYMBOL) {
@@ -47,7 +55,7 @@ export function parseSolanaKnownTokens(raw: string): SolanaTokenRegistry {
         `SOLANA_KNOWN_TOKENS cannot redefine the reserved "${NATIVE_ASSET_SYMBOL}" symbol.`,
       );
     }
-    registry[symbol] = { mint, decimals };
+    registry[symbol] = program ? { mint, decimals, tokenProgram: program } : { mint, decimals };
   }
   return registry;
 }

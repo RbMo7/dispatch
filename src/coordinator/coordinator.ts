@@ -299,9 +299,16 @@ export class Coordinator {
         });
     });
 
-    for (const { prepared, members } of chunks.values()) {
-      await this.processChunk(handler, senderAddress, chain, prepared, members);
-    }
+    // #42 (ADR-0044): up to the handler's own limit in flight at once; one at a time by default.
+    const queue = [...chunks.values()];
+    const workers = Math.min(queue.length, Math.max(1, handler.maxConcurrentSends ?? 1));
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        for (let chunk = queue.shift(); chunk; chunk = queue.shift()) {
+          await this.processChunk(handler, senderAddress, chain, chunk.prepared, chunk.members);
+        }
+      }),
+    );
   }
 
   /**
@@ -419,6 +426,39 @@ export class Coordinator {
       });
     }
 
+    // #40 (ADR-0043): what sending costs beyond the payments themselves
+    // (fees, rent), paid by the Sender in the chain's native asset. Shared
+    // by every Call of the chain, so a shortfall fails them all.
+    const refsByChain = new Map<Chain, CallRef[]>();
+    for (const dispatch of dispatches) {
+      const refs = refsByChain.get(dispatch.chain) ?? [];
+      dispatch.items.forEach((_item, callIndex) => refs.push({ dispatch, callIndex }));
+      refsByChain.set(dispatch.chain, refs);
+    }
+    for (const [chain, refs] of refsByChain) {
+      const handler = this.requireChainHandler(chain);
+      if (!handler.networkCost) continue;
+      const calls = refs.flatMap(({ dispatch, callIndex }) => {
+        const call = dispatch.items[callIndex]?.call;
+        return call ? [call] : [];
+      });
+      const cost = await handler.networkCost(calls, this.requireSenderAddress(chain));
+      if (!cost.ok) {
+        this.logger.warn({ chain, error: cost.error }, 'funding check: networkCost failed, failing affected calls');
+        await this.failFundingItems(refs, cost.error, failedKeys);
+        continue;
+      }
+      const key = `${chain}\u0000\u0000${cost.value.asset}`;
+      const existing = requirements.get(key);
+      requirements.set(key, {
+        chain,
+        fundedBy: null,
+        asset: cost.value.asset,
+        required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
+        items: refs,
+      });
+    }
+
     for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
@@ -462,6 +502,7 @@ export class Coordinator {
     failedKeys: Set<string>,
   ): Promise<void> {
     for (const { dispatch, callIndex } of items) {
+      if (failedKeys.has(callKey(dispatch.id, callIndex))) continue; // already failed by another requirement
       await this.store.recordCallFailure({
         dispatchId: dispatch.id,
         callIndex,
