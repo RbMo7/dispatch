@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: implemented — merged to main 2026-09-26 (GitHub issues #1–#15, plus #20/#21/#24 filed during review). Where the shipped design differs from this spec, the ADRs win: reorg re-check by time window (ADR-0036), Coordinator-driven fee-bump (ADR-0037), Bulk Call with a caller-named aggregator and `allowFailure` defaulting to false (ADR-0038), sign-time nonces (ADR-0039), an opt-in volume run (ADR-0040), and write-before-send (ADR-0041).
 
 # Base Chain Handler
 

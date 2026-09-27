@@ -1,6 +1,6 @@
 # API
 
-The wire format Managed Dispatch's issues (`core-engine-scaffold` 02, 06, 08) build against. This is a sketch to agree on the shape now — exact field names may still shift during implementation, but the structure (auth header, idempotency header, item shape, async response) shouldn't.
+The shipped wire format for `POST /v1/dispatch` and `GET /v1/dispatch/:id`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## `POST /v1/dispatch`
 
@@ -41,6 +41,7 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 ```json
 {
   "dispatchId": "<id>",
+  "mode": "managed",
   "status": "queued | broadcasting | confirmed | failed | partial",
   "items": [
     { "status": "confirmed", "transactionHash": "<hash>", "error": null },
@@ -54,6 +55,8 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 Per-item `status` is `queued | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`); the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`.
 
 With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new transaction at the same nonce with higher fees (ADR-0037). While that's in progress, `transactionHash` is the latest version and can change between polls. Once one version lands, `transactionHash` is the one that actually landed, which may be the original.
+
+An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
 
@@ -102,6 +105,23 @@ Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "st
 }
 ```
 One transaction, not a batch — this is the same per-item status vocabulary Managed Dispatch's `items[]` entries use, applied directly at the top level rather than to a fake single-item array (ADR-0031).
+
+## Error codes
+
+Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the most specific human-readable reason available (on Base, the node's own words). `chainDetail` carries the raw chain-side detail (JSON-RPC code, HTTP status, revert data, the shortfall) for debugging, and its shape varies by code and chain.
+
+| `code` | Meaning |
+|---|---|
+| `INSUFFICIENT_FUNDS` | The payer's balance can't cover it: caught up front by the Funding Check, or refused by the chain |
+| `INVALID_RECIPIENT` | A malformed or unusable address (a recipient, a Bulk Call aggregator with no contract code) |
+| `UNKNOWN_ASSET` | A `payment`'s `asset` has no configured encoding on this chain (ADR-0029) |
+| `CHAIN_REJECTED` | The chain definitely refused or reverted it, or a request was invalid for this chain (wrong chain ID, bad signature, …) |
+| `RPC_UNAVAILABLE` | The chain's RPC couldn't be reached or answered (timeout, rate limit, 5xx) |
+| `SIGNER_UNREACHABLE` | The Signer couldn't be reached or returned an unusable signature |
+| `CHAIN_NOT_ENABLED` | The request names a chain this deployment hasn't enabled (ADR-0019) |
+| `NONCE_ALREADY_USED` | The transaction's nonce was already consumed on-chain (Base) |
+
+One more code exists internally, `ALREADY_KNOWN` (the node already has these exact bytes). It is never reported: it means "sent", so the item stays `broadcasting` until it resolves.
 
 ## Not yet specced here
 

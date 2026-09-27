@@ -31,7 +31,7 @@ The convenience shape for a plain asset transfer — `recipient`/`asset`/`amount
 A client-supplied string, required on every Dispatch, that makes creating one a create-once operation — resubmitting the same key returns the original Dispatch rather than creating a new one. Scoped globally, not per-tenant (there is no tenant dimension here).
 
 **Funding Check**:
-A pre-flight check the Coordinator runs before forming an Execution Plan for a claimed batch: aggregates the required amount per asset across it and compares against the Sender's real balance (via the Chain Handler's `getBalance`). A shortfall fails the affected Calls immediately with a structured `INSUFFICIENT_FUNDS` error naming exactly which asset and how much more is needed — never discovered one `Call` at a time. Runs in the Coordinator's claim step, never on the `POST /v1/dispatch` ingest path.
+A pre-flight check the Coordinator runs before forming an Execution Plan for a claimed batch: aggregates the required amount per asset across it and compares against the Sender's real balance (via the Chain Handler's `getBalance`). A shortfall fails the affected Calls immediately with a structured `INSUFFICIENT_FUNDS` error naming exactly which asset and how much more is needed — never discovered one `Call` at a time. Runs in the Coordinator's claim step, never on the `POST /v1/dispatch` ingest path. Each amount is checked against whoever actually pays it: the Sender, except for a Bulk Call's ERC-20 items, which spend the aggregator's own balance (ADR-0038).
 _Avoid_: Prefunded/Reactive Funding Mode (an old-repo distinction not carried over — this is the single, simpler check; an auto-resume-once-funded mode would be a later addition on top of it, not a redesign)
 
 **Chain Handler**:
@@ -46,22 +46,26 @@ _Avoid_: Network, Environment, Tier, Sandbox/Live (config values within a Chain,
 Several Sender wallets under one logical operator, each with its own independent nonce sequence, that a large Managed Dispatch batch spreads across — inspired by Stellar SDP's channel accounts. The purpose is fault isolation, not raw throughput: a transaction stuck in one Sender's sequence only blocks that Sender's own remaining queue, not the whole batch. Requires pre-funding/allocation across the pool and each member registered with a Signer — deferred out of the first phase; single-Sender sequential dispatch (already safe via the atomic nonce counter and the `ABANDONED`/Retry Policy handling) ships first.
 
 **Transaction**:
-One broadcastable, chain-native unit with its own hash/signature.
+One broadcastable, chain-native unit with its own hash/signature. Always written down, hash included, *before* it is sent (ADR-0041), so a crash or an ambiguous send can never lose track of one that may land. Its status is `PENDING`, `CONFIRMED`, `FAILED` or `ABANDONED`. A fee-bumped Call also has `REPLACED` versions (superseded, still watched) and `DROPPED` ones (another version settled the Call). Those two are never a Call's reported status.
 
 **Attempt**:
-One broadcast/confirmation-check of a Transaction's exact signed bytes. Resubmitting identical bytes (e.g. after an RPC timeout) is a new Attempt of the same Transaction. Anything that changes the signed bytes (a fee-bump replacement, a refreshed Solana blockhash) is a new Transaction, not a new Attempt of the old one.
+One broadcast/confirmation-check of a Transaction's exact signed bytes. Resubmitting identical bytes (e.g. after an RPC timeout, or a Stuck Transaction's rebroadcast) is a new Attempt of the same Transaction, recorded even when the node answers "already known". Anything that changes the signed bytes (a fee-bump replacement, a refreshed Solana blockhash) is a new Transaction, not a new Attempt of the old one.
 
 **Retry Policy**:
-The setting, defaulting off and configurable per Managed Dispatch request (with a global operator default), controlling whether the engine may fee-bump a stuck transaction. Off means nothing about a Dispatch can cost more than what was originally authorized unless the caller explicitly opts in.
+The setting, defaulting off and configurable per Managed Dispatch request (with a global operator default), controlling whether the engine may fee-bump a Stuck Transaction: build a new Transaction at the same nonce with both fees raised, up to a capped number of attempts (ADR-0037). Off means nothing about a Dispatch can cost more than what was originally authorized unless the caller explicitly opts in; a stuck transaction is then only rebroadcast, never repriced. Meaningless for Relay Dispatch, where the engine holds no key.
 _Avoid_: Fee Bump (the mechanism the policy turns on, not the policy itself), Auto-retry
 
 **ABANDONED**:
-The terminal status for a transaction the engine has stopped actively tracking without a definitive on-chain outcome — e.g. an EVM transaction that never confirmed within its timeout while Retry Policy is off. Distinct from `FAILED`, which means the chain itself rejected or reverted the transaction: an `ABANDONED` transaction may still land later, so the engine keeps a low-frequency background check running for it, for a bounded window, and reports if it does.
+The terminal status for a transaction the engine has stopped actively tracking without a definitive on-chain outcome — e.g. an EVM transaction that never confirmed within its timeout while Retry Policy is off. Distinct from `FAILED`, which means the chain itself rejected or reverted the transaction: an `ABANDONED` transaction may still land later, so the engine keeps a low-frequency background check running for it, for a bounded window, and reports if it does. With Retry Policy on, abandonment waits only while the transaction can still be fee-bumped.
 _Avoid_: FAILED (reserved for a definitive on-chain outcome only), CANCELLED (implies an action stopped it — nothing did)
 
 **Bulk Call**:
-An EVM Managed Dispatch batching mode, opt-in per request, where multiple payments are encoded as one call against a caller-supplied aggregator contract instead of one transaction per payment. The engine only knows how to encode against a documented interface (e.g. Multicall3's shape) — it never deploys or owns the contract itself. The default batching mode is one transaction per payment, sent sequentially under the Sender's nonce.
+An EVM Managed Dispatch batching mode, opt-in per request, where multiple payments are encoded as one call against a caller-supplied aggregator contract instead of one transaction per payment. The engine only knows how to encode against a documented interface (Multicall3's `aggregate3Value`) — it never deploys or owns the contract itself (ADR-0038). By default a bundle lands whole or fails whole (`allowFailure: false`); per-item success and failure is opt-in and needs a tracing RPC. ERC-20 items spend the aggregator's own balance, so they're refused through the canonical, permissionless Multicall3. The default batching mode, without Bulk Call, is one transaction per payment, sent sequentially under the Sender's nonce.
 _Avoid_: Multicall (that's the caller's contract pattern, not the engine's concept), Batch Transaction
+
+**Stuck Transaction**:
+A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`, 60s on Base) after its latest send (ADR-0037). Stuck handling rebroadcasts its identical bytes, or fee-bumps it when Retry Policy allows. Only chains that opt in get stuck handling; Solana's expiring blockhash resolves stuck transactions on its own.
+_Avoid_: Dropped (a mempool eviction is one possible cause, not the state), Failed
 
 **Durable Nonce Execution**:
 An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is blockhash-refresh-and-resubmit.
