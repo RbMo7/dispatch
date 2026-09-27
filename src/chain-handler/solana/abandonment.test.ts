@@ -12,9 +12,9 @@ import {
 } from './test-support/devnet-fixtures.js';
 
 /**
- * issue 08's decision (ADR-0030): Solana never needs ABANDONED — a
- * transaction whose blockhash has provably expired without ever
- * confirming resolves to a definitive FAILED. Deliberately real and slow
+ * issue 08's decision (ADR-0030, ADR-0042): Solana never needs ABANDONED —
+ * a transaction whose blockhash has provably expired without ever
+ * confirming resolves to a definitive EXPIRED. Deliberately real and slow
  * (ADR-0013), same as the blockhash-refresh test: this one holds a signed
  * transaction *unbroadcast* until its blockhash genuinely expires, so
  * getSignatureStatuses genuinely finds nothing and isBlockhashValid
@@ -28,7 +28,7 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
     signer = undefined;
   });
 
-  it('reports FAILED, never leaves it PENDING forever, once the signed blockhash is provably expired and nothing was ever broadcast', async () => {
+  it('reports EXPIRED, never leaves it PENDING forever, once the signed blockhash is provably expired and nothing was ever broadcast — also from a fresh instance given the bytes via restoreInFlight', async () => {
     const sender = await getFundedSenderKeypair();
     const recipient = Keypair.generate();
     signer = await startTestSigner([sender]);
@@ -74,11 +74,20 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
     expect(stillValid).toBe(false);
 
     // Never broadcast at all — getStatus must still resolve this to
-    // FAILED on its own, purely from the provable-expiry check.
+    // EXPIRED on its own, purely from the provable-expiry check.
     const status = await handler.getStatus(hash);
 
     expect(status.ok).toBe(true);
-    expect(status.ok && status.value).toBe('FAILED');
+    expect(status.ok && status.value).toBe('EXPIRED');
+
+    // #33 (ADR-0042): a restarted worker's fresh instance has no record
+    // until restoreInFlight hands it the in-flight bytes.
+    const restarted = new SolanaChainHandler({ connection, senderAddress: sender.publicKey.toBase58() });
+    const before = await restarted.getStatus(hash);
+    expect(before.ok && before.value).toBe('PENDING');
+    await restarted.restoreInFlight([signResult.value]);
+    const after = await restarted.getStatus(hash);
+    expect(after.ok && after.value).toBe('EXPIRED');
   }, 180_000);
 
   it('leaves a hash it has no blockhash bookkeeping for as PENDING rather than guessing FAILED', async () => {

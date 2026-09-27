@@ -10,7 +10,7 @@ import { getDevnetConnection, getFundedSenderKeypair } from './test-support/devn
  * issue 15/ADR-0033: `broadcast` must derive the same blockhash bookkeeping
  * for a transaction it never itself signed (a Relay Dispatch transaction)
  * that `sign` already gives a self-signed one — so `getStatus`'s
- * provable-expiry-to-FAILED resolution (ADR-0030, issue 08) holds
+ * provable-expiry resolution (ADR-0030, ADR-0042) holds
  * identically regardless of who produced the signature. Mirrors
  * abandonment.test.ts's own "hold it unbroadcast until it genuinely
  * expires" strategy (ADR-0013: real and slow, no mocked timeout standing in
@@ -20,7 +20,7 @@ import { getDevnetConnection, getFundedSenderKeypair } from './test-support/devn
  * only place bookkeeping for these bytes gets created at all.
  */
 describe('SolanaChainHandler.broadcast bookkeeping for externally-signed transactions (issue 15)', () => {
-  it('derives bookkeeping from the signed bytes alone, and resolves a provably-expired externally-signed transaction to FAILED — never resigning, never leaving it PENDING forever', async () => {
+  it('derives bookkeeping from the signed bytes alone, and resolves a provably-expired externally-signed transaction to EXPIRED — never resigning, never leaving it PENDING forever', async () => {
     const sender = await getFundedSenderKeypair();
     const connection = getDevnetConnection();
 
@@ -64,18 +64,17 @@ describe('SolanaChainHandler.broadcast bookkeeping for externally-signed transac
     }
     expect(stillValid).toBe(false); // sanity check the wait actually worked before trusting what follows
 
-    // Only now attempt to send — genuinely expired, so this fails at send
-    // time ("Blockhash not found"). broadcast must not attempt to resign
-    // (it has no key for `sender` beyond what this test itself holds) and
-    // must still have recorded bookkeeping for `hash` despite the send
-    // itself failing.
+    // Only now attempt to send — genuinely expired, so the send itself is
+    // refused ("Blockhash not found"). broadcast must not attempt to resign
+    // (it has no key for `sender` beyond what this test itself holds): it
+    // hands off with the same hash (ADR-0042), having recorded bookkeeping
+    // for `hash` despite the send itself failing.
     const broadcastResult = await handler.broadcast(signed);
-    expect(broadcastResult.ok).toBe(false);
-    expect(!broadcastResult.ok && broadcastResult.error.code).toBe('CHAIN_REJECTED');
+    expect(broadcastResult.ok && broadcastResult.value.hash).toBe(hash);
 
     const status = await handler.getStatus(hash);
     expect(status.ok).toBe(true);
-    expect(status.ok && status.value).toBe('FAILED');
+    expect(status.ok && status.value).toBe('EXPIRED');
   }, 180_000);
 
   it('confirms an externally-signed transaction the same way as a self-signed one, proving bookkeeping was really recorded for bytes this handler never signed', async () => {

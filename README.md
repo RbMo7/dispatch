@@ -17,7 +17,7 @@ Two chains are shipped and proven end to end against their real test networks:
 | Managed Dispatch: payments (native + tokens) and raw contract calls | ✓ | ✓ |
 | Relay Dispatch: broadcast a transaction the caller signed | ✓ | ✓ |
 | Bundling | native, several instructions per transaction | Bulk Call via a caller-named `aggregate3Value` aggregator (ADR-0038) |
-| Stuck transactions | blockhash refresh and resubmit | rebroadcast, and fee-bump when Retry Policy is on (ADR-0037) |
+| Stuck transactions | resend while the blockhash is valid, then resubmit once it provably expired (ADR-0042); optional priority fee | rebroadcast, and fee-bump when Retry Policy is on (ADR-0037) |
 | Confirmation | `confirmed`/`finalized` commitment | L2 inclusion (~2s), plus a reorg safety net (ADR-0036) |
 
 Across both, every transaction is written down before it is sent, so a crash, a restart or a timeout can't lose track of one that may land (ADR-0041), and a failed send never leaves a nonce gap (ADR-0039).

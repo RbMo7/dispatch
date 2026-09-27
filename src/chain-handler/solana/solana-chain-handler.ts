@@ -2,7 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import { getAccount, TokenAccountNotFoundError } from '@solana/spl-token';
 import bs58 from 'bs58';
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import {
+  ComputeBudgetProgram,
+  Connection,
+  PACKET_DATA_SIZE,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+} from '@solana/web3.js';
 import type { Logger } from 'pino';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
@@ -48,24 +55,26 @@ function sleep(ms: number): Promise<void> {
  * (ADR-0030) — a fallback safety net only, comfortably past a blockhash's
  * ~60-90s validity window, for the one case `getStatus`'s own
  * provable-expiry check can't cover (no `blockhashByHash` record for the
- * hash, e.g. after a process restart). In ordinary operation `getStatus`
- * itself resolves a stuck transaction to FAILED well before this fires.
+ * hash). In ordinary operation `getStatus` itself reports EXPIRED well
+ * before this fires, and `restoreInFlight` rebuilds the records after a
+ * restart (ADR-0042).
  */
 export const SOLANA_ABANDONMENT_TIMEOUT_MS = 120_000;
 
 /**
  * issue 10: bundles multiple Calls into one transaction via Solana's native
  * multi-instruction support (ADR-0006's Solana-specific answer to batching;
- * no separate Bulk Call concept needed here). Measured directly against
- * this codec's own worst case, one create-ATA plus transferChecked pair per
- * payment, all distinct recipients/mints, one signer: 10 payments serialize
- * to about 1204 bytes total, just inside the 1232-byte legacy transaction
- * limit; 11 measures at about 1295 bytes and exceeds it. Shipping 8 rather
- * than the measured ceiling of 10 leaves headroom this synthetic worst case
- * doesn't account for. Re-measure if instruction-codec.ts ever changes
- * what a Call expands into.
+ * no separate Bulk Call concept needed here), at most this many per bundle.
+ * #34: a bundle also stops growing before it would pass the 1232-byte
+ * transaction limit (`prepare` measures it). Measured (signed, legacy): 8
+ * native transfers ~560 bytes, 8 SPL payments of one mint ~1020, but SPL
+ * payments of distinct mints (create-ATA + transferChecked each) pass the
+ * limit at 7 — the earlier "10 fit" measurement was wrong.
  */
 const MAX_BUNDLE_SIZE = 8;
+
+/** How often `broadcast` resends the identical signed bytes while it waits: leaders drop transactions under load, and resending the same bytes can never execute them twice. */
+const RESEND_INTERVAL_MS = 2_000;
 
 /** The opaque `UnsignedTransaction` encoding this Chain Handler chooses (ADR-0027) — its shape is this file's own business, never assumed elsewhere. */
 type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: string };
@@ -81,6 +90,17 @@ type EncodedTransaction = {
   feePayer: string;
   instructions: EncodedInstruction[];
 };
+
+/** Bytes these instructions take as a signed, single-signer legacy transaction — the blockhash is 32 bytes whatever its value. */
+function signedSize(feePayer: PublicKey, instructions: TransactionInstruction[]): number {
+  const tx = new Transaction({ feePayer, blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 0 });
+  tx.add(...instructions);
+  try {
+    return 1 + 64 + tx.compileMessage().serialize().length; // signature count + one signature + message
+  } catch {
+    return Infinity; // web3.js throws outright once the instructions alone pass the limit
+  }
+}
 
 function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
   return {
@@ -114,36 +134,12 @@ function decodeUnsignedTransaction(unsigned: UnsignedTransaction): EncodedTransa
   return JSON.parse(Buffer.from(unsigned, 'base64').toString('utf8')) as EncodedTransaction;
 }
 
-/**
- * `getStatus`'s only way to know whether a not-yet-confirmed transaction's
- * blockhash has provably expired (issue 08) — the interface hands it only a
- * hash, never the blockhash that produced it, so `sign`/`broadcast` record
- * it here the moment they know it. Lost on process restart, which only
- * widens the fallback window (see issue 08's doc comment on `getStatus`),
- * never causes an incorrect answer.
- */
-type BlockhashRecord = {
-  blockhash: string;
-  /**
-   * issue 15 (ADR-0033): whether this handler's own key produced the
-   * signature over this blockhash. `true` for anything `signInstructions`
-   * itself signed — a fresh blockhash and a fresh Signer-produced
-   * signature can replace it on expiry (issue 06). `false` for a record
-   * `broadcast` derived from already-signed bytes it never itself
-   * produced (a Relay Dispatch transaction) — there is no key here to
-   * produce a replacement signature with (ADR-0005), so expiry for one of
-   * these must resolve to a clean FAILED instead of an attempted, always-
-   * doomed resign.
-   */
-  resignable: boolean;
-};
 
 export type SolanaChainHandlerDeps = {
   connection: Connection;
   /**
    * Only needed if this handler ever builds+signs a Managed Dispatch
-   * transaction (`sign`, and the resign-on-expiry path inside `broadcast`
-   * for a self-signed transaction). A Relay-Dispatch-only deployment never
+   * transaction (`sign`). A Relay-Dispatch-only deployment never
    * calls `sign` at all (the transaction always arrives already signed,
    * ADR-0005) and can omit this entirely, rather than needing to wire up
    * an unreachable placeholder just to satisfy the constructor.
@@ -153,6 +149,12 @@ export type SolanaChainHandlerDeps = {
   senderAddress: string;
   /** Operator-configured symbol -> {mint, decimals} for SPL transfers (known-tokens.ts) — empty by default, never hardcoded. */
   knownTokens?: SolanaTokenRegistry;
+  /**
+   * #34: priority fee, in micro-lamports per compute unit, added to every
+   * transaction this handler builds. 0 (the default) adds nothing: a
+   * priority fee costs more, so it is the operator's opt-in (ADR-0003).
+   */
+  computeUnitPriceMicroLamports?: number;
   /** Defaults to the shared app logger (src/logger.ts) under a `component: 'solana-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
   logger?: Logger;
 };
@@ -169,7 +171,14 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   private readonly signerClient: SignerClient | undefined;
   private readonly senderAddress: string;
   private readonly knownTokens: SolanaTokenRegistry;
-  private readonly blockhashByHash = new Map<string, BlockhashRecord>();
+  private readonly computeUnitPriceMicroLamports: number;
+  /**
+   * `getStatus`'s only way to know whether a not-yet-confirmed transaction's
+   * blockhash has provably expired (issue 08) — the interface hands it only
+   * a hash, so `sign`/`broadcast` record hash -> blockhash here the moment
+   * they know it, and `restoreInFlight` rebuilds it after a restart.
+   */
+  private readonly blockhashByHash = new Map<string, string>();
   /**
    * issue 10: one signature per bundle chunk, however many Calls share it —
    * see `sign`. Caches the in-flight *promise*, not just its resolved
@@ -189,6 +198,12 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     this.signerClient = deps.signerClient;
     this.senderAddress = deps.senderAddress;
     this.knownTokens = deps.knownTokens ?? {};
+    this.computeUnitPriceMicroLamports = deps.computeUnitPriceMicroLamports ?? 0;
+    if (!Number.isSafeInteger(this.computeUnitPriceMicroLamports) || this.computeUnitPriceMicroLamports < 0) {
+      throw new Error(
+        `Solana compute-unit price must be a whole, non-negative number of micro-lamports, got ${deps.computeUnitPriceMicroLamports}`,
+      );
+    }
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'solana-chain-handler' });
   }
 
@@ -263,23 +278,45 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     const feePayer = parsePublicKey(senderAddress);
     if (!feePayer.ok) return Promise.resolve(feePayer);
 
+    const chunks: SolanaCall[][] = [];
+    let current: SolanaCall[] = [];
+    for (const call of items) {
+      const candidate = [...current, call];
+      const full =
+        candidate.length > MAX_BUNDLE_SIZE ||
+        signedSize(feePayer.value, this.instructionsFor(candidate, feePayer.value)) > PACKET_DATA_SIZE;
+      if (current.length > 0 && full) {
+        chunks.push(current);
+        current = [call];
+      } else {
+        current = candidate;
+      }
+    }
+    if (current.length > 0) chunks.push(current);
+
     const prepared: PreparedTransaction[] = [];
-    for (let chunkStart = 0; chunkStart < items.length; chunkStart += MAX_BUNDLE_SIZE) {
-      const chunk = items.slice(chunkStart, chunkStart + MAX_BUNDLE_SIZE);
-      const chunkNonce = randomUUID();
-      const instructions = chunk.flatMap((call) => toTransactionInstructions(call, feePayer.value));
+    for (const chunk of chunks) {
       const encoded: EncodedTransaction = {
-        chunkNonce,
+        chunkNonce: randomUUID(),
         feePayer: senderAddress,
-        instructions: instructions.map(encodeInstruction),
+        instructions: this.instructionsFor(chunk, feePayer.value).map(encodeInstruction),
       };
       const unsignedTransaction = encodeUnsignedTransaction(encoded);
-      chunk.forEach((_call, offset) => {
-        prepared.push({ callIndex: chunkStart + offset, unsignedTransaction });
-      });
+      chunk.forEach(() => prepared.push({ callIndex: prepared.length, unsignedTransaction }));
     }
 
     return Promise.resolve(ok(prepared));
+  }
+
+  /** One transaction's instructions for `calls`: the priority fee first when configured (#34), then each Call's own. */
+  private instructionsFor(calls: SolanaCall[], feePayer: PublicKey): TransactionInstruction[] {
+    const instructions = calls.flatMap((call) => toTransactionInstructions(call, feePayer));
+    if (this.computeUnitPriceMicroLamports > 0) {
+      instructions.unshift(
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.computeUnitPriceMicroLamports }),
+      );
+    }
+    return instructions;
   }
 
   /**
@@ -328,11 +365,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     return result;
   }
 
-  /**
-   * Shared by `sign` and, for issue 06, `resignWithFreshBlockhash` — always
-   * fetches its own fresh blockhash (never reuses a caller's), so a refresh
-   * really is a new signature over a new message, never a stale resubmit.
-   */
+  /** Always fetches its own fresh blockhash, so a resubmission (ADR-0042) really is a new signature over a new message. */
   private async signInstructions(
     feePayer: PublicKey,
     instructions: TransactionInstruction[],
@@ -349,6 +382,15 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
     log.debug({ instructionCount: instructions.length }, 'signing instructions');
+
+    // prepare keeps bundles under the limit; a single Call can still be too big on its own.
+    const size = signedSize(feePayer, instructions);
+    if (size > PACKET_DATA_SIZE) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `transaction would be ${size} bytes, over Solana's ${PACKET_DATA_SIZE}-byte limit`,
+      });
+    }
 
     let blockhash: string;
     let lastValidBlockHeight: number;
@@ -392,7 +434,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     }
 
     const hash = bs58.encode(signatureBytes);
-    this.blockhashByHash.set(hash, { blockhash, resignable: true });
+    this.blockhashByHash.set(hash, blockhash);
     log.debug({ hash }, 'signed transaction');
 
     return ok(
@@ -438,114 +480,60 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issues 05/06/15: submits the signed bytes via `sendTransaction` and
-   * waits for confirmation against the exact blockhash `sign` used (tracked
-   * in `blockhashByHash`, since the interface hands `broadcast` only the
-   * opaque bytes) — via `pollUntilConfirmedOrExpired` below, plain HTTP
-   * polling only, deliberately never `connection.confirmTransaction`
-   * (see that method's own doc comment for why).
-   *
-   * issue 15/ADR-0033: bytes this handler never itself signed (a Relay
-   * Dispatch transaction) get the exact same bookkeeping treatment as
-   * self-signed ones — `ensureBlockhashRecord` derives it straight from the
-   * signed bytes' own embedded blockhash, no RPC needed — but are marked
-   * `resignable: false` (see `BlockhashRecord`), since there is no key here
-   * to produce a replacement signature with. If that blockhash provably
-   * expires — at send time ("Blockhash not found", the reliably-
-   * reproducible case: this handler's own `sign` always fetches a
-   * genuinely fresh one, so this only fires for bytes held past their
-   * ~60-90s window) or while waiting for confirmation (the "sent but
-   * dropped" case ADR-0007 exists for — real but not reproducible on
-   * demand against a public devnet) — a resignable record refreshes the
-   * blockhash and resubmits as a genuinely new Transaction (CONTEXT.md's
-   * Attempt-vs-Transaction distinction: the signed bytes changed), up to a
-   * bounded number of refreshes; a non-resignable one never attempts that
-   * (it would only ever fail, since the Signer holds no key for this
-   * transaction's fee payer) and instead hands off to `getStatus`'s own
-   * provable-expiry check (issue 08), which now has the bookkeeping it
-   * needs to resolve a clean, definitive FAILED for these too.
+   * issues 05/15, ADR-0042: sends the signed bytes and waits for
+   * confirmation against their blockhash, resending the identical bytes
+   * every `RESEND_INTERVAL_MS` while it is still valid — a dropped
+   * transaction lands on a later resend, and identical bytes can never
+   * execute twice. Never re-signs: once the blockhash provably expires it
+   * returns the same hash, `getStatus` reports EXPIRED, and the Coordinator
+   * resubmits as a new Transaction written down first (ADR-0041). A
+   * "Blockhash not found" at send time is not terminal either: the node
+   * may just lag behind a fresh blockhash, and the validity window decides.
+   * Bytes this handler never signed (a Relay Dispatch) are treated
+   * identically, their blockhash read from the bytes (ADR-0033).
    */
   async broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> {
-    let currentRaw: Buffer<ArrayBufferLike> = Buffer.from(signed, 'base64');
-    const maxRefreshes = 3;
+    const raw = Buffer.from(signed, 'base64');
+    const hashResult = this.transactionHash(signed);
+    if (!hashResult.ok) return hashResult;
+    const hash = hashResult.value;
+    const blockhash = this.ensureBlockhashRecord(raw);
 
-    for (let attempt = 0; ; attempt++) {
-      const record = this.ensureBlockhashRecord(currentRaw);
-      this.logger.debug({ attempt, resignable: record?.resignable }, 'broadcasting transaction');
-
-      let hash: string;
-      try {
-        hash = await this.connection.sendRawTransaction(currentRaw, {
-          skipPreflight: false,
-          maxRetries: 0,
-        });
-      } catch (cause) {
-        if (
-          isBlockhashExpiryMessage(extractMessage(cause)) &&
-          attempt < maxRefreshes &&
-          record?.resignable !== false
-        ) {
-          this.logger.warn(
-            { attempt },
-            'blockhash expired before send, refreshing and resubmitting',
-          );
-          const refreshed = await this.resignWithFreshBlockhash(currentRaw);
-          if (!refreshed.ok) return refreshed;
-          currentRaw = refreshed.value;
-          continue;
-        }
-        this.logger.warn({ attempt, error: extractMessage(cause) }, 'sendRawTransaction failed');
+    try {
+      await this.send(raw);
+      this.logger.debug({ hash }, 'sendRawTransaction accepted');
+    } catch (cause) {
+      if (!blockhash || !isBlockhashExpiryMessage(extractMessage(cause))) {
+        this.logger.warn({ hash, error: extractMessage(cause) }, 'sendRawTransaction failed');
         return err(mapSolanaFailure(cause));
       }
-      this.logger.debug({ hash }, 'sendRawTransaction accepted');
-
-      const sentRecord = this.blockhashByHash.get(hash);
-      if (!sentRecord) return ok({ hash }); // defensive only — ensureBlockhashRecord above already covers any decodable transaction
-
-      const outcome = await this.pollUntilConfirmedOrExpired(hash, sentRecord);
-      if (outcome.type === 'confirmed') {
-        this.logger.info({ hash }, 'transaction confirmed');
-        return ok({ hash });
-      }
-      if (outcome.type === 'failed') {
-        this.logger.warn({ hash, chainDetail: outcome.chainDetail }, 'transaction reported failed');
-        return err({
-          code: 'CHAIN_REJECTED',
-          message: `${this.chain} reported this transaction as failed`,
-          chainDetail: outcome.chainDetail,
-        });
-      }
-      if (outcome.type === 'error') {
-        this.logger.warn(
-          { hash, error: outcome.error },
-          'status check failed while awaiting confirmation',
-        );
-        return err(outcome.error);
-      }
-
-      // outcome.type === 'expired'
-      if (!sentRecord.resignable) {
-        this.logger.warn(
-          { hash },
-          'blockhash expired while awaiting confirmation, no key to resign — handing off to getStatus',
-        );
-        return ok({ hash }); // hand off to getStatus's own expiry check (issue 08/15)
-      }
-      if (attempt >= maxRefreshes) {
-        this.logger.warn(
-          { hash, attempt },
-          'blockhash expired while awaiting confirmation, out of refreshes — handing off to getStatus',
-        );
-        return ok({ hash });
-      }
-      this.logger.warn(
-        { hash, attempt },
-        'blockhash expired while awaiting confirmation, refreshing and resubmitting',
-      );
-      const refreshed = await this.resignWithFreshBlockhash(currentRaw);
-      if (!refreshed.ok) return refreshed;
-      currentRaw = refreshed.value;
+      this.logger.warn({ hash }, 'blockhash not found at send — waiting on its validity window');
     }
+    if (!blockhash) return ok({ hash }); // defensive only — any decodable signed transaction has one
+
+    const outcome = await this.waitUntilConfirmedOrExpired(hash, blockhash, raw);
+    if (outcome.type === 'confirmed') {
+      this.logger.info({ hash }, 'transaction confirmed');
+      return ok({ hash });
+    }
+    if (outcome.type === 'failed') {
+      this.logger.warn({ hash, chainDetail: outcome.chainDetail }, 'transaction reported failed');
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `${this.chain} reported this transaction as failed`,
+        chainDetail: outcome.chainDetail,
+      });
+    }
+    if (outcome.type === 'error') {
+      this.logger.warn({ hash, error: outcome.error }, 'status check failed while awaiting confirmation');
+      return err(outcome.error);
+    }
+    this.logger.warn({ hash }, 'blockhash expired before confirmation — handing off to getStatus');
+    return ok({ hash });
+  }
+
+  private send(raw: Buffer): Promise<string> {
+    return this.connection.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 0 });
   }
 
   /**
@@ -560,9 +548,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * mechanism, issue 07) and `isBlockhashValid` (issue 08) are both plain
    * HTTP and work everywhere.
    */
-  private async pollUntilConfirmedOrExpired(
+  private async waitUntilConfirmedOrExpired(
     hash: string,
-    record: BlockhashRecord,
+    blockhash: string,
+    raw: Buffer,
   ): Promise<
     | { type: 'confirmed' }
     | { type: 'failed'; chainDetail: unknown }
@@ -570,6 +559,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     | { type: 'error'; error: DispatchError }
   > {
     const pollIntervalMs = 1_000;
+    let lastSentAt = Date.now();
     for (;;) {
       let statuses: Awaited<ReturnType<Connection['getSignatureStatuses']>>;
       try {
@@ -592,7 +582,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
       let stillValid: boolean;
       try {
-        ({ value: stillValid } = await this.connection.isBlockhashValid(record.blockhash, {
+        ({ value: stillValid } = await this.connection.isBlockhashValid(blockhash, {
           commitment: 'confirmed',
         }));
       } catch (cause) {
@@ -600,16 +590,19 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       }
       if (!stillValid) return { type: 'expired' };
 
+      // Not seen yet: resend. A refusal ("already processed", a lagging
+      // node's "Blockhash not found") changes nothing — status decides.
+      if (!status && Date.now() - lastSentAt >= RESEND_INTERVAL_MS) {
+        lastSentAt = Date.now();
+        await this.send(raw).catch((cause: unknown) =>
+          this.logger.debug({ hash, error: extractMessage(cause) }, 'resend not accepted'),
+        );
+      }
+
       await sleep(pollIntervalMs);
     }
   }
 
-  /**
-   * Shared by `resignWithFreshBlockhash` and `validateSignedTransaction`
-   * (ADR-0032) — the one place this handler turns opaque signed bytes back
-   * into a decoded `Transaction`, or a structured `CHAIN_REJECTED` if they
-   * aren't one.
-   */
   /** #20 (ADR-0041): a Solana transaction's id is its first (fee payer's) signature, base58 — exactly what sendRawTransaction reports. */
   transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
     const decoded = this.decodeSignedTransaction(Buffer.from(signed, 'base64'));
@@ -621,6 +614,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     return ok(bs58.encode(signature));
   }
 
+  /** The one place this handler turns opaque signed bytes back into a decoded `Transaction`, or a structured `CHAIN_REJECTED` if they aren't one (ADR-0032). */
   private decodeSignedTransaction(raw: Buffer): Result<Transaction, DispatchError> {
     try {
       return ok(Transaction.from(raw));
@@ -634,50 +628,27 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * issue 15/ADR-0033: `broadcast`'s only source of bookkeeping for signed
-   * bytes it never itself produced — a transaction's signature (its own
-   * hash) and its blockhash are both already public information embedded
-   * in the bytes themselves, so no RPC round-trip is needed to read them
-   * back out, only to decode. Never downgrades an existing record (e.g.
-   * one `signInstructions` already populated as `resignable: true`);
-   * returns `undefined` for bytes that don't decode or lack a signature/
-   * blockhash, leaving `broadcast`'s own pre-existing behavior for those
-   * unchanged.
+   * issue 15/ADR-0033: records the blockhash signed bytes carry — public,
+   * embedded in the bytes themselves, so no RPC is needed — and returns it.
+   * The only bookkeeping source for bytes this handler never signed (a
+   * Relay Dispatch), and for any in flight across a restart
+   * (`restoreInFlight`). `undefined` for bytes that don't decode or lack a
+   * signature/blockhash.
    */
-  private ensureBlockhashRecord(raw: Buffer): BlockhashRecord | undefined {
+  private ensureBlockhashRecord(raw: Buffer): string | undefined {
     const decodedResult = this.decodeSignedTransaction(raw);
     if (!decodedResult.ok) return undefined;
     const tx = decodedResult.value;
     if (!tx.signature || !tx.recentBlockhash) return undefined;
 
-    const hash = bs58.encode(tx.signature);
-    const existing = this.blockhashByHash.get(hash);
-    if (existing) return existing;
-
-    const record: BlockhashRecord = { blockhash: tx.recentBlockhash, resignable: false };
-    this.blockhashByHash.set(hash, record);
-    return record;
+    this.blockhashByHash.set(bs58.encode(tx.signature), tx.recentBlockhash);
+    return tx.recentBlockhash;
   }
 
-  /** issue 06: decodes the previously-signed bytes back to feePayer + instructions and re-signs them fresh, under a genuinely new blockhash. */
-  private async resignWithFreshBlockhash(raw: Buffer): Promise<Result<Buffer, DispatchError>> {
-    const decodedResult = this.decodeSignedTransaction(raw);
-    if (!decodedResult.ok) return decodedResult;
-    const decoded = decodedResult.value;
-    if (!decoded.feePayer) {
-      return err({
-        code: 'CHAIN_REJECTED',
-        message: 'cannot refresh: decoded transaction has no feePayer',
-      });
-    }
-
-    this.logger.debug(
-      { senderAddress: decoded.feePayer.toBase58() },
-      'resigning with a fresh blockhash',
-    );
-    const resigned = await this.signInstructions(decoded.feePayer, decoded.instructions);
-    if (!resigned.ok) return resigned;
-    return ok(Buffer.from(resigned.value, 'base64'));
+  /** ADR-0042: at worker start, re-learns the blockhash of every in-flight transaction, so `getStatus` can still prove expiry after a restart. */
+  restoreInFlight(signed: SignedTransaction[]): Promise<void> {
+    for (const bytes of signed) this.ensureBlockhashRecord(Buffer.from(bytes, 'base64'));
+    return Promise.resolve();
   }
 
   /**
@@ -700,17 +671,18 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * end is *provable*: once its blockhash's ~150-slot validity window has
    * definitively passed with no signature status ever recorded (now
    * correctly checked against full history, not just the recent cache), it
-   * mathematically cannot be included in any future block — a clean,
-   * honest `FAILED` (ADR-0030), not "the engine gave up watching without a
-   * definitive outcome" (CONTEXT.md's own definition of ABANDONED). This
+   * mathematically cannot be included in any future block — a definitive
+   * outcome (ADR-0030), not "the engine gave up watching without one"
+   * (CONTEXT.md's own definition of ABANDONED). It is reported as EXPIRED,
+   * so the Coordinator can resubmit the Calls or report FAILED (ADR-0042). This
    * only works because `sign`/`broadcast` (this instance) already recorded
    * that blockhash in `blockhashByHash` — as of issue 15/ADR-0033, that
    * includes bytes this handler never itself signed too (`broadcast`'s
    * `ensureBlockhashRecord` derives the record straight from the bytes), so
-   * a Relay Dispatch transaction gets the identical provable-FAILED
+   * a Relay Dispatch transaction gets the identical provable-expiry
    * resolution a Managed Dispatch one does. A signature with genuinely no
-   * recorded blockhash (only after a process restart, since every
-   * `broadcast` call now records one) falls back to plain PENDING,
+   * recorded blockhash (every `broadcast` records one, and
+   * `restoreInFlight` rebuilds them at restart) falls back to plain PENDING,
    * unresolved by `getStatus` itself; the Coordinator's own
    * `abandonmentTimeoutMs` config for 'solana' is pinned generously past
    * the blockhash window purely as that fallback's safety net, not the
@@ -737,14 +709,14 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         return ok('PENDING');
       }
 
-      const record = this.blockhashByHash.get(hash);
-      if (record) {
-        const { value: stillValid } = await this.connection.isBlockhashValid(record.blockhash, {
+      const blockhash = this.blockhashByHash.get(hash);
+      if (blockhash) {
+        const { value: stillValid } = await this.connection.isBlockhashValid(blockhash, {
           commitment: 'confirmed',
         });
         if (!stillValid) {
-          this.logger.debug({ hash }, 'getStatus: FAILED (blockhash provably expired)');
-          return ok('FAILED');
+          this.logger.debug({ hash }, 'getStatus: EXPIRED (blockhash provably expired)');
+          return ok('EXPIRED');
         }
       }
       return ok('PENDING');

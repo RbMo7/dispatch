@@ -1184,7 +1184,7 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
     });
   });
 
-  it('takes the hash the chain reported when the send re-signed (e.g. Solana refreshing an expired blockhash)', async () => {
+  it('takes the hash the chain reported if it differs from the noted one', async () => {
     const { store, handler, coordinator } = setup();
     const dispatch = await queueOne(store);
     handler.transactionHash.mockReturnValue(ok('noted-hash'));
@@ -1270,7 +1270,7 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
   it('hands every unsettled Transaction\'s signed bytes to the Chain Handler on restoreReservations (#20 review)', async () => {
     const { store, handler, coordinator } = setup();
     const reserve = vi.fn();
-    (handler as FakeChainHandler & { reserveNonces?: (signed: string[]) => void }).reserveNonces = reserve;
+    (handler as FakeChainHandler & { restoreInFlight?: (signed: string[]) => void }).restoreInFlight = reserve;
     const dispatch = await queueOne(store, [solanaItem, solanaItem]);
     const pendingRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 0, chain: 'solana', signedBytes: 'pending-bytes', hash: 'p' });
     const confirmedRow = await store.createTransaction({ dispatchId: dispatch.id, callIndex: 1, chain: 'solana', signedBytes: 'confirmed-bytes', hash: 'c' });
@@ -1539,6 +1539,114 @@ describe('Coordinator.pollPendingTransactions for a Relay Dispatch', () => {
   });
 });
 
+describe('Coordinator resubmission of provably expired transactions (ADR-0042)', () => {
+  async function sendOne(items: DispatchItem<'solana'>[] = [solanaItem]) {
+    const ctx = setup();
+    const dispatch = await ctx.store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: `exp-${Math.random()}`,
+      items,
+      retryPolicy: false,
+    });
+    await ctx.coordinator.processQueuedDispatches(10);
+    ctx.handler.getStatus.mockImplementation((hash) =>
+      Promise.resolve(ok(hash === 'hash-1' ? 'EXPIRED' : 'PENDING')),
+    );
+    ctx.handler.transactionHash.mockReturnValue(ok('hash-2'));
+    ctx.handler.broadcast.mockResolvedValue(ok({ hash: 'hash-2' }));
+    return { ...ctx, dispatch };
+  }
+
+  it('resubmits the Call as a new Transaction, written down before it is sent, and DROPs the dead original', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne();
+    handler.sign.mockResolvedValue(ok('resigned-bytes'));
+    handler.broadcast.mockImplementation(async () => {
+      const rows = await store.listTransactions(dispatch.id);
+      expect(rows.find((t) => t.hash === 'hash-2')).toMatchObject({ status: 'PENDING', signedBytes: 'resigned-bytes' });
+      return ok({ hash: 'hash-2' });
+    });
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.prepare).toHaveBeenLastCalledWith([solanaCall], 'sender-address');
+    const rows = await store.listTransactions(dispatch.id);
+    expect(rows.map((t) => [t.hash, t.status])).toEqual([
+      ['hash-1', 'DROPPED'],
+      ['hash-2', 'PENDING'],
+    ]);
+    expect(rows[1]?.replacesTransactionId).toBe(rows[0]?.id);
+  });
+
+  it('resubmits a bundle as one transaction for all its members', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne([solanaItem, solanaItem]);
+    handler.prepare.mockImplementation((items: Call[]) =>
+      Promise.resolve(ok(items.map((_, callIndex) => ({ callIndex, unsignedTransaction: 'bundle' })))),
+    );
+    handler.sign.mockClear();
+    handler.broadcast.mockClear();
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.prepare).toHaveBeenLastCalledWith([solanaCall, solanaCall], 'sender-address');
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    const live = (await store.listTransactions(dispatch.id)).filter((t) => t.status === 'PENDING');
+    expect(live.map((t) => [t.callIndex, t.hash])).toEqual([
+      [0, 'hash-2'],
+      [1, 'hash-2'],
+    ]);
+  });
+
+  it('fails the Call once it has been resubmitted 3 times', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne();
+    let n = 1;
+    handler.getStatus.mockResolvedValue(ok('EXPIRED'));
+    handler.transactionHash.mockImplementation(() => ok(`hash-${++n}`));
+    handler.broadcast.mockImplementation(() => Promise.resolve(ok({ hash: `hash-${n}` })));
+
+    for (let tick = 0; tick < 4; tick++) await coordinator.pollPendingTransactions(10);
+
+    const rows = await store.listTransactions(dispatch.id);
+    expect(rows).toHaveLength(4);
+    expect(rows.at(-1)).toMatchObject({ status: 'FAILED', error: { code: 'CHAIN_REJECTED' } });
+    expect(rows.slice(0, 3).every((t) => t.status === 'DROPPED')).toBe(true);
+  });
+
+  it('fails an expired Relay Dispatch — there is no key to re-sign it', async () => {
+    const { store, handler, coordinator } = setup();
+    const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `exp-r-${Math.random()}`, signedTransaction: 'relay-bytes' });
+    await coordinator.processQueuedRelayDispatches(10);
+    handler.getStatus.mockResolvedValue(ok('EXPIRED'));
+    handler.sign.mockClear();
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.sign).not.toHaveBeenCalled();
+    const [row] = await store.listTransactions(relay.id);
+    expect(row).toMatchObject({ status: 'FAILED', error: { code: 'CHAIN_REJECTED' } });
+  });
+
+  it('leaves the expired Transaction PENDING when re-signing fails, and retries next tick', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne();
+    handler.sign.mockResolvedValueOnce(err({ code: 'SIGNER_UNREACHABLE', message: 'down' }));
+
+    await coordinator.pollPendingTransactions(10);
+    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['PENDING']);
+
+    await coordinator.pollPendingTransactions(10);
+    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['DROPPED', 'PENDING']);
+  });
+
+  it('marks the resubmission FAILED when the node definitely refuses it', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne();
+    handler.broadcast.mockResolvedValue(err({ code: 'INSUFFICIENT_FUNDS', message: 'insufficient lamports' }));
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect((await store.listTransactions(dispatch.id)).map((t) => t.status)).toEqual(['DROPPED', 'FAILED']);
+  });
+});
+
 describe('Coordinator.rewatchAbandonedTransactions', () => {
   async function createAbandonedTransaction(store: InMemoryDispatchStore): Promise<string> {
     const dispatch = await store.createDispatch({
@@ -1578,6 +1686,16 @@ describe('Coordinator.rewatchAbandonedTransactions', () => {
     const transaction = store.getTransaction(transactionId);
     expect(transaction?.status).toBe('FAILED');
     expect(transaction?.error?.code).toBe('CHAIN_REJECTED');
+  });
+
+  it('fails a previously-ABANDONED Transaction that provably expired — too late to resubmit (ADR-0042)', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createAbandonedTransaction(store);
+    handler.getStatus.mockResolvedValueOnce(ok('EXPIRED'));
+
+    await coordinator.rewatchAbandonedTransactions(10);
+
+    expect(store.getTransaction(transactionId)).toMatchObject({ status: 'FAILED', error: { code: 'CHAIN_REJECTED' } });
   });
 
   it('leaves a Transaction ABANDONED when the chain still reports it as PENDING', async () => {

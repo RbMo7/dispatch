@@ -47,6 +47,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
         signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
         senderAddress: config.solana.senderAddress,
         knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
+        computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
       }),
     ),
   base: () =>
