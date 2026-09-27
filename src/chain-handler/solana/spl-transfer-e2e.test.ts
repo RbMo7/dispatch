@@ -1,9 +1,14 @@
-import { getAccount, getOrCreateAssociatedTokenAccount } from '@solana/spl-token';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAccount,
+  getAssociatedTokenAddressSync,
+} from '@solana/spl-token';
 import { Keypair } from '@solana/web3.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../signer/client.js';
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
+import { fromTransactionInstruction } from './instruction-codec.js';
 import { buildSplTransferCall } from './spl-transfer.js';
 import { SolanaChainHandler } from './solana-chain-handler.js';
 import {
@@ -103,9 +108,32 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
     signer = await startTestSigner([sender]);
     const connection = getDevnetConnection();
 
+    const handler = new SolanaChainHandler({
+      connection,
+      signerClient: new SignerClient(signer.url),
+      senderAddress: sender.publicKey.toBase58(),
+    });
+
     // Caller is responsible for the destination existing themselves —
     // create it up front, exactly as a real integrator would for a raw call.
-    await getOrCreateAssociatedTokenAccount(connection, sender, mint, recipient.publicKey);
+    // Sent through the engine itself (confirmed by HTTP polling), not
+    // spl-token's getOrCreateAssociatedTokenAccount: that confirms over a
+    // websocket subscription, which some RPC providers (Alchemy's devnet
+    // endpoint, observed 2026-09-26) never deliver — the test hung there.
+    const createAta = fromTransactionInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
+        sender.publicKey,
+        getAssociatedTokenAddressSync(mint, recipient.publicKey),
+        recipient.publicKey,
+        mint,
+      ),
+    );
+    const ataPrepared = await handler.prepare([createAta], sender.publicKey.toBase58());
+    if (!ataPrepared.ok || !ataPrepared.value[0]) throw new Error('ATA prepare failed');
+    const ataSigned = await handler.sign(ataPrepared.value[0], sender.publicKey.toBase58());
+    if (!ataSigned.ok) throw new Error(`ATA sign failed: ${JSON.stringify(ataSigned.error)}`);
+    const ataSent = await handler.broadcast(ataSigned.value);
+    if (!ataSent.ok) throw new Error(`ATA broadcast failed: ${JSON.stringify(ataSent.error)}`);
 
     const rawCallResult = buildSplTransferCall(
       sender.publicKey.toBase58(),
@@ -118,12 +146,6 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
     if (!rawCallResult.ok) return;
     const rawCall = { ...rawCallResult.value, accounts: rawCallResult.value.accounts.slice(0, 4) };
     expect(rawCall.accounts).toHaveLength(4);
-
-    const handler = new SolanaChainHandler({
-      connection,
-      signerClient: new SignerClient(signer.url),
-      senderAddress: sender.publicKey.toBase58(),
-    });
 
     const validation = await handler.validateCall(rawCall);
     expect(validation.ok).toBe(true);
