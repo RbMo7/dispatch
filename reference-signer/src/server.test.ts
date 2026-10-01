@@ -91,9 +91,9 @@ describe('createSignerServer', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { signature: string };
     const signature = Buffer.from(body.signature, 'base64');
-    expect(
-      nodeVerify(null, Buffer.from(unsignedTransaction, 'base64'), publicKey, signature),
-    ).toBe(true);
+    expect(nodeVerify(null, Buffer.from(unsignedTransaction, 'base64'), publicKey, signature)).toBe(
+      true,
+    );
   });
 
   it('hashes an EVM unsigned transaction itself: the signature recovers over its keccak256 to the address', async () => {
@@ -108,7 +108,10 @@ describe('createSignerServer', () => {
     });
 
     expect(response.status).toBe(200);
-    const signature = Buffer.from(((await response.json()) as { signature: string }).signature, 'base64');
+    const signature = Buffer.from(
+      ((await response.json()) as { signature: string }).signature,
+      'base64',
+    );
     expect(signature).toHaveLength(65);
     const recovered = new secp256k1.Signature(
       BigInt(`0x${signature.subarray(0, 32).toString('hex')}`),

@@ -471,7 +471,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     // here, the nonce goes back instead of a send that can only be refused.
     let recovered: Address;
     try {
-      recovered = await recoverAddress({ hash: keccak256(unsignedSerialized), signature: { r, s, yParity } });
+      recovered = await recoverAddress({
+        hash: keccak256(unsignedSerialized),
+        signature: { r, s, yParity },
+      });
     } catch (cause) {
       return fail({
         code: 'SIGNER_UNREACHABLE',

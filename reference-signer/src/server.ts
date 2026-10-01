@@ -82,7 +82,9 @@ function carriesToken(header: string | undefined, expected: Buffer): boolean {
  */
 export function createSignerServer(keyring: Keyring, authToken: string) {
   if (authToken === '') {
-    throw new Error('SIGNER_AUTH_TOKEN is required: the Signer refuses to start without a bearer token (ADR-0046)');
+    throw new Error(
+      'SIGNER_AUTH_TOKEN is required: the Signer refuses to start without a bearer token (ADR-0046)',
+    );
   }
   const expected = Buffer.from(`Bearer ${authToken}`);
   return createServer((req, res) => {

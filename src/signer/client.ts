@@ -78,9 +78,17 @@ async function signerFailure(response: Response): Promise<DispatchError> {
   const text = await response.text().catch(() => undefined);
   const refusal = response.status === 403 ? parseRefusal(text) : undefined;
   if (refusal) {
-    return { code: 'SIGNER_REFUSED', message: `signer refused: ${refusal.reason}`, chainDetail: refusal };
+    return {
+      code: 'SIGNER_REFUSED',
+      message: `signer refused: ${refusal.reason}`,
+      chainDetail: refusal,
+    };
   }
-  return { code: 'SIGNER_UNREACHABLE', message: `signer responded with ${response.status}`, chainDetail: text };
+  return {
+    code: 'SIGNER_UNREACHABLE',
+    message: `signer responded with ${response.status}`,
+    chainDetail: text,
+  };
 }
 
 function parseRefusal(text: string | undefined): { error: string; reason: string } | undefined {

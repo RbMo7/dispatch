@@ -1,7 +1,12 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { keccak256, recoverTransactionAddress, type Hex, type TransactionSerializedEIP1559 } from 'viem';
+import {
+  keccak256,
+  recoverTransactionAddress,
+  type Hex,
+  type TransactionSerializedEIP1559,
+} from 'viem';
 import { generatePrivateKey, privateKeyToAccount, sign } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -18,7 +23,9 @@ const TOKEN = 'test-token';
 const fakeRpc: typeof fetch = (_input, init) => {
   const request = JSON.parse(init?.body as string) as { id: number; method: string };
   const result =
-    request.method === 'eth_chainId' ? `0x${CHAIN_ID.toString(16)}` : `0x${CONFIRMED_NONCE.toString(16)}`;
+    request.method === 'eth_chainId'
+      ? `0x${CHAIN_ID.toString(16)}`
+      : `0x${CONFIRMED_NONCE.toString(16)}`;
   return Promise.resolve(
     new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), {
       headers: { 'content-type': 'application/json' },
@@ -33,7 +40,9 @@ async function startSigner(privateKey: Hex): Promise<Server> {
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       void (async () => {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { unsignedTransaction: string };
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          unsignedTransaction: string;
+        };
         const hash = keccak256(Buffer.from(body.unsignedTransaction, 'base64'));
         const { r, s, yParity } = await sign({ hash, privateKey, to: 'object' });
         const signature = Buffer.concat([

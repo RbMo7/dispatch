@@ -21,7 +21,9 @@ describe('SignerClient', () => {
   });
 
   it('POSTs the request with its bearer token to <signerUrl>/sign and returns the signature', async () => {
-    const fetchMock = respondWith(new Response(JSON.stringify({ signature: 'c2ln' }), { status: 200 }));
+    const fetchMock = respondWith(
+      new Response(JSON.stringify({ signature: 'c2ln' }), { status: 200 }),
+    );
 
     const result = await new SignerClient('http://signer.local', 'tok-1').requestSignature(request);
 
@@ -37,7 +39,9 @@ describe('SignerClient', () => {
   });
 
   it('sends no authorization header when no token is configured', async () => {
-    const fetchMock = respondWith(new Response(JSON.stringify({ signature: 'c2ln' }), { status: 200 }));
+    const fetchMock = respondWith(
+      new Response(JSON.stringify({ signature: 'c2ln' }), { status: 200 }),
+    );
 
     await new SignerClient('http://signer.local', undefined).requestSignature(request);
 
@@ -73,11 +77,23 @@ describe('SignerClient', () => {
   });
 
   it.each([
-    ['a 401 (wrong or missing token)', new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })],
-    ['a 403 with an HTML body (a proxy or WAF)', new Response('<html>Forbidden</html>', { status: 403 })],
-    ['a 403 whose JSON lacks a reason', new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 })],
+    [
+      'a 401 (wrong or missing token)',
+      new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }),
+    ],
+    [
+      'a 403 with an HTML body (a proxy or WAF)',
+      new Response('<html>Forbidden</html>', { status: 403 }),
+    ],
+    [
+      'a 403 whose JSON lacks a reason',
+      new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }),
+    ],
     ['a 500', new Response('boom', { status: 500 })],
-    ['a 503 with a refusal-shaped body', new Response(JSON.stringify({ error: 'x', reason: 'y' }), { status: 503 })],
+    [
+      'a 503 with a refusal-shaped body',
+      new Response(JSON.stringify({ error: 'x', reason: 'y' }), { status: 503 }),
+    ],
     ['a 2xx with an unparsable body', new Response('not json', { status: 200 })],
   ])('maps %s to SIGNER_UNREACHABLE', async (_, response) => {
     respondWith(response);
