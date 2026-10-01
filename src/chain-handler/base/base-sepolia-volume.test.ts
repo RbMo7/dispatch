@@ -37,8 +37,8 @@ import { decodeUnsignedTransaction, encodeUnsignedTransaction } from './transact
  * sequential Managed Dispatch, Bulk Call and a real fee-bump together, then
  * auditing the Sender's whole nonce sequence against the chain itself.
  *
- * Unlike Solana's devnet run this spends real (testnet) ETH, so it only
- * runs when asked: RUN_BASE_VOLUME=1 (ADR-0040).
+ * It spends real (testnet) ETH, so it only runs when asked:
+ * RUN_BASE_VOLUME=1 (ADR-0040). Solana's devnet run is opt-in the same way.
  */
 const RUN = process.env.RUN_BASE_VOLUME === '1';
 const TRACE_RPC_URL = process.env.BASE_TRACE_RPC_URL ?? '';

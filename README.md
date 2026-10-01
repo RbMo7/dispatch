@@ -67,7 +67,7 @@ Configuration is environment variables, documented in [`.env.example`](./.env.ex
 - `pnpm test:offline`: unit tests, the Coordinator against an in-memory store, and the real-Postgres tier (ADR-0034). This is what CI runs on every PR (`.github/workflows/ci.yml`). It needs a Postgres at `DATABASE_URL`.
 - `pnpm test`: everything, **including the live-chain tests** against real Solana devnet and Base Sepolia (ADR-0013). They spend testnet funds from dev wallets and use RPC URLs from `.env` (`SOLANA_DEVNET_RPC_URL`, `BASE_SEPOLIA_RPC_URL`; public endpoints are the fallback, but they rate-limit). A test counts as live exactly when it imports a chain's `test-support/*-fixtures`.
 - `RUN_BASE_VOLUME=1 pnpm test src/chain-handler/base/base-sepolia-volume.test.ts`: the opt-in Base volume run (100+ real transactions, a fee-bump, and a nonce audit against the chain, ADR-0040).
-- `src/chain-handler/solana/devnet-volume.test.ts`: 500 real devnet payments, bundled. Unlike Base's, it is **not** opt-in, so every `pnpm test` spends about 0.5 devnet SOL. The Solana expiry tests wait out real blockhash expiry and take several minutes each.
+- `RUN_SOLANA_VOLUME=1 pnpm test src/chain-handler/solana/devnet-volume.test.ts`: the opt-in Solana volume run (500 real devnet payments, bundled, about 0.55 devnet SOL). The Solana expiry tests, which do run in `pnpm test`, wait out real blockhash expiry and take several minutes each.
 
 ## License
 
