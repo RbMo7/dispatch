@@ -10,6 +10,7 @@ import {
   isAddress,
   keccak256,
   parseTransaction,
+  recoverAddress,
   recoverTransactionAddress,
   serializeTransaction,
   type Address,
@@ -465,6 +466,25 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       yParity = yParity === 0 ? 1 : 0;
     }
     const s = `0x${sValue.toString(16).padStart(64, '0')}` as const;
+
+    // ADR-0046: a misconfigured Signer could sign with the wrong key. Caught
+    // here, the nonce goes back instead of a send that can only be refused.
+    let recovered: Address;
+    try {
+      recovered = await recoverAddress({ hash: keccak256(unsignedSerialized), signature: { r, s, yParity } });
+    } catch (cause) {
+      return fail({
+        code: 'SIGNER_UNREACHABLE',
+        message: 'signer returned a signature that recovers to no address',
+        chainDetail: extractMessage(cause),
+      });
+    }
+    if (!isSameAddress(recovered, senderAddress)) {
+      return fail({
+        code: 'SIGNER_UNREACHABLE',
+        message: `signer returned a signature for ${recovered}, expected ${senderAddress}`,
+      });
+    }
 
     const signed = serializeTransaction(tx, { r, s, yParity });
     if (assigned) this.unsentNonces.add(nonce);
