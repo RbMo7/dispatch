@@ -54,13 +54,17 @@ services:
         condition: service_healthy
 
   signer:
-    # Reference/dev-only local-keyfile Signer (ADR-0002) — never imported by the engine itself.
+    # The Signer (ADR-0002), never imported by the engine itself. Dev only: the
+    # keyfile backend with committed keys. Replace the config, keys and token
+    # in any real deployment.
     build:
       context: .
       dockerfile: signer/Dockerfile
     environment:
       PORT: 8421
       SIGNER_AUTH_TOKEN: *signer-auth-token
+      SIGNER_CONFIG: /app/signer.config.dev.json
+      SIGNER_KEYFILE: /app/keys.dev.json
     ports:
       - '8421:8421'
 
