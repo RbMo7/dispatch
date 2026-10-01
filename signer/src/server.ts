@@ -1,19 +1,49 @@
 import { timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 
-import type { Keyring } from './keys.js';
-import { sign, type Curve } from './sign.js';
+import bs58 from 'bs58';
+import { keccak256, parseTransaction, serializeTransaction, toHex } from 'viem';
 
-type SignRequestBody = {
-  chain: unknown;
-  curve: unknown;
-  address: unknown;
-  unsignedTransaction: unknown;
+import { CURVES, type Curve, type KeyBackend } from './backends/key-backend.js';
+import { lookupKey, type AddressEntry } from './config.js';
+
+/** A configured address with the backend holding its key. */
+export type KeyringEntry = { entry: AddressEntry; backend: KeyBackend };
+
+/** Keyed by `lookupKey`. */
+export type Keyring = ReadonlyMap<string, KeyringEntry>;
+
+/**
+ * `refused` is a policy refusal (403); `rejected` a request the Signer
+ * would never sign (400, 401, 404); `failed` the Signer's own failure.
+ */
+export type AuditDecision = 'signed' | 'refused' | 'rejected' | 'failed';
+
+export type AuditRecord = {
+  time: string;
+  address?: string | undefined;
+  chain?: string | undefined;
+  /** The id the chain will know the signed transaction by: its EVM hash, or its Solana signature. */
+  transactionId?: string | undefined;
+  decision: AuditDecision;
+  status: number;
+  reason?: string | undefined;
 };
 
-function isCurve(value: unknown): value is Curve {
-  return value === 'secp256k1' || value === 'ed25519';
+function decisionFor(status: number): AuditDecision {
+  if (status === 200) return 'signed';
+  if (status === 403) return 'refused';
+  return status < 500 ? 'rejected' : 'failed';
 }
+
+/** What a request came to, before it is answered and audited. */
+type Outcome = {
+  status: number;
+  body: Record<string, unknown>;
+  address?: string;
+  chain?: string;
+  transactionId?: string;
+};
 
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -23,48 +53,87 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(body));
+function isCurve(value: unknown): value is Curve {
+  return CURVES.includes(value as Curve);
 }
 
-async function handleSign(req: IncomingMessage, res: ServerResponse, keyring: Keyring) {
-  let body: SignRequestBody;
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** The EVM transaction hash once `signature` (r || s || recovery) is applied, as the engine will serialize it. */
+function evmTransactionHash(
+  transaction: ReturnType<typeof parseTransaction>,
+  signature: Uint8Array,
+): string {
+  return keccak256(
+    serializeTransaction(transaction, {
+      r: toHex(signature.subarray(0, 32)),
+      s: toHex(signature.subarray(32, 64)),
+      yParity: signature[64] ?? 0,
+    }),
+  );
+}
+
+async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outcome> {
+  let body: unknown;
   try {
-    body = JSON.parse(await readBody(req)) as SignRequestBody;
+    body = JSON.parse(await readBody(req));
   } catch {
-    sendJson(res, 400, { error: 'invalid JSON body' });
-    return;
+    return { status: 400, body: { error: 'invalid JSON body' } };
+  }
+  if (typeof body !== 'object' || body === null) {
+    return { status: 400, body: { error: 'the body must be a JSON object' } };
   }
 
-  if (!isCurve(body.curve)) {
-    sendJson(res, 400, { error: `unsupported curve: ${String(body.curve)}` });
-    return;
-  }
-  if (typeof body.unsignedTransaction !== 'string') {
-    sendJson(res, 400, { error: 'unsignedTransaction is required' });
-    return;
-  }
-  if (typeof body.address !== 'string') {
-    sendJson(res, 400, { error: 'address is required' });
-    return;
+  const { chain, curve, address, unsignedTransaction } = body as Record<string, unknown>;
+  const known = {
+    ...(typeof address === 'string' ? { address } : {}),
+    ...(typeof chain === 'string' ? { chain } : {}),
+  };
+  const reject = (status: number, error: string): Outcome => ({
+    status,
+    body: { error },
+    ...known,
+  });
+
+  if (!isCurve(curve)) return reject(400, `unsupported curve: ${String(curve)}`);
+  if (typeof unsignedTransaction !== 'string')
+    return reject(400, 'unsignedTransaction is required');
+  if (typeof address !== 'string') return reject(400, 'address is required');
+
+  const key = keyring.get(lookupKey(curve, address));
+  if (!key || key.entry.curve !== curve) {
+    return reject(404, `no key for address ${address} on curve ${curve}`);
   }
 
-  const privateKeyHex = keyring[body.curve][body.address];
-  if (!privateKeyHex) {
-    sendJson(res, 404, { error: `no key for address ${body.address} on curve ${body.curve}` });
-    return;
+  const unsigned = Buffer.from(unsignedTransaction, 'base64');
+  // Parsed before signing, so a signed EVM transaction always has a hash to audit.
+  let evmTransaction: ReturnType<typeof parseTransaction> | undefined;
+  if (curve === 'secp256k1') {
+    try {
+      evmTransaction = parseTransaction(toHex(unsigned));
+    } catch (cause) {
+      return reject(400, `unsignedTransaction is not an EVM transaction: ${errorMessage(cause)}`);
+    }
   }
 
-  const unsignedTransaction = Buffer.from(body.unsignedTransaction, 'base64');
+  let signature: Uint8Array;
   try {
-    const signature = sign(body.curve, privateKeyHex, unsignedTransaction);
-    sendJson(res, 200, { signature: signature.toString('base64') });
+    const payload = curve === 'secp256k1' ? keccak256(unsigned, 'bytes') : unsigned;
+    signature = await key.backend.sign(curve, key.entry.keyRef, payload);
   } catch (cause) {
-    sendJson(res, 500, {
-      error: `signing failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    });
+    return reject(500, `signing failed: ${errorMessage(cause)}`);
   }
+
+  return {
+    status: 200,
+    body: { signature: Buffer.from(signature).toString('base64') },
+    ...known,
+    transactionId: evmTransaction
+      ? evmTransactionHash(evmTransaction, signature)
+      : bs58.encode(signature),
+  };
 }
 
 /** Constant-time, so a wrong token's response time says nothing about how much of it matched. */
@@ -73,29 +142,60 @@ function carriesToken(header: string | undefined, expected: Buffer): boolean {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
+export type SignerServerOptions = {
+  keyring: Keyring;
+  authToken: string;
+  /** Receives one JSON line per request. Defaults to stdout, kept apart from everything else on stderr. */
+  audit?: (line: string) => void;
+};
+
 /**
- * The reference local-keyfile Signer's HTTP surface — implements just the
- * one `/sign` route from ADR-0046's contract, behind a bearer token. This
- * is dev/reference-only: production signing backends are an operator's own
- * concern. Refuses to construct without a token, so the Signer can't start
- * open to anything that reaches it.
+ * The Signer's HTTP surface: the one `/sign` route from ADR-0046's
+ * contract, behind a bearer token, with every request audited. Refuses to
+ * construct without a token, so the Signer can't start open to anything
+ * that reaches it.
  */
-export function createSignerServer(keyring: Keyring, authToken: string) {
+export function createSignerServer({
+  keyring,
+  authToken,
+  audit = (line) => process.stdout.write(`${line}\n`),
+}: SignerServerOptions) {
   if (authToken === '') {
     throw new Error(
       'SIGNER_AUTH_TOKEN is required: the Signer refuses to start without a bearer token (ADR-0046)',
     );
   }
   const expected = Buffer.from(`Bearer ${authToken}`);
-  return createServer((req, res) => {
+
+  async function answer(req: IncomingMessage): Promise<Outcome> {
     if (req.method !== 'POST' || req.url !== '/sign') {
-      sendJson(res, 404, { error: 'not found' });
-      return;
+      return { status: 404, body: { error: 'not found' } };
     }
     if (!carriesToken(req.headers.authorization, expected)) {
-      sendJson(res, 401, { error: 'missing or wrong bearer token' });
-      return;
+      return { status: 401, body: { error: 'missing or wrong bearer token' } };
     }
-    void handleSign(req, res, keyring);
+    try {
+      return await handleSign(req, keyring);
+    } catch (cause) {
+      return { status: 500, body: { error: `signing failed: ${errorMessage(cause)}` } };
+    }
+  }
+
+  return createServer((req, res) => {
+    void answer(req).then(({ status, body, address, chain, transactionId }) => {
+      // Audited before answering, so no signature leaves without its line.
+      const record: AuditRecord = {
+        time: new Date().toISOString(),
+        address,
+        chain,
+        transactionId,
+        decision: decisionFor(status),
+        status,
+        reason: typeof body.error === 'string' ? body.error : undefined,
+      };
+      audit(JSON.stringify(record));
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
   });
 }

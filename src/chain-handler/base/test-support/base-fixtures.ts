@@ -446,7 +446,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-/** Mirrors signer/src/sign.ts's signSecp256k1 after its keccak step: signs the digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
+/** Mirrors the Signer's keyfile backend (signer/src/backends/keyfile.ts) on secp256k1: signs the digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
 function signSecp256k1Digest(privateKeyHex: string, digest: Buffer): Buffer {
   const scalar = Buffer.from(privateKeyHex, 'hex');
   const signature = secp256k1.sign(digest, scalar, { prehash: false, format: 'recovered' });

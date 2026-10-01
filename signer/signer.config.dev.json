@@ -1,0 +1,12 @@
+{
+  "0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A": {
+    "curve": "secp256k1",
+    "backend": "keyfile",
+    "keyRef": "dev-sender"
+  },
+  "3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe": {
+    "curve": "ed25519",
+    "backend": "keyfile",
+    "keyRef": "dev-sender"
+  }
+}
