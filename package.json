@@ -38,6 +38,7 @@
   "devDependencies": {
     "@eslint/js": "^9.37.0",
     "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@types/node": "^22.15.29",
     "drizzle-kit": "^0.31.5",
     "eslint": "^9.37.0",
