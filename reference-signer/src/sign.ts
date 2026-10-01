@@ -1,6 +1,7 @@
 import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 
 import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** Mirrors src/domain/curve.ts on the engine side — kept separate since this package must stay outside the engine's dependency tree (ADR-0002). */
 export type Curve = 'secp256k1' | 'ed25519';
@@ -25,14 +26,11 @@ function signEd25519(privateKeyHex: string, message: Buffer): Buffer {
 }
 
 /**
- * Signs an already-computed 32-byte digest directly (`prehash: false`) —
- * never re-hashing it — and returns a 65-byte `r`(32) || `s`(32) ||
- * recovery-byte(1) encoding, canonical low-S by default. Ethereum-shaped
- * callers (base-chain-handler) hand this exactly their own EIP-1559
- * signing hash (keccak256 of the RLP payload) and need the recovery byte
- * back to derive `v`/`yParity` and let the sender address be recovered
- * on-chain — a bare r||s pair without it isn't enough to build a valid
- * Ethereum signed transaction.
+ * Signs a 32-byte digest directly (`prehash: false`), never re-hashing it,
+ * and returns a 65-byte `r`(32) || `s`(32) || recovery-byte(1) encoding,
+ * canonical low-S by default. The recovery byte lets the engine derive
+ * `yParity` and recover the Sender's address; a bare r||s pair isn't
+ * enough to build a valid Ethereum signed transaction.
  *
  * `@noble/curves`'s own `format: 'recovered'` puts the recovery byte
  * *first* (`recovery || r || s`) — confirmed against its source, not
@@ -45,11 +43,8 @@ function signEd25519(privateKeyHex: string, message: Buffer): Buffer {
  * supported way to sign a pre-computed digest under secp256k1 without
  * either re-hashing it or losing the recovery id.
  */
-function signSecp256k1(privateKeyHex: string, digest: Buffer): Buffer {
+function signSecp256k1(privateKeyHex: string, digest: Uint8Array): Buffer {
   const scalar = privateKeyBytes(privateKeyHex);
-  if (digest.length !== 32) {
-    throw new Error(`secp256k1 signing expects a 32-byte digest, got ${digest.length} bytes`);
-  }
   const signature = secp256k1.sign(digest, scalar, { prehash: false, format: 'recovered' });
   const recovery = signature[0];
   const r = signature.slice(1, 33);
@@ -58,19 +53,19 @@ function signSecp256k1(privateKeyHex: string, digest: Buffer): Buffer {
 }
 
 /**
- * Signs raw message bytes under the given curve, using only dependency-free
- * cryptography (no signing vendor SDK, per ADR-0002's spirit even for this
- * reference implementation). ed25519 signs the bytes directly, matching
- * Solana's own signing model; secp256k1 signs `message` as an
- * already-final digest with no additional hashing, matching Ethereum's own
- * signing model, and returns a recoverable signature (see
- * `signSecp256k1`'s own doc comment).
+ * Signs a chain's whole unsigned transaction under the given curve (ADR-0046),
+ * using only dependency-free cryptography (no signing vendor SDK, per
+ * ADR-0002's spirit even for this reference implementation). ed25519 signs
+ * the bytes directly: on Solana they are the message itself. secp256k1
+ * treats them as an unsigned EIP-1559 serialization (`0x02 || rlp(...)`)
+ * and signs its keccak256, Ethereum's signing hash, returning a recoverable
+ * signature (see `signSecp256k1`).
  */
-export function sign(curve: Curve, privateKeyHex: string, message: Buffer): Buffer {
+export function sign(curve: Curve, privateKeyHex: string, unsignedTransaction: Buffer): Buffer {
   switch (curve) {
     case 'ed25519':
-      return signEd25519(privateKeyHex, message);
+      return signEd25519(privateKeyHex, unsignedTransaction);
     case 'secp256k1':
-      return signSecp256k1(privateKeyHex, message);
+      return signSecp256k1(privateKeyHex, keccak_256(unsignedTransaction));
   }
 }

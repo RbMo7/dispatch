@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { Keyring } from './keys.js';
@@ -7,7 +8,7 @@ type SignRequestBody = {
   chain: unknown;
   curve: unknown;
   address: unknown;
-  unsignedTxBytes: unknown;
+  unsignedTransaction: unknown;
 };
 
 function isCurve(value: unknown): value is Curve {
@@ -40,8 +41,8 @@ async function handleSign(req: IncomingMessage, res: ServerResponse, keyring: Ke
     sendJson(res, 400, { error: `unsupported curve: ${String(body.curve)}` });
     return;
   }
-  if (typeof body.unsignedTxBytes !== 'string') {
-    sendJson(res, 400, { error: 'unsignedTxBytes is required' });
+  if (typeof body.unsignedTransaction !== 'string') {
+    sendJson(res, 400, { error: 'unsignedTransaction is required' });
     return;
   }
   if (typeof body.address !== 'string') {
@@ -55,9 +56,9 @@ async function handleSign(req: IncomingMessage, res: ServerResponse, keyring: Ke
     return;
   }
 
-  const message = Buffer.from(body.unsignedTxBytes, 'base64');
+  const unsignedTransaction = Buffer.from(body.unsignedTransaction, 'base64');
   try {
-    const signature = sign(body.curve, privateKeyHex, message);
+    const signature = sign(body.curve, privateKeyHex, unsignedTransaction);
     sendJson(res, 200, { signature: signature.toString('base64') });
   } catch (cause) {
     sendJson(res, 500, {
@@ -66,15 +67,31 @@ async function handleSign(req: IncomingMessage, res: ServerResponse, keyring: Ke
   }
 }
 
+/** Constant-time, so a wrong token's response time says nothing about how much of it matched. */
+function carriesToken(header: string | undefined, expected: Buffer): boolean {
+  const given = Buffer.from(header ?? '');
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
 /**
  * The reference local-keyfile Signer's HTTP surface — implements just the
- * one `/sign` route from ADR-0002's contract. This is dev/reference-only:
- * production signing backends are an operator's own concern.
+ * one `/sign` route from ADR-0046's contract, behind a bearer token. This
+ * is dev/reference-only: production signing backends are an operator's own
+ * concern. Refuses to construct without a token, so the Signer can't start
+ * open to anything that reaches it.
  */
-export function createSignerServer(keyring: Keyring) {
+export function createSignerServer(keyring: Keyring, authToken: string) {
+  if (authToken === '') {
+    throw new Error('SIGNER_AUTH_TOKEN is required: the Signer refuses to start without a bearer token (ADR-0046)');
+  }
+  const expected = Buffer.from(`Bearer ${authToken}`);
   return createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/sign') {
       sendJson(res, 404, { error: 'not found' });
+      return;
+    }
+    if (!carriesToken(req.headers.authorization, expected)) {
+      sendJson(res, 401, { error: 'missing or wrong bearer token' });
       return;
     }
     void handleSign(req, res, keyring);
