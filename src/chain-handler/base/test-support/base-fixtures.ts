@@ -1,12 +1,28 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import solc from 'solc';
-import { createPublicClient, createWalletClient, http, keccak256, type Abi, type Chain } from 'viem';
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  keccak256,
+  type Abi,
+  type Chain,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /**
@@ -20,16 +36,13 @@ export const BASE_SEPOLIA_CHAIN_ID = 84532;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * `reference-signer/keys.dev.json`'s checked-in `secp256k1.dev-sender` key
+ * `signer/keys.dev.json`'s checked-in `secp256k1.dev-sender` key
  * — reused here (rather than generating a fresh throwaway key, unlike
  * Solana's own devnet fixtures) so the one real address an operator was
  * asked to fund with Base Sepolia ETH is the exact same one every test in
  * this suite exercises.
  */
-const KEYS_DEV_JSON_PATH = path.resolve(
-  __dirname,
-  '../../../../reference-signer/keys.dev.json',
-);
+const KEYS_DEV_JSON_PATH = path.resolve(__dirname, '../../../../signer/keys.dev.json');
 
 export type DevSenderAccount = {
   address: `0x${string}`;
@@ -47,7 +60,7 @@ export function getDevSenderAccount(): DevSenderAccount {
   };
   const privateKeyHex = keys.secp256k1['dev-sender'];
   if (!privateKeyHex) {
-    throw new Error(`reference-signer/keys.dev.json has no secp256k1 "dev-sender" key`);
+    throw new Error(`signer/keys.dev.json has no secp256k1 "dev-sender" key`);
   }
 
   const account = privateKeyToAccount(`0x${privateKeyHex}`);
@@ -87,7 +100,9 @@ async function fetchTransactionCount(address: string): Promise<number> {
   });
   const body = (await response.json()) as { result?: string; error?: unknown };
   if (!response.ok || body.result === undefined) {
-    throw new Error(`eth_getTransactionCount failed (HTTP ${response.status}): ${JSON.stringify(body.error)}`);
+    throw new Error(
+      `eth_getTransactionCount failed (HTTP ${response.status}): ${JSON.stringify(body.error)}`,
+    );
   }
   return Number.parseInt(body.result, 16);
 }
@@ -113,7 +128,9 @@ async function waitForNonceConsistency(address: string): Promise<void> {
     previous = current;
     await sleepMs(1_000);
   }
-  throw new Error(`dev-sender nonce for ${address} never read the same twice within 20s — RPC nodes still disagreeing`);
+  throw new Error(
+    `dev-sender nonce for ${address} never read the same twice within 20s — RPC nodes still disagreeing`,
+  );
 }
 
 /**
@@ -221,7 +238,10 @@ const TEST_TOKEN_INITIAL_SUPPLY = 1_000_000n * 10n ** BigInt(TEST_TOKEN_DECIMALS
 /** `solc` ships no types of its own — this is the one call this file makes into it. */
 const solcCompile = solc.compile as (input: string) => string;
 
-export function compileContract(name: string, source: string): { abi: Abi; bytecode: `0x${string}` } {
+export function compileContract(
+  name: string,
+  source: string,
+): { abi: Abi; bytecode: `0x${string}` } {
   const file = `${name}.sol`;
   const input = {
     language: 'Solidity',
@@ -234,7 +254,9 @@ export function compileContract(name: string, source: string): { abi: Abi; bytec
   };
   const fatal = output.errors?.filter((e) => e.severity === 'error');
   if (fatal && fatal.length > 0) {
-    throw new Error(`${file} failed to compile: ${fatal.map((e) => e.formattedMessage).join('\n')}`);
+    throw new Error(
+      `${file} failed to compile: ${fatal.map((e) => e.formattedMessage).join('\n')}`,
+    );
   }
   const contract = output.contracts[file]?.[name];
   if (!contract) throw new Error(`${file} produced no ${name} contract`);
@@ -271,8 +293,15 @@ export function getOrDeployTestToken(): Promise<TestTokenInfo> {
 
     const sender = getDevSenderAccount();
     const account = privateKeyToAccount(`0x${sender.privateKeyHex}`);
-    const walletClient = createWalletClient({ account, chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
-    const publicClient = createPublicClient({ chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
+    const walletClient = createWalletClient({
+      account,
+      chain: BASE_SEPOLIA,
+      transport: http(BASE_SEPOLIA_RPC_URL),
+    });
+    const publicClient = createPublicClient({
+      chain: BASE_SEPOLIA,
+      transport: http(BASE_SEPOLIA_RPC_URL),
+    });
 
     const hash = await walletClient.deployContract({
       abi,
@@ -295,7 +324,10 @@ export function getOrDeployTestToken(): Promise<TestTokenInfo> {
     const deployTx = await publicClient.getTransaction({ hash });
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
-      const nextNonce = await publicClient.getTransactionCount({ address: account.address, blockTag: 'latest' });
+      const nextNonce = await publicClient.getTransactionCount({
+        address: account.address,
+        blockTag: 'latest',
+      });
       if (nextNonce > deployTx.nonce) break;
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
@@ -354,19 +386,30 @@ let testAggregatorPromise: Promise<`0x${string}`> | undefined;
 export function getOrDeployTestAggregator(): Promise<`0x${string}`> {
   testAggregatorPromise ??= (async () => {
     if (existsSync(TEST_AGGREGATOR_CACHE_PATH)) {
-      const cached = JSON.parse(readFileSync(TEST_AGGREGATOR_CACHE_PATH, 'utf8')) as { address: `0x${string}` };
+      const cached = JSON.parse(readFileSync(TEST_AGGREGATOR_CACHE_PATH, 'utf8')) as {
+        address: `0x${string}`;
+      };
       return cached.address;
     }
     const token = await getOrDeployTestToken();
     const { abi, bytecode } = compileContract('TestAggregator', TEST_AGGREGATOR_SOURCE);
     const account = privateKeyToAccount(`0x${getDevSenderAccount().privateKeyHex}`);
-    const walletClient = createWalletClient({ account, chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
-    const publicClient = createPublicClient({ chain: BASE_SEPOLIA, transport: http(BASE_SEPOLIA_RPC_URL) });
+    const walletClient = createWalletClient({
+      account,
+      chain: BASE_SEPOLIA,
+      transport: http(BASE_SEPOLIA_RPC_URL),
+    });
+    const publicClient = createPublicClient({
+      chain: BASE_SEPOLIA,
+      transport: http(BASE_SEPOLIA_RPC_URL),
+    });
 
     const deployHash = await walletClient.deployContract({ abi, bytecode });
     const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
     if (!receipt.contractAddress) {
-      throw new Error(`TestAggregator deployment (tx ${deployHash}) did not report a contract address`);
+      throw new Error(
+        `TestAggregator deployment (tx ${deployHash}) did not report a contract address`,
+      );
     }
     await waitForNonceConsistency(account.address);
     const fundHash = await walletClient.writeContract({
@@ -385,13 +428,13 @@ export function getOrDeployTestAggregator(): Promise<`0x${string}`> {
   return testAggregatorPromise;
 }
 
-// --- In-process reference-signer-style Signer (ADR-0002's `/sign` contract) ---
+// --- In-process test Signer (ADR-0002's `/sign` contract) ---
 //
-// A real HTTP service, exactly like reference-signer's actual secp256k1
+// A real HTTP service, exactly like signer/'s actual secp256k1
 // path (same @noble/curves digest-direct, recoverable-signature approach —
 // duplicated here rather than imported, mirroring solana-chain-handler's
 // own test-support signer, which duplicates its ed25519 signing rather
-// than importing reference-signer). This file is test-only and is never
+// than importing signer/). This file is test-only and is never
 // imported by BaseChainHandler itself.
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -403,7 +446,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-/** Mirrors reference-signer/src/sign.ts's signSecp256k1 after its keccak step: signs the digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
+/** Mirrors signer/src/sign.ts's signSecp256k1 after its keccak step: signs the digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
 function signSecp256k1Digest(privateKeyHex: string, digest: Buffer): Buffer {
   const scalar = Buffer.from(privateKeyHex, 'hex');
   const signature = secp256k1.sign(digest, scalar, { prehash: false, format: 'recovered' });
@@ -455,14 +498,18 @@ export async function startTestSigner(
             .end(JSON.stringify({ error: `unsupported curve: ${String(body.curve)}` }));
           return;
         }
-        const privateKeyHex = body.address ? keysByAddress.get(body.address.toLowerCase()) : undefined;
+        const privateKeyHex = body.address
+          ? keysByAddress.get(body.address.toLowerCase())
+          : undefined;
         if (!privateKeyHex || typeof body.unsignedTransaction !== 'string') {
           res
             .writeHead(404, { 'content-type': 'application/json' })
             .end(JSON.stringify({ error: `no key for address ${String(body.address)}` }));
           return;
         }
-        const digest = Buffer.from(keccak256(Buffer.from(body.unsignedTransaction, 'base64'), 'bytes'));
+        const digest = Buffer.from(
+          keccak256(Buffer.from(body.unsignedTransaction, 'base64'), 'bytes'),
+        );
         const signature = signSecp256k1Digest(privateKeyHex, digest);
         res
           .writeHead(200, { 'content-type': 'application/json' })

@@ -1,5 +1,5 @@
 {
-  "name": "reference-signer",
+  "name": "signer",
   "version": "0.1.0",
   "description": "Reference/dev-only local-keyfile Signer implementing the engine's /sign contract (ADR-0002). A standalone service the engine never imports.",
   "type": "module",

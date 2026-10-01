@@ -21,7 +21,7 @@ import { getDevnetConnection, getFundedSenderKeypair } from './test-support/devn
  * Decisions): the real HTTP API driving a real Coordinator, a real
  * in-memory DispatchStore, and the real SolanaChainHandler on real devnet —
  * exactly dispatch-api-e2e.test.ts's own shape, extended to `mode:
- * "relay"`. Unlike that file, no reference-signer/SignerClient is started
+ * "relay"`. Unlike that file, no signer/SignerClient is started
  * for the relayed transaction itself: it's signed entirely outside the
  * engine, by a keypair the engine never sees. A SignerClient is still
  * constructed for SolanaChainHandler's own required deps, but nothing in
