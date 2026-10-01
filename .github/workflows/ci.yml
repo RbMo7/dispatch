@@ -38,3 +38,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test:offline
+      # The Signer is its own package (ADR-0002). Installed after the root
+      # lint, so that lint keeps proving it resolves without the Signer's deps.
+      - run: pnpm --dir signer install --frozen-lockfile
+      - run: pnpm --dir signer typecheck
+      - run: pnpm --dir signer test
