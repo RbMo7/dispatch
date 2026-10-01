@@ -28,7 +28,7 @@ Across both, every transaction is written down before it is sent, so a crash, a 
 
 Not built yet: webhooks (callers poll today, ADR-0023), Ethereum L1 as its own chain (ADR-0035), a Sender Pool of several sending wallets (ADR-0016), and Solana durable nonces (ADR-0007, #44).
 
-**Before mainnet:** the only Signer here, `reference-signer/`, is for development. It reads keys from a committed file and its `/sign` endpoint has no authentication. A production deployment needs its own Signer backed by a real key store. Neither chain has been run on mainnet yet.
+**Before mainnet:** the only Signer here, `reference-signer/`, is for development. It reads keys from a committed file and its `/sign` endpoint has no authentication. A production deployment needs its own Signer backed by a real key store; that's the next feature, `.scratch/production-signer/spec.md` (ADR-0046, issues #47–#52). Neither chain has been run on mainnet yet.
 
 ## Running it
 
