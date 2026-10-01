@@ -64,7 +64,7 @@ describe('BaseChainHandler smart contract call submission (real Base Sepolia)', 
       rpcUrl: BASE_SEPOLIA_RPC_URL,
       chainId: BASE_SEPOLIA_CHAIN_ID,
       senderAddress: sender.address,
-      signerClient: new SignerClient(testSigner.url),
+      signerClient: new SignerClient(testSigner.url, testSigner.token),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
     });
   }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);

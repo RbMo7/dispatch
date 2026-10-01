@@ -46,7 +46,7 @@ describe.runIf(RUN)('SolanaChainHandler devnet volume (issue 12)', () => {
 
       const handler = new SolanaChainHandler({
         connection,
-        signerClient: new SignerClient(signer.url),
+        signerClient: new SignerClient(signer.url, signer.token),
         senderAddress,
       });
 

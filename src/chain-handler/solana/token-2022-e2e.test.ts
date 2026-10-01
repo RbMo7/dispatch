@@ -64,7 +64,7 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
     signer = await startTestSigner([sender]);
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
       knownTokens: {
         T22: { mint: mint.toBase58(), decimals: testMintDecimals(), tokenProgram: 'token-2022' },

@@ -14,7 +14,7 @@ describe('SolanaChainHandler.getStatus', () => {
   it('reports PENDING for a hash that was never broadcast', async () => {
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient('http://127.0.0.1:1'),
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined),
       senderAddress: Keypair.generate().publicKey.toBase58(),
     });
 
@@ -36,7 +36,7 @@ describe('SolanaChainHandler.getStatus', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -108,7 +108,7 @@ describe('SolanaChainHandler.getStatus', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient('http://127.0.0.1:1'),
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined),
       senderAddress: funder.publicKey.toBase58(),
     });
 

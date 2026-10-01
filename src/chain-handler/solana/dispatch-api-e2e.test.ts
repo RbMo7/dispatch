@@ -97,7 +97,7 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
         Promise.resolve(
           new SolanaChainHandler({
             connection,
-            signerClient: new SignerClient(signer!.url),
+            signerClient: new SignerClient(signer!.url, signer!.token),
             senderAddress: sender.publicKey.toBase58(),
             knownTokens: { TEST: { mint: mint.toBase58(), decimals } },
           }),
@@ -195,7 +195,7 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
         Promise.resolve(
           new SolanaChainHandler({
             connection,
-            signerClient: new SignerClient(signer!.url),
+            signerClient: new SignerClient(signer!.url, signer!.token),
             senderAddress: sender.publicKey.toBase58(),
           }),
         ),

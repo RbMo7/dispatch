@@ -30,7 +30,7 @@ describe('Solana concurrent sends through the Coordinator (#42)', () => {
     const senderAddress = sender.publicKey.toBase58();
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
       maxConcurrentSends,
     });

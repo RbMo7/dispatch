@@ -34,7 +34,7 @@ describe('SolanaChainHandler bundling', () => {
     const connection = getDevnetConnection();
 
     let signCallCount = 0;
-    const countingSignerClient = new SignerClient(signer.url);
+    const countingSignerClient = new SignerClient(signer.url, signer.token);
     const realRequestSignature = countingSignerClient.requestSignature.bind(countingSignerClient);
     countingSignerClient.requestSignature = (request) => {
       signCallCount++;

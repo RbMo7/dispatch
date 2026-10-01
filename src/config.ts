@@ -14,6 +14,8 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://dispatch:dispatch@localhost:5432/dispatch',
   /** Base URL of the operator-configured Signer (ADR-0002) — swap this to point at a production Signer. */
   signerUrl: process.env.SIGNER_URL ?? 'http://localhost:8421',
+  /** ADR-0046: the bearer token every /sign request carries. Unset, the engine still starts (a Relay-only deployment never signs), but the Signer refuses to sign with 401. */
+  signerAuthToken: process.env.SIGNER_AUTH_TOKEN || undefined,
   /** Comma-separated chain names (ADR-0019), e.g. "solana,evm" — parsed via chain-registry's parseEnabledChains. */
   enabledChains: process.env.ENABLED_CHAINS ?? '',
   /** Operator-configured shared secret (ADR-0022) — override in any non-dev deployment. */

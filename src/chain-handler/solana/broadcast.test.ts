@@ -43,7 +43,7 @@ describe('SolanaChainHandler.broadcast', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -69,7 +69,7 @@ describe('SolanaChainHandler.broadcast', () => {
   it('surfaces a broadcast rejection as a structured error, not a thrown exception', async () => {
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient('http://127.0.0.1:1'),
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined),
       senderAddress: Keypair.generate().publicKey.toBase58(),
     });
 

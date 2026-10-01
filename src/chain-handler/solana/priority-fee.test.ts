@@ -109,7 +109,7 @@ describe('SolanaChainHandler priority fee (#34)', () => {
   it('refuses to sign a single Call too big for one transaction — a structured error, never a throw', async () => {
     const handler = new SolanaChainHandler({
       connection: new Connection('http://127.0.0.1:1'),
-      signerClient: new SignerClient('http://127.0.0.1:1'), // never reached
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined), // never reached
       senderAddress: sender,
     });
     const huge: SolanaCall = {

@@ -113,7 +113,7 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
         rpcUrl: RPC_URL,
         chainId: CHAIN_ID,
         senderAddress: sender.address,
-        signerClient: new SignerClient(signer.url),
+        signerClient: new SignerClient(signer.url, signer.token),
         nonceHistoryStore: new InMemoryNonceHistoryStore(),
         knownTokens,
       }),

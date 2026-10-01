@@ -50,7 +50,7 @@ describe('Base nonce gaps (#24, real Base Sepolia)', () => {
       rpcUrl: BASE_SEPOLIA_RPC_URL,
       chainId: BASE_SEPOLIA_CHAIN_ID,
       senderAddress: sender.address,
-      signerClient: new SignerClient(signerUrl),
+      signerClient: new SignerClient(signerUrl, testSigner.token),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
     });
   }
@@ -99,7 +99,7 @@ describe('Base nonce gaps (#24, real Base Sepolia)', () => {
       req.on('end', () => {
         void fetch(new URL('/sign', testSigner.url), {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', authorization: req.headers.authorization ?? '' },
           body: Buffer.concat(chunks),
         })
           .then((r) => r.json() as Promise<{ signature: string }>)

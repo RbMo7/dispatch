@@ -38,7 +38,7 @@ describe('Solana resubmission of a provably expired transaction after a restart 
     const newHandler = () =>
       new SolanaChainHandler({
         connection,
-        signerClient: new SignerClient(signer!.url),
+        signerClient: new SignerClient(signer!.url, signer!.token),
         senderAddress,
       });
 

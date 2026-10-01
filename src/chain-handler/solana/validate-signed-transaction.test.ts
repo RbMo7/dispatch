@@ -13,7 +13,7 @@ import { SolanaChainHandler } from './solana-chain-handler.js';
 function buildHandler(): SolanaChainHandler {
   return new SolanaChainHandler({
     connection: new Connection('http://127.0.0.1:1'),
-    signerClient: new SignerClient('http://127.0.0.1:1'),
+    signerClient: new SignerClient('http://127.0.0.1:1', undefined),
     senderAddress: Keypair.generate().publicKey.toBase58(),
   });
 }

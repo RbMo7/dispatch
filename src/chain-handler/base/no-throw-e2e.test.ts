@@ -41,7 +41,7 @@ describe('BaseChainHandler never throws on its sign/broadcast paths (#10, real B
       rpcUrl: BASE_SEPOLIA_RPC_URL,
       chainId: BASE_SEPOLIA_CHAIN_ID,
       senderAddress: sender.address,
-      signerClient: new SignerClient(testSigner.url),
+      signerClient: new SignerClient(testSigner.url, testSigner.token),
       nonceHistoryStore,
     });
   }

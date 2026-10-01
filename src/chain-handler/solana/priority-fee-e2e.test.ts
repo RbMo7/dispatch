@@ -27,7 +27,7 @@ describe('SolanaChainHandler priority fee on devnet (#34)', () => {
     const connection = getDevnetConnection();
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
       computeUnitPriceMicroLamports: 1_000,
     });
@@ -76,7 +76,7 @@ describe('SolanaChainHandler priority fee on devnet (#34)', () => {
     const connection = getDevnetConnection();
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
       computeUnitPriceMicroLamports: 'auto',
       maxComputeUnitPriceMicroLamports: 50_000,
