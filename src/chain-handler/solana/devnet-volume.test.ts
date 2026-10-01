@@ -21,13 +21,15 @@ import {
  * bugs only surfacing at this scale.
  */
 const TOTAL_PAYMENTS = 500;
+/** Spends ~0.55 devnet SOL and takes ~4 minutes, so it only runs when asked: RUN_SOLANA_VOLUME=1 (like Base's, ADR-0040). */
+const RUN = process.env.RUN_SOLANA_VOLUME === '1';
 const AMOUNT_LAMPORTS = 1_000_000n; // comfortably above rent-exemption (issue 05's own lesson), modest against the 5 SOL test wallet
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe('SolanaChainHandler devnet volume (issue 12)', () => {
+describe.runIf(RUN)('SolanaChainHandler devnet volume (issue 12)', () => {
   let signer: TestSignerHandle | undefined;
 
   afterAll(async () => {
