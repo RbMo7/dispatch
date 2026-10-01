@@ -25,7 +25,7 @@ describe('SolanaChainHandler.sign', () => {
 
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -65,7 +65,7 @@ describe('SolanaChainHandler.sign', () => {
 
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -95,7 +95,7 @@ describe('SolanaChainHandler.sign', () => {
 
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient('http://127.0.0.1:1'), // nothing listens here
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined), // nothing listens here
       senderAddress: sender.publicKey.toBase58(),
     });
 

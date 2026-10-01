@@ -9,7 +9,7 @@ import type {
 import type { Call } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
-import type { DispatchError } from '../domain/errors.js';
+import type { DispatchError, DispatchErrorCode } from '../domain/errors.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
@@ -34,6 +34,18 @@ const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** ADR-0042: how many times a Call whose transaction provably expired is resubmitted before it is reported FAILED. */
 const MAX_EXPIRY_RESUBMISSIONS = 3;
+
+/**
+ * Fee-bump failures that end bumping for good: the Call's attempts go to
+ * the cap and the original stays tracked, rebroadcast and abandoned as with
+ * Retry Policy off. Every other failure counts one attempt and is retried.
+ */
+const BUMPING_STOPS_ON: Partial<Record<DispatchErrorCode, string>> = {
+  /** #9 (ADR-0037): some version already landed. */
+  NONCE_ALREADY_USED: 'nonce already used on-chain — some version landed',
+  /** ADR-0046: the Signer refused the replacement on purpose; the original may still land. */
+  SIGNER_REFUSED: 'the Signer refused the replacement',
+};
 
 /** #20 (ADR-0041): how long a claim may stay `broadcasting` with unsent items before another tick resumes it. */
 const STALE_CLAIM_MS = 5 * 60 * 1000;
@@ -892,16 +904,17 @@ export class Coordinator {
       for (const member of members) await this.store.setFeeBumpAttempts(member.id, feeBumpAttempts);
     };
 
-    const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
-    if (!prepared.ok && prepared.error.code === 'NONCE_ALREADY_USED') {
-      log.info(
-        { error: prepared.error },
-        'fee-bump: nonce already used on-chain — some version landed, bumping stops',
-      );
+    const stopBumping = async (error: DispatchError): Promise<boolean> => {
+      const reason = BUMPING_STOPS_ON[error.code];
+      if (reason === undefined) return false;
+      log.info({ error }, `fee-bump: ${reason}, bumping stops`);
       await recordAttempts(config.maxFeeBumps);
-      return 'handled';
-    }
+      return true;
+    };
+
+    const prepared = await handler.prepareReplacement!(signedBytes, senderAddress);
     const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
+    if (!signed.ok && (await stopBumping(signed.error))) return 'handled';
     const replacementHash = signed.ok ? handler.transactionHash(signed.value) : signed;
     if (!signed.ok || !replacementHash.ok) {
       const error = !replacementHash.ok ? replacementHash.error : undefined;
@@ -943,14 +956,7 @@ export class Coordinator {
     }
     // Definitely refused: undo it, so the original is the live version again.
     for (const replacement of replacements) await this.store.undoReplacement(replacement.id);
-    if (broadcast.error.code === 'NONCE_ALREADY_USED') {
-      log.info(
-        { error: broadcast.error },
-        'fee-bump: nonce already used on-chain — some version landed, bumping stops',
-      );
-      await recordAttempts(config.maxFeeBumps);
-      return 'handled';
-    }
+    if (await stopBumping(broadcast.error)) return 'handled';
     log.warn(
       { error: broadcast.error, feeBumpAttempts: transaction.feeBumpAttempts + 1 },
       'fee-bump attempt failed — counted against the cap, retried next time it is stuck',
@@ -1016,6 +1022,12 @@ export class Coordinator {
 
     for (const chunk of chunks.values()) {
       const signed = await handler.sign(chunk.prepared, senderAddress);
+      if (!signed.ok && signed.error.code === 'SIGNER_REFUSED') {
+        // ADR-0046: refused on purpose, so retrying cannot help, and the original can never land.
+        log.warn({ error: signed.error }, 'resubmission refused by the Signer — failed');
+        for (const member of chunk.members) await this.store.markFailed(member.id, signed.error);
+        continue;
+      }
       const newHash = signed.ok ? handler.transactionHash(signed.value) : signed;
       if (!signed.ok || !newHash.ok) {
         // The original can't land, so nothing is lost: retried next tick.

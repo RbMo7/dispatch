@@ -28,7 +28,7 @@ Across both, every transaction is written down before it is sent, so a crash, a 
 
 Not built yet: webhooks (callers poll today, ADR-0023), Ethereum L1 as its own chain (ADR-0035), a Sender Pool of several sending wallets (ADR-0016), and Solana durable nonces (ADR-0007, #44).
 
-**Before mainnet:** the only Signer here, `reference-signer/`, is for development. It reads keys from a committed file and its `/sign` endpoint has no authentication. A production deployment needs its own Signer backed by a real key store; that's the next feature, `.scratch/production-signer/spec.md` (ADR-0046, issues #47–#52). Neither chain has been run on mainnet yet.
+**Before mainnet:** the only Signer here, `reference-signer/`, is for development. It reads keys from a committed file, and Compose gives it and the engine a shared dev bearer token (`SIGNER_AUTH_TOKEN`). A production deployment needs its own Signer backed by a real key store; that's the next feature, `.scratch/production-signer/spec.md` (ADR-0046, issues #47–#52). Neither chain has been run on mainnet yet.
 
 ## Running it
 
@@ -50,7 +50,8 @@ Or locally (Node 22, pnpm):
 docker compose up -d postgres
 pnpm install
 pnpm db:migrate
-pnpm --dir reference-signer install && pnpm --dir reference-signer dev   # the dev Signer
+pnpm --dir reference-signer install
+SIGNER_AUTH_TOKEN=dev-only-signer-token pnpm --dir reference-signer dev   # the dev Signer; set the same token in .env
 pnpm dev:api        # in one terminal
 pnpm dev:worker     # in another
 ```

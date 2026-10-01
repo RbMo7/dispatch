@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import solc from 'solc';
-import { createPublicClient, createWalletClient, http, type Abi, type Chain } from 'viem';
+import { createPublicClient, createWalletClient, http, keccak256, type Abi, type Chain } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /**
@@ -402,7 +403,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-/** Mirrors reference-signer/src/sign.ts's signSecp256k1: signs an already-final digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
+/** Mirrors reference-signer/src/sign.ts's signSecp256k1 after its keccak step: signs the digest directly (no re-hashing), returns r||s||recovery (65 bytes). */
 function signSecp256k1Digest(privateKeyHex: string, digest: Buffer): Buffer {
   const scalar = Buffer.from(privateKeyHex, 'hex');
   const signature = secp256k1.sign(digest, scalar, { prehash: false, format: 'recovered' });
@@ -414,6 +415,8 @@ function signSecp256k1Digest(privateKeyHex: string, digest: Buffer): Buffer {
 
 export type TestSignerHandle = {
   url: string;
+  /** The bearer token this signer demands (ADR-0046); pass it to `SignerClient`. */
+  token: string;
   close: () => Promise<void>;
 };
 
@@ -427,17 +430,24 @@ export async function startTestSigner(
 ): Promise<TestSignerHandle> {
   const keysByAddress = new Map(accounts.map((a) => [a.address.toLowerCase(), a.privateKeyHex]));
 
+  const token = randomBytes(16).toString('hex');
   const server = createServer((req, res) => {
     void (async () => {
       if (req.method !== 'POST' || req.url !== '/sign') {
         res.writeHead(404).end();
         return;
       }
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res
+          .writeHead(401, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ error: 'missing or wrong bearer token' }));
+        return;
+      }
       try {
         const body = JSON.parse((await readBody(req)).toString('utf8')) as {
           curve?: string;
           address?: string;
-          unsignedTxBytes?: string;
+          unsignedTransaction?: string;
         };
         if (body.curve !== 'secp256k1') {
           res
@@ -446,13 +456,13 @@ export async function startTestSigner(
           return;
         }
         const privateKeyHex = body.address ? keysByAddress.get(body.address.toLowerCase()) : undefined;
-        if (!privateKeyHex || typeof body.unsignedTxBytes !== 'string') {
+        if (!privateKeyHex || typeof body.unsignedTransaction !== 'string') {
           res
             .writeHead(404, { 'content-type': 'application/json' })
             .end(JSON.stringify({ error: `no key for address ${String(body.address)}` }));
           return;
         }
-        const digest = Buffer.from(body.unsignedTxBytes, 'base64');
+        const digest = Buffer.from(keccak256(Buffer.from(body.unsignedTransaction, 'base64'), 'bytes'));
         const signature = signSecp256k1Digest(privateKeyHex, digest);
         res
           .writeHead(200, { 'content-type': 'application/json' })
@@ -473,6 +483,7 @@ export async function startTestSigner(
 
   return {
     url: `http://127.0.0.1:${address.port}`,
+    token,
     close: () =>
       new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };

@@ -31,7 +31,7 @@ const handler = await BaseChainHandler.create({
   rpcUrl: BASE_SEPOLIA_RPC_URL,
   chainId: BASE_SEPOLIA_CHAIN_ID,
   senderAddress: sender.address,
-  signerClient: new SignerClient(signer.url),
+  signerClient: new SignerClient(signer.url, signer.token),
   nonceHistoryStore: new InMemoryNonceHistoryStore(),
   // Enables Bulk Call so its conformance case runs here too; a
   // never-broadcast hash is answered before any trace is attempted.

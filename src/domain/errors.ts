@@ -2,6 +2,8 @@ export type DispatchErrorCode =
   | 'INSUFFICIENT_FUNDS'
   | 'INVALID_RECIPIENT'
   | 'SIGNER_UNREACHABLE'
+  /** ADR-0046: the Signer answered 403 `{ error, reason }`, a deliberate policy refusal. Definite, never retried. */
+  | 'SIGNER_REFUSED'
   | 'CHAIN_REJECTED'
   | 'RPC_UNAVAILABLE'
   | 'CHAIN_NOT_ENABLED'

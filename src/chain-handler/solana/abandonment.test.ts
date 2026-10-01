@@ -36,7 +36,7 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -105,7 +105,7 @@ describe('SolanaChainHandler.getStatus provable-expiry resolution (issue 08)', (
   it('leaves a hash it has no blockhash bookkeeping for as PENDING rather than guessing FAILED', async () => {
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient('http://127.0.0.1:1'),
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined),
       senderAddress: Keypair.generate().publicKey.toBase58(),
     });
     const result = await handler.getStatus(bs58.encode(Buffer.alloc(64, 9)));

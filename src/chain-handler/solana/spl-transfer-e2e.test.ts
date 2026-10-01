@@ -51,7 +51,7 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
       knownTokens: { TEST: { mint: mint.toBase58(), decimals } },
     });
@@ -110,7 +110,7 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -194,7 +194,7 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 

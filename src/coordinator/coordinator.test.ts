@@ -254,6 +254,28 @@ describe('Coordinator.processQueuedDispatches', () => {
     expect(transaction?.error).toEqual({ code: 'SIGNER_UNREACHABLE', message: 'no signer' });
   });
 
+  it('fails a Call the Signer refuses (SIGNER_REFUSED) and never signs it again on later ticks', async () => {
+    const { store, handler, coordinator } = setup();
+    const refused = { code: 'SIGNER_REFUSED', message: 'signer refused: over the cap' } as const;
+    handler.sign.mockResolvedValue(err(refused));
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(10);
+    await coordinator.pollPendingTransactions(10);
+    await coordinator.processQueuedDispatches(10);
+
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).not.toHaveBeenCalled();
+    const transactions = await store.listTransactions(dispatch.id);
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({ status: 'FAILED', error: refused });
+  });
+
   it('records a Call failure when broadcast fails', async () => {
     const { store, handler, coordinator } = setup();
     handler.broadcast.mockResolvedValueOnce(
@@ -944,6 +966,27 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
     expect(currentVersions(store, dispatch.id)).toEqual([
       { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
       { hash: 'hash-2', status: 'DROPPED', feeBumpAttempts: 1 },
+    ]);
+  });
+
+  it('stops bumping when the Signer refuses the replacement, and keeps the original tracked (ADR-0046)', async () => {
+    const { store, handler, coordinator, advance } = setupWithStuckHandling();
+    const { dispatch } = await createStuckCandidate(store, true);
+    handler.sign.mockResolvedValue(err({ code: 'SIGNER_REFUSED', message: 'signer refused: over the cap' }));
+    advance(STUCK_AFTER_MS);
+
+    await coordinator.pollPendingTransactions(10);
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
+    ]);
+
+    advance(STUCK_AFTER_MS);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).toHaveBeenCalledWith('signed-bytes');
+    expect(currentVersions(store, dispatch.id)).toEqual([
+      { hash: 'hash-1', status: 'PENDING', feeBumpAttempts: MAX_FEE_BUMPS },
     ]);
   });
 
@@ -1850,6 +1893,23 @@ describe('Coordinator resubmission of provably expired transactions (ADR-0042)',
       'DROPPED',
       'PENDING',
     ]);
+  });
+
+  it('fails the expired Call when the Signer refuses its resubmission, and never re-signs it (ADR-0046)', async () => {
+    const { store, handler, coordinator, dispatch } = await sendOne();
+    const refused = { code: 'SIGNER_REFUSED', message: 'signer refused: over the cap' } as const;
+    handler.sign.mockClear();
+    handler.broadcast.mockClear();
+    handler.sign.mockResolvedValue(err(refused));
+
+    await coordinator.pollPendingTransactions(10);
+    await coordinator.pollPendingTransactions(10);
+
+    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.broadcast).not.toHaveBeenCalled();
+    const rows = await store.listTransactions(dispatch.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'FAILED', error: refused });
   });
 
   it('marks the resubmission FAILED when the node definitely refuses it', async () => {

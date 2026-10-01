@@ -119,7 +119,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
           Promise.resolve(
             new SolanaChainHandler({
               connection,
-              signerClient: new SignerClient('http://127.0.0.1:1'), // never called — Relay Dispatch signs nothing
+              signerClient: new SignerClient('http://127.0.0.1:1', undefined), // never called — Relay Dispatch signs nothing
               senderAddress: sender.publicKey.toBase58(),
             }),
           ),
@@ -175,7 +175,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
         Promise.resolve(
           new SolanaChainHandler({
             connection,
-            signerClient: new SignerClient('http://127.0.0.1:1'),
+            signerClient: new SignerClient('http://127.0.0.1:1', undefined),
             senderAddress: sender.publicKey.toBase58(),
           }),
         ),

@@ -120,6 +120,7 @@ Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the 
 | `CHAIN_REJECTED` | The chain definitely refused or reverted it, or a request was invalid for this chain (wrong chain ID, bad signature, …) |
 | `RPC_UNAVAILABLE` | The chain's RPC couldn't be reached or answered (timeout, rate limit, 5xx) |
 | `SIGNER_UNREACHABLE` | The Signer couldn't be reached or returned an unusable signature |
+| `SIGNER_REFUSED` | The Signer refused to sign it under its policy (ADR-0046). Definite: the Call is `FAILED` and never retried; `message` carries the Signer's reason |
 | `CHAIN_NOT_ENABLED` | The request names a chain this deployment hasn't enabled (ADR-0019) |
 | `NONCE_ALREADY_USED` | The transaction's nonce was already consumed on-chain (Base) |
 

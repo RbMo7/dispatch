@@ -1,4 +1,4 @@
-import { createPrivateKey, sign as nodeSign } from 'node:crypto';
+import { createPrivateKey, randomBytes, sign as nodeSign } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -234,6 +234,8 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
 
 export type TestSignerHandle = {
   url: string;
+  /** The bearer token this signer demands (ADR-0046); pass it to `SignerClient`. */
+  token: string;
   close: () => Promise<void>;
 };
 
@@ -247,17 +249,24 @@ export async function startTestSigner(keypairs: Keypair[]): Promise<TestSignerHa
     keypairs.map((kp) => [kp.publicKey.toBase58(), Buffer.from(kp.secretKey.slice(0, 32))]),
   );
 
+  const token = randomBytes(16).toString('hex');
   const server = createServer((req, res) => {
     void (async () => {
       if (req.method !== 'POST' || req.url !== '/sign') {
         res.writeHead(404).end();
         return;
       }
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res
+          .writeHead(401, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ error: 'missing or wrong bearer token' }));
+        return;
+      }
       try {
         const body = JSON.parse((await readBody(req)).toString('utf8')) as {
           curve?: string;
           address?: string;
-          unsignedTxBytes?: string;
+          unsignedTransaction?: string;
         };
         if (body.curve !== 'ed25519') {
           res
@@ -266,13 +275,13 @@ export async function startTestSigner(keypairs: Keypair[]): Promise<TestSignerHa
           return;
         }
         const seed = body.address ? seedsByAddress.get(body.address) : undefined;
-        if (!seed || typeof body.unsignedTxBytes !== 'string') {
+        if (!seed || typeof body.unsignedTransaction !== 'string') {
           res
             .writeHead(404, { 'content-type': 'application/json' })
             .end(JSON.stringify({ error: `no key for address ${String(body.address)}` }));
           return;
         }
-        const message = Buffer.from(body.unsignedTxBytes, 'base64');
+        const message = Buffer.from(body.unsignedTransaction, 'base64');
         const signature = signEd25519(seed, message);
         res
           .writeHead(200, { 'content-type': 'application/json' })
@@ -293,6 +302,7 @@ export async function startTestSigner(keypairs: Keypair[]): Promise<TestSignerHa
 
   return {
     url: `http://127.0.0.1:${address.port}`,
+    token,
     close: () =>
       new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };

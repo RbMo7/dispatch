@@ -1,5 +1,7 @@
 x-database-url: &database-url postgres://dispatch:dispatch@postgres:5432/dispatch
 x-signer-url: &signer-url http://signer:8421
+# Dev only (ADR-0046): engine and Signer share one bearer token. Replace it in any real deployment.
+x-signer-auth-token: &signer-auth-token dev-only-signer-token
 
 services:
   postgres:
@@ -29,6 +31,7 @@ services:
       PORT: 8420
       DATABASE_URL: *database-url
       SIGNER_URL: *signer-url
+      SIGNER_AUTH_TOKEN: *signer-auth-token
     ports:
       - '8420:8420'
     depends_on:
@@ -45,6 +48,7 @@ services:
     environment:
       DATABASE_URL: *database-url
       SIGNER_URL: *signer-url
+      SIGNER_AUTH_TOKEN: *signer-auth-token
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,6 +60,7 @@ services:
       dockerfile: reference-signer/Dockerfile
     environment:
       PORT: 8421
+      SIGNER_AUTH_TOKEN: *signer-auth-token
     ports:
       - '8421:8421'
 

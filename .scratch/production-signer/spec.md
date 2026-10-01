@@ -14,7 +14,7 @@ The engine is ready to send on mainnet except for the keys. The only Signer is `
 
 ## Solution
 
-One Signer service, `signer/` (renamed from `reference-signer/`), with pluggable key backends: `keyfile` for development and `aws-kms` for production. It implements ADR-0046's contract:
+One Signer service, `signer/` (renamed from `reference-signer/`), with pluggable key backends: `keyfile` for development, `privy` (Privy server wallets) and `aws-kms` for production. The operator picks a backend per address in the Signer's config. It implements ADR-0046's contract:
 
 - the whole unsigned transaction, not a hash;
 - bearer-token authentication;
@@ -25,7 +25,7 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 
 ## User Stories
 
-1. As an operator, I want my keys in AWS KMS, never in a file or in process memory, so that a compromised host can't exfiltrate them.
+1. As an operator, I want my keys in AWS KMS or Privy, never in a file or in process memory, so that a compromised host can't exfiltrate them.
 2. As an operator, I want the Signer to refuse a transaction outside my policy (wrong chain, unknown destination, too much value), so that a compromised engine can't drain the Sender.
 3. As an operator, I want only my engine able to request signatures, so that nothing else on the network can.
 4. As an operator, I want every signing decision logged, so that I can audit what was signed and what was refused, and why.
@@ -37,6 +37,7 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 ## Implementation Decisions
 
 - **Wire contract (ADR-0046).** `POST /sign {chain, curve, address, unsignedTransaction}` plus `Authorization: Bearer`. EVM: the unsigned EIP-1559 serialization, which the Signer keccak-hashes. Solana: the message bytes. Responses: `200 {signature}`, `400` malformed, `401` auth, `403 {error, reason}` policy, `404` unknown address, `5xx` failure.
+- **Contract edge cases (#47, decided 2026-10-01).** Only a `403` with a `{ error, reason }` body is `SIGNER_REFUSED`; any other `403` stays `SIGNER_UNREACHABLE`. A refused Base fee-bump stops bumping (the original stays tracked); a refused Solana resubmission marks the expired original `FAILED`. An engine without `SIGNER_AUTH_TOKEN` starts with a warning.
 - **Engine.**
   - `SignerClient` sends `SIGNER_AUTH_TOKEN` and maps `403` to `SIGNER_REFUSED`, a new `DispatchErrorCode` documented in `docs/api.md`.
   - The Base handler sends `serializeTransaction(tx)` and recovers the signer address; a mismatch is `SIGNER_UNREACHABLE` and the nonce is released.
@@ -44,12 +45,17 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 - **Signer layout.**
   - `signer/src/server.ts` covers HTTP, auth and the audit log.
   - `policy.ts` decodes and checks transactions.
-  - `backends/keyfile.ts` and `backends/aws-kms.ts` share one `KeyBackend { address(curve, keyRef), sign(curve, keyRef, payload) }` interface. ADR-0012 allows it: there are two real implementations.
+  - `backends/keyfile.ts`, `backends/privy.ts` and `backends/aws-kms.ts` share one `KeyBackend { address(curve, keyRef), sign(curve, keyRef, payload) }` interface. ADR-0012 allows it: there are three real implementations.
   - Config is one JSON file (`SIGNER_CONFIG`), mapping each address to `{ curve, backend, keyRef, policy? }`. At startup the Signer derives every address from its key and refuses to start on a mismatch.
 - **Keyfile backend** derives addresses from the keys, which fixes the name-versus-address bug. It logs a loud warning that it is for development only.
+- **Privy backend (#55).**
+  - `keyRef` is a Privy server wallet id. Credentials: `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, and optionally `PRIVY_AUTHORIZATION_KEY` (signs each request for wallets owned by an authorization key; the mainnet checklist requires it).
+  - secp256k1: `raw_sign` with the keccak digest; the 64-byte `r||s` is normalized to low-s and the recovery bit found against the wallet's address (a helper the KMS backend reuses).
+  - ed25519: `rpc signTransaction` on the message wrapped in a transaction; the fee payer's signature is extracted from the result.
+  - At startup each wallet's address is fetched and checked against the config.
 - **AWS KMS backend.**
   - secp256k1: key spec `ECC_SECG_P256K1`, `Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`, so KMS signs the keccak digest as given. The DER result becomes `r,s`, normalized to low-s, and the recovery bit is found by recovering against the key's address. The address comes from `GetPublicKey`.
-  - ed25519 for Solana: check whether AWS KMS supports Ed25519 signing (a spike in its own ticket). If it doesn't, Solana keys stay on keyfile or a later GCP KMS backend, and the docs say so.
+  - ed25519 for Solana: check whether AWS KMS supports Ed25519 signing (a spike in its own ticket). If it doesn't, production Solana keys go on Privy, and the docs say so.
 - **Policy v1** is per address and optional; with no policy, the Signer signs anything for that address, but still only with authentication.
   - `chainIds`: EVM chain IDs the key may sign for.
   - `allowedDestinations`: EVM `to` addresses, or Solana program IDs besides System, Token, Token-2022, Associated Token and ComputeBudget.
@@ -61,20 +67,21 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 
 ## Testing Decisions
 
-- **Signer, offline:** auth (missing or wrong token gives 401); the policy matrix (each rule allows and refuses; nested `aggregate3Value`; undecodable refused); the keyfile backend's address derivation; KMS against a mocked client (DER parsing, high-s normalization, recovery bit, address mismatch at startup).
+- **Signer, offline:** auth (missing or wrong token gives 401); the policy matrix (each rule allows and refuses; nested `aggregate3Value`; undecodable refused); the keyfile backend's address derivation; KMS and Privy against mocked clients (DER parsing, high-s normalization, recovery bit, Solana signature extraction, Privy authorization header, address mismatch at startup).
 - **Engine, offline:** `SignerClient` 401, 403 and 5xx mapping; Base recovered-address mismatch refused with the nonce released; a `SIGNER_REFUSED` Call is `FAILED` and never retried.
-- **Live (local, opt-in):** existing live tests keep passing on the new contract, since their in-process signers are updated too. `RUN_AWS_KMS=1` covers a real KMS key signing a Base Sepolia transaction that lands. A Docker Compose smoke test runs engine plus Signer over HTTP with auth.
+- **Live (local, opt-in):** existing live tests keep passing on the new contract, since their in-process signers are updated too. `RUN_PRIVY=1` covers Privy wallets signing a Base Sepolia and a Solana devnet transaction that land; `RUN_AWS_KMS=1` covers a real KMS key signing a Base Sepolia transaction that lands. A Docker Compose smoke test runs engine plus Signer over HTTP with auth.
 
 ## Tickets
 
-In order, each blocked by the one before unless noted:
+Worked in this order:
 
 1. #47: contract v2 (whole transaction, auth, `SIGNER_REFUSED`, engine verifies signatures).
 2. #48: rename to `signer/`, key backends, address-keyed config, audit log, a working Compose stack.
-3. #49: policy v1.
-4. #50: AWS KMS secp256k1. Needs #48; can run alongside #49.
-5. #51: Ed25519 in KMS (a spike first).
-6. #52: runbook and mainnet checklist. Needs #49, #50 and #51.
+3. #55: Privy backend, both curves. Needs #48.
+4. #50: AWS KMS secp256k1. Needs #48; reuses #55's recovery helper.
+5. #49: policy v1. Needs #48.
+6. #51: Ed25519 in KMS (a spike first); if unsupported, Solana production keys go on Privy.
+7. #52: runbook and mainnet checklist. Needs #49, #50, #51 and #55.
 
 ## Out of Scope
 

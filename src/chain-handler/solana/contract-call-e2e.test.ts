@@ -34,7 +34,7 @@ describe('SolanaChainHandler arbitrary contract call (real devnet)', () => {
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -87,7 +87,7 @@ describe('SolanaChainHandler arbitrary contract call (real devnet)', () => {
 
     const handler = new SolanaChainHandler({
       connection: getDevnetConnection(),
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
     });
 

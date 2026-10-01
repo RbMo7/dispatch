@@ -49,7 +49,7 @@ describe('SolanaChainHandler.broadcast bookkeeping for externally-signed transac
     // fail if `broadcast` ever wrongly attempted to resign with it.
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient('http://127.0.0.1:1'), // never called
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined), // never called
       senderAddress: sender.publicKey.toBase58(),
     });
 
@@ -97,7 +97,7 @@ describe('SolanaChainHandler.broadcast bookkeeping for externally-signed transac
 
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient('http://127.0.0.1:1'),
+      signerClient: new SignerClient('http://127.0.0.1:1', undefined),
       senderAddress: sender.publicKey.toBase58(),
     });
 

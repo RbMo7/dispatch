@@ -684,7 +684,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       chain: 'solana',
       curve: 'ed25519',
       address: senderAddress,
-      unsignedTxBytes: message.toString('base64'),
+      unsignedTransaction: message.toString('base64'),
     });
     if (!signResult.ok) {
       log.warn({ error: signResult.error }, 'signer request failed');

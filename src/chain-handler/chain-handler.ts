@@ -10,9 +10,9 @@ import type { Result } from '../domain/result.js';
  * structure only that Chain Handler understands; the engine core never
  * decodes or assumes anything EVM- or Solana-shaped about it. Typed as
  * `string` rather than `unknown` because it has to actually travel
- * somewhere un-opaquely: `sign` hands it to the Signer client as
- * `unsignedTxBytes` (ADR-0002, itself string-typed end-to-end), so there's
- * no unspecified serialization step to hide behind a wider type.
+ * somewhere un-opaquely: `sign` turns it into the chain's own unsigned
+ * serialization and hands that to the Signer client as base64
+ * `unsignedTransaction` (ADR-0046), string-typed end to end.
  */
 export type UnsignedTransaction = string;
 

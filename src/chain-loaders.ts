@@ -21,6 +21,7 @@ import type { StuckHandlingConfig } from './coordinator/coordinator.js';
 import type { Chain } from './domain/chain.js';
 import { PostgresNonceHistoryStore } from './repository/postgres-nonce-history-store.js';
 import { db } from './db/client.js';
+import { logger } from './logger.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
 
@@ -43,7 +44,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
         // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
         fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
       }),
-      signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
+      signerClient: new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
       senderAddress: config.solana.senderAddress,
       knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
       computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
@@ -59,7 +60,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       rpcUrl: config.base.rpcUrl,
       chainId: config.base.chainId,
       senderAddress: config.base.senderAddress,
-      signerClient: new SignerClient(config.signerUrl, config.rpcTimeoutMs),
+      signerClient: new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
       knownTokens: parseBaseKnownTokens(config.base.knownTokens),
       nonceHistoryStore: new PostgresNonceHistoryStore(db),
       feeBumpPercent: config.base.feeBumpPercent,
@@ -117,6 +118,11 @@ const stuckHandlingByChain: Partial<Record<Chain, StuckHandlingConfig>> = {
 };
 
 export async function loadChainRegistry(): Promise<ChainRegistry> {
+  if (config.signerAuthToken === undefined) {
+    logger.warn(
+      'SIGNER_AUTH_TOKEN is unset: the Signer will refuse every signing request with 401 (a Relay-only deployment can ignore this)',
+    );
+  }
   return ChainRegistry.load(parseEnabledChains(config.enabledChains), loaders);
 }
 

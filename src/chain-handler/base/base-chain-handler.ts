@@ -10,6 +10,7 @@ import {
   isAddress,
   keccak256,
   parseTransaction,
+  recoverAddress,
   recoverTransactionAddress,
   serializeTransaction,
   type Address,
@@ -383,13 +384,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   }
 
   /**
-   * issue 03: rebuilds the exact unsigned transaction `prepare` encoded,
-   * re-derives its signing hash (`keccak256` of the unsigned serialized
-   * bytes — EIP-1559's own signing-hash definition), and delegates to the
-   * Signer client (ADR-0002) for a raw recoverable signature over that
-   * exact digest (reference-signer's own `r||s||recovery` contract — see
-   * its `sign.ts` doc comment). Folds the returned signature back into a
-   * fully signed transaction via viem.
+   * issue 03: rebuilds the exact unsigned transaction `prepare` encoded and
+   * sends its unsigned EIP-1559 serialization (`0x02 || rlp(...)`) to the
+   * Signer client (ADR-0046), which keccak-hashes it itself and answers
+   * with a raw recoverable `r||s||recovery` signature. Folds that signature
+   * back into a fully signed transaction via viem.
    */
   async sign(
     prepared: PreparedTransaction,
@@ -430,10 +429,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     // #10: viem's own serialization checks (e.g. a tip above the fee cap)
     // throw on bad input — answered as a structured error.
     let tx: ReturnType<typeof toViemTransaction>;
-    let signingHash: `0x${string}`;
+    let unsignedSerialized: `0x${string}`;
     try {
       tx = toViemTransaction(encoded, nonce);
-      signingHash = keccak256(serializeTransaction(tx));
+      unsignedSerialized = serializeTransaction(tx);
     } catch (cause) {
       return fail({ ...mapBaseFailure(cause), code: 'CHAIN_REJECTED' });
     }
@@ -442,7 +441,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       chain: 'base',
       curve: 'secp256k1',
       address: senderAddress,
-      unsignedTxBytes: Buffer.from(signingHash.slice(2), 'hex').toString('base64'),
+      unsignedTransaction: Buffer.from(unsignedSerialized.slice(2), 'hex').toString('base64'),
     });
     if (!signResult.ok) {
       this.logger.warn({ error: signResult.error }, 'signer request failed');
@@ -467,6 +466,28 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       yParity = yParity === 0 ? 1 : 0;
     }
     const s = `0x${sValue.toString(16).padStart(64, '0')}` as const;
+
+    // ADR-0046: a misconfigured Signer could sign with the wrong key. Caught
+    // here, the nonce goes back instead of a send that can only be refused.
+    let recovered: Address;
+    try {
+      recovered = await recoverAddress({
+        hash: keccak256(unsignedSerialized),
+        signature: { r, s, yParity },
+      });
+    } catch (cause) {
+      return fail({
+        code: 'SIGNER_UNREACHABLE',
+        message: 'signer returned a signature that recovers to no address',
+        chainDetail: extractMessage(cause),
+      });
+    }
+    if (!isSameAddress(recovered, senderAddress)) {
+      return fail({
+        code: 'SIGNER_UNREACHABLE',
+        message: `signer returned a signature for ${recovered}, expected ${senderAddress}`,
+      });
+    }
 
     const signed = serializeTransaction(tx, { r, s, yParity });
     if (assigned) this.unsentNonces.add(nonce);

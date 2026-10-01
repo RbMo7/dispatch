@@ -57,7 +57,7 @@ runChainHandlerConformanceSuite(
   () =>
     new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(signer.url),
+      signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
     }),
   {

@@ -8,7 +8,8 @@ export type SignRequest = {
   chain: Chain;
   curve: Curve;
   address: string;
-  unsignedTxBytes: string;
+  /** ADR-0046: base64 of the chain's whole unsigned transaction, never a pre-computed hash, so the Signer can decode and police what it signs. */
+  unsignedTransaction: string;
 };
 
 export type SignResponse = {
@@ -24,6 +25,8 @@ export type SignResponse = {
 export class SignerClient {
   constructor(
     private readonly signerUrl: string,
+    /** ADR-0046: sent as a bearer token. Unset only on a deployment that never signs; the Signer then answers 401. */
+    private readonly authToken: string | undefined,
     /** issue 15: aborts the request past this deadline rather than letting a hung Signer block the caller forever — see rpc-timeout.ts. */
     private readonly timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS,
   ) {}
@@ -33,7 +36,10 @@ export class SignerClient {
     try {
       response = await fetch(new URL('/sign', this.signerUrl), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(this.authToken === undefined ? {} : { authorization: `Bearer ${this.authToken}` }),
+        },
         body: JSON.stringify(request),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -45,13 +51,7 @@ export class SignerClient {
       });
     }
 
-    if (!response.ok) {
-      return err({
-        code: 'SIGNER_UNREACHABLE',
-        message: `signer responded with ${response.status}`,
-        chainDetail: await response.text().catch(() => undefined),
-      });
-    }
+    if (!response.ok) return err(await signerFailure(response));
 
     let body: SignResponse;
     try {
@@ -66,4 +66,39 @@ export class SignerClient {
 
     return ok(body);
   }
+}
+
+/**
+ * ADR-0046: only a 403 whose body is the Signer's own `{ error, reason }`
+ * is a deliberate policy refusal. Any other 403 may come from a proxy or
+ * WAF in front of it, so it joins 401, 5xx and the rest as the Signer
+ * being unusable, which the caller may retry.
+ */
+async function signerFailure(response: Response): Promise<DispatchError> {
+  const text = await response.text().catch(() => undefined);
+  const refusal = response.status === 403 ? parseRefusal(text) : undefined;
+  if (refusal) {
+    return {
+      code: 'SIGNER_REFUSED',
+      message: `signer refused: ${refusal.reason}`,
+      chainDetail: refusal,
+    };
+  }
+  return {
+    code: 'SIGNER_UNREACHABLE',
+    message: `signer responded with ${response.status}`,
+    chainDetail: text,
+  };
+}
+
+function parseRefusal(text: string | undefined): { error: string; reason: string } | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(text ?? '');
+  } catch {
+    return undefined;
+  }
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { error, reason } = body as Record<string, unknown>;
+  return typeof error === 'string' && typeof reason === 'string' ? { error, reason } : undefined;
 }

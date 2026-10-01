@@ -51,7 +51,7 @@ describe('Base write-ahead crash recovery (#20, real Base Sepolia)', () => {
       rpcUrl: BASE_SEPOLIA_RPC_URL,
       chainId: BASE_SEPOLIA_CHAIN_ID,
       senderAddress: sender.address,
-      signerClient: new SignerClient(testSigner.url),
+      signerClient: new SignerClient(testSigner.url, testSigner.token),
       nonceHistoryStore,
       ...(fetchFn ? { fetch: fetchFn } : {}),
     });
