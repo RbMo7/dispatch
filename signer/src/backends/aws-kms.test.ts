@@ -13,6 +13,7 @@ import {
   type KmsApi,
   type KmsSdk,
 } from './aws-kms.js';
+import { createBackends } from './index.js';
 
 const N = secp256k1.Point.CURVE().n;
 const KEY_ID = 'arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab';
@@ -242,5 +243,11 @@ describe('createKmsApi', () => {
     await expect(createKmsApi(sdk).publicKey(KEY_ID)).rejects.toThrow(
       `KMS key ${KEY_ID} is ${described}; it must be ECC_SECG_P256K1 for SIGN_VERIFY`,
     );
+  });
+});
+
+describe('createBackends for aws-kms', () => {
+  it('builds a real KMS client from no Signer variables', () => {
+    expect(createBackends(['aws-kms'], {}).has('aws-kms')).toBe(true);
   });
 });
