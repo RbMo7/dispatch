@@ -21,6 +21,7 @@ import {
 import {
   encodeFunctionData,
   erc20Abi,
+  parseAbi,
   serializeTransaction,
   type Address,
   type Hex,
@@ -254,6 +255,24 @@ describe('EVM policy', () => {
       unsigned({ to: AGGREGATOR, data: '0x174dea710000' }),
     ],
     ['a truncated ERC-20 transfer', unsigned({ to: TOKEN, data: '0xa9059cbb0000' })],
+    [
+      "Multicall3's aggregate3, whose inner calls go unread",
+      unsigned({
+        to: AGGREGATOR,
+        data: encodeFunctionData({
+          abi: parseAbi(['function aggregate3((address,bool,bytes)[])']),
+          args: [
+            [
+              [
+                TOKEN,
+                false,
+                encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [OTHER, 1n] }),
+              ],
+            ],
+          ],
+        }),
+      }),
+    ],
   ])('refuses %s as undecodable', (_, tx) => {
     const decision = evaluate({}, tx);
     expect(decision.ok).toBe(false);

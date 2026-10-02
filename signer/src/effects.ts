@@ -75,6 +75,21 @@ const AGGREGATE3_VALUE_ABI = [
 const AGGREGATE3_VALUE = toFunctionSelector('aggregate3Value((address,bool,uint256,bytes)[])');
 const ERC20_TRANSFER = toFunctionSelector('transfer(address,uint256)');
 
+/**
+ * Multicall3's other batch functions make calls this decoder doesn't read,
+ * with the aggregator as sender, so an allowed aggregator would let them
+ * past every rule.
+ */
+const UNREAD_BATCHES: ReadonlyMap<string, string> = new Map(
+  [
+    'aggregate((address,bytes)[])',
+    'aggregate3((address,bool,bytes)[])',
+    'tryAggregate(bool,(address,bytes)[])',
+    'blockAndAggregate((address,bytes)[])',
+    'tryBlockAndAggregate(bool,(address,bytes)[])',
+  ].map((signature) => [toFunctionSelector(signature), signature.split('(')[0] ?? signature]),
+);
+
 class UndecodableError extends Error {}
 
 function errorMessage(cause: unknown): string {
@@ -107,6 +122,9 @@ function evmCall(effects: TransactionEffects, target: Hex, value: bigint, data: 
     for (const call of calls) forwarded += evmCall(effects, call.target, call.value, call.callData);
     return value > forwarded ? value : forwarded;
   }
+
+  const batch = UNREAD_BATCHES.get(selector);
+  if (batch) throw new UndecodableError(`${batch} to ${to} makes calls the Signer does not read`);
 
   if (selector === ERC20_TRANSFER) {
     let amount: bigint;

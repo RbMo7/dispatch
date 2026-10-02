@@ -94,7 +94,7 @@ With a policy set, a transaction the Signer can't read is refused, and the reaso
 
 Limits are per transaction only. The engine bundles several Payments into one transaction (one Bulk Call chunk on Base, up to a full message on Solana), so a cap applies to a whole bundle, and a batch larger than the cap is refused. A limit across transactions, such as a daily cap, needs state in the Signer and is out of scope.
 
-An allowed destination is trusted with whatever it does next. The Signer looks inside `aggregate3Value` only: any other function of a listed contract, including Multicall3's other `aggregate` functions, can make calls the policy never sees. List only contracts you trust that far.
+An allowed destination is trusted with whatever it does next. The Signer looks inside `aggregate3Value` and refuses Multicall3's other batch functions (`aggregate`, `aggregate3`, `tryAggregate`, `blockAndAggregate`, `tryBlockAndAggregate`) whenever a policy is set, since their inner calls go unread. Any other function of a listed contract can still make calls the policy never sees, so list only contracts you trust that far.
 
 ## Backends
 
