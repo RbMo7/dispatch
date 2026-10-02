@@ -6,6 +6,7 @@ import { keccak256, parseTransaction, serializeTransaction, toHex } from 'viem';
 
 import { CURVES, type Curve, type KeyBackend } from './backends/key-backend.js';
 import { lookupKey, type AddressEntry } from './config.js';
+import { evaluatePolicy } from './policy.js';
 
 /** A configured address with the backend holding its key. */
 export type KeyringEntry = { entry: AddressEntry; backend: KeyBackend };
@@ -108,6 +109,12 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
   }
 
   const unsigned = Buffer.from(unsignedTransaction, 'base64');
+  if (key.entry.policy) {
+    const decision = evaluatePolicy(key.entry.policy, curve, unsigned);
+    if (!decision.ok) {
+      return { status: 403, body: { error: 'policy refused', reason: decision.reason }, ...known };
+    }
+  }
   // Parsed before signing, so a signed EVM transaction always has a hash to audit.
   let evmTransaction: ReturnType<typeof parseTransaction> | undefined;
   if (curve === 'secp256k1') {
@@ -184,6 +191,8 @@ export function createSignerServer({
   return createServer((req, res) => {
     void answer(req).then(({ status, body, address, chain, transactionId }) => {
       // Audited before answering, so no signature leaves without its line.
+      // A policy refusal's own reason says more than its `error`.
+      const reason = body.reason ?? body.error;
       const record: AuditRecord = {
         time: new Date().toISOString(),
         address,
@@ -191,7 +200,7 @@ export function createSignerServer({
         transactionId,
         decision: decisionFor(status),
         status,
-        reason: typeof body.error === 'string' ? body.error : undefined,
+        reason: typeof reason === 'string' ? reason : undefined,
       };
       audit(JSON.stringify(record));
       res.writeHead(status, { 'content-type': 'application/json' });
