@@ -32,6 +32,70 @@ Backends can be mixed in one Signer. At startup the Signer asks each backend for
 
 Every request is audited as one JSON line on stdout.
 
+## Policy
+
+An address may carry a `policy`. The Signer then decodes each transaction before signing it and refuses one that breaks a rule, with `403 { "error": "policy refused", "reason": "..." }`. The engine reports that as `SIGNER_REFUSED`, with the reason in the message, and never retries it. The audit line records the decision as `refused`, with the same reason. An address without a policy is signed for unconditionally, though still only for a caller with the bearer token.
+
+Every rule is optional, and each is checked on its own. Amounts are decimal strings in base units (wei or lamports, or the token's smallest unit), since JSON numbers can't hold them exactly. An unknown rule, a bad address or a bad amount stops the Signer at startup, so a misspelled rule never goes silently unenforced.
+
+A Base Sender that may only pay two recipients and USDC, up to 0.01 ETH and 500 USDC per transaction:
+
+```json
+{
+  "0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A": {
+    "curve": "secp256k1",
+    "backend": "aws-kms",
+    "keyRef": "<key id>",
+    "policy": {
+      "chainIds": [8453],
+      "allowedDestinations": [
+        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222"
+      ],
+      "maxNativePerTransaction": "10000000000000000",
+      "maxTokenPerTransaction": { "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "500000000" }
+    }
+  }
+}
+```
+
+A Solana Sender that may use no program beyond the default ones, up to 1 SOL and 500 USDC per transaction:
+
+```json
+{
+  "3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe": {
+    "curve": "ed25519",
+    "backend": "privy",
+    "keyRef": "<wallet id>",
+    "policy": {
+      "allowedDestinations": [],
+      "maxNativePerTransaction": "1000000000",
+      "maxTokenPerTransaction": { "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "500000000" }
+    }
+  }
+}
+```
+
+### Rules
+
+- `chainIds` (EVM only). The transaction's chain id must be listed. A transaction without one is refused. Setting it on an `ed25519` address is a config error.
+- `allowedDestinations`.
+  - EVM. The transaction's `to` must be listed, and so must the `target` of every call inside an `aggregate3Value` (the engine's Bulk Call), at any depth. A contract creation has no `to` and is refused. Addresses compare case-insensitively. A Bulk Call needs both its aggregator and every item's target listed. A Payment in a token needs the token contract listed, not the recipient.
+  - Solana. Every instruction's program must be listed, except the ones every payment uses: System, Token, Token-2022, Associated Token and ComputeBudget. An empty list therefore allows plain SOL and SPL payments and nothing else. It does not restrict who receives SOL or tokens; cap the amounts for that.
+- `maxNativePerTransaction`.
+  - EVM. The larger of the transaction's `value` and the sum of the values its `aggregate3Value` calls forward. Multicall3 requires the two to be equal, but an aggregator the caller names might not, so the larger counts, and the two are never added together.
+  - Solana. The lamports of every System `Transfer`, `TransferWithSeed`, `CreateAccount`, `CreateAccountWithSeed` and `WithdrawNonceAccount`, summed. Other System instructions move no lamports and are allowed. Rent paid for an account created through another program, such as the Associated Token program creating a recipient's token account, is not counted.
+- `maxTokenPerTransaction`, keyed by token contract address (EVM) or mint (Solana).
+  - EVM. ERC-20 `transfer(address,uint256)` calls to a capped token, at the top level or inside `aggregate3Value`, summed per token. Any other call to a capped token (`approve`, `transferFrom`, an unknown function) is refused, since it could move the token without being counted. Tokens without a cap are not looked at.
+  - Solana. `TransferChecked` instructions (Token and Token-2022), summed per mint. While any token cap is set, every other Token or Token-2022 instruction (`Transfer`, which names no mint, `Approve`, and the rest) is refused for the same reason, as is a `TransferChecked` in a v0 message whose mint comes from an address lookup table, which the Signer can't resolve offline.
+
+With a policy set, a transaction the Signer can't read is refused, and the reason names what it couldn't read: bytes that aren't a transaction, an EVM transaction type other than legacy, EIP-2930 or EIP-1559, malformed `aggregate3Value` or `transfer` calldata, System instruction data that doesn't parse, or a Solana message with bytes left over after decoding. An empty `policy: {}` has no rules, but still refuses what it can't read.
+
+Limits are per transaction only. The engine bundles several Payments into one transaction (one Bulk Call chunk on Base, up to a full message on Solana), so a cap applies to a whole bundle, and a batch larger than the cap is refused. A limit across transactions, such as a daily cap, needs state in the Signer and is out of scope.
+
+An allowed destination is trusted with whatever it does next. The Signer looks inside `aggregate3Value` only: any other function of a listed contract, including Multicall3's other `aggregate` functions, can make calls the policy never sees. List only contracts you trust that far.
+
 ## Backends
 
 ### `keyfile`
