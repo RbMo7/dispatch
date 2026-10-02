@@ -119,17 +119,23 @@ On `secp256k1` the Signer asks Privy to sign the transaction's keccak256 hash (t
 
 ### `aws-kms`
 
-Keys held in AWS KMS, for `secp256k1` only; Solana keys go on Privy until #51 settles whether KMS can hold them. The private key never leaves KMS. `keyRef` is the key id, key ARN or alias ARN.
+Keys held in AWS KMS, for both curves: a secp256k1 key signs for Base, an Ed25519 key for Solana. The private key never leaves KMS. `keyRef` is the key id, key ARN or alias ARN.
 
 The Signer has no variables of its own for this backend. The AWS SDK finds the region and credentials through its standard provider chain: `AWS_REGION`, then `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, a profile (`AWS_PROFILE`), or the instance or task role it runs under. Prefer a role to long-lived access keys.
 
-Create the key as an asymmetric signing key on secp256k1:
+Create each key as an asymmetric signing key with the key spec its curve needs:
+
+| Curve | Chain | Key spec |
+| --- | --- | --- |
+| `secp256k1` | Base | `ECC_SECG_P256K1` |
+| `ed25519` | Solana | `ECC_NIST_EDWARDS25519` |
 
 ```sh
 aws kms create-key --key-spec ECC_SECG_P256K1 --key-usage SIGN_VERIFY --description "dispatch Base sender"
+aws kms create-key --key-spec ECC_NIST_EDWARDS25519 --key-usage SIGN_VERIFY --description "dispatch Solana sender"
 ```
 
-The Signer refuses to start on a key with any other key spec or usage. Its credentials need only these two actions, on that key alone:
+The Signer refuses to start on a key whose spec doesn't match its address's curve, or whose usage isn't `SIGN_VERIFY`, and names the key, its spec and the spec it needs. Its credentials need only these two actions, on those keys alone, whichever the curve:
 
 ```json
 {
@@ -144,14 +150,14 @@ The Signer refuses to start on a key with any other key spec or usage. Its crede
 }
 ```
 
-The key's EVM address comes from its public key. To find it, configure the key under a placeholder address and start the Signer. It refuses to start and prints the address the key derives:
+The key's address comes from its public key: an EVM address for secp256k1, a base58 Solana address for Ed25519. To find it, configure the key under a placeholder address and start the Signer. It refuses to start and prints the address the key derives:
 
 ```
 signer refused to start: these addresses don't match their keys:
   0x0000000000000000000000000000000000000000: expected 0x0000000000000000000000000000000000000000, derived 0x...
 ```
 
-Then configure the key under that derived address:
+A Solana key works the same way under any placeholder address. Then configure the key under that derived address, with its curve:
 
 ```json
 {
@@ -164,3 +170,7 @@ Then configure the key under that derived address:
 ```
 
 The Signer asks KMS to sign the transaction's keccak256 hash as given (`Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`), turns the DER signature into `r` and `s`, lowers a high `s`, and finds the recovery bit against the key's address. A signature that doesn't recover to that address is never returned.
+
+On `ed25519` the Signer asks KMS to sign the Solana message itself with pure Ed25519 (`Sign` with `MessageType: RAW` and `ED25519_SHA_512`), the RFC 8032 signature Solana verifies. It never uses `ED25519_PH_SHA_512`, which is HashEdDSA (Ed25519ph) over a digest and produces signatures Solana rejects. AWS documents the signature only as FIPS 186-5's EdDSA signature, which is the 64-byte `R || S`; the Signer refuses any other length, then verifies the signature against the key's address over the message before returning it. KMS signs RAW messages of up to 4096 bytes; a whole Solana transaction, signatures included, is at most 1232.
+
+KMS support for Ed25519 is from the AWS KMS Developer Guide's [key spec reference](https://docs.aws.amazon.com/kms/latest/developerguide/symm-asymm-choose-key-spec.html): `ECC_NIST_EDWARDS25519` is for signing and verification only, and `ED25519_SHA_512` is the "NIST FIPS 186-5, Section 7.6, EdDSA signature", for which KMS requires `MessageType:RAW`. The 4096-byte limit is from the [`Sign` API reference](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html).

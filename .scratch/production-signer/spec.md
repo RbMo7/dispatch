@@ -55,7 +55,7 @@ The engine sends the full transaction and the token, maps a `403` to the new err
   - At startup each wallet's address is fetched and checked against the config.
 - **AWS KMS backend.**
   - secp256k1: key spec `ECC_SECG_P256K1`, `Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`, so KMS signs the keccak digest as given. The DER result becomes `r,s`, normalized to low-s, and the recovery bit is found by recovering against the key's address. The address comes from `GetPublicKey`.
-  - ed25519 for Solana: check whether AWS KMS supports Ed25519 signing (a spike in its own ticket). If it doesn't, production Solana keys go on Privy, and the docs say so.
+  - ed25519 for Solana (#51): supported. Key spec `ECC_NIST_EDWARDS25519`, `Sign` with `MessageType: RAW` and `ED25519_SHA_512`, which is pure Ed25519 (RFC 8032, FIPS 186-5 Section 7.6), what Solana verifies; never `ED25519_PH_SHA_512` (HashEdDSA over a digest). The signature must be 64 bytes (AWS documents it only as the FIPS 186-5 EdDSA signature, `R || S`) and is verified against the key's address over the message. The address is the base58 of the 32-byte key in the Ed25519 SubjectPublicKeyInfo. Source: the AWS KMS Developer Guide's key spec reference, https://docs.aws.amazon.com/kms/latest/developerguide/symm-asymm-choose-key-spec.html.
 - **Policy v1** is per address and optional; with no policy, the Signer signs anything for that address, but still only with authentication.
   - `chainIds`: EVM chain IDs the key may sign for.
   - `allowedDestinations`: EVM `to` addresses, or Solana program IDs besides System, Token, Token-2022, Associated Token and ComputeBudget.
@@ -69,7 +69,7 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 
 - **Signer, offline:** auth (missing or wrong token gives 401); the policy matrix (each rule allows and refuses; nested `aggregate3Value`; undecodable refused); the keyfile backend's address derivation; KMS and Privy against mocked clients (DER parsing, high-s normalization, recovery bit, Solana signature extraction, Privy authorization header, address mismatch at startup).
 - **Engine, offline:** `SignerClient` 401, 403 and 5xx mapping; Base recovered-address mismatch refused with the nonce released; a `SIGNER_REFUSED` Call is `FAILED` and never retried.
-- **Live (local, opt-in):** existing live tests keep passing on the new contract, since their in-process signers are updated too. `RUN_PRIVY=1` covers Privy wallets signing a Base Sepolia and a Solana devnet transaction that land; `RUN_AWS_KMS=1` covers a real KMS key signing a Base Sepolia transaction that lands. A Docker Compose smoke test runs engine plus Signer over HTTP with auth.
+- **Live (local, opt-in):** existing live tests keep passing on the new contract, since their in-process signers are updated too. `RUN_PRIVY=1` covers Privy wallets signing a Base Sepolia and a Solana devnet transaction that land; `RUN_AWS_KMS=1` covers a real KMS key signing a Base Sepolia transaction that lands, and with `AWS_KMS_ED25519_KEY_ID` an Ed25519 KMS key signing a Solana devnet transaction that lands. A Docker Compose smoke test runs engine plus Signer over HTTP with auth.
 
 ## Tickets
 
@@ -80,7 +80,7 @@ Worked in this order:
 3. #55: Privy backend, both curves. Needs #48.
 4. #50: AWS KMS secp256k1. Needs #48; reuses #55's recovery helper.
 5. #49: policy v1. Needs #48.
-6. #51: Ed25519 in KMS (a spike first); if unsupported, Solana production keys go on Privy.
+6. #51: Ed25519 in KMS. KMS supports it, so the `aws-kms` backend signs for Solana too.
 7. #52: runbook and mainnet checklist. Needs #49, #50, #51 and #55.
 
 ## Out of Scope
