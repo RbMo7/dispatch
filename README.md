@@ -28,7 +28,7 @@ Across both, every transaction is written down before it is sent, so a crash, a 
 
 Not built yet: webhooks (callers poll today, ADR-0023), Ethereum L1 as its own chain (ADR-0035), a Sender Pool of several sending wallets (ADR-0016), and Solana durable nonces (ADR-0007, #44).
 
-**Before mainnet:** the Signer, `signer/`, picks a key backend per address from its config (`SIGNER_CONFIG`) and audits every request as a JSON line on stdout. Its backends are `keyfile`, which reads keys from a committed file and is for development, and `privy`, which signs with Privy server wallets ([`signer/README.md`](./signer/README.md)). Compose runs it with the dev keys (`signer/signer.config.dev.json`) and a dev bearer token shared with the engine (`SIGNER_AUTH_TOKEN`). An AWS KMS backend and per-address policy are the rest of `.scratch/production-signer/spec.md` (ADR-0046). Neither chain has been run on mainnet yet.
+**Before mainnet:** follow [`docs/signer.md`](./docs/signer.md), the Signer runbook and mainnet checklist. The Signer, `signer/`, picks a key backend per address from its config (`SIGNER_CONFIG`), enforces a per-address policy, and audits every request as a JSON line on stdout. Its production backends are `privy` (Privy server wallets) and `aws-kms`, for both chains; `keyfile` reads raw keys from a file and is for development only ([`signer/README.md`](./signer/README.md)). Compose runs it with the dev keys (`signer/signer.config.dev.json`) and a dev bearer token shared with the engine (`SIGNER_AUTH_TOKEN`); replace the keys, the config and the token in any real deployment. The KMS backend has not yet been run against real KMS (#61), and neither chain has been run on mainnet yet.
 
 ## Running it
 
@@ -71,6 +71,7 @@ Configuration is environment variables, documented in [`.env.example`](./.env.ex
 - `RUN_BASE_VOLUME=1 pnpm test src/chain-handler/base/base-sepolia-volume.test.ts`: the opt-in Base volume run (100+ real transactions, a fee-bump, and a nonce audit against the chain, ADR-0040).
 - `RUN_SOLANA_VOLUME=1 pnpm test src/chain-handler/solana/devnet-volume.test.ts`: the opt-in Solana volume run (500 real devnet payments, bundled, about 0.55 devnet SOL). The Solana expiry tests, which do run in `pnpm test`, wait out real blockhash expiry and take several minutes each.
 - `RUN_PRIVY=1 pnpm test src/signer/privy-e2e.test.ts`: Privy server wallets signing a Base Sepolia and a Solana devnet transfer through the real Signer, and a Signer without the authorization key refused. It needs an operator's Privy app and two wallets owned by its authorization key (`PRIVY_*` in `.env.example`); the wallets are topped up from the dev Senders when low.
+- `RUN_AWS_KMS=1 pnpm test src/signer/aws-kms-e2e.test.ts`: an AWS KMS key signing a Base Sepolia transfer through the real Signer, and with `AWS_KMS_ED25519_KEY_ID` an Ed25519 key signing a Solana devnet transfer. It needs an operator's KMS keys and AWS credentials (`AWS_KMS_*` in `.env.example`). Not yet run against real KMS (#61).
 
 ## License
 
