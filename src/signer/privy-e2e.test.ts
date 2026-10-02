@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -60,7 +61,7 @@ import { SignerClient } from './client.js';
  * Senders the other live tests use, only when it runs low.
  */
 const RUN = process.env.RUN_PRIVY === '1';
-const SIGNER_TOKEN = 'privy-e2e-token';
+const SIGNER_TOKEN = randomBytes(16).toString('hex');
 
 const BASE_MIN_BALANCE = parseEther('0.0002');
 const BASE_TOP_UP = parseEther('0.0005');
