@@ -27,6 +27,8 @@ function liveTestFiles(dir: string): string[] {
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    globalSetup: ['src/db/test-database.ts'],
+    setupFiles: ['src/db/test-database-env.ts'],
     exclude:
       process.env.TEST_TIER === 'offline'
         ? [...configDefaults.exclude, ...liveTestFiles('src')]

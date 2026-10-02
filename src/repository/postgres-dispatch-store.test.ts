@@ -10,11 +10,11 @@ import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
- * (the `postgres` service in docker-compose.yml, migrated), not
+ * (a throwaway database on the `postgres` service, ADR-0047), not
  * `InMemoryDispatchStore` — proving the real schema, its constraints, and
  * Drizzle's own query mapping, none of which the rest of the suite ever
  * touches. Runs unconditionally, same as solana-chain-handler's devnet
- * tests: no reachable, migrated Postgres means this tier fails loudly,
+ * tests: no reachable Postgres means this tier fails loudly,
  * not silently skips.
  */
 
