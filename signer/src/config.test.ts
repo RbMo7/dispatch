@@ -52,6 +52,27 @@ describe('parseSignerConfig', () => {
     ).toThrow(new RegExp(`${EVM}: unknown backend[\\s\\S]*${SOLANA}: keyRef`));
   });
 
+  it('parses a policy, and names each of its problems under its address', () => {
+    const config = parseSignerConfig({
+      [EVM]: { curve: 'secp256k1', backend: 'keyfile', keyRef: 'k', policy: { chainIds: [8453] } },
+    });
+    expect(config.get(EVM.toLowerCase())?.policy).toEqual({ chainIds: new Set([8453]) });
+
+    expect(() =>
+      parseSignerConfig({
+        [SOLANA]: {
+          curve: 'ed25519',
+          backend: 'keyfile',
+          keyRef: 'k',
+          policy: { chainIds: [1], maxNative: '1' },
+        },
+      }),
+    ).toThrow(
+      `${SOLANA}: policy has an unknown rule "maxNative"\n` +
+        `  ${SOLANA}: policy.chainIds applies only to secp256k1 (EVM) addresses`,
+    );
+  });
+
   it('refuses one EVM address written twice in different case', () => {
     expect(() =>
       parseSignerConfig({

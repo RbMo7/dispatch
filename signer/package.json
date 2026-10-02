@@ -27,6 +27,7 @@
     "@aws-sdk/client-kms": "^3.1146.0",
     "@noble/curves": "^2.4.0",
     "@privy-io/node": "^0.35.0",
+    "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "bs58": "^6.0.0",
     "viem": "^2.56.9"
