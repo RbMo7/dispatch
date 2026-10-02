@@ -2,6 +2,8 @@
 
 The Signer holds each Sender's key and answers the engine's `POST /sign` (ADR-0002, ADR-0046). It is its own package: the engine never imports it, and vendor SDKs live only here.
 
+This is the reference. To set up and run a production Signer, follow [`docs/signer.md`](../docs/signer.md), the runbook and mainnet checklist.
+
 ## Configuration
 
 Environment variables:
@@ -113,7 +115,7 @@ Keys held by Privy server wallets. The private key never leaves Privy; the Signe
 - `PRIVY_APP_ID`, `PRIVY_APP_SECRET`: the app's API credentials.
 - `PRIVY_AUTHORIZATION_KEY` (optional, recommended): the private key of a Privy authorization key, as Privy shows it (`wallet-auth:...`). When set, every signing request is signed with it.
 
-Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. The mainnet checklist (#52) will require one.
+Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. [`docs/signer.md`](../docs/signer.md#privy) shows how to create owned wallets, and its mainnet checklist requires them.
 
 On `secp256k1` the Signer asks Privy to sign the transaction's keccak256 hash (the `secp256k1_sign` RPC; Privy refuses `raw_sign` for Ethereum wallets), lowers a high `s` and finds the recovery bit against the wallet's address. On `ed25519` it sends the Solana message to Privy as an unsigned transaction (`signTransaction`), so Privy's own transaction policies still apply. Either way, a signature that doesn't verify for the wallet's address is never returned.
 
@@ -123,51 +125,14 @@ Keys held in AWS KMS, for both curves: a secp256k1 key signs for Base, an Ed2551
 
 The Signer has no variables of its own for this backend. The AWS SDK finds the region and credentials through its standard provider chain: `AWS_REGION`, then `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, a profile (`AWS_PROFILE`), or the instance or task role it runs under. Prefer a role to long-lived access keys.
 
-Create each key as an asymmetric signing key with the key spec its curve needs:
+Each key is an asymmetric signing key (`SIGN_VERIFY`) with the key spec its curve needs:
 
 | Curve | Chain | Key spec |
 | --- | --- | --- |
 | `secp256k1` | Base | `ECC_SECG_P256K1` |
 | `ed25519` | Solana | `ECC_NIST_EDWARDS25519` |
 
-```sh
-aws kms create-key --key-spec ECC_SECG_P256K1 --key-usage SIGN_VERIFY --description "dispatch Base sender"
-aws kms create-key --key-spec ECC_NIST_EDWARDS25519 --key-usage SIGN_VERIFY --description "dispatch Solana sender"
-```
-
-The Signer refuses to start on a key whose spec doesn't match its address's curve, or whose usage isn't `SIGN_VERIFY`, and names the key, its spec and the spec it needs. Its credentials need only these two actions, on those keys alone, whichever the curve:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["kms:GetPublicKey", "kms:Sign"],
-      "Resource": "arn:aws:kms:<region>:<account>:key/<key id>"
-    }
-  ]
-}
-```
-
-The key's address comes from its public key: an EVM address for secp256k1, a base58 Solana address for Ed25519. To find it, configure the key under a placeholder address and start the Signer. It refuses to start and prints the address the key derives:
-
-```
-signer refused to start: these addresses don't match their keys:
-  0x0000000000000000000000000000000000000000: expected 0x0000000000000000000000000000000000000000, derived 0x...
-```
-
-A Solana key works the same way under any placeholder address. Then configure the key under that derived address, with its curve:
-
-```json
-{
-  "<the key's derived address>": {
-    "curve": "secp256k1",
-    "backend": "aws-kms",
-    "keyRef": "arn:aws:kms:<region>:<account>:key/<key id>"
-  }
-}
-```
+The Signer refuses to start on a key whose spec doesn't match its address's curve, or whose usage isn't `SIGN_VERIFY`, and names the key, its spec and the spec it needs. Its credentials need only `kms:GetPublicKey` and `kms:Sign`, on those keys alone. The key's address comes from its public key: an EVM address for secp256k1, a base58 Solana address for Ed25519. [`docs/signer.md`](../docs/signer.md#aws-kms) has the commands to create a key, its IAM policy, and how to find its address.
 
 The Signer asks KMS to sign the transaction's keccak256 hash as given (`Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`), turns the DER signature into `r` and `s`, lowers a high `s`, and finds the recovery bit against the key's address. A signature that doesn't recover to that address is never returned.
 
