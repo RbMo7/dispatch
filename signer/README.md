@@ -52,3 +52,51 @@ Keys held by Privy server wallets. The private key never leaves Privy; the Signe
 Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. The mainnet checklist (#52) will require one.
 
 On `secp256k1` the Signer asks Privy to sign the transaction's keccak256 hash (the `secp256k1_sign` RPC; Privy refuses `raw_sign` for Ethereum wallets), lowers a high `s` and finds the recovery bit against the wallet's address. On `ed25519` it sends the Solana message to Privy as an unsigned transaction (`signTransaction`), so Privy's own transaction policies still apply. Either way, a signature that doesn't verify for the wallet's address is never returned.
+
+### `aws-kms`
+
+Keys held in AWS KMS, for `secp256k1` only; Solana keys go on Privy until #51 settles whether KMS can hold them. The private key never leaves KMS. `keyRef` is the key id, key ARN or alias ARN.
+
+The Signer has no variables of its own for this backend. The AWS SDK finds the region and credentials through its standard provider chain: `AWS_REGION`, then `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, a profile (`AWS_PROFILE`), or the instance or task role it runs under. Prefer a role to long-lived access keys.
+
+Create the key as an asymmetric signing key on secp256k1:
+
+```sh
+aws kms create-key --key-spec ECC_SECG_P256K1 --key-usage SIGN_VERIFY --description "dispatch Base sender"
+```
+
+The Signer refuses to start on a key with any other key spec or usage. Its credentials need only these two actions, on that key alone:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["kms:GetPublicKey", "kms:Sign"],
+      "Resource": "arn:aws:kms:<region>:<account>:key/<key id>"
+    }
+  ]
+}
+```
+
+The key's EVM address comes from its public key. To find it, configure the key under a placeholder address and start the Signer. It refuses to start and prints the address the key derives:
+
+```
+signer refused to start: these addresses don't match their keys:
+  0x0000000000000000000000000000000000000000: expected 0x0000000000000000000000000000000000000000, derived 0x...
+```
+
+Then configure the key under that derived address:
+
+```json
+{
+  "<the key's derived address>": {
+    "curve": "secp256k1",
+    "backend": "aws-kms",
+    "keyRef": "arn:aws:kms:<region>:<account>:key/<key id>"
+  }
+}
+```
+
+The Signer asks KMS to sign the transaction's keccak256 hash as given (`Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`), turns the DER signature into `r` and `s`, lowers a high `s`, and finds the recovery bit against the key's address. A signature that doesn't recover to that address is never returned.
