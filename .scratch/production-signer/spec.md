@@ -50,7 +50,7 @@ The engine sends the full transaction and the token, maps a `403` to the new err
 - **Keyfile backend** derives addresses from the keys, which fixes the name-versus-address bug. It logs a loud warning that it is for development only.
 - **Privy backend (#55).**
   - `keyRef` is a Privy server wallet id. Credentials: `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, and optionally `PRIVY_AUTHORIZATION_KEY` (signs each request for wallets owned by an authorization key; the mainnet checklist requires it).
-  - secp256k1: `raw_sign` with the keccak digest; the 64-byte `r||s` is normalized to low-s and the recovery bit found against the wallet's address (a helper the KMS backend reuses).
+  - secp256k1: the `secp256k1_sign` RPC with the keccak digest (`raw_sign` is refused for Ethereum wallets); the 64-byte `r||s` is normalized to low-s and the recovery bit found against the wallet's address (a helper the KMS backend reuses).
   - ed25519: `rpc signTransaction` on the message wrapped in a transaction; the fee payer's signature is extracted from the result.
   - At startup each wallet's address is fetched and checked against the config.
 - **AWS KMS backend.**

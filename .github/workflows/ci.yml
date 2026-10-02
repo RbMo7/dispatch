@@ -34,12 +34,13 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The Signer is its own package (ADR-0002), with its own dependencies
+      # (vendor SDKs the engine never installs). The root lint type-checks
+      # signer/ too, so it needs them installed first.
+      - run: pnpm --dir signer install --frozen-lockfile
       - run: pnpm db:migrate
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test:offline
-      # The Signer is its own package (ADR-0002). Installed after the root
-      # lint, so that lint keeps proving it resolves without the Signer's deps.
-      - run: pnpm --dir signer install --frozen-lockfile
       - run: pnpm --dir signer typecheck
       - run: pnpm --dir signer test
