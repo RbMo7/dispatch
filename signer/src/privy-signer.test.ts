@@ -45,16 +45,18 @@ vi.mock('@privy-io/node', async () => {
     wallets() {
       return {
         get: (walletId: string) => Promise.resolve({ address: walletAddress(walletId) }),
-        rawSign: (walletId: string, input: { params: { hash: `0x${string}` } }) => {
-          privy.signingInputs.push(input);
-          const key = privy.evmKeys.get(walletId);
-          if (!key) return Promise.reject(new Error(`Privy: no EVM wallet ${walletId}`));
-          const hash = Buffer.from(input.params.hash.slice(2), 'hex');
-          return Promise.resolve({
-            encoding: 'hex',
-            signature: toHex(secp256k1.sign(hash, key, { prehash: false })),
-          });
-        },
+        ethereum: () => ({
+          signSecp256k1: (walletId: string, input: { params: { hash: `0x${string}` } }) => {
+            privy.signingInputs.push(input);
+            const key = privy.evmKeys.get(walletId);
+            if (!key) return Promise.reject(new Error(`Privy: no EVM wallet ${walletId}`));
+            const hash = Buffer.from(input.params.hash.slice(2), 'hex');
+            return Promise.resolve({
+              encoding: 'hex',
+              signature: toHex(secp256k1.sign(hash, key, { prehash: false })),
+            });
+          },
+        }),
         solana: () => ({
           signTransaction: (walletId: string, input: { transaction: string }) => {
             privy.signingInputs.push(input);

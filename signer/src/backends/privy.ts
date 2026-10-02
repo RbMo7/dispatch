@@ -11,7 +11,7 @@ import { recoverableSignature } from './secp256k1-recovery.js';
 export type PrivyApi = {
   walletAddress: (walletId: string) => Promise<string>;
   /** Signs a 32-byte hash as given; returns the signature as hex. */
-  rawSignHash: (walletId: string, hash: Hex) => Promise<string>;
+  signSecp256k1Hash: (walletId: string, hash: Hex) => Promise<string>;
   /** Takes and returns a base64 Solana wire transaction. */
   signSolanaTransaction: (walletId: string, transaction: string) => Promise<string>;
 };
@@ -22,10 +22,12 @@ type Authorized = { authorization_context?: AuthorizationContext };
 export type PrivySdk = {
   wallets(): {
     get(walletId: string): PromiseLike<{ address: string }>;
-    rawSign(
-      walletId: string,
-      input: { params: { hash: Hex } } & Authorized,
-    ): Promise<{ signature: string }>;
+    ethereum(): {
+      signSecp256k1(
+        walletId: string,
+        input: { params: { hash: Hex } } & Authorized,
+      ): Promise<{ signature: string }>;
+    };
     solana(): {
       signTransaction(
         walletId: string,
@@ -45,8 +47,13 @@ export function createPrivyApi(sdk: PrivySdk, authorizationKey?: string): PrivyA
     : {};
   return {
     walletAddress: async (walletId) => (await sdk.wallets().get(walletId)).address,
-    rawSignHash: async (walletId, hash) =>
-      (await sdk.wallets().rawSign(walletId, { params: { hash }, ...authorization })).signature,
+    signSecp256k1Hash: async (walletId, hash) =>
+      (
+        await sdk
+          .wallets()
+          .ethereum()
+          .signSecp256k1(walletId, { params: { hash }, ...authorization })
+      ).signature,
     signSolanaTransaction: async (walletId, transaction) =>
       (
         await sdk
@@ -108,7 +115,7 @@ export function createPrivyBackend(api: PrivyApi): KeyBackend {
       const address = await walletAddress(walletId);
       switch (curve) {
         case 'secp256k1': {
-          const signature = await api.rawSignHash(walletId, toHex(payload));
+          const signature = await api.signSecp256k1Hash(walletId, toHex(payload));
           if (!isHex(signature)) throw new Error('Privy returned a non-hex signature');
           return recoverableSignature(hexToBytes(signature), payload, address);
         }

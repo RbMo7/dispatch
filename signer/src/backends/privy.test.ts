@@ -18,12 +18,12 @@ import { createPrivyApi, createPrivyBackend, type PrivyApi, type PrivySdk } from
 const N = secp256k1.Point.CURVE().n;
 const WALLET = 'privy-wallet-id';
 
-/** A Privy stand-in that signs with a local key, as Privy's raw_sign does: 64 bytes `r || s`. */
+/** A Privy stand-in that signs with a local key, as Privy's secp256k1_sign does: 64 bytes `r || s`. */
 function evmWallet(transform: (rs: Uint8Array) => Uint8Array = (rs) => rs) {
   const key = randomBytes(32);
   const api: PrivyApi = {
     walletAddress: vi.fn(() => Promise.resolve(privateKeyToAddress(toHex(key)))),
-    rawSignHash: vi.fn((_walletId: string, hash: `0x${string}`) => {
+    signSecp256k1Hash: vi.fn((_walletId: string, hash: `0x${string}`) => {
       const signature = secp256k1.sign(Buffer.from(hash.slice(2), 'hex'), key, { prehash: false });
       return Promise.resolve(toHex(transform(signature)));
     }),
@@ -50,7 +50,7 @@ function solanaWallet(
   const keypair = Keypair.generate();
   const api: PrivyApi = {
     walletAddress: vi.fn(() => Promise.resolve(keypair.publicKey.toBase58())),
-    rawSignHash: () => Promise.reject(new Error('not an EVM wallet')),
+    signSecp256k1Hash: () => Promise.reject(new Error('not an EVM wallet')),
     signSolanaTransaction: vi.fn((_walletId: string, base64: string) => {
       const transaction = VersionedTransaction.deserialize(Buffer.from(base64, 'base64'));
       sign(transaction, keypair);
@@ -86,13 +86,13 @@ describe('createPrivyBackend on secp256k1', () => {
     );
   });
 
-  it("raw-signs the digest and returns Privy's r || s with the recovery bit appended", async () => {
+  it("signs the digest and returns Privy's r || s with the recovery bit appended", async () => {
     const { key, api } = evmWallet();
     const digest = randomBytes(32);
 
     const signature = await createPrivyBackend(api).sign('secp256k1', WALLET, digest);
 
-    expect(api.rawSignHash).toHaveBeenCalledWith(WALLET, toHex(digest));
+    expect(api.signSecp256k1Hash).toHaveBeenCalledWith(WALLET, toHex(digest));
     expect(signature).toEqual(expectedSignature(key, digest));
   });
 
@@ -117,7 +117,7 @@ describe('createPrivyBackend on secp256k1', () => {
 
   it('rejects a signature that is not 0x-prefixed hex', async () => {
     const { api } = evmWallet();
-    api.rawSignHash = () => Promise.resolve('ab'.repeat(65));
+    api.signSecp256k1Hash = () => Promise.resolve('ab'.repeat(65));
 
     await expect(
       createPrivyBackend(api).sign('secp256k1', WALLET, randomBytes(32)),
@@ -195,7 +195,7 @@ describe('createPrivyBackend on ed25519', () => {
 
 describe('createPrivyApi', () => {
   function sdkStub() {
-    const rawSign = vi.fn((_walletId: string, _input: unknown) =>
+    const signSecp256k1 = vi.fn((_walletId: string, _input: unknown) =>
       Promise.resolve({ signature: '0xabcd' }),
     );
     const signTransaction = vi.fn((_walletId: string, _input: unknown) =>
@@ -203,46 +203,50 @@ describe('createPrivyApi', () => {
     );
     const get = vi.fn((_walletId: string) => Promise.resolve({ address: '0xWallet' }));
     const sdk: PrivySdk = {
-      wallets: () => ({ get, rawSign, solana: () => ({ signTransaction }) }),
+      wallets: () => ({
+        get,
+        ethereum: () => ({ signSecp256k1 }),
+        solana: () => ({ signTransaction }),
+      }),
     };
-    return { sdk, get, rawSign, signTransaction };
+    return { sdk, get, signSecp256k1, signTransaction };
   }
 
   it('passes each call through and unwraps its result', async () => {
-    const { sdk, get, rawSign, signTransaction } = sdkStub();
+    const { sdk, get, signSecp256k1, signTransaction } = sdkStub();
     const api = createPrivyApi(sdk);
 
     expect(await api.walletAddress('w1')).toBe('0xWallet');
-    expect(await api.rawSignHash('w1', '0x01')).toBe('0xabcd');
+    expect(await api.signSecp256k1Hash('w1', '0x01')).toBe('0xabcd');
     expect(await api.signSolanaTransaction('w1', 'dW5zaWduZWQ=')).toBe('c2lnbmVk');
     expect(get).toHaveBeenCalledWith('w1');
-    expect(rawSign).toHaveBeenCalledWith('w1', { params: { hash: '0x01' } });
+    expect(signSecp256k1).toHaveBeenCalledWith('w1', { params: { hash: '0x01' } });
     expect(signTransaction).toHaveBeenCalledWith('w1', { transaction: 'dW5zaWduZWQ=' });
   });
 
   it.each([undefined, ''])(
     'sends no authorization context with an authorization key of %j',
     async (key) => {
-      const { sdk, rawSign, signTransaction } = sdkStub();
+      const { sdk, signSecp256k1, signTransaction } = sdkStub();
       const api = createPrivyApi(sdk, key);
 
-      await api.rawSignHash('w1', '0x01');
+      await api.signSecp256k1Hash('w1', '0x01');
       await api.signSolanaTransaction('w1', 'dW5zaWduZWQ=');
 
-      expect(rawSign.mock.calls[0]?.[1]).toStrictEqual({ params: { hash: '0x01' } });
+      expect(signSecp256k1.mock.calls[0]?.[1]).toStrictEqual({ params: { hash: '0x01' } });
       expect(signTransaction.mock.calls[0]?.[1]).toStrictEqual({ transaction: 'dW5zaWduZWQ=' });
     },
   );
 
   it('signs every signing request with the authorization key when one is set', async () => {
-    const { sdk, rawSign, signTransaction } = sdkStub();
+    const { sdk, signSecp256k1, signTransaction } = sdkStub();
     const api = createPrivyApi(sdk, 'wallet-auth:key');
 
-    await api.rawSignHash('w1', '0x01');
+    await api.signSecp256k1Hash('w1', '0x01');
     await api.signSolanaTransaction('w1', 'dW5zaWduZWQ=');
 
     const authorization_context = { authorization_private_keys: ['wallet-auth:key'] };
-    expect(rawSign.mock.calls[0]?.[1]).toStrictEqual({
+    expect(signSecp256k1.mock.calls[0]?.[1]).toStrictEqual({
       params: { hash: '0x01' },
       authorization_context,
     });
