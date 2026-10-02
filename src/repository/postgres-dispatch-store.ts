@@ -8,6 +8,7 @@ import type { DispatchError } from '../domain/errors.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import type {
+  ChainScope,
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
@@ -110,7 +111,7 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(toTransaction);
   }
 
-  async claimQueued(limit: number): Promise<Dispatch[]> {
+  async claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
     // Concurrency-safe outbox claim: lock and skip rows another worker is
     // already claiming, per ADR-0009's shared-outbox pattern. Via the query
     // builder (not a raw sql`` template) so the returned rows go through
@@ -120,7 +121,7 @@ export class PostgresDispatchStore implements DispatchStore {
       const claimable = await tx
         .select({ id: dispatches.id })
         .from(dispatches)
-        .where(eq(dispatches.status, 'queued'))
+        .where(and(eq(dispatches.status, 'queued'), inArray(dispatches.chain, chains)))
         .orderBy(dispatches.createdAt)
         .limit(limit)
         .for('update', { skipLocked: true });
@@ -142,9 +143,9 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async listPendingTransactions(limit: number): Promise<Transaction[]> {
+  async listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
-      where: eq(transactions.status, 'PENDING'),
+      where: and(eq(transactions.status, 'PENDING'), inArray(transactions.chain, chains)),
       orderBy: [sql`${transactions.lastCheckedAt} asc nulls first`, transactions.broadcastAt],
       limit,
     });
@@ -163,10 +164,15 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map((row) => toTransaction({ ...row, lastCheckedAt }));
   }
 
-  async listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
+  async listAbandonedTransactions(
+    chains: ChainScope,
+    limit: number,
+    notAbandonedBefore: Date,
+  ): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
       where: and(
         eq(transactions.status, 'ABANDONED'),
+        inArray(transactions.chain, chains),
         gte(transactions.abandonedAt, notAbandonedBefore),
       ),
       orderBy: transactions.abandonedAt,
@@ -289,7 +295,11 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]> {
+  async reclaimStaleDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<Dispatch[]> {
     return this.db.transaction(async (tx) => {
       const stale = await tx
         .select({ id: dispatches.id })
@@ -297,6 +307,7 @@ export class PostgresDispatchStore implements DispatchStore {
         .where(
           and(
             eq(dispatches.status, 'broadcasting'),
+            inArray(dispatches.chain, chains),
             or(isNull(dispatches.claimedAt), lt(dispatches.claimedAt, claimedBefore)),
             sql`jsonb_array_length(${dispatches.items}) > (select count(distinct ${transactions.callIndex}) from ${transactions} where ${transactions.dispatchId} = ${dispatches.id})`,
           ),
@@ -319,7 +330,11 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]> {
+  async reclaimStaleRelayDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<RelayDispatch[]> {
     return this.db.transaction(async (tx) => {
       const stale = await tx
         .select({ id: relayDispatches.id })
@@ -327,6 +342,7 @@ export class PostgresDispatchStore implements DispatchStore {
         .where(
           and(
             eq(relayDispatches.status, 'broadcasting'),
+            inArray(relayDispatches.chain, chains),
             or(isNull(relayDispatches.claimedAt), lt(relayDispatches.claimedAt, claimedBefore)),
             sql`not exists (select 1 from ${transactions} where ${transactions.dispatchId} = ${relayDispatches.id})`,
           ),
@@ -347,6 +363,25 @@ export class PostgresDispatchStore implements DispatchStore {
         .returning();
       return rows.map(toRelayDispatch);
     });
+  }
+
+  async countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>> {
+    const counts = new Map<Chain, number>();
+    for (const [table, waitingStatus] of [
+      [dispatches, eq(dispatches.status, 'queued')],
+      [relayDispatches, eq(relayDispatches.status, 'queued')],
+      [transactions, eq(transactions.status, 'PENDING')],
+    ] as const) {
+      const rows = await this.db
+        .select({ chain: table.chain, count: sql<number>`count(*)::int` })
+        .from(table)
+        .where(and(waitingStatus, inArray(table.chain, chains)))
+        .groupBy(table.chain);
+      for (const { chain, count } of rows) {
+        counts.set(chain as Chain, (counts.get(chain as Chain) ?? 0) + count);
+      }
+    }
+    return counts;
   }
 
   async markDropped(transactionId: string): Promise<void> {
@@ -378,14 +413,20 @@ export class PostgresDispatchStore implements DispatchStore {
 
   async listUnsettledTransactions(chain: Chain): Promise<Transaction[]> {
     const rows = await this.db.query.transactions.findMany({
-      where: and(eq(transactions.chain, chain), inArray(transactions.status, ['PENDING', 'REPLACED'])),
+      where: and(
+        eq(transactions.chain, chain),
+        inArray(transactions.status, ['PENDING', 'REPLACED']),
+      ),
     });
     return rows.map(toTransaction);
   }
 
   async touchClaims(dispatchIds: string[]): Promise<void> {
     if (dispatchIds.length === 0) return;
-    await this.db.update(dispatches).set({ claimedAt: new Date() }).where(inArray(dispatches.id, dispatchIds));
+    await this.db
+      .update(dispatches)
+      .set({ claimedAt: new Date() })
+      .where(inArray(dispatches.id, dispatchIds));
   }
 
   async recordCallFailure(input: NewFailedCallInput): Promise<Transaction> {
@@ -493,12 +534,12 @@ export class PostgresDispatchStore implements DispatchStore {
     return row ? toRelayDispatch(row) : null;
   }
 
-  async claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]> {
+  async claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {
     return this.db.transaction(async (tx) => {
       const claimable = await tx
         .select({ id: relayDispatches.id })
         .from(relayDispatches)
-        .where(eq(relayDispatches.status, 'queued'))
+        .where(and(eq(relayDispatches.status, 'queued'), inArray(relayDispatches.chain, chains)))
         .orderBy(relayDispatches.createdAt)
         .limit(limit)
         .for('update', { skipLocked: true });

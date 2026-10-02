@@ -7,7 +7,7 @@ import type {
   UnsignedTransaction,
 } from '../chain-handler/chain-handler.js';
 import type { Call } from '../domain/call.js';
-import type { Chain } from '../domain/chain.js';
+import { CHAINS, type Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError, DispatchErrorCode } from '../domain/errors.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
@@ -84,7 +84,7 @@ export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
 
 export type CoordinatorDeps = {
   store: DispatchStore;
-  /** Populated by the chain registry (issue 07, `ChainRegistry.handlers`) — a claimed Dispatch naming an unregistered chain is a configuration bug, never a business-relevant outcome, so it's not surfaced as a DispatchError here. */
+  /** Populated by the chain registry (issue 07, `ChainRegistry.handlers`). Its keys are the enabled chains: the Coordinator only ever loads work for these (#57). */
   chainHandlers: ReadonlyMap<Chain, ChainHandler>;
   /** Deployment config, one Sender wallet per chain (ADR-0016: Sender Pool is deferred — single-Sender ships first). */
   senderAddresses: Map<Chain, string>;
@@ -132,6 +132,7 @@ export type CoordinatorDeps = {
 export class Coordinator {
   private readonly store: DispatchStore;
   private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
+  private readonly enabledChains: Chain[];
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
@@ -148,6 +149,7 @@ export class Coordinator {
   constructor(deps: CoordinatorDeps) {
     this.store = deps.store;
     this.chainHandlers = deps.chainHandlers;
+    this.enabledChains = [...deps.chainHandlers.keys()];
     this.senderAddresses = deps.senderAddresses;
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs =
@@ -175,7 +177,7 @@ export class Coordinator {
    * either way.
    */
   async processQueuedDispatches(limit: number): Promise<void> {
-    const dispatches = await this.store.claimQueued(limit);
+    const dispatches = await this.store.claimQueued(this.enabledChains, limit);
     if (dispatches.length === 0) {
       this.logger.debug({ limit }, 'no queued dispatches to claim');
       return;
@@ -552,7 +554,11 @@ export class Coordinator {
   async reclaimStaleClaims(limit: number): Promise<void> {
     const claimedBefore = new Date(this.now().getTime() - STALE_CLAIM_MS);
 
-    for (const dispatch of await this.store.reclaimStaleDispatches(claimedBefore, limit)) {
+    for (const dispatch of await this.store.reclaimStaleDispatches(
+      this.enabledChains,
+      claimedBefore,
+      limit,
+    )) {
       if (this.inFlight.has(dispatch.id)) continue; // merely slow, not crashed: this Coordinator is still on it
       const sent = new Set(
         (await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex),
@@ -578,6 +584,7 @@ export class Coordinator {
     }
 
     for (const relayDispatch of await this.store.reclaimStaleRelayDispatches(
+      this.enabledChains,
       claimedBefore,
       limit,
     )) {
@@ -608,8 +615,24 @@ export class Coordinator {
     }
   }
 
+  /**
+   * #57: work on a chain that is not enabled is never loaded, so it waits
+   * silently. This names each such chain and how much is waiting, so an
+   * operator can see why it isn't moving.
+   */
+  async reportWorkOnDisabledChains(): Promise<void> {
+    const disabled = CHAINS.filter((chain) => !this.chainHandlers.has(chain));
+    if (disabled.length === 0) return;
+    for (const [chain, waiting] of await this.store.countWaitingWork(disabled)) {
+      this.logger.warn(
+        { chain, waiting },
+        'work is waiting on a chain that is not enabled; it resumes once the chain is enabled again',
+      );
+    }
+  }
+
   async processQueuedRelayDispatches(limit: number): Promise<void> {
-    const relayDispatches = await this.store.claimQueuedRelayDispatches(limit);
+    const relayDispatches = await this.store.claimQueuedRelayDispatches(this.enabledChains, limit);
     if (relayDispatches.length === 0) {
       this.logger.debug({ limit }, 'no queued relay dispatches to claim');
       return;
@@ -706,7 +729,7 @@ export class Coordinator {
    */
   async pollPendingTransactions(limit: number): Promise<void> {
     this.bundleStatusCache.clear();
-    const pending = await this.store.listPendingTransactions(limit);
+    const pending = await this.store.listPendingTransactions(this.enabledChains, limit);
     this.logger.debug({ count: pending.length, limit }, 'polling pending transactions');
 
     // A bundled broadcast's member rows share one hash: once one of them
@@ -750,7 +773,11 @@ export class Coordinator {
   async rewatchAbandonedTransactions(limit: number): Promise<void> {
     const notAbandonedBefore = new Date(this.now().getTime() - this.abandonedRewatchWindowMs);
     this.bundleStatusCache.clear();
-    const abandoned = await this.store.listAbandonedTransactions(limit, notAbandonedBefore);
+    const abandoned = await this.store.listAbandonedTransactions(
+      this.enabledChains,
+      limit,
+      notAbandonedBefore,
+    );
     this.logger.debug({ count: abandoned.length, limit }, 'rewatching abandoned transactions');
 
     for (const transaction of abandoned) {
@@ -1326,7 +1353,7 @@ export class Coordinator {
     const handler = this.chainHandlers.get(chain);
     if (!handler) {
       throw new Error(
-        `No ChainHandler registered for chain: ${chain} — the chain registry (issue 07) should never let a Dispatch for an unenabled chain reach the Coordinator.`,
+        `No ChainHandler registered for chain: ${chain}. Work for a chain that is not enabled is never loaded (#57), so reaching this is a bug.`,
       );
     }
     return handler;

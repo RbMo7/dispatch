@@ -39,6 +39,13 @@ export type NewRelayDispatchInput<C extends Chain = Chain> = {
 };
 
 /**
+ * #57: every work queue below takes the `chains` the caller can act on and
+ * never returns a row for any other chain. A chain removed from
+ * ENABLED_CHAINS keeps its rows exactly as they are until it is enabled again.
+ */
+export type ChainScope = readonly Chain[];
+
+/**
  * The Coordinator's — and the API's — only way to touch persistence
  * (ADR-0011): a small, domain-shaped seam so orchestration logic can be
  * tested against InMemoryDispatchStore instead of a real database.
@@ -50,13 +57,23 @@ export interface DispatchStore {
   /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/api.md) is built from. */
   listTransactions(dispatchId: string): Promise<Transaction[]>;
   /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). */
-  claimQueued(limit: number): Promise<Dispatch[]>;
+  claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
-  listPendingTransactions(limit: number): Promise<Transaction[]>;
+  listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
-  listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]>;
+  listAbandonedTransactions(
+    chains: ChainScope,
+    limit: number,
+    notAbandonedBefore: Date,
+  ): Promise<Transaction[]>;
   /** base-chain-handler issue 07: up to `limit` of `chain`'s CONFIRMED Transactions (per chain, so one chain's volume never crowds another's out of `limit`) whose `confirmedAt` is no earlier than `notConfirmedBefore`, oldest-confirmed first — the reorg safety net's own low-frequency re-watch work queue, mirroring listAbandonedTransactions's shape exactly. A Transaction confirmed before `notConfirmedBefore` (outside the bounded re-check window) is excluded — it's aged past the point this engine still bothers re-verifying it. */
-  listRecentlyConfirmedTransactions(chain: Chain, limit: number, notConfirmedBefore: Date): Promise<Transaction[]>;
+  listRecentlyConfirmedTransactions(
+    chain: Chain,
+    limit: number,
+    notConfirmedBefore: Date,
+  ): Promise<Transaction[]>;
+  /** #57: per chain in `chains`, how many queued Dispatches, queued Relay Dispatches and PENDING Transactions are waiting. A chain with none is absent. */
+  countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>>;
   /** Persists a Call's freshly-signed Transaction — #20 (ADR-0041): written down *before* it is ever sent. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
   /** #20 review: every member of one bundled broadcast, written down in one atomic step — a crash can never leave a bundle half-recorded. */
@@ -83,9 +100,17 @@ export interface DispatchStore {
   /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
   undoReplacement(replacementId: string): Promise<void>;
   /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` (or was never stamped) and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
-  reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]>;
+  reclaimStaleDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<Dispatch[]>;
   /** #20: the same for Relay Dispatches with no Transaction row at all (not merely an unwritten link). */
-  reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]>;
+  reclaimStaleRelayDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<RelayDispatch[]>;
   /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
   markDropped(transactionId: string): Promise<void>;
   markAbandoned(transactionId: string): Promise<void>;
@@ -98,7 +123,7 @@ export interface DispatchStore {
   createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;
   getRelayDispatch(id: string): Promise<RelayDispatch | null>;
   /** Atomically claims up to `limit` queued RelayDispatches for the worker to process, mirroring claimQueued. */
-  claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]>;
+  claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]>;
   /** Records which Transaction a RelayDispatch's single broadcast attempt produced — success or failure alike (recordCallFailure and createTransaction both already produce a Transaction id). */
   setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void>;
 }
