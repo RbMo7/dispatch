@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { Keypair, SystemProgram, TransactionMessage } from '@solana/web3.js';
 import { keccak256, recoverAddress, serializeTransaction, toHex } from 'viem';
 import { privateKeyToAddress } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +15,7 @@ import { buildSigner } from './startup.js';
 
 /** AWS KMS, stood in for by keys generated locally; the SDK's real command classes are kept. */
 const kms = vi.hoisted(() => ({
-  keys: new Map<string, { spki: Uint8Array; key: Uint8Array }>(),
+  keys: new Map<string, { spki: Uint8Array; key: Uint8Array; keySpec: string }>(),
   keySpecs: new Map<string, string>(),
   clients: [] as unknown[],
   commands: [] as unknown[],
@@ -22,6 +24,7 @@ const kms = vi.hoisted(() => ({
 vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kms')>();
   const { secp256k1 } = await import('@noble/curves/secp256k1.js');
+  const { ed25519 } = await import('@noble/curves/ed25519.js');
 
   class KMSClient {
     constructor(config: unknown) {
@@ -34,7 +37,7 @@ vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
         const held = kms.keys.get(keyId);
         if (!held) return Promise.reject(new Error(`KMS: no key ${keyId}`));
         return Promise.resolve({
-          KeySpec: kms.keySpecs.get(keyId) ?? 'ECC_SECG_P256K1',
+          KeySpec: kms.keySpecs.get(keyId) ?? held.keySpec,
           KeyUsage: 'SIGN_VERIFY',
           PublicKey: held.spki,
         });
@@ -42,6 +45,13 @@ vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
       if (command instanceof actual.SignCommand) {
         const held = kms.keys.get(command.input.KeyId ?? '');
         if (!held || !command.input.Message) return Promise.reject(new Error('KMS: bad Sign'));
+        if (held.keySpec === 'ECC_NIST_EDWARDS25519') {
+          const { MessageType, SigningAlgorithm } = command.input;
+          if (MessageType !== 'RAW' || SigningAlgorithm !== 'ED25519_SHA_512') {
+            return Promise.reject(new Error('KMS: bad Ed25519 Sign'));
+          }
+          return Promise.resolve({ Signature: ed25519.sign(command.input.Message, held.key) });
+        }
         return Promise.resolve({
           Signature: secp256k1.sign(command.input.Message, held.key, {
             prehash: false,
@@ -68,8 +78,21 @@ function kmsKey(keyId: string): `0x${string}` {
   kms.keys.set(keyId, {
     spki: new Uint8Array(publicKey.export({ type: 'spki', format: 'der' })),
     key,
+    keySpec: 'ECC_SECG_P256K1',
   });
   return privateKeyToAddress(toHex(key));
+}
+
+/** Puts a new Ed25519 key in the fake KMS under `keyId`, returning its Solana keypair's public half. */
+function kmsEd25519Key(keyId: string) {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const seed = Buffer.from(privateKey.export({ format: 'jwk' }).d ?? '', 'base64url');
+  kms.keys.set(keyId, {
+    spki: new Uint8Array(publicKey.export({ type: 'spki', format: 'der' })),
+    key: seed,
+    keySpec: 'ECC_NIST_EDWARDS25519',
+  });
+  return Keypair.fromSeed(seed).publicKey;
 }
 
 const env = (SIGNER_CONFIG: string) => ({ SIGNER_AUTH_TOKEN: 'test-token', SIGNER_CONFIG });
@@ -131,6 +154,51 @@ describe('the Signer on AWS KMS keys', () => {
     }
   });
 
+  it('signs a Solana message through KMS for its address', async () => {
+    const payer = kmsEd25519Key('solana-key');
+    const address = payer.toBase58();
+    const config = writeJson({
+      [address]: { curve: 'ed25519', backend: 'aws-kms', keyRef: 'solana-key' },
+    });
+    const server = await buildSigner(env(config), () => {});
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+
+    try {
+      const message = new TransactionMessage({
+        payerKey: payer,
+        recentBlockhash: Keypair.generate().publicKey.toBase58(),
+        instructions: [
+          SystemProgram.transfer({
+            fromPubkey: payer,
+            toPubkey: Keypair.generate().publicKey,
+            lamports: 1,
+          }),
+        ],
+      })
+        .compileToV0Message()
+        .serialize();
+      const { port } = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${port}/sign`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-token' },
+        body: JSON.stringify({
+          chain: 'solana',
+          curve: 'ed25519',
+          address,
+          unsignedTransaction: Buffer.from(message).toString('base64'),
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { signature: string };
+      expect(ed25519.verify(Buffer.from(body.signature, 'base64'), message, payer.toBytes())).toBe(
+        true,
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it('refuses to start when a key has a different address, naming both', async () => {
     const configured = privateKeyToAddress(toHex(randomBytes(32)));
     const actual = kmsKey('kms-key');
@@ -155,19 +223,16 @@ describe('the Signer on AWS KMS keys', () => {
     );
   });
 
-  it('refuses to start on an ed25519 address, without asking KMS', async () => {
+  it("refuses to start when a Solana address's key isn't an Ed25519 key", async () => {
+    kmsKey('secp-key');
+    const address = Keypair.generate().publicKey.toBase58();
     const config = writeJson({
-      '3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe': {
-        curve: 'ed25519',
-        backend: 'aws-kms',
-        keyRef: 'kms-key',
-      },
+      [address]: { curve: 'ed25519', backend: 'aws-kms', keyRef: 'secp-key' },
     });
 
     await expect(buildSigner(env(config))).rejects.toThrow(
-      '3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe: aws-kms supports secp256k1 only; see #51',
+      `${address}: KMS key secp-key is ECC_SECG_P256K1 for SIGN_VERIFY; it must be ECC_NIST_EDWARDS25519 for SIGN_VERIFY`,
     );
-    expect(kms.commands).toEqual([]);
   });
 });
 
