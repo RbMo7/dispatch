@@ -20,6 +20,6 @@ pnpm tsx demo/base/token-transfer.ts
 pnpm tsx demo/base/contract-calls.ts
 ```
 
-- Sends from the `dev-sender` key in `reference-signer/keys.dev.json`, the same funded wallet the live tests use. It needs Base Sepolia ETH.
+- Sends from the `dev-sender` key in `signer/keys.dev.json`, the same funded wallet the live tests use. It needs Base Sepolia ETH.
 - `BASE_SEPOLIA_RPC_URL` in `.env` sets the RPC. `https://sepolia.base.org` is the fallback, and it rate-limits.
 - Don't run a demo while `pnpm test` is running. Both would own the Sender's nonce.

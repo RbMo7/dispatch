@@ -208,13 +208,13 @@ export function testMintDecimals(): number {
   return TEST_MINT_DECIMALS;
 }
 
-// --- In-process reference-style Signer (ADR-0002's `/sign` contract) -------
+// --- In-process test Signer (ADR-0002's `/sign` contract) -----------------
 //
-// A real HTTP service, exactly like reference-signer's actual shape, so
+// A real HTTP service, exactly like signer/'s actual shape, so
 // SolanaChainHandler's SignerClient wiring is tested against a real network
 // round-trip rather than an in-process fake object — it just happens to be
 // started in-process for test convenience instead of via docker-compose.
-// Signs with Node's built-in crypto only, matching reference-signer's own
+// Signs with Node's built-in crypto only, matching signer/'s own
 // ADR-0002-spirited "no signing SDK" discipline. This file is test-only and
 // is never imported by SolanaChainHandler itself.
 

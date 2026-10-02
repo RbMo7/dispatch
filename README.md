@@ -28,11 +28,11 @@ Across both, every transaction is written down before it is sent, so a crash, a 
 
 Not built yet: webhooks (callers poll today, ADR-0023), Ethereum L1 as its own chain (ADR-0035), a Sender Pool of several sending wallets (ADR-0016), and Solana durable nonces (ADR-0007, #44).
 
-**Before mainnet:** the only Signer here, `reference-signer/`, is for development. It reads keys from a committed file, and Compose gives it and the engine a shared dev bearer token (`SIGNER_AUTH_TOKEN`). A production deployment needs its own Signer backed by a real key store; that's the next feature, `.scratch/production-signer/spec.md` (ADR-0046, issues #47–#52). Neither chain has been run on mainnet yet.
+**Before mainnet:** the Signer, `signer/`, picks a key backend per address from its config (`SIGNER_CONFIG`) and audits every request as a JSON line on stdout. Its only backend so far, `keyfile`, reads keys from a committed file and is for development; Compose runs it with the dev keys (`signer/signer.config.dev.json`) and a dev bearer token shared with the engine (`SIGNER_AUTH_TOKEN`). Production backends (Privy, AWS KMS) and per-address policy are the rest of `.scratch/production-signer/spec.md` (ADR-0046). Neither chain has been run on mainnet yet.
 
 ## Running it
 
-It has three processes, sharing one Postgres (ADR-0009): the **API** (`src/index.ts`, port 8420), the **worker** that actually sends and tracks transactions (`src/worker.ts`), and a **Signer** holding the sending wallet's keys (ADR-0002; `reference-signer/` is a development one, port 8421).
+It has three processes, sharing one Postgres (ADR-0009): the **API** (`src/index.ts`, port 8420), the **worker** that actually sends and tracks transactions (`src/worker.ts`), and a **Signer** holding the sending wallet's keys (ADR-0002; `signer/`, port 8421). The Signer refuses to start unless every address in its config matches the key behind it.
 
 With Docker:
 
@@ -50,8 +50,8 @@ Or locally (Node 22, pnpm):
 docker compose up -d postgres
 pnpm install
 pnpm db:migrate
-pnpm --dir reference-signer install
-SIGNER_AUTH_TOKEN=dev-only-signer-token pnpm --dir reference-signer dev   # the dev Signer; set the same token in .env
+pnpm --dir signer install
+SIGNER_AUTH_TOKEN=dev-only-signer-token pnpm --dir signer dev   # the dev keys; set the same token in .env
 pnpm dev:api        # in one terminal
 pnpm dev:worker     # in another
 ```

@@ -5,7 +5,7 @@
  * Signer), and push a Managed Dispatch through `POST /v1/dispatch` until
  * `GET /v1/dispatch/:id` reports a terminal state.
  *
- * Every demo sends from the dev-sender in `reference-signer/keys.dev.json`
+ * Every demo sends from the dev-sender in `signer/keys.dev.json`
  * — the same funded Base Sepolia wallet the live tests use. Don't run a
  * demo while `pnpm test` is running: both would own its nonce.
  */
