@@ -84,7 +84,7 @@ async function mainLoop(): Promise<void> {
       await coordinator.processQueuedRelayDispatches(BATCH_LIMIT);
       await coordinator.pollPendingTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker tick failed');
+      logger.error({ err: cause }, 'worker tick failed');
     }
     if (!running) break;
     await sleep(POLL_INTERVAL_MS);
@@ -102,7 +102,7 @@ async function rewatchLoop(): Promise<void> {
     try {
       await coordinator.rewatchAbandonedTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker rewatch tick failed');
+      logger.error({ err: cause }, 'worker rewatch tick failed');
     }
     if (!running) break;
     await sleep(REWATCH_INTERVAL_MS);
@@ -129,7 +129,7 @@ async function reclaimLoop(): Promise<void> {
       await coordinator.reclaimStaleClaims(BATCH_LIMIT);
       await coordinator.reportWorkOnDisabledChains();
     } catch (cause) {
-      logger.error({ cause }, 'worker reclaim tick failed');
+      logger.error({ err: cause }, 'worker reclaim tick failed');
     }
     if (!running) break;
     await sleep(RECLAIM_INTERVAL_MS);
@@ -141,7 +141,7 @@ async function reorgRecheckLoop(): Promise<void> {
     try {
       await coordinator.recheckRecentlyConfirmedTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker reorg-recheck tick failed');
+      logger.error({ err: cause }, 'worker reorg-recheck tick failed');
     }
     if (!running) break;
     await sleep(REORG_RECHECK_INTERVAL_MS);
