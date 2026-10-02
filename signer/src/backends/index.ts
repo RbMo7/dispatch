@@ -1,5 +1,7 @@
+import { KMSClient } from '@aws-sdk/client-kms';
 import { PrivyClient } from '@privy-io/node';
 
+import { createAwsKmsBackend, createKmsApi } from './aws-kms.js';
 import type { KeyBackend } from './key-backend.js';
 import { createKeyfileBackend } from './keyfile.js';
 import { createPrivyApi, createPrivyBackend } from './privy.js';
@@ -26,6 +28,8 @@ const BACKENDS = {
         env.PRIVY_AUTHORIZATION_KEY,
       ),
     ),
+  // Region and credentials come from the AWS SDK's own provider chain, resolved on the first call.
+  'aws-kms': () => createAwsKmsBackend(createKmsApi(new KMSClient({}))),
 } satisfies Record<string, (env: Env) => KeyBackend>;
 
 export type BackendName = keyof typeof BACKENDS;
