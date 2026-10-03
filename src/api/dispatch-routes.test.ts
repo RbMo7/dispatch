@@ -5,6 +5,7 @@ import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { BulkCallPlan, BulkCallRequest } from '../chain-handler/chain-handler.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import type { DispatchItem } from '../domain/call.js';
+import { CHAINS } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
@@ -109,7 +110,7 @@ describe('POST /v1/dispatch', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<ErrorResponseBody>()).toMatchObject({ code: 'CHAIN_REJECTED' });
-    expect(await store.claimQueued(10)).toEqual([]);
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
   });
 
   it('accepts a call item as-is and returns 202 with the queued Dispatch', async () => {
@@ -462,7 +463,7 @@ describe('POST /v1/dispatch with bulkCall (#11)', () => {
     const response = await post(app, { chain: 'base', items, bulkCall: { aggregator: '0xbad' } });
     expect(response.statusCode).toBe(400);
     expect(response.json<ErrorResponseBody>().message).toBe('bad aggregator');
-    expect(await store.claimQueued(10)).toEqual([]);
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
   });
 
   it('rejects bulkCall on a relay dispatch with 400', async () => {
@@ -541,7 +542,7 @@ describe('GET /v1/dispatch/:id', () => {
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
-    await store.claimQueued(10);
+    await store.claimQueued(CHAINS, 10);
     const transaction = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
@@ -573,7 +574,7 @@ describe('GET /v1/dispatch/:id', () => {
         items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
         retryPolicy: true,
       });
-      await store.claimQueued(10);
+      await store.claimQueued(CHAINS, 10);
       const original = await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -628,7 +629,7 @@ describe('GET /v1/dispatch/:id', () => {
       ],
       retryPolicy: false,
     });
-    await store.claimQueued(10);
+    await store.claimQueued(CHAINS, 10);
     const confirmed = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
@@ -669,7 +670,7 @@ describe('GET /v1/dispatch/:id', () => {
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
-    await store.claimQueued(10);
+    await store.claimQueued(CHAINS, 10);
     await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
@@ -696,7 +697,7 @@ describe('GET /v1/dispatch/:id', () => {
       items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
-    await store.claimQueued(10);
+    await store.claimQueued(CHAINS, 10);
     const transaction = await store.createTransaction({
       dispatchId: dispatch.id,
       callIndex: 0,
@@ -746,7 +747,7 @@ describe('GET /v1/dispatch/:id', () => {
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
-      await store.claimQueuedRelayDispatches(10);
+      await store.claimQueuedRelayDispatches(CHAINS, 10);
       const transaction = await store.createTransaction({
         dispatchId: relayDispatch.id,
         callIndex: 0,
@@ -777,7 +778,7 @@ describe('GET /v1/dispatch/:id', () => {
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
-      await store.claimQueuedRelayDispatches(10);
+      await store.claimQueuedRelayDispatches(CHAINS, 10);
       const transaction = await store.createTransaction({
         dispatchId: relayDispatch.id,
         callIndex: 0,
@@ -806,7 +807,7 @@ describe('GET /v1/dispatch/:id', () => {
         idempotencyKey: 'relay-key-1',
         signedTransaction: 'externally-signed-bytes',
       });
-      await store.claimQueuedRelayDispatches(10);
+      await store.claimQueuedRelayDispatches(CHAINS, 10);
       const transaction = await store.recordCallFailure({
         dispatchId: relayDispatch.id,
         callIndex: 0,

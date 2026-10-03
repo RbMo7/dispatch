@@ -1,3 +1,4 @@
+import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -10,7 +11,7 @@ import type {
   SignedTransaction,
 } from '../chain-handler/chain-handler.js';
 import type { Call, DispatchItem, EvmCall, Payment, SolanaCall } from '../domain/call.js';
-import type { Chain } from '../domain/chain.js';
+import { CHAINS, type Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
@@ -311,20 +312,6 @@ describe('Coordinator.processQueuedDispatches', () => {
 
     const transactions = await store.listTransactions(dispatch.id);
     expect(transactions.map((t) => t.status)).toEqual(['FAILED', 'PENDING']);
-  });
-
-  it('throws when a claimed Dispatch names a chain with no registered ChainHandler', async () => {
-    const { store, coordinator } = setup();
-    await store.createDispatch({
-      chain: 'base',
-      idempotencyKey: 'key-1',
-      items: [evmItem],
-      retryPolicy: false,
-    });
-
-    await expect(coordinator.processQueuedDispatches(10)).rejects.toThrow(
-      /No ChainHandler registered/,
-    );
   });
 });
 
@@ -972,7 +959,9 @@ describe('Coordinator fee-bump and rebroadcast of stuck transactions (#9, ADR-00
   it('stops bumping when the Signer refuses the replacement, and keeps the original tracked (ADR-0046)', async () => {
     const { store, handler, coordinator, advance } = setupWithStuckHandling();
     const { dispatch } = await createStuckCandidate(store, true);
-    handler.sign.mockResolvedValue(err({ code: 'SIGNER_REFUSED', message: 'signer refused: over the cap' }));
+    handler.sign.mockResolvedValue(
+      err({ code: 'SIGNER_REFUSED', message: 'signer refused: over the cap' }),
+    );
     advance(STUCK_AFTER_MS);
 
     await coordinator.pollPendingTransactions(10);
@@ -1514,7 +1503,7 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
         items: [solanaItem, { call: second, payment: null }],
         retryPolicy: false,
       });
-      await store.claimQueued(10); // the crashed worker's claim
+      await store.claimQueued(CHAINS, 10); // the crashed worker's claim
       await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -1561,7 +1550,7 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
         items: [solanaItem],
         retryPolicy: false,
       });
-      await store.claimQueued(10);
+      await store.claimQueued(CHAINS, 10);
       advance(5 * 60_000 - 1);
 
       await coordinator.reclaimStaleClaims(10);
@@ -1576,7 +1565,7 @@ describe('Coordinator write-ahead: every Transaction is written down before it i
         idempotencyKey: 'stale-r',
         signedTransaction: 'relay-bytes',
       });
-      await store.claimQueuedRelayDispatches(10);
+      await store.claimQueuedRelayDispatches(CHAINS, 10);
       advance(5 * 60_000 + 1);
 
       await coordinator.reclaimStaleClaims(10);
@@ -2177,5 +2166,218 @@ describe('Coordinator.recheckRecentlyConfirmedTransactions (base-chain-handler i
 
     expect(store.getTransaction(transaction.id)?.status).toBe('CONFIRMED');
     expect(handler.getStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Coordinator with work left on a chain that is not enabled (#57)', () => {
+  // Every case below loads with a limit of 1 and writes the disabled chain's
+  // row first, so skipping it after loading would still starve 'base'.
+  function setupBaseOnly() {
+    let currentTime = new Date('2024-01-01T00:00:00.000Z');
+    const clock = () => currentTime;
+    const store = new InMemoryDispatchStore(clock);
+    const handler = new FakeChainHandler('base');
+    const coordinator = new Coordinator({
+      store,
+      chainHandlers: new Map([['base', handler]]),
+      senderAddresses: new Map([['base', 'sender-address']]),
+      abandonmentTimeoutMs: new Map([['base', ABANDON_AFTER_MS]]),
+      reorgRecheckWindowMs: new Map([['base', RECHECK_WINDOW_MS]]),
+      now: clock,
+      sleep: () => Promise.resolve(),
+    });
+    return {
+      store,
+      handler,
+      coordinator,
+      advance: (ms: number) => (currentTime = new Date(currentTime.getTime() + ms)),
+    };
+  }
+
+  async function createTransaction(store: InMemoryDispatchStore, chain: Chain): Promise<string> {
+    const dispatch = await store.createDispatch({
+      chain,
+      idempotencyKey: `${chain}-${Math.random()}`,
+      items: chain === 'solana' ? [solanaItem] : [evmItem],
+      retryPolicy: false,
+    });
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain,
+      signedBytes: `${chain}-signed`,
+      hash: `${chain}-hash`,
+    });
+    return transaction.id;
+  }
+
+  it('confirms a pending Base Transaction while a Solana one waits untouched', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const solanaId = await createTransaction(store, 'solana');
+    const baseId = await createTransaction(store, 'base');
+    handler.getStatus.mockResolvedValue(ok('CONFIRMED'));
+
+    await coordinator.pollPendingTransactions(1);
+
+    expect(store.getTransaction(baseId)?.status).toBe('CONFIRMED');
+    expect(store.getTransaction(solanaId)).toMatchObject({
+      status: 'PENDING',
+      lastCheckedAt: null,
+    });
+  });
+
+  it('claims a queued Base Dispatch and leaves a queued Solana one queued', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const solana = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'queued-solana',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const base = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'queued-base',
+      items: [evmItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.processQueuedDispatches(1);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    expect(await store.listTransactions(base.id)).toHaveLength(1);
+    expect((await store.getDispatch(solana.id))?.status).toBe('queued');
+  });
+
+  it('claims a queued Base Relay Dispatch and leaves a queued Solana one queued', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const solana = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'relay-solana',
+      signedTransaction: 'solana-signed',
+    });
+    await store.createRelayDispatch({
+      chain: 'base',
+      idempotencyKey: 'relay-base',
+      signedTransaction: 'base-signed',
+    });
+
+    await coordinator.processQueuedRelayDispatches(1);
+
+    expect(handler.broadcast).toHaveBeenCalledWith('base-signed');
+    expect(await store.getRelayDispatch(solana.id)).toMatchObject({
+      status: 'queued',
+      transactionId: null,
+    });
+  });
+
+  it('rewatches an ABANDONED Base Transaction and leaves a Solana one ABANDONED', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const solanaId = await createTransaction(store, 'solana');
+    const baseId = await createTransaction(store, 'base');
+    await store.markAbandoned(solanaId);
+    await store.markAbandoned(baseId);
+    handler.getStatus.mockResolvedValue(ok('CONFIRMED'));
+
+    await coordinator.rewatchAbandonedTransactions(1);
+
+    expect(store.getTransaction(baseId)?.status).toBe('CONFIRMED');
+    expect(store.getTransaction(solanaId)?.status).toBe('ABANDONED');
+  });
+
+  it('reclaims a stale Base claim and leaves stale Solana claims alone', async () => {
+    const { store, handler, coordinator, advance } = setupBaseOnly();
+    const solana = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'stale-solana',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    const solanaRelay = await store.createRelayDispatch({
+      chain: 'solana',
+      idempotencyKey: 'stale-relay-solana',
+      signedTransaction: 'solana-signed',
+    });
+    const base = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'stale-base',
+      items: [evmItem],
+      retryPolicy: false,
+    });
+    await store.claimQueued(CHAINS, 10);
+    await store.claimQueuedRelayDispatches(CHAINS, 10);
+    advance(5 * 60_000 + 1);
+
+    await coordinator.reclaimStaleClaims(1);
+
+    expect(handler.broadcast).toHaveBeenCalledTimes(1);
+    expect(await store.listTransactions(base.id)).toHaveLength(1);
+    expect(await store.listTransactions(solana.id)).toEqual([]);
+    expect(await store.listTransactions(solanaRelay.id)).toEqual([]);
+  });
+
+  it('rechecks only Base for reorgs, never a confirmed Solana Transaction', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const solanaId = await createTransaction(store, 'solana');
+    const baseId = await createTransaction(store, 'base');
+    await store.markConfirmed(solanaId);
+    await store.markConfirmed(baseId);
+    handler.getStatus.mockResolvedValue(ok('CONFIRMED'));
+
+    await coordinator.recheckRecentlyConfirmedTransactions(1);
+
+    expect(handler.getStatus).toHaveBeenCalledExactlyOnceWith('base-hash');
+  });
+
+  it('restores only Base nonce reservations at startup', async () => {
+    const { store, handler, coordinator } = setupBaseOnly();
+    const reserve = vi.fn(() => Promise.resolve());
+    (handler as FakeChainHandler & { restoreInFlight?: typeof reserve }).restoreInFlight = reserve;
+    await createTransaction(store, 'solana');
+    await createTransaction(store, 'base');
+
+    await coordinator.restoreReservations();
+
+    expect(reserve).toHaveBeenCalledExactlyOnceWith(['base-signed']);
+  });
+});
+
+describe('Coordinator.reportWorkOnDisabledChains (#57)', () => {
+  it('warns once per disabled chain with work waiting, naming how much', async () => {
+    const lines: { level: number; chain?: Chain; waiting?: number }[] = [];
+    const logger = pino(
+      { level: 'warn' },
+      { write: (line: string) => lines.push(JSON.parse(line) as (typeof lines)[number]) },
+    );
+    const store = new InMemoryDispatchStore();
+    const coordinator = new Coordinator({
+      store,
+      chainHandlers: new Map([['base', new FakeChainHandler('base')]]),
+      senderAddresses: new Map([['base', 'sender-address']]),
+      abandonmentTimeoutMs: new Map([['base', ABANDON_AFTER_MS]]),
+      logger,
+    });
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'waiting-solana',
+      items: [solanaItem],
+      retryPolicy: false,
+    });
+    await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'solana',
+      signedBytes: 'b',
+      hash: 'h',
+    });
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'waiting-base',
+      items: [evmItem],
+      retryPolicy: false,
+    });
+
+    await coordinator.reportWorkOnDisabledChains();
+
+    expect(lines).toEqual([expect.objectContaining({ level: 40, chain: 'solana', waiting: 2 })]);
   });
 });

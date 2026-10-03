@@ -52,6 +52,7 @@ const coordinator = new Coordinator({
 // engine's in-flight Transactions hold — including one written down but never
 // sent before a crash, which recovery will send.
 await coordinator.restoreReservations();
+await coordinator.reportWorkOnDisabledChains();
 
 let running = true;
 
@@ -83,7 +84,7 @@ async function mainLoop(): Promise<void> {
       await coordinator.processQueuedRelayDispatches(BATCH_LIMIT);
       await coordinator.pollPendingTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker tick failed');
+      logger.error({ err: cause }, 'worker tick failed');
     }
     if (!running) break;
     await sleep(POLL_INTERVAL_MS);
@@ -101,7 +102,7 @@ async function rewatchLoop(): Promise<void> {
     try {
       await coordinator.rewatchAbandonedTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker rewatch tick failed');
+      logger.error({ err: cause }, 'worker rewatch tick failed');
     }
     if (!running) break;
     await sleep(REWATCH_INTERVAL_MS);
@@ -117,7 +118,8 @@ async function rewatchLoop(): Promise<void> {
 /**
  * #20 (ADR-0041): resumes claims a crashed worker left half-done — a
  * claim counts as stale after 5 minutes, so checking once a minute is
- * plenty.
+ * plenty. The same cadence repeats the startup warning about work waiting
+ * on a chain that is not enabled (#57), since the API may keep queueing it.
  */
 const RECLAIM_INTERVAL_MS = 60_000;
 
@@ -125,8 +127,9 @@ async function reclaimLoop(): Promise<void> {
   while (running) {
     try {
       await coordinator.reclaimStaleClaims(BATCH_LIMIT);
+      await coordinator.reportWorkOnDisabledChains();
     } catch (cause) {
-      logger.error({ cause }, 'worker reclaim tick failed');
+      logger.error({ err: cause }, 'worker reclaim tick failed');
     }
     if (!running) break;
     await sleep(RECLAIM_INTERVAL_MS);
@@ -138,7 +141,7 @@ async function reorgRecheckLoop(): Promise<void> {
     try {
       await coordinator.recheckRecentlyConfirmedTransactions(BATCH_LIMIT);
     } catch (cause) {
-      logger.error({ cause }, 'worker reorg-recheck tick failed');
+      logger.error({ err: cause }, 'worker reorg-recheck tick failed');
     }
     if (!running) break;
     await sleep(REORG_RECHECK_INTERVAL_MS);

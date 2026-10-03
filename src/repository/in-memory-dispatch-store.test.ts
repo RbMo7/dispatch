@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
+import { CHAINS } from '../domain/chain.js';
+import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
@@ -12,6 +14,8 @@ describe('InMemoryDispatchStore', () => {
   beforeEach(() => {
     store = new InMemoryDispatchStore();
   });
+
+  runChainScopeConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {
@@ -91,7 +95,7 @@ describe('InMemoryDispatchStore', () => {
         retryPolicy: false,
       });
 
-      const claimed = await store.claimQueued(10);
+      const claimed = await store.claimQueued(CHAINS, 10);
 
       expect(claimed).toHaveLength(1);
       expect(claimed[0]?.id).toBe(created.id);
@@ -107,8 +111,8 @@ describe('InMemoryDispatchStore', () => {
         retryPolicy: false,
       });
 
-      const first = await store.claimQueued(10);
-      const second = await store.claimQueued(10);
+      const first = await store.claimQueued(CHAINS, 10);
+      const second = await store.claimQueued(CHAINS, 10);
 
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(0);
@@ -128,7 +132,7 @@ describe('InMemoryDispatchStore', () => {
         retryPolicy: false,
       });
 
-      const claimed = await store.claimQueued(1);
+      const claimed = await store.claimQueued(CHAINS, 1);
 
       expect(claimed).toHaveLength(1);
     });
@@ -394,7 +398,7 @@ describe('InMemoryDispatchStore', () => {
       // abandoned 24h ago, excludes the still-PENDING one entirely (wrong
       // status), includes only the one abandoned 24h into the timeline.
       const notAbandonedBefore = new Date(currentTime.getTime() - 60 * 60 * 1000);
-      const result = await clock.listAbandonedTransactions(10, notAbandonedBefore);
+      const result = await clock.listAbandonedTransactions(CHAINS, 10, notAbandonedBefore);
 
       expect(result.map((t) => t.id)).toEqual([abandonedRecently.id]);
       expect(result.map((t) => t.id)).not.toContain(stillPending.id);
@@ -431,10 +435,10 @@ describe('InMemoryDispatchStore', () => {
       });
       await clock.markAbandoned(first.id);
 
-      const all = await clock.listAbandonedTransactions(10, new Date(0));
+      const all = await clock.listAbandonedTransactions(CHAINS, 10, new Date(0));
       expect(all.map((t) => t.id)).toEqual([first.id, second.id]);
 
-      const limited = await clock.listAbandonedTransactions(1, new Date(0));
+      const limited = await clock.listAbandonedTransactions(CHAINS, 1, new Date(0));
       expect(limited.map((t) => t.id)).toEqual([first.id]);
     });
   });
@@ -593,7 +597,7 @@ describe('InMemoryDispatchStore', () => {
         items: [solanaItem, solanaItem],
         retryPolicy: false,
       });
-      await store.claimQueued(100);
+      await store.claimQueued(CHAINS, 100);
       await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -603,8 +607,8 @@ describe('InMemoryDispatchStore', () => {
       });
 
       const future = new Date(Date.now() + 60_000);
-      const reclaimed = await store.reclaimStaleDispatches(future, 100);
-      const again = await store.reclaimStaleDispatches(new Date(Date.now() - 60_000), 100);
+      const reclaimed = await store.reclaimStaleDispatches(CHAINS, future, 100);
+      const again = await store.reclaimStaleDispatches(CHAINS, new Date(Date.now() - 60_000), 100);
 
       expect(reclaimed.map((d) => d.id)).toContain(dispatch.id);
       expect(again.map((d) => d.id)).not.toContain(dispatch.id); // re-stamped: not stale again yet
@@ -617,7 +621,7 @@ describe('InMemoryDispatchStore', () => {
         items: [solanaItem],
         retryPolicy: false,
       });
-      await store.claimQueued(100);
+      await store.claimQueued(CHAINS, 100);
       await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -626,17 +630,35 @@ describe('InMemoryDispatchStore', () => {
         hash: `h-${Math.random()}`,
       });
 
-      const reclaimed = await store.reclaimStaleDispatches(new Date(Date.now() + 60_000), 100);
+      const reclaimed = await store.reclaimStaleDispatches(
+        CHAINS,
+        new Date(Date.now() + 60_000),
+        100,
+      );
 
       expect(reclaimed.map((d) => d.id)).not.toContain(dispatch.id);
     });
 
     it('never reclaims a Relay Dispatch that has a Transaction, even if its link was never written (#20 review)', async () => {
-      const relay = await store.createRelayDispatch({ chain: 'solana', idempotencyKey: `wa-${Math.random()}`, signedTransaction: 'c2lnbmVk' });
-      await store.claimQueuedRelayDispatches(100);
-      await store.createTransaction({ dispatchId: relay.id, callIndex: 0, chain: 'solana', signedBytes: 'c2lnbmVk', hash: 'h' });
+      const relay = await store.createRelayDispatch({
+        chain: 'solana',
+        idempotencyKey: `wa-${Math.random()}`,
+        signedTransaction: 'c2lnbmVk',
+      });
+      await store.claimQueuedRelayDispatches(CHAINS, 100);
+      await store.createTransaction({
+        dispatchId: relay.id,
+        callIndex: 0,
+        chain: 'solana',
+        signedBytes: 'c2lnbmVk',
+        hash: 'h',
+      });
 
-      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+      const reclaimed = await store.reclaimStaleRelayDispatches(
+        CHAINS,
+        new Date(Date.now() + 60_000),
+        100,
+      );
 
       expect(reclaimed.map((r) => r.id)).not.toContain(relay.id);
     });
@@ -647,9 +669,13 @@ describe('InMemoryDispatchStore', () => {
         idempotencyKey: `wa-${Math.random()}`,
         signedTransaction: 'c2lnbmVk',
       });
-      await store.claimQueuedRelayDispatches(100);
+      await store.claimQueuedRelayDispatches(CHAINS, 100);
 
-      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+      const reclaimed = await store.reclaimStaleRelayDispatches(
+        CHAINS,
+        new Date(Date.now() + 60_000),
+        100,
+      );
 
       expect(reclaimed.map((r) => r.id)).toContain(relay.id);
     });
@@ -679,9 +705,9 @@ describe('InMemoryDispatchStore', () => {
       }
 
       currentTime = new Date(currentTime.getTime() + 1_000);
-      const firstTick = await clock.listPendingTransactions(2);
+      const firstTick = await clock.listPendingTransactions(CHAINS, 2);
       currentTime = new Date(currentTime.getTime() + 1_000);
-      const secondTick = await clock.listPendingTransactions(2);
+      const secondTick = await clock.listPendingTransactions(CHAINS, 2);
 
       expect(firstTick.map((t) => t.id)).toEqual([ids[0], ids[1]]);
       expect(secondTick.map((t) => t.id)[0]).toBe(ids[2]);
@@ -876,7 +902,7 @@ describe('InMemoryDispatchStore', () => {
         signedTransaction: 'c2lnbmVk',
       });
 
-      const claimed = await store.claimQueuedRelayDispatches(10);
+      const claimed = await store.claimQueuedRelayDispatches(CHAINS, 10);
 
       expect(claimed).toHaveLength(1);
       expect(claimed[0]?.id).toBe(created.id);
@@ -891,8 +917,8 @@ describe('InMemoryDispatchStore', () => {
         signedTransaction: 'c2lnbmVk',
       });
 
-      const first = await store.claimQueuedRelayDispatches(10);
-      const second = await store.claimQueuedRelayDispatches(10);
+      const first = await store.claimQueuedRelayDispatches(CHAINS, 10);
+      const second = await store.claimQueuedRelayDispatches(CHAINS, 10);
 
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(0);
@@ -910,7 +936,7 @@ describe('InMemoryDispatchStore', () => {
         signedTransaction: 'c2lnbmVk',
       });
 
-      const claimed = await store.claimQueuedRelayDispatches(1);
+      const claimed = await store.claimQueuedRelayDispatches(CHAINS, 1);
 
       expect(claimed).toHaveLength(1);
     });

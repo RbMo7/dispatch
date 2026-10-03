@@ -6,15 +6,17 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../db/client.js';
 import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
+import { CHAINS } from '../domain/chain.js';
+import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
- * (the `postgres` service in docker-compose.yml, migrated), not
+ * (a throwaway database on the `postgres` service, ADR-0047), not
  * `InMemoryDispatchStore` — proving the real schema, its constraints, and
  * Drizzle's own query mapping, none of which the rest of the suite ever
  * touches. Runs unconditionally, same as solana-chain-handler's devnet
- * tests: no reachable, migrated Postgres means this tier fails loudly,
+ * tests: no reachable Postgres means this tier fails loudly,
  * not silently skips.
  */
 
@@ -34,6 +36,8 @@ describe('PostgresDispatchStore (real Postgres)', () => {
     store = new PostgresDispatchStore(db);
     await truncateAll();
   });
+
+  runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {
@@ -164,11 +168,11 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         retryPolicy: false,
       });
 
-      const claimed = await store.claimQueued(10);
+      const claimed = await store.claimQueued(CHAINS, 10);
 
       expect(claimed.map((d) => d.id).sort()).toEqual([a.id, b.id].sort());
       expect(claimed.every((d) => d.status === 'broadcasting')).toBe(true);
-      expect(await store.claimQueued(10)).toEqual([]); // already claimed, not re-claimed
+      expect(await store.claimQueued(CHAINS, 10)).toEqual([]); // already claimed, not re-claimed
     });
   });
 
@@ -446,7 +450,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         items: [solanaItem, solanaItem],
         retryPolicy: false,
       });
-      await store.claimQueued(100);
+      await store.claimQueued(CHAINS, 100);
       await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -456,8 +460,8 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       });
 
       const future = new Date(Date.now() + 60_000);
-      const reclaimed = await store.reclaimStaleDispatches(future, 100);
-      const again = await store.reclaimStaleDispatches(new Date(Date.now() - 60_000), 100);
+      const reclaimed = await store.reclaimStaleDispatches(CHAINS, future, 100);
+      const again = await store.reclaimStaleDispatches(CHAINS, new Date(Date.now() - 60_000), 100);
 
       expect(reclaimed.map((d) => d.id)).toContain(dispatch.id);
       expect(again.map((d) => d.id)).not.toContain(dispatch.id); // re-stamped: not stale again yet
@@ -470,7 +474,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         items: [solanaItem],
         retryPolicy: false,
       });
-      await store.claimQueued(100);
+      await store.claimQueued(CHAINS, 100);
       await store.createTransaction({
         dispatchId: dispatch.id,
         callIndex: 0,
@@ -479,7 +483,11 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         hash: `h-${Math.random()}`,
       });
 
-      const reclaimed = await store.reclaimStaleDispatches(new Date(Date.now() + 60_000), 100);
+      const reclaimed = await store.reclaimStaleDispatches(
+        CHAINS,
+        new Date(Date.now() + 60_000),
+        100,
+      );
 
       expect(reclaimed.map((d) => d.id)).not.toContain(dispatch.id);
     });
@@ -490,9 +498,13 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         idempotencyKey: randomUUID(),
         signedTransaction: 'c2lnbmVk',
       });
-      await store.claimQueuedRelayDispatches(100);
+      await store.claimQueuedRelayDispatches(CHAINS, 100);
 
-      const reclaimed = await store.reclaimStaleRelayDispatches(new Date(Date.now() + 60_000), 100);
+      const reclaimed = await store.reclaimStaleRelayDispatches(
+        CHAINS,
+        new Date(Date.now() + 60_000),
+        100,
+      );
 
       expect(reclaimed.map((r) => r.id)).toContain(relay.id);
     });
@@ -518,8 +530,8 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         ids.push(transaction.id);
       }
 
-      const firstTick = await store.listPendingTransactions(2);
-      const secondTick = await store.listPendingTransactions(2);
+      const firstTick = await store.listPendingTransactions(CHAINS, 2);
+      const secondTick = await store.listPendingTransactions(CHAINS, 2);
 
       expect(firstTick.map((t) => t.id)).toEqual([ids[0], ids[1]]);
       expect(secondTick.map((t) => t.id)[0]).toBe(ids[2]);

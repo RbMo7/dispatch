@@ -22,6 +22,7 @@ import {
   BASE_SEPOLIA_RPC_URL,
   getDevSenderAccount,
 } from './test-support/base-fixtures.js';
+import { CHAINS } from '../../domain/chain.js';
 
 const AUTH_TOKEN = 'test-token';
 
@@ -194,7 +195,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       });
       expect(response.statusCode).toBe(400);
     }
-    expect(await store.claimQueuedRelayDispatches(10)).toEqual([]);
+    expect(await store.claimQueuedRelayDispatches(CHAINS, 10)).toEqual([]);
   }, 60_000);
 
   it('relays an externally-signed transfer through POST /v1/dispatch to confirmed, verified on-chain', async () => {

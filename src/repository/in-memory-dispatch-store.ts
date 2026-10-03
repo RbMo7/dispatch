@@ -6,6 +6,7 @@ import type { DispatchError } from '../domain/errors.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type {
+  ChainScope,
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
@@ -66,11 +67,11 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(matches);
   }
 
-  claimQueued(limit: number): Promise<Dispatch[]> {
+  claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
     const claimed: Dispatch[] = [];
     for (const dispatch of this.dispatches.values()) {
       if (claimed.length >= limit) break;
-      if (dispatch.status !== 'queued') continue;
+      if (dispatch.status !== 'queued' || !chains.includes(dispatch.chain)) continue;
 
       const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting' };
       this.dispatches.set(dispatch.id, broadcasting);
@@ -148,9 +149,11 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(transaction);
   }
 
-  listPendingTransactions(limit: number): Promise<Transaction[]> {
+  listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {
     const pending = [...this.transactions.values()]
-      .filter((transaction) => transaction.status === 'PENDING')
+      .filter(
+        (transaction) => transaction.status === 'PENDING' && chains.includes(transaction.chain),
+      )
       .sort(
         (a, b) =>
           (a.lastCheckedAt?.getTime() ?? -Infinity) - (b.lastCheckedAt?.getTime() ?? -Infinity) ||
@@ -164,11 +167,16 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(stamped);
   }
 
-  listAbandonedTransactions(limit: number, notAbandonedBefore: Date): Promise<Transaction[]> {
+  listAbandonedTransactions(
+    chains: ChainScope,
+    limit: number,
+    notAbandonedBefore: Date,
+  ): Promise<Transaction[]> {
     const abandoned = [...this.transactions.values()]
       .filter(
         (transaction) =>
           transaction.status === 'ABANDONED' &&
+          chains.includes(transaction.chain) &&
           (transaction.abandonedAt?.getTime() ?? 0) >= notAbandonedBefore.getTime(),
       )
       .sort((a, b) => (a.abandonedAt?.getTime() ?? 0) - (b.abandonedAt?.getTime() ?? 0))
@@ -273,11 +281,20 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
-  reclaimStaleDispatches(claimedBefore: Date, limit: number): Promise<Dispatch[]> {
+  reclaimStaleDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<Dispatch[]> {
     const stale = [...this.dispatches.values()]
       .filter((dispatch) => {
         const claimed = this.claimedAt.get(dispatch.id);
-        if (dispatch.status !== 'broadcasting' || !claimed || claimed >= claimedBefore)
+        if (
+          dispatch.status !== 'broadcasting' ||
+          !chains.includes(dispatch.chain) ||
+          !claimed ||
+          claimed >= claimedBefore
+        )
           return false;
         const sent = new Set(
           [...this.transactions.values()]
@@ -291,17 +308,39 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(stale);
   }
 
-  reclaimStaleRelayDispatches(claimedBefore: Date, limit: number): Promise<RelayDispatch[]> {
+  reclaimStaleRelayDispatches(
+    chains: ChainScope,
+    claimedBefore: Date,
+    limit: number,
+  ): Promise<RelayDispatch[]> {
     const stale = [...this.relayDispatches.values()]
       .filter((relay) => {
+        if (!chains.includes(relay.chain)) return false;
         const claimed = this.claimedAt.get(relay.id);
         // No Transaction row at all — not merely an unwritten link (a crash between the two writes).
-        const hasTransaction = [...this.transactions.values()].some((t) => t.dispatchId === relay.id);
-        return relay.status === 'broadcasting' && !hasTransaction && !!claimed && claimed < claimedBefore;
+        const hasTransaction = [...this.transactions.values()].some(
+          (t) => t.dispatchId === relay.id,
+        );
+        return (
+          relay.status === 'broadcasting' && !hasTransaction && !!claimed && claimed < claimedBefore
+        );
       })
       .slice(0, limit);
     for (const relay of stale) this.claimedAt.set(relay.id, this.now());
     return Promise.resolve(stale);
+  }
+
+  countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>> {
+    const waiting = [
+      ...[...this.dispatches.values()].filter((d) => d.status === 'queued'),
+      ...[...this.relayDispatches.values()].filter((r) => r.status === 'queued'),
+      ...[...this.transactions.values()].filter((t) => t.status === 'PENDING'),
+    ];
+    const counts = new Map<Chain, number>();
+    for (const { chain } of waiting) {
+      if (chains.includes(chain)) counts.set(chain, (counts.get(chain) ?? 0) + 1);
+    }
+    return Promise.resolve(counts);
   }
 
   markDropped(transactionId: string): Promise<void> {
@@ -343,7 +382,11 @@ export class InMemoryDispatchStore implements DispatchStore {
   reopenTransaction(transactionId: string): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'PENDING', confirmedAt: null });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'PENDING',
+        confirmedAt: null,
+      });
     });
   }
 
@@ -372,11 +415,11 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(this.relayDispatches.get(id) ?? null);
   }
 
-  claimQueuedRelayDispatches(limit: number): Promise<RelayDispatch[]> {
+  claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {
     const claimed: RelayDispatch[] = [];
     for (const relayDispatch of this.relayDispatches.values()) {
       if (claimed.length >= limit) break;
-      if (relayDispatch.status !== 'queued') continue;
+      if (relayDispatch.status !== 'queued' || !chains.includes(relayDispatch.chain)) continue;
 
       const broadcasting: RelayDispatch = { ...relayDispatch, status: 'broadcasting' };
       this.relayDispatches.set(relayDispatch.id, broadcasting);

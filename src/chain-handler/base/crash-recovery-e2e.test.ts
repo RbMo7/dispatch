@@ -16,6 +16,7 @@ import {
   startTestSigner,
   type TestSignerHandle,
 } from './test-support/base-fixtures.js';
+import { CHAINS } from '../../domain/chain.js';
 
 const STUCK_AFTER_MS = 5_000;
 
@@ -175,7 +176,7 @@ describe('Base write-ahead crash recovery (#20, real Base Sepolia)', () => {
       items: [payment()],
       retryPolicy: false,
     });
-    await store.claimQueued(10); // the crashed worker's claim: nothing was ever sent
+    await store.claimQueued(CHAINS, 10); // the crashed worker's claim: nothing was ever sent
 
     currentTime = new Date(currentTime.getTime() + 5 * 60_000 + 1);
     await coordinator.reclaimStaleClaims(10);

@@ -1,12 +1,10 @@
 import type { ChainHandler } from '../chain-handler/chain-handler.js';
-import type { Chain } from '../domain/chain.js';
+import { CHAINS, type Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 
-const KNOWN_CHAINS: readonly Chain[] = ['base', 'solana'];
-
 function isChain(value: string): value is Chain {
-  return (KNOWN_CHAINS as readonly string[]).includes(value);
+  return (CHAINS as readonly string[]).includes(value);
 }
 
 /**
@@ -23,7 +21,7 @@ export function parseEnabledChains(raw: string): Chain[] {
     .map((name) => {
       if (!isChain(name)) {
         throw new Error(
-          `ENABLED_CHAINS names an unknown chain: "${name}" — must be one of ${KNOWN_CHAINS.join(', ')}.`,
+          `ENABLED_CHAINS names an unknown chain: "${name}" — must be one of ${CHAINS.join(', ')}.`,
         );
       }
       return name;

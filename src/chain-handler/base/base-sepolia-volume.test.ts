@@ -29,6 +29,7 @@ import {
   type TestTokenInfo,
 } from './test-support/base-fixtures.js';
 import { decodeUnsignedTransaction, encodeUnsignedTransaction } from './transaction-codec.js';
+import { CHAINS } from '../../domain/chain.js';
 
 /**
  * #15 — the actual proof base-chain-handler is done, mirroring
@@ -433,7 +434,7 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
         items: [{ call: bumpCall, payment: null }], // the very Call the underpriced transaction carries
         retryPolicy: true,
       });
-      await store.claimQueued(10);
+      await store.claimQueued(CHAINS, 10);
       const original = await store.createTransaction({
         dispatchId: bumpDispatch.id,
         callIndex: 0,

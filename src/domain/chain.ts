@@ -4,4 +4,6 @@
  * `base` and Ethereum L1 are separate Chains despite sharing a virtual
  * machine and wire format (ADR-0035) — there is no `evm` family value here.
  */
-export type Chain = 'base' | 'solana';
+export const CHAINS = ['base', 'solana'] as const;
+
+export type Chain = (typeof CHAINS)[number];
