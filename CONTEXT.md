@@ -68,5 +68,5 @@ A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`,
 _Avoid_: Dropped (a mempool eviction is one possible cause, not the state), Failed
 
 **Durable Nonce Execution**:
-An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Not built yet (#44): without expiry, safe resubmission would first have to cancel the original.
+An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Deferred (ADR-0048): without expiry, safe resubmission would first have to cancel the original by advancing the nonce, and no Sender needs the mode yet.
 _Avoid_: Nonce Account (the on-chain object the mode depends on, not the mode itself)
