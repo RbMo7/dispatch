@@ -9,6 +9,7 @@ import {
   type SafeCall,
   type SafeTransaction,
 } from './safe-transaction.js';
+import { checkMultisigMessage } from './squads.js';
 
 /**
  * What one address may sign, per transaction. Every rule is optional and
@@ -24,6 +25,8 @@ export type Policy = {
   allowedSafe?: string;
   /** With `allowedSafe`: the MultiSendCallOnly contracts a Safe transaction may delegatecall. */
   allowedMultiSend?: ReadonlySet<string>;
+  /** Solana: the one Squads multisig this key may propose, execute and close for (ADR-0049); every other transaction is refused. */
+  allowedMultisig?: string;
 };
 
 /** MultiSendCallOnly per Safe version (spike #79): 1.4.1, then 1.3.0 eip155 and canonical. */
@@ -44,6 +47,7 @@ const POLICY_KEYS = [
   'maxTokenPerTransaction',
   'allowedSafe',
   'allowedMultiSend',
+  'allowedMultisig',
 ];
 
 /** EVM addresses lowercase, as the decoder reports them; a Solana address must be 32 bytes of base58. */
@@ -90,6 +94,7 @@ export function parsePolicy(curve: Curve, raw: unknown): Policy | string[] {
     maxTokenPerTransaction,
     allowedSafe,
     allowedMultiSend,
+    allowedMultisig,
   } = raw;
 
   if (chainIds !== undefined) {
@@ -187,6 +192,19 @@ export function parsePolicy(curve: Curve, raw: unknown): Policy | string[] {
     policy.allowedMultiSend = new Set(DEFAULT_MULTI_SEND_CALL_ONLY);
   }
 
+  if (allowedMultisig !== undefined) {
+    const multisig = normalizeAddress(curve, allowedMultisig);
+    if (curve !== 'ed25519') {
+      problems.push('policy.allowedMultisig applies only to ed25519 (Solana) addresses');
+    } else if (multisig === undefined) {
+      problems.push(
+        `policy.allowedMultisig must be a Solana address, got ${JSON.stringify(allowedMultisig)}`,
+      );
+    } else {
+      policy.allowedMultisig = multisig;
+    }
+  }
+
   return problems.length > 0 ? problems : policy;
 }
 
@@ -240,7 +258,17 @@ export function checkPolicy(policy: Policy, effects: TransactionEffects): Policy
 }
 
 /** Decodes and checks; whatever the decoder can't read is refused, since no rule could vouch for it. */
-export function evaluatePolicy(policy: Policy, curve: Curve, unsigned: Uint8Array): PolicyDecision {
+export function evaluatePolicy(
+  policy: Policy,
+  curve: Curve,
+  unsigned: Uint8Array,
+  /** The address being signed for; `allowedMultisig` needs it to check the fee payer. */
+  signer?: string,
+): PolicyDecision {
+  if (policy.allowedMultisig !== undefined) {
+    const decision = checkMultisigMessage(policy.allowedMultisig, signer, unsigned);
+    if (!decision.ok) return decision;
+  }
   if (policy.allowedSafe !== undefined) {
     const decision = checkSafeExecution(policy, unsigned);
     if (!decision.ok) return decision;

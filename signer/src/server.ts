@@ -121,7 +121,7 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
 
   const unsigned = Buffer.from(unsignedTransaction, 'base64');
   if (key.entry.policy) {
-    const decision = evaluatePolicy(key.entry.policy, curve, unsigned);
+    const decision = evaluatePolicy(key.entry.policy, curve, unsigned, key.entry.address);
     if (!decision.ok) {
       return { status: 403, body: { error: 'policy refused', reason: decision.reason }, ...known };
     }

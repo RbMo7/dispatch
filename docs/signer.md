@@ -208,6 +208,7 @@ A policy is optional, but an address without one is signed for unconditionally, 
 - `maxNativePerTransaction`. The most ETH or SOL one transaction may move.
 - `maxTokenPerTransaction`. The most of each listed token one transaction may move, keyed by token contract (Base) or mint (Solana).
 - `allowedSafe` (Base only, needs `chainIds`). Pins the key to one Safe: it signs only that Safe's `execTransaction` and the matching `safeTransaction` typed data, and only as a delegatecall to MultiSendCallOnly with zero gas and refund fields. `allowedMultiSend` overrides the MultiSendCallOnly addresses (the defaults are Safe 1.4.1 and 1.3.0). Use it for a Safe's executor and delegate keys. The nested payments are not decoded; the owners' confirmation is the control.
+- `allowedMultisig` (Solana only). Pins the key to one Squads multisig: it signs only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the ComputeBudget instructions that accompany them, with itself as fee payer. It refuses votes (approve, reject, cancel), config transactions and every other program. The nested payments are not decoded; the Approvers' vote is the control. If you also set `allowedDestinations`, list the Squads program in it.
 
 A misspelled rule, a bad address, or a bad amount stops the Signer at startup. Before you write a policy, know where it can surprise you:
 
