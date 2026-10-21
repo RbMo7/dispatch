@@ -22,4 +22,4 @@ A Multisig Sender's address is a multisig wallet, so a transaction from it needs
 - A time lock longer than the approval deadline makes every proposal time out; the runbook says to keep the deadline above it.
 - The engine pays proposal rent when it proposes (about 4.7 million lamports for one transfer on devnet). Squads refunds it only to the multisig's rent collector, and only once a proposal is closed, which anyone may do. The runbook sets the rent collector to the engine's member key, and the engine closes resolved proposals.
 - `AWAITING_APPROVAL`, `APPROVAL_REJECTED` (a `FAILED` error) and `APPROVAL_TIMEOUT` (an `ABANDONED` reason) are wire-format additions in `docs/api.md`.
-- Squads is built concretely. A cross-chain multisig interface waits for Safe on Base to be the second implementation (ADR-0012).
+- The approval flow is a chain-neutral Chain Handler capability from the start, with Squads first and Safe designed against it (ADR-0054, which supersedes this ADR's earlier plan to wait for Safe).

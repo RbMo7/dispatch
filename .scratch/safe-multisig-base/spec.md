@@ -44,7 +44,7 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
 3. Owners see it queued in the Safe app, check it, and confirm (off-chain, no gas).
 4. The engine polls the service, counts confirmations against the threshold (and on-chain `approveHash` approvals), and filters them against the Safe's real owner set. At the threshold it simulates, then submits `execTransaction` from the executor as an ordinary Managed transaction (nonce authority, fee estimation and fee-bump all apply, ADR-0037/0039).
 5. Reject or replace: if the Safe's nonce moves past the proposal without the engine's transaction, the Calls fail with `APPROVAL_REJECTED`. A proposal with no decision by the deadline (default 72h) becomes `ABANDONED` with reason `APPROVAL_TIMEOUT`, is never executed by the engine, and is watched for 30 days (ADR-0053).
-6. **One open proposal per Safe at a time**, because of the shared nonce. Dispatches that arrive meanwhile accumulate, and when the proposal resolves everything waiting becomes one new proposal (up to the bundle limit), so owners approve once per round. Only Calls routed through the Safe wait: Relay Dispatch and other chains are never blocked. After a timeout the next proposal reuses the Safe's current nonce, so the Safe app shows both as alternatives and only one can ever execute.
+6. **One open proposal per Safe at a time**, because of the shared nonce. Dispatches that arrive meanwhile wait their turn, and each becomes its own proposal (a proposal never mixes Dispatches, ADR-0054). Only Calls routed through the Safe wait: Relay Dispatch and other chains are never blocked. After a timeout the next proposal reuses the Safe's current nonce, so the Safe app shows both as alternatives and only one can ever execute.
 
 ## How an operator sets it up
 
@@ -113,7 +113,7 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
   - the Safe transaction typed data for that Safe and the policy's chain ID: `to` is the canonical `MultiSendCallOnly`, `operation` is delegatecall, and `safeTxGas`, `baseGas`, `gasPrice` and `refundReceiver` are zero, so a proposal can never make the Safe pay the executor a refund.
   Nested payments are not decoded; the owners' confirmation is the control, as in ADR-0049.
 - **Bundling.** One `MultiSendCallOnly` transaction per bundle, default limit 50 items (about 1.67M gas), configurable up to 100. The address is the canonical deployment for the Safe's version (see Spike findings).
-- **One open proposal per Safe**, because of the sequential Safe nonce. Calls that arrive while one is open accumulate and become one next proposal when it resolves, in order within the bundle. Only Calls routed through the Safe wait.
+- **One open proposal per Safe**, because of the sequential Safe nonce. A Dispatch that arrives while one is open waits its turn and becomes its own proposal (ADR-0054). Only Calls routed through the Safe wait.
 - **Counting confirmations.** From the Safe Transaction Service plus on-chain `approveHash` approvals, filtered against the Safe's real owners (read on-chain, not from the service) and its real threshold. The service is a convenience for collecting signatures, never the authority on who may approve.
 - **A thin REST client**, not the Safe SDK, talks to the Transaction Service (the SDK refuses the hosted service without an API key, and the engine keeps third-party chain SDKs out of its tree). Reads of Safe state pin the block to the receipt's, or retry, because public RPCs lag.
 - **Reject or replace.** A proposal at nonce N is rejected or replaced only if the Safe's nonce is past N and the transaction executed at N has a different `safeTxHash` (the engine's own execution moves the nonce too). Then the Calls fail with `APPROVAL_REJECTED`.
@@ -129,7 +129,7 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
 - **Offline:**
   - Policy: `allowedSafe` allows its own `execTransaction` and the matching typed data, and refuses another Safe, another selector, another `operation`, a non-zero refund field, and anything undecodable.
   - Signer: typed-data digest matches Safe's reference hash on known vectors, on every backend (digest signing is the same primitive as today).
-  - Engine, against a fake Safe and Transaction Service: propose, confirmations reaching the threshold, signature ordering by owner address, execute, an owner-set change, a nonce that moved (rejection or replacement), timeout then a late execution and a superseded proposal, one-open-proposal accumulation, a restart mid-approval, and the startup checks (including refusing an owner key).
+  - Engine, against a fake Safe and Transaction Service: propose, confirmations reaching the threshold, signature ordering by owner address, execute, an owner-set change, a nonce that moved (rejection or replacement), timeout then a late execution and a superseded proposal, one-open-proposal queuing of whole Dispatches, a restart mid-approval, and the startup checks (including refusing an owner key).
   - Funding Check names the right balance.
 - **Live, local and opt-in (`RUN_SAFE=1`):** a real 2-of-3 Safe on Base Sepolia, test owner keys confirm through the service, and the engine proposes and executes a small ETH and ERC-20 bundle that lands; a rejection; a short deadline.
 - **Existing live tests** keep passing unchanged.
@@ -138,7 +138,7 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
 
 1. **A missed deadline is `ABANDONED`, not `FAILED` (ADR-0053).** Anyone can execute a fully confirmed Safe proposal after the engine's deadline, so the engine reports a timeout as `ABANDONED` (`APPROVAL_TIMEOUT`), never executes it itself, and watches the proposal for 30 days (#88). A late execution moves the Calls to `CONFIRMED`; a late rejection (the nonce consumed by a different transaction) moves them to `FAILED`.
 2. **The hosted Safe Transaction Service is an accepted dependency.** No service-less mode in v1. The spike (#79) confirms Base support, the API key and the delegate flow before anything else is built on it.
-3. **The shared queue accumulates.** One open proposal per Safe; Dispatches arriving meanwhile accumulate and become one next proposal. Only Calls routed through the Safe wait.
+3. **The shared queue holds whole Dispatches.** One open proposal per Safe; Dispatches arriving meanwhile wait their turn, each becoming its own proposal (decided 2026-10-21, ADR-0054, replacing the earlier plan to accumulate Calls across Dispatches, which would have made a proposal unverifiable against any one caller's record). Only Calls routed through the Safe wait.
 4. **One key on Base** acts as delegate and executor, pinned to the one Safe by policy.
 5. **A threshold of 1 only warns** loudly at startup.
 6. **The deadline is global config only** (default 72h), with no per-request override.
