@@ -31,3 +31,4 @@ This revises the timeout part of ADR-0049. Rejection, stale proposals and the ro
 - After the 30-day window, a late execution goes unseen, and the Calls stay `ABANDONED`. The runbook says so.
 - A long approval window means a Squads vault's committed balance stays reserved that long. An operator who does not want that rejects the proposal.
 - The `approval` block gains `state` (`awaiting`, `approved`, `approved_after_deadline`), documented in `docs/api.md`.
+- On Squads a closed proposal no longer exists. The engine finds an execution by someone else through the proposal address's transaction history, which outlives the account. An approved proposal whose execute failed stays Approved and retryable, so the engine retries it until the deadline rather than reporting `FAILED` while it can still execute.

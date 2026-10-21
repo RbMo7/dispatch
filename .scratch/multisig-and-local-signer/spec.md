@@ -76,7 +76,7 @@ The Sender address is the Squads vault. The engine's own key is a member of that
 
 ### C. A Multisig Sender
 
-1. Create a Squads multisig in the Squads app with the Approvers as members (Vote permission). Set a threshold, and a time lock if you want one.
+1. Create a Squads multisig in the Squads app with the Approvers as members (Vote permission). Set a threshold, a time lock if you want one, and **a rent collector (the engine's member key)**, so the rent the engine pays for proposals is refunded when they are closed.
 2. Create a key for the engine on any Signer backend, and **add it as a member with Initiate and Execute permission only**. The engine refuses to start if that key can vote.
 3. In `SIGNER_CONFIG`, map the member key's address, **pinning the one multisig it may act on**:
    ```json
@@ -144,12 +144,13 @@ A dashboard for this is deferred (see Out of Scope). Until then a caller can pol
 - **Roles (ADR-0049).** The engine's key holds Initiate and Execute, never Vote. The engine proposes, the Approvers vote, the engine executes. No design in which the engine or its Signer holds an Approver key.
 - **Local keystore (ADR-0050).** One encrypted file per key (scrypt, AES-256-GCM, Node `crypto`), covering both curves. Passphrase from env or a mounted file. A CLI manages keys. The backend implements the existing `KeyBackend` interface (ADR-0012: it is the fourth real implementation).
 - **Signer policy.** A new per-address field, `allowedMultisig`, pins the one multisig account the key may act on. For a pinned address the Squads program is allowed, and the decoder accepts only its create/execute (and proposal-create) instructions on that multisig. Nested payments are not decoded; the Approvers' vote is the control on what is inside (decided in the grilling session).
-- **Calls to proposals.** One vault transaction and proposal per bundle, using the existing size-aware bundling. The real maximum bundle is measured on devnet in the first ticket; the bundling limit for Multisig Senders may be tighter than for plain Senders.
+- **Calls to proposals.** One vault transaction and proposal per bundle, created together in one transaction. The default limit is 12 transfers per vault transaction (measured in #70), with Squads-specific, byte-size-aware bundling; Multisig Sender bundles are much smaller than a plain Sender's. Execute always requests a 256 KB heap frame and sets a compute limit. Creation is serialized per multisig, because the next index is the last one plus one. Whether a batch can approve a whole run at once is being measured.
 - **Statuses and errors.** `AWAITING_APPROVAL` (a Call status, additive), `APPROVAL_REJECTED` (a `FAILED` error code) and `APPROVAL_TIMEOUT` (an `ABANDONED` reason, ADR-0053). All are documented in `docs/api.md`. The `approval` block carries `state` (`awaiting`, `approved`, `approved_after_deadline`) and is described above.
 - **Timeout (ADR-0053).** `SOLANA_APPROVAL_DEADLINE_MS`, default 72 hours, measured from when the proposal is created. After it the Calls are `ABANDONED` (`APPROVAL_TIMEOUT`) and the engine never executes the proposal itself. `SOLANA_APPROVAL_REWATCH_WINDOW_MS` (default 30 days; the existing re-watch cadence on the first day, hourly after) is how long it still watches: someone else executing it moves the Calls to `CONFIRMED` (log `late_execution_detected`), a rejection moves them to `FAILED`, and an approved-but-unexecuted proposal is shown as `approved_after_deadline` and logged loudly. An engine restart resumes watching from the written-down proposal (ADR-0041).
 - **Time lock.** If the multisig has a time lock, the engine waits for it before executing. The runbook says to set the deadline above the time lock.
-- **Stale proposals.** A proposal made stale by a multisig config change is treated as rejected.
-- **Funding Check.** For a Multisig Sender it checks the vault for the payments and the member key for fees and proposal rent, naming whichever is short. Proposals are independent, so several can be open at once; the check therefore subtracts the amounts already committed in open proposals, including timed-out ones still being watched, and names the committed amount when it refuses.
+- **Stale proposals.** A stale proposal that is not Approved is treated as rejected. A stale proposal that is already Approved can still execute (measured in #70), so it is handled like any approved proposal (ADR-0053).
+- **Rent and closing.** The engine pays proposal rent when it proposes and sends the permissionless close instruction once a proposal is resolved (executed, rejected, cancelled, or stale and not approved), so the rent returns to the multisig's rent collector. The startup check warns loudly when the multisig has no rent collector, or one other than the engine's member key.
+- **Funding Check.** For a Multisig Sender it checks the vault for the payments and the member key for fees and proposal rent, naming whichever is short. Proposal rent stays locked until the proposal is closed, so the member key must hold it. Proposals are independent, so several can be open at once; the check therefore subtracts the amounts already committed in open proposals, including timed-out ones still being watched, and names the committed amount when it refuses.
 - **Engine config (names proposed).** `SOLANA_SENDER_MODE` (`single` default, or `multisig`), `SOLANA_MULTISIG_ADDRESS`, `SOLANA_MULTISIG_MEMBER_ADDRESS`, `SOLANA_APPROVAL_DEADLINE_MS`. One Sender per chain stays (ADR-0016).
 - **Startup checks.** The member key exists with exactly Initiate and Execute (refuse to start if it holds Vote), the Signer can sign for it, and the vault derived from the multisig matches `SOLANA_SENDER_ADDRESS` if that is set.
 - **Squads only.** No cross-chain multisig interface until Safe on Base is the second real implementation (ADR-0012).
@@ -168,11 +169,26 @@ A dashboard for this is deferred (see Out of Scope). Until then a caller can pol
 - **Live, local and opt-in (`RUN_SQUADS=1`):** a real 2-of-3 Squads multisig on devnet. Test Approver keys vote, and the engine proposes and executes a small SOL and SPL bundle that lands.
 - **Existing live tests** keep passing unchanged.
 
+## Spike findings (#70, measured on devnet 2026-10-21)
+
+Full evidence, instruction layouts and account lists: `spike-findings.md`. What it settled, and what it changed:
+
+- **Program and SDK.** The Squads v4 program ID is `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` on mainnet and devnet. `@sqds/multisig` 2.1.4 works with `@solana/web3.js` 1.x (this repo's 1.99), not 3.x. The devnet RPC has no websocket, so confirmation is polled.
+- **Roles work as designed.** An Initiate + Execute member (permission mask 5) creates the vault transaction and proposal in one transaction, with no activation step, and executes after Voter-only members approve. It cannot approve or cancel. Proposals are independent and executable in any order.
+- **A bundle is 12 transfers per vault transaction.** Creating the vault transaction and proposal in one transaction fits 14 to 15 transfers once budget instructions are added, so 12 leaves room for mint and program keys and token-account creation. Execute must always request a 256 KB heap frame and set a compute limit (SPL execution fails on the default heap from 18 transfers). Beyond about 16 needs the buffer path and an address lookup table, which reaches 56 SOL transfers but is not recommended for v1. Batches (one proposal covering several vault transactions) are being measured in a follow-up, because 12 per proposal would make a 500-payment run need about 42 proposals.
+- **Rent is real and is not refunded automatically.** The engine pays about 4.7 million lamports for a one-transfer proposal on devnet, growing about 50 bytes of rent per transfer (about 5.2 million for 12 SPL transfers). Squads refunds it only when a proposal is closed, a separate permissionless instruction, and only to the multisig's **rent collector**; with none set the close fails and the rent is never recovered. So the operator sets the rent collector to the engine's member key, and the engine closes resolved proposals. Rent must be read from the chain, never hard-coded.
+- **Time lock** counts from the moment the proposal became Approved. Executing early fails at simulation with `TimeLockNotReleased` (6021).
+- **Stale is not simply rejected.** After a config change, a stale proposal that was Active stays Active forever, can no longer be voted on, and can only be closed. A stale proposal that was already **Approved still executes.** The engine treats a stale, non-Approved proposal as rejected, and an approved stale one like any approved proposal (ADR-0053).
+- **A failed execute leaves the proposal Approved and retryable**, for example when the vault is underfunded. The engine therefore never reports such Calls `FAILED` while the proposal can still execute; it retries until the deadline, then abandons them (ADR-0053). A proposal too large to execute is stuck until Approvers cancel it.
+- **Creating proposals is serial per multisig.** The next transaction index is the multisig's last index plus one, so two concurrent creates would collide.
+- **A closed proposal disappears.** The engine finds an execution by someone else through the proposal address's transaction history, which still lists it after closing.
+- **Not measured:** the mainnet fee and rent rates (read `ProgramConfig` and `getMinimumBalanceForRentExemption` at runtime), and batches (follow-up).
+
 ## Tickets
 
 GitHub Issues on `RbMo7/dispatch`, worked in this order, in one pass per `AGENTS.md`'s chain-specific cadence:
 
-1. #70: **Spike:** Squads v4 on devnet. Measure the largest bundle per proposal, fees and rent, confirm the program ID, observe time lock and stale behaviour. Record findings in this spec.
+1. #70: **Spike:** Squads v4 on devnet. Done (see Spike findings); a batch follow-up is being measured.
 2. #71: `local` keystore backend and the key CLI.
 3. #72: Policy: `allowedMultisig` and the Squads instruction decoder. Needs #70.
 4. #73: Engine: Multisig Sender config and startup checks. Needs #70.
