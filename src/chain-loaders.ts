@@ -14,6 +14,12 @@ import {
   runSafeStartupChecks,
 } from './chain-handler/base/safe/startup-checks.js';
 import { SafeTxServiceClient } from './chain-handler/base/safe/tx-service-client.js';
+import { readMultisigState } from './chain-handler/solana/multisig/multisig-account.js';
+import { resolveSolanaMultisigConfig } from './chain-handler/solana/multisig/multisig-config.js';
+import {
+  probeSignerForSolanaAddress,
+  runMultisigStartupChecks,
+} from './chain-handler/solana/multisig/startup-checks.js';
 import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
@@ -45,13 +51,16 @@ import { SignerClient } from './signer/client.js';
  */
 const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
   solana: async () => {
+    const connection = new Connection(config.solana.rpcUrl, {
+      commitment: 'confirmed',
+      // issue 15: every RPC call this Connection makes is aborted, not
+      // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
+      fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+    });
+    // #73 (ADR-0049): `single` is a no-op; `multisig` refuses to start before anything is sent.
+    await verifyMultisigSender(connection);
     const handler = new SolanaChainHandler({
-      connection: new Connection(config.solana.rpcUrl, {
-        commitment: 'confirmed',
-        // issue 15: every RPC call this Connection makes is aborted, not
-        // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
-        fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
-      }),
+      connection,
       signerClient: new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
       senderAddress: config.solana.senderAddress,
       knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
@@ -82,6 +91,31 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
     });
   },
 };
+
+/** #73: Solana's Multisig Sender startup checks (solana/multisig/startup-checks.ts), wired to the real RPC and Signer. */
+async function verifyMultisigSender(connection: Connection): Promise<void> {
+  const multisig = resolveSolanaMultisigConfig(config.solana.multisig);
+  if (multisig === undefined) return;
+  const { warnings } = await runMultisigStartupChecks({
+    config: multisig,
+    senderAddress: config.solana.senderAddress,
+    readMultisig: (address) => readMultisigState(connection, address),
+    probeSigner: (member) =>
+      probeSignerForSolanaAddress(
+        new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
+        member,
+      ),
+  });
+  for (const warning of warnings) logger.warn(`Solana multisig sender: ${warning}`);
+  logger.info(
+    {
+      multisig: multisig.multisigAddress,
+      vault: multisig.vaultAddress,
+      member: multisig.memberAddress,
+    },
+    'Solana multisig sender checks passed',
+  );
+}
 
 /** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */
 async function verifySafeSender(): Promise<void> {

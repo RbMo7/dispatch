@@ -1,11 +1,21 @@
 import { existsSync } from 'node:fs';
 
+import {
+  deriveVaultAddress,
+  parsePublicKey,
+} from './chain-handler/solana/multisig/multisig-config.js';
 import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
 
 // A local, gitignored .env (RPC URLs, keys) for the API, the worker and
 // drizzle-kit alike — real environment variables always win, and a deploy
 // without one is unaffected.
 if (existsSync('.env')) process.loadEnvFile('.env');
+
+/** The vault of SOLANA_MULTISIG_ADDRESS, or '' when it is unset or invalid (resolveSolanaMultisigConfig reports that at startup). */
+function solanaVaultFromEnv(): string {
+  const multisig = parsePublicKey((process.env.SOLANA_MULTISIG_ADDRESS ?? '').trim());
+  return multisig ? deriveVaultAddress(multisig).toBase58() : '';
+}
 
 export const config = {
   port: Number(process.env.PORT ?? 8420),
@@ -25,8 +35,19 @@ export const config = {
   /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */
   solana: {
     rpcUrl: process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com',
-    /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. */
-    senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
+    /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. In multisig mode (ADR-0049) it is the multisig's vault, derived from SOLANA_MULTISIG_ADDRESS. */
+    senderAddress:
+      process.env.SOLANA_SENDER_ADDRESS ||
+      (process.env.SOLANA_SENDER_MODE === 'multisig' ? solanaVaultFromEnv() : ''),
+    /** #73 (ADR-0049): raw Multisig Sender settings, validated by resolveSolanaMultisigConfig when 'solana' loads — `single` (the default) ignores them. */
+    multisig: {
+      senderMode: process.env.SOLANA_SENDER_MODE ?? '',
+      senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
+      multisigAddress: process.env.SOLANA_MULTISIG_ADDRESS ?? '',
+      memberAddress: process.env.SOLANA_MULTISIG_MEMBER_ADDRESS ?? '',
+      approvalDeadlineMs: process.env.SOLANA_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: process.env.SOLANA_APPROVAL_REWATCH_WINDOW_MS ?? '',
+    },
     /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
     knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
     /** #34: priority fee in micro-lamports per compute unit on every transaction the engine builds. 0 (default) adds none — a priority fee costs more, so it's opt-in (ADR-0003). */
