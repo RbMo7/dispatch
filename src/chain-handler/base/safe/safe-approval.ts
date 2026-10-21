@@ -85,6 +85,8 @@ export type SafeApprovalDeps = {
  * Reading, executing and the cost estimate belong to #84 and #85.
  */
 export class SafeApproval implements ApprovalCapability<'base'> {
+  /** The Funding Check names these in `INSUFFICIENT_FUNDS`'s `chainDetail.holder`. */
+  readonly holders = { sender: 'safe', proposer: 'executor' } as const;
   readonly proposerAddress: string;
   /** ADR-0051: one open proposal per Safe, because every proposal takes the Safe's next nonce. */
   readonly openProposalLimit = 1;
