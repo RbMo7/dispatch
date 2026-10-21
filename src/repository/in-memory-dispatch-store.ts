@@ -347,7 +347,10 @@ export class InMemoryDispatchStore implements DispatchStore {
     const waiting = [
       ...[...this.dispatches.values()].filter((d) => d.status === 'queued'),
       ...[...this.relayDispatches.values()].filter((r) => r.status === 'queued'),
-      ...[...this.transactions.values()].filter((t) => t.status === 'PENDING'),
+      ...[...this.transactions.values()].filter(
+        (t) =>
+          t.status === 'PENDING' || t.status === 'UNPROPOSED' || t.status === 'AWAITING_APPROVAL',
+      ),
     ];
     const counts = new Map<Chain, number>();
     for (const { chain } of waiting) {
@@ -567,6 +570,16 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   getProposal(id: string): Promise<Proposal | null> {
     return Promise.resolve(this.proposals.get(id) ?? null);
+  }
+
+  countOpenProposals(chain: Chain, senderAddress: string): Promise<number> {
+    const open = [...this.proposals.values()].filter(
+      (p) =>
+        p.chain === chain &&
+        p.senderAddress === senderAddress &&
+        (p.phase === 'noted' || p.phase === 'open' || p.phase === 'executing'),
+    );
+    return Promise.resolve(open.length);
   }
 
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {

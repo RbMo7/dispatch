@@ -25,7 +25,8 @@ export function mapSolanaFailure(cause: unknown): DispatchError {
 
 function classify(message: string): DispatchErrorCode {
   // A simulation failure is the chain's own verdict, whatever numbers its logs contain.
-  if (!/simulation failed/i.test(message) && isRateLimitOrTimeout(message)) return 'RPC_UNAVAILABLE';
+  if (!/simulation failed/i.test(message) && isRateLimitOrTimeout(message))
+    return 'RPC_UNAVAILABLE';
   if (isInsufficientFunds(message)) return 'INSUFFICIENT_FUNDS';
   if (isUnknownOrMissingAccount(message)) return 'INVALID_RECIPIENT';
   return 'CHAIN_REJECTED';

@@ -428,7 +428,7 @@ export class PostgresDispatchStore implements DispatchStore {
     for (const [table, waitingStatus] of [
       [dispatches, eq(dispatches.status, 'queued')],
       [relayDispatches, eq(relayDispatches.status, 'queued')],
-      [transactions, eq(transactions.status, 'PENDING')],
+      [transactions, inArray(transactions.status, ['PENDING', 'UNPROPOSED', 'AWAITING_APPROVAL'])],
     ] as const) {
       const rows = await this.db
         .select({ chain: table.chain, count: sql<number>`count(*)::int` })
@@ -653,6 +653,20 @@ export class PostgresDispatchStore implements DispatchStore {
   async getProposal(id: string): Promise<Proposal | null> {
     const row = await this.db.query.proposals.findFirst({ where: eq(proposals.id, id) });
     return row ? toProposal(row) : null;
+  }
+
+  async countOpenProposals(chain: Chain, senderAddress: string): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(proposals)
+      .where(
+        and(
+          eq(proposals.chain, chain),
+          eq(proposals.senderAddress, senderAddress),
+          inArray(proposals.phase, ['noted', 'open', 'executing']),
+        ),
+      );
+    return row?.count ?? 0;
   }
 
   async listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {

@@ -49,7 +49,12 @@ import {
 } from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
-import { extractMessage, isDefinitiveRefusal, isRpcOutage, mapBaseFailure } from './error-mapping.js';
+import {
+  extractMessage,
+  isDefinitiveRefusal,
+  isRpcOutage,
+  mapBaseFailure,
+} from './error-mapping.js';
 import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
 import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
@@ -142,7 +147,11 @@ function isSameAddress(a: string, b: string): boolean {
 /** #13: the address a signed transaction's signature recovers to — pure secp256k1, no RPC. */
 async function recoverSender(hex: `0x${string}`): Promise<Result<Address, DispatchError>> {
   try {
-    return ok(await recoverTransactionAddress({ serializedTransaction: hex as TransactionSerializedEIP1559 }));
+    return ok(
+      await recoverTransactionAddress({
+        serializedTransaction: hex as TransactionSerializedEIP1559,
+      }),
+    );
   } catch (cause) {
     return err({
       code: 'CHAIN_REJECTED',
@@ -254,7 +263,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       blockTag: 'latest',
     });
     if (latest > this.nonceCounter.peek()) {
-      this.logger.warn({ previousNextNonce: this.nonceCounter.peek(), advancedTo: latest }, 'advancing nonce counter to the chain');
+      this.logger.warn(
+        { previousNextNonce: this.nonceCounter.peek(), advancedTo: latest },
+        'advancing nonce counter to the chain',
+      );
     }
     this.nonceCounter.advanceTo(latest);
   }
@@ -407,7 +419,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       });
     }
     if (!this.signerClient) {
-      this.logger.warn({ senderAddress }, 'asked to sign but no Signer is configured for this ChainHandler');
+      this.logger.warn(
+        { senderAddress },
+        'asked to sign but no Signer is configured for this ChainHandler',
+      );
       return err({
         code: 'SIGNER_UNREACHABLE',
         message:
@@ -494,7 +509,6 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     return ok(signed);
   }
 
-
   /**
    * #9 (ADR-0037): an unsigned replacement for a stuck transaction — the
    * same nonce, recipient, value, data and gas, decoded straight from its
@@ -515,7 +529,12 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     if (!decodedSigned.ok) return decodedSigned;
     const decoded = decodedSigned.value.tx;
     const { nonce, to, gas, maxFeePerGas, maxPriorityFeePerGas } = decoded;
-    if (!to || gas === undefined || maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
+    if (
+      !to ||
+      gas === undefined ||
+      maxFeePerGas === undefined ||
+      maxPriorityFeePerGas === undefined
+    ) {
       return err({
         code: 'CHAIN_REJECTED',
         message: 'cannot replace: not a complete EIP-1559 transaction',
@@ -525,7 +544,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
 
     let confirmedNonce: number;
     try {
-      confirmedNonce = await this.client.getTransactionCount({ address: sender.value, blockTag: 'latest' });
+      confirmedNonce = await this.client.getTransactionCount({
+        address: sender.value,
+        blockTag: 'latest',
+      });
     } catch (cause) {
       return err(mapBaseFailure(cause));
     }
@@ -619,7 +641,11 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return err(mapBaseFailure(cause));
     }
     const maxBatchSize = request.maxBatchSize ?? this.bulkCallMaxBatchSize;
-    if (!Number.isInteger(maxBatchSize) || maxBatchSize < 1 || maxBatchSize > this.bulkCallMaxBatchSize) {
+    if (
+      !Number.isInteger(maxBatchSize) ||
+      maxBatchSize < 1 ||
+      maxBatchSize > this.bulkCallMaxBatchSize
+    ) {
       return err({
         code: 'CHAIN_REJECTED',
         message: `maxBatchSize must be 1..${this.bulkCallMaxBatchSize}`,
@@ -671,7 +697,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         // allowFailure false, any one bad item does that; with true, only
         // the aggregator refusing the call. Still sent, so the chain answers
         // (ADR-0018: never pre-judged here).
-        this.logger.warn({ error: extractMessage(cause) }, 'bulk estimateGas failed — using the fallback gas limit');
+        this.logger.warn(
+          { error: extractMessage(cause) },
+          'bulk estimateGas failed — using the fallback gas limit',
+        );
         gas = FALLBACK_GAS_LIMIT;
       }
       const unsignedTransaction = encodeUnsignedTransaction({
@@ -686,7 +715,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
         preparedId: randomUUID(), // one per chunk: its members share these bytes
       });
-      for (let i = 0; i < calls.length; i++) prepared.push({ callIndex: callIndex++, unsignedTransaction });
+      for (let i = 0; i < calls.length; i++)
+        prepared.push({ callIndex: callIndex++, unsignedTransaction });
     }
     return ok(prepared);
   }
@@ -713,11 +743,13 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         if (cause instanceof TransactionNotFoundError && status.value === 'PENDING') return ok([]);
         throw cause;
       }
-      const itemCount = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data: input }).args[0].length;
+      const itemCount = decodeFunctionData({ abi: AGGREGATE3_VALUE_ABI, data: input }).args[0]
+        .length;
       const every = (slot: BundleSlotStatus) => Array.from({ length: itemCount }, () => slot);
       if (status.value === 'PENDING') return ok(every({ status: 'PENDING' }));
       // A reverted bundle fails every slot — the receipt alone proves it, no trace needed.
-      if (status.value === 'FAILED') return ok(every({ status: 'FAILED', detail: { error: 'bundle reverted' } }));
+      if (status.value === 'FAILED')
+        return ok(every({ status: 'FAILED', detail: { error: 'bundle reverted' } }));
       // debug_* isn't in viem's typed method list, hence the untyped request.
       const request = traceClient.request as (args: {
         method: string;
@@ -733,12 +765,14 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
   }
 
-
   /** #20 (ADR-0041): an EIP-1559 transaction's hash is keccak256 of its signed serialization — exactly what eth_sendRawTransaction reports. */
   transactionHash(signed: SignedTransaction): Result<string, DispatchError> {
     const hex = signedTransactionHex(signed);
     if (!hex) {
-      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is neither 0x-hex nor base64 bytes' });
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'signed transaction is neither 0x-hex nor base64 bytes',
+      });
     }
     return ok(keccak256(hex));
   }
@@ -782,10 +816,16 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    */
   private decodeSigned(
     signed: SignedTransaction,
-  ): Result<{ hex: `0x${string}`; tx: TransactionSerializableEIP1559 & { nonce: number } }, DispatchError> {
+  ): Result<
+    { hex: `0x${string}`; tx: TransactionSerializableEIP1559 & { nonce: number } },
+    DispatchError
+  > {
     const hex = signedTransactionHex(signed);
     if (!hex) {
-      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is neither 0x-hex nor base64 bytes' });
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'signed transaction is neither 0x-hex nor base64 bytes',
+      });
     }
     let decoded: ReturnType<typeof parseTransaction>;
     try {
@@ -812,11 +852,17 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       });
     }
     if (decoded.nonce === undefined || decoded.r === undefined || decoded.s === undefined) {
-      return err({ code: 'CHAIN_REJECTED', message: 'signed transaction is missing its nonce or signature' });
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'signed transaction is missing its nonce or signature',
+      });
     }
     // EIP-2: a high-s signature still recovers, but every node refuses it.
     if (BigInt(decoded.s) > SECP256K1_HALF_N) {
-      return err({ code: 'CHAIN_REJECTED', message: 'signature has a high s value (EIP-2) — nodes refuse it' });
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'signature has a high s value (EIP-2) — nodes refuse it',
+      });
     }
     return ok({ hex, tx: { ...decoded, nonce: decoded.nonce } });
   }
@@ -862,7 +908,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         isDefinitiveRefusal(error)
       ) {
         if (this.nonceCounter.release(nonce)) {
-          this.logger.info({ nonce, error: error.message }, 'broadcast refused — nonce released, no gap');
+          this.logger.info(
+            { nonce, error: error.message },
+            'broadcast refused — nonce released, no gap',
+          );
         }
       }
       // #10: the chain is ahead of our counter (e.g. something else sent

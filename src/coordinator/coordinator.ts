@@ -15,6 +15,7 @@ import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+import { ApprovalFlow } from './approval-flow.js';
 
 /** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
 const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
@@ -112,6 +113,8 @@ export type CoordinatorDeps = {
    * 'solana') is never touched. Defaults to an empty map.
    */
   stuckHandling?: Map<Chain, StuckHandlingConfig>;
+  /** ADR-0054/0053: how long a Multisig Sender's Proposal waits for approval before its Calls are abandoned. Defaults to 72 hours; only read for a chain whose handler has an `approval` capability. */
+  approvalDeadlineMs?: number;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -141,6 +144,8 @@ export class Coordinator {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
+  /** ADR-0054: the chain-neutral multisig state machine; only ever touched for a chain whose handler has `.approval`. */
+  private readonly approvalFlow: ApprovalFlow;
   /** #20 review: Dispatches this Coordinator is processing right now — never reclaimed out from under itself. */
   private readonly inFlight = new Set<string>();
   /** #11: one bundle trace per hash per poll tick — cleared at the start of every tick. */
@@ -159,6 +164,14 @@ export class Coordinator {
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
+    this.approvalFlow = new ApprovalFlow({
+      store: this.store,
+      chainHandlers: this.chainHandlers,
+      requireSenderAddress: (chain) => this.requireSenderAddress(chain),
+      now: this.now,
+      logger: this.logger,
+      approvalDeadlineMs: deps.approvalDeadlineMs,
+    });
   }
 
   /**
@@ -180,6 +193,8 @@ export class Coordinator {
     const dispatches = await this.store.claimQueued(this.enabledChains, limit);
     if (dispatches.length === 0) {
       this.logger.debug({ limit }, 'no queued dispatches to claim');
+      // ADR-0054: Calls left UNPROPOSED (a full slot, an unreachable Signer) are retried every tick.
+      await this.proposeUnproposed();
       return;
     }
     this.logger.info(
@@ -192,6 +207,14 @@ export class Coordinator {
       await this.processClaimedDispatches(dispatches);
     } finally {
       for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+    }
+    await this.proposeUnproposed();
+  }
+
+  /** ADR-0054: proposes what is waiting on every chain with an approval capability; nothing at all for any other chain. */
+  private async proposeUnproposed(): Promise<void> {
+    for (const chain of this.approvalFlow.chains()) {
+      await this.approvalFlow.proposeUnproposed(chain);
     }
   }
 
@@ -211,6 +234,10 @@ export class Coordinator {
 
     for (const [chain, items] of itemsByChain) {
       const handler = this.requireChainHandler(chain);
+      if (handler.approval) {
+        await this.approvalFlow.admit(chain, items);
+        continue;
+      }
       const senderAddress = this.requireSenderAddress(chain);
       await this.processChainBatch(handler, senderAddress, chain, items);
     }
@@ -572,12 +599,18 @@ export class Coordinator {
       );
       this.inFlight.add(dispatch.id);
       try {
-        await this.processChainBatch(
-          this.requireChainHandler(dispatch.chain),
-          this.requireSenderAddress(dispatch.chain),
-          dispatch.chain,
-          unsent,
-        );
+        const handler = this.requireChainHandler(dispatch.chain);
+        if (handler.approval) {
+          // ADR-0054: a multisig Call is never signed as the Sender; it is noted and proposed.
+          await this.approvalFlow.admit(dispatch.chain, unsent);
+        } else {
+          await this.processChainBatch(
+            handler,
+            this.requireSenderAddress(dispatch.chain),
+            dispatch.chain,
+            unsent,
+          );
+        }
       } finally {
         this.inFlight.delete(dispatch.id);
       }

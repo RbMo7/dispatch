@@ -135,7 +135,7 @@ export interface DispatchStore {
     limit: number,
     notConfirmedBefore: Date,
   ): Promise<Transaction[]>;
-  /** #57: per chain in `chains`, how many queued Dispatches, queued Relay Dispatches and PENDING Transactions are waiting. A chain with none is absent. */
+  /** #57: per chain in `chains`, how many queued Dispatches, queued Relay Dispatches and PENDING Transactions are waiting — and, for a multisig chain (ADR-0054), Calls `UNPROPOSED` or `AWAITING_APPROVAL`, which wait on a chain just the same. A chain with none is absent. */
   countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>>;
   /** Persists a Call's freshly-signed Transaction — #20 (ADR-0041): written down *before* it is ever sent. */
   createTransaction(input: NewTransactionInput): Promise<Transaction>;
@@ -203,6 +203,13 @@ export interface DispatchStore {
    */
   createProposal(input: NewProposalInput): Promise<Proposal>;
   getProposal(id: string): Promise<Proposal | null>;
+  /**
+   * How many of `senderAddress`'s Proposals on `chain` are open in the sense
+   * of a chain's `openProposalLimit`: phase `noted`, `open` or `executing`.
+   * A `timed_out` Proposal no longer holds a slot (ADR-0053: its Calls are
+   * already ABANDONED), nor does a `resolved` one.
+   */
+  countOpenProposals(chain: Chain, senderAddress: string): Promise<number>;
   /** Unresolved Proposals on `chains` whose `nextCheckAt` is no later than `now`, most overdue first. Does not stamp them: the watcher reschedules with `updateProposal`. */
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]>;
   /** A Proposal's Calls in position order, one Transaction per Call (never a REPLACED or DROPPED version). */

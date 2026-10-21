@@ -2,6 +2,12 @@ import type { CallForChain, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type {
+  ChainProposalRef,
+  CommittedAmounts,
+  ExpectedTotals,
+  Proposal,
+} from '../domain/proposal.js';
 import type { Result } from '../domain/result.js';
 
 /**
@@ -66,6 +72,101 @@ export type Balance = {
  * reports it; the Coordinator then resubmits the Calls, or reports FAILED.
  */
 export type ChainStatus = 'PENDING' | 'CONFIRMED' | 'FAILED' | 'EXPIRED';
+
+/**
+ * ADR-0054: a Proposal as the Chain Handler built it, before it is signed or
+ * written down. Everything the engine persists about the Proposal that only
+ * the chain can know. `payload` is opaque (ADR-0027) and handler-owned: enough
+ * to re-sign, re-post or execute it later.
+ */
+export type BuiltProposal = {
+  chainRef: ChainProposalRef;
+  /** The proposal's own address (Squads PDA) or `safeTxHash`; unique, so a re-post is idempotent. */
+  proposalRef: string;
+  payload: string;
+  /** Squads `transactionIndex`, Safe nonce. */
+  sequence: number | null;
+  /** Approvals needed, as the multisig stands now. */
+  threshold: number;
+  /** The multisig's time lock, when it has one. */
+  executeAfter: Date | null;
+  /** What it should pay out, from the Dispatch's own items (a mistake-catcher, never a control). */
+  expected: ExpectedTotals;
+  /** What it holds back from the Sender and the proposer until it is closed (rent included). */
+  committed: CommittedAmounts;
+};
+
+/** ADR-0054: the signed propose transaction (or signed Safe message), exactly what is persisted before it is sent. */
+export type SignedProposal = {
+  /** Opaque, handler-owned; kept as `proposeSignedBytes` so a crash re-sends the same bytes. */
+  signedBytes: string;
+  hash: string;
+};
+
+/** ADR-0054: what the chain says about a Proposal right now, for the watch loop (a later ticket). */
+export type ProposalSnapshot = {
+  status: 'unknown' | 'active' | 'approved' | 'rejected' | 'executed' | 'cancelled' | 'stale';
+  approvals: number;
+  threshold: number;
+  executeAfter?: Date;
+  /** Set when the status is `executed`: the hash that executed it. */
+  executedHash?: string;
+  /** Approved, past its time lock, and able to execute right now. */
+  executable: boolean;
+};
+
+/** ADR-0054: what proposing costs the key that pays for it, beyond any payment. */
+export type ApprovalCost = {
+  asset: string;
+  /** Fees and rent paid, smallest unit. */
+  amount: string;
+  /** The part of `amount` that is rent, returned only when the Proposal is closed. */
+  rentLocked: string;
+};
+
+/**
+ * ADR-0054, optional: only a chain with a multisig Sender implements it —
+ * its presence is the capability, like `prepareReplacement` (ADR-0037) and
+ * `validateBulkCall` (ADR-0038). It carries the chain-specific work only;
+ * the state machine (claiming, funding, the deadline, settling) is the
+ * Coordinator's `ApprovalFlow`. The engine never approves (ADR-0049): a
+ * vault or Safe never signs here — `signProposal` is signed by the
+ * `proposerAddress`, not by the Sender.
+ */
+export interface ApprovalCapability<C extends Chain = Chain> {
+  /** The key that proposes (and executes): a Squads member or a Safe delegate/executor. */
+  readonly proposerAddress: string;
+  /** How many Proposals may be open per Sender: Squads `Infinity` (creation is serialized), Safe 1. */
+  readonly openProposalLimit: number;
+  /** A failed execute of a still-approved Proposal is tried again until its deadline (Squads true, Safe false). */
+  readonly reexecuteOnFailure: boolean;
+
+  /**
+   * Pure and size-aware: how one Dispatch's Calls split into Proposals.
+   * Returns each Proposal's Call positions (indexes into `calls`), every
+   * index exactly once. Only ever given one Dispatch's Calls (ADR-0054). A
+   * structured error fails every one of those Calls.
+   */
+  planBundles(calls: CallForChain<C>[]): Result<number[][], DispatchError>;
+  /** Builds one Proposal from one bundle of one Dispatch's Calls, for `sender` (the vault or Safe). */
+  buildProposal(input: {
+    calls: CallForChain<C>[];
+    sender: string;
+  }): Promise<Result<BuiltProposal, DispatchError>>;
+  /** Signs the propose transaction through the Signer as `proposerAddress`. `SIGNER_REFUSED` is definite; `SIGNER_UNREACHABLE` is retried. */
+  signProposal(built: BuiltProposal): Promise<Result<SignedProposal, DispatchError>>;
+  /** Sends it: idempotent (Squads broadcast, Safe POST), so re-sending the same bytes is always safe. */
+  submitProposal(signed: SignedProposal): Promise<Result<void, DispatchError>>;
+  readProposal(ref: ChainProposalRef): Promise<Result<ProposalSnapshot, DispatchError>>;
+  /** The execute transaction for an approved Proposal, to be signed and broadcast like any other. */
+  prepareExecution(proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>>;
+  estimateApprovalCost(
+    calls: CallForChain<C>[],
+    sender: string,
+  ): Promise<Result<ApprovalCost, DispatchError>>;
+  /** Optional: reclaims what a finished Proposal still locks (Squads rent). */
+  closeProposal?(proposal: Proposal): Promise<Result<void, DispatchError>>;
+}
 
 /**
  * The chain-specific plugin seam (CONTEXT.md, ADR-0015): one implementation
@@ -206,6 +307,9 @@ export interface ChainHandler<C extends Chain = Chain> {
    * while the chain doesn't know the transaction at all yet.
    */
   getBundleStatus?(hash: string): Promise<Result<BundleSlotStatus[], DispatchError>>;
+
+  /** ADR-0054, optional: present only for a chain with a multisig Sender. See ApprovalCapability. */
+  readonly approval?: ApprovalCapability<C>;
 
   /** What the Coordinator's Funding Check (ADR-0024) compares a claimed batch's required amount against. */
   getBalance(address: string, asset: string): Promise<Result<Balance, DispatchError>>;

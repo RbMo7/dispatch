@@ -56,7 +56,7 @@ describe('BaseChainHandler.getStatus (real Base Sepolia)', () => {
     expect(result).toEqual({ ok: true, value: 'PENDING' });
   });
 
-  it('reports CONFIRMED within roughly Base\'s ~2s inclusion window for a transaction that actually landed', async () => {
+  it("reports CONFIRMED within roughly Base's ~2s inclusion window for a transaction that actually landed", async () => {
     const sender = getDevSenderAccount();
     const call: EvmCall = {
       to: token.address,

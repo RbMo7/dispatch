@@ -38,7 +38,11 @@ export function buildSplTransferCall(
   }
 
   const sourceAta = deriveAssociatedTokenAddress(owner.value, mintKey.value, tokenProgram);
-  const destinationAta = deriveAssociatedTokenAddress(recipientOwner.value, mintKey.value, tokenProgram);
+  const destinationAta = deriveAssociatedTokenAddress(
+    recipientOwner.value,
+    mintKey.value,
+    tokenProgram,
+  );
 
   const instruction = createTransferCheckedInstruction(
     sourceAta,

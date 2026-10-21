@@ -1,4 +1,11 @@
-import { createPublicClient, encodeFunctionData, http, type Abi, type Address, type PublicClient } from 'viem';
+import {
+  createPublicClient,
+  encodeFunctionData,
+  http,
+  type Abi,
+  type Address,
+  type PublicClient,
+} from 'viem';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 function sleep(ms: number): Promise<void> {
@@ -110,9 +117,16 @@ describe('BaseChainHandler smart contract call submission (real Base Sepolia)', 
     });
     expect(receipt.status).toBe('success');
     // The event, not just "the transaction confirmed": exactly one Incremented log from our contract.
-    expect(receipt.logs.filter((log) => log.address.toLowerCase() === token.address.toLowerCase())).toHaveLength(1);
+    expect(
+      receipt.logs.filter((log) => log.address.toLowerCase() === token.address.toLowerCase()),
+    ).toHaveLength(1);
 
-    const countAfter = await waitForCount(client, token.address, token.abi, (countBefore as bigint) + 1n);
+    const countAfter = await waitForCount(
+      client,
+      token.address,
+      token.abi,
+      (countBefore as bigint) + 1n,
+    );
     expect(countAfter).toBe((countBefore as bigint) + 1n);
   }, 120_000);
 

@@ -251,6 +251,37 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
       });
     });
 
+    describe('countOpenProposals / countWaitingWork', () => {
+      it("counts a sender's noted, open and executing Proposals only", async () => {
+        const store = makeStore();
+        const ids: string[] = [];
+        for (const sender of ['vault', 'vault', 'vault', 'vault', 'other']) {
+          const seeded = await seedUnproposed(store, 'solana', 1);
+          const proposal = await store.createProposal(
+            proposalInput(seeded.dispatch.id, seeded.calls, { senderAddress: sender }),
+          );
+          ids.push(proposal.id);
+        }
+        expect(await store.countOpenProposals('solana', 'vault')).toBe(4);
+        await store.updateProposal(ids[0] as string, { phase: 'open' });
+        await store.updateProposal(ids[1] as string, { phase: 'executing' });
+        await store.updateProposal(ids[2] as string, { phase: 'timed_out' });
+        await store.updateProposal(ids[3] as string, { phase: 'resolved' });
+        expect(await store.countOpenProposals('solana', 'vault')).toBe(2);
+        expect(await store.countOpenProposals('solana', 'other')).toBe(1);
+        expect(await store.countOpenProposals('base', 'vault')).toBe(0);
+      });
+
+      it('counts UNPROPOSED and AWAITING_APPROVAL Calls as waiting work on their chain', async () => {
+        const store = makeStore();
+        await seedUnproposed(store, 'solana', 2);
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        await store.createProposal(proposalInput(seeded.dispatch.id, seeded.calls));
+        expect(await store.countWaitingWork(['solana', 'base'])).toEqual(new Map([['solana', 3]]));
+        expect(await store.countWaitingWork(['base'])).toEqual(new Map());
+      });
+    });
+
     describe('listProposalsDue / updateProposal', () => {
       it('returns unresolved Proposals on the asked chains whose check is due, most overdue first', async () => {
         const store = makeStore();
