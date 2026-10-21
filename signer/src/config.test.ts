@@ -21,6 +21,14 @@ describe('parseSignerConfig', () => {
     ]);
   });
 
+  it('accepts the local backend, keyed by key name', () => {
+    const config = parseSignerConfig({
+      [SOLANA]: { curve: 'ed25519', backend: 'local', keyRef: 'ops-sender' },
+    });
+
+    expect(config.get(SOLANA)).toMatchObject({ backend: 'local', keyRef: 'ops-sender' });
+  });
+
   it.each([
     ['an entry that is not an object', 'keyfile', 'must be an object'],
     [

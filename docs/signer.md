@@ -17,8 +17,11 @@ Each address in the Signer's config names its own backend, and one Signer can mi
 | Backend | Use it for | Base (`secp256k1`) | Solana (`ed25519`) |
 | --- | --- | --- | --- |
 | `keyfile` | Development only. Never mainnet. The private key sits in a file and in process memory. | yes | yes |
-| `privy` | Production. Keys live in Privy server wallets. | an Ethereum wallet | a Solana wallet |
-| `aws-kms` | Production. Keys live in AWS KMS. | key spec `ECC_SECG_P256K1` | key spec `ECC_NIST_EDWARDS25519` |
+| `aws-kms` | Production, the strongest option. Keys live in AWS KMS and never reach the host. | key spec `ECC_SECG_P256K1` | key spec `ECC_NIST_EDWARDS25519` |
+| `privy` | Production. Keys live in Privy server wallets and never reach the host. | an Ethereum wallet | a Solana wallet |
+| `local` | Production when you have neither of the above. Keys are encrypted files, decrypted into the Signer's process memory. The weakest production option. | yes | yes |
+
+Rank them `aws-kms`, then `privy`, then `local`. With `local`, a compromise of the Signer's host exposes the key, so rely on a tight [policy](#4-write-a-policy-for-every-address) and keep little in the Sender.
 
 The Privy backend has been run against real Privy on Base Sepolia and Solana devnet (`RUN_PRIVY=1`). The AWS KMS backend has been tested only against mocks. Its live test has not yet been run against a real key (#61). The [mainnet checklist](#mainnet-checklist) says what to do about that.
 
@@ -87,6 +90,40 @@ Generate a fresh authorization key for mainnet. Never paste it into chat, a tick
    ```
 
    Replace the placeholder with the derived address. A Solana key works the same way under any placeholder.
+
+### Local
+
+Each key is one encrypted file in a directory. scrypt turns your passphrase into the encryption key, and AES-256-GCM encrypts the private key. The Signer decrypts every key it is configured for when it starts, and keeps them in memory (ADR-0050).
+
+1. Choose a keystore directory and a passphrase. Put the passphrase in a file only the Signer's user can read, such as a mounted secret. Use a long random one, for example `openssl rand -hex 32`.
+
+   ```sh
+   export SIGNER_KEYSTORE_DIR=/var/lib/signer/keystore
+   export SIGNER_KEYSTORE_PASSPHRASE_FILE=/run/secrets/keystore-passphrase
+   ```
+
+   `SIGNER_KEYSTORE_PASSPHRASE` works too. The passphrase is never a command-line argument.
+
+2. Create a key with the CLI, run from the `signer/` package (`pnpm signer keys ...`), or `node dist/cli.js keys ...` inside the image. It prints the key's address and nothing secret:
+
+   ```sh
+   pnpm signer keys new --curve secp256k1 --name base-sender
+   pnpm signer keys new --curve ed25519 --name solana-sender
+   ```
+
+   To bring an existing key, pipe it in on stdin as 64 hex characters (32 bytes). Reading it with `read -rs` keeps it out of your shell history and the process list:
+
+   ```sh
+   read -rs KEY && printf %s "$KEY" | pnpm signer keys import --curve secp256k1 --name base-sender; unset KEY
+   ```
+
+   `pnpm signer keys list` shows each key's name, curve and address, and `pnpm signer keys export-public --name <name>` prints one address. Neither needs the passphrase. The CLI has no command that prints or exports a private key, and it never overwrites a key.
+
+3. Use the address it printed in the config file, with `"backend": "local"` and the key's name as `keyRef`. See [Write the config file](#3-write-the-config-file).
+
+The directory is created `0700` and each file `0600`. The Signer logs a warning if the directory is open to other users.
+
+Back up the passphrase and the key files, separately and somewhere safe. **If you lose the passphrase, the keys are lost.** The CLI cannot recover them, and it cannot change a passphrase. If you want to move funds off a key, do it before you lose access.
 
 ## 3. Write the config file
 
@@ -219,13 +256,15 @@ Before it listens, the Signer reads the config, builds each backend it names, an
 | `SIGNER_CONFIG <path> is unreadable` | The file is missing, or it is not valid JSON. |
 | `SIGNER_CONFIG is invalid:` and one line per problem | An entry has a bad `curve`, `backend`, `keyRef`, or `policy`. Each line names the address. |
 | `PRIVY_APP_ID is required by the privy backend`, and the like | The config names a backend whose credentials are not set. |
+| `SIGNER_KEYSTORE_DIR is required` or `SIGNER_KEYSTORE_PASSPHRASE or SIGNER_KEYSTORE_PASSPHRASE_FILE is required` | The config names the `local` backend and its keystore settings are not set. |
+| `the key file did not decrypt: the passphrase is wrong, or the file was altered` | A `local` key. Check the passphrase first, then whether the file changed. |
 | `these addresses don't match their keys:` and `expected …, derived …` | The key behind a `keyRef` has a different address. Fix the address or the `keyRef`. |
 | `these addresses don't match their keys:` and a backend error | The backend could not produce the key's address. Examples are missing AWS credentials or region, a KMS key with the wrong key spec or usage, and a wrong Privy wallet ID. |
 | `SIGNER_AUTH_TOKEN is required` | The token is unset. The Signer checks it after the keys, so this can appear after every key is proven. |
 
 On success it prints `signer listening on :8421` on stderr.
 
-A line starting `WARNING: the keyfile backend holds raw private keys` means some address uses the `keyfile` backend. It must never appear on a mainnet Signer.
+A line starting `WARNING: the keyfile backend holds raw private keys` means some address uses the `keyfile` backend. It must never appear on a mainnet Signer. A line starting `NOTICE: the local backend decrypts keys` means some address uses `local`: the keys are in this process's memory.
 
 ## 8. Point the engine at the Signer
 
@@ -295,6 +334,7 @@ When a Call's first signing fails, the Call is `FAILED` with a structured error 
 Clear every item before the first mainnet transaction.
 
 - [ ] No address in the mainnet Signer's config uses the `keyfile` backend, and its startup log has no `WARNING: the keyfile backend` line.
+- [ ] If any address uses `local`: the passphrase and the key files are backed up separately, the passphrase comes from a mounted secret file, the keystore directory is `0700`, and every `local` address has a tight policy and holds little.
 - [ ] `SIGNER_AUTH_TOKEN` is a fresh random value (`openssl rand -hex 32`), set identically on the worker and the Signer, used in no other environment, and not Compose's `dev-only-signer-token`.
 - [ ] Every address has a policy. On Base it has `chainIds: [8453]`. Every address has `allowedDestinations` and caps sized to what one transaction should ever move.
 - [ ] Every Privy wallet has an owner (`owner_id` set), `PRIVY_AUTHORIZATION_KEY` is set on the Signer, and the authorization key is a fresh one made for mainnet that has never been pasted into chat, a ticket, or a commit.
