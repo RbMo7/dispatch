@@ -1,6 +1,6 @@
 import { zeroAddress, type Address } from 'viem';
 
-import type { SignerClient } from '../../../signer/client.js';
+import type { SignerClient, SignRequest } from '../../../signer/client.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import type { SafeOnChainState } from './safe-reads.js';
 import { SafeTxServiceError, type SafeTxServiceClient } from './tx-service-client.js';
@@ -221,12 +221,23 @@ export async function probeSignerForAddress(
   signerClient: SignerClient,
   address: Address,
 ): Promise<SignerProbe> {
-  const result = await signerClient.requestSignature({
+  return probeSignerWith(signerClient, {
     chain: 'base',
     curve: 'secp256k1',
     address,
     unsignedTransaction: Buffer.from([0x02]).toString('base64'),
   });
+}
+
+/**
+ * The chain-neutral half of the probe: sends `request` (whose bytes must not
+ * be a transaction of its chain) and reads the Signer's answer as above.
+ */
+export async function probeSignerWith(
+  signerClient: SignerClient,
+  request: SignRequest,
+): Promise<SignerProbe> {
+  const result = await signerClient.requestSignature(request);
   // A 200 means the Signer signed bytes it cannot have read; the key is there either way.
   if (result.ok || result.error.code === 'SIGNER_REFUSED') return 'has-key';
   if (result.error.message.endsWith('400')) return 'has-key';
