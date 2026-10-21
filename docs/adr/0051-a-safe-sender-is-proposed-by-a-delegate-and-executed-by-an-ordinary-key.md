@@ -23,7 +23,7 @@ ADR-0049 settled the roles for a Multisig Sender on Squads: the engine proposes 
 ## Consequences
 
 - The engine depends on the Safe Transaction Service, hosted by Safe, for proposing and for reading confirmations. The URL is configurable so an operator can run their own.
-- An owner registers the engine as a delegate once, outside the engine. The startup check tells the operator when that is missing.
+- An owner registers the engine as a delegate once, outside the engine. The startup check reads the service's delegate list and tells the operator when it is missing. In the Safe app the engine's proposals appear as proposed by that owner (the service records `proposedByDelegate` separately), which the runbook says.
 - Anyone, including an owner, can execute a fully confirmed proposal after the engine's deadline; the engine reports that honestly (ADR-0053). After a timeout the next proposal reuses the Safe's current nonce, so only one of the two can ever execute, and a superseded proposal's Calls fail with `APPROVAL_REJECTED` without having been paid.
 - A Safe with a guard or a gating module is unsupported in v1.
 - A Safe Sender is therefore slower than a plain Sender: one proposal in approval at a time per Safe, with new Dispatches accumulating behind it. An operator needing throughput uses a Treasury funding a hot Sender, run as a second engine instance (one Sender per chain, ADR-0016).

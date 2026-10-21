@@ -112,15 +112,16 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
   - EIP-1559 transactions `to` that Safe with the `execTransaction` selector only;
   - the Safe transaction typed data for that Safe and the policy's chain ID: `to` is the canonical `MultiSendCallOnly`, `operation` is delegatecall, and `safeTxGas`, `baseGas`, `gasPrice` and `refundReceiver` are zero, so a proposal can never make the Safe pay the executor a refund.
   Nested payments are not decoded; the owners' confirmation is the control, as in ADR-0049.
-- **Bundling.** One `MultiSendCallOnly` transaction per bundle, size-bounded like the existing Bulk Call batch size. The address is the canonical deployment on Base, confirmed in the spike.
+- **Bundling.** One `MultiSendCallOnly` transaction per bundle, default limit 50 items (about 1.67M gas), configurable up to 100. The address is the canonical deployment for the Safe's version (see Spike findings).
 - **One open proposal per Safe**, because of the sequential Safe nonce. Calls that arrive while one is open accumulate and become one next proposal when it resolves, in order within the bundle. Only Calls routed through the Safe wait.
 - **Counting confirmations.** From the Safe Transaction Service plus on-chain `approveHash` approvals, filtered against the Safe's real owners (read on-chain, not from the service) and its real threshold. The service is a convenience for collecting signatures, never the authority on who may approve.
-- **Reject or replace.** The Safe nonce advancing without the engine's transaction means the proposal was rejected or replaced; the Calls fail with `APPROVAL_REJECTED`.
+- **A thin REST client**, not the Safe SDK, talks to the Transaction Service (the SDK refuses the hosted service without an API key, and the engine keeps third-party chain SDKs out of its tree). Reads of Safe state pin the block to the receipt's, or retry, because public RPCs lag.
+- **Reject or replace.** A proposal at nonce N is rejected or replaced only if the Safe's nonce is past N and the transaction executed at N has a different `safeTxHash` (the engine's own execution moves the nonce too). Then the Calls fail with `APPROVAL_REJECTED`.
 - **Statuses and errors.** The same `AWAITING_APPROVAL`, `APPROVAL_REJECTED` (`FAILED`) and `APPROVAL_TIMEOUT` (an `ABANDONED` reason, ADR-0053) as the Solana feature. The `approval` block keeps common, chain-neutral fields (including `state`) and adds chain-specific identifiers.
 - **Funding Check.** The Safe for the payments (native and ERC-20); the executor for gas, including the L1 data fee. A shortfall names which.
 - **Engine config (names proposed).** `BASE_SENDER_MODE` (`single` default, or `safe`), `BASE_SAFE_ADDRESS`, `BASE_SAFE_EXECUTOR_ADDRESS`, `BASE_SAFE_TX_SERVICE_URL`, `BASE_SAFE_API_KEY`, `BASE_APPROVAL_DEADLINE_MS`. One Sender per chain stays (ADR-0016).
 - **Unsupported in v1.** A Safe with a transaction guard or modules that gate execution (for example a Zodiac Delay) is warned about at startup, and not supported; executions through it may revert.
-- **Safe versions.** The startup check accepts the Safe versions the spike confirms, reading `VERSION()`.
+- **Safe versions.** The startup check accepts 1.3.0 and 1.4.1 (L1 and L2 variants), reading `VERSION()`, and refuses the rest.
 - **Glossary.** Approver, Treasury and Multisig Sender (in `CONTEXT.md`) cover this; Safe owners are Approvers.
 
 ## Testing Decisions
@@ -143,6 +144,25 @@ The payments come from the Safe. The engine acts through its own EOA, the **exec
 6. **The deadline is global config only** (default 72h), with no per-request override.
 7. **Webhooks and approver notifications are deferred** (ADR-0023). Until then late outcomes reach a caller only through `GET` and the logs.
 8. **`expected` is not a security control.** The independent check is the verifier CLI (#89) or the owners comparing the decoded transaction in the Safe app with their own record.
+
+## Spike findings (#79, measured on Base Sepolia 2026-10-21)
+
+Full evidence and the throwaway Safe addresses: `spike-findings.md`; the EIP-712 test vectors and the hashing helper: `spike-vectors/`. What changed in the design:
+
+- **The Transaction Service supports both chains and works without a key**, at 2 requests per second and 5,000 per month. Base Sepolia is `https://api.safe.global/tx-service/basesep`, Base mainnet `https://api.safe.global/tx-service/base`. A key goes in `Authorization: Bearer <key>`. Polling one open proposal every 60 seconds is about 43,000 requests a month, so a key is needed in production; the monthly quotas of the paid plans are not public and must be read from the Safe developer dashboard before choosing one.
+- **The engine uses its own thin REST client**, not the Safe SDK: `api-kit` throws without an API key against the hosted service, and the engine keeps third-party chain SDKs out of its tree.
+- **The delegate signs the raw 32-byte `safeTxHash`** (v 27/28), with no prefix. That is exactly the digest primitive the Signer already uses (ADR-0052). The proposal body also needs `contractTransactionHash` and `origin`. Re-posting the same proposal is idempotent.
+- **A delegate is registered by an owner** with an EIP-712 `Delegate(address delegateAddress, uint256 totp)` signature, where `totp` is the unix time divided by 3600. The delegate's signature is **not** counted as a confirmation, and a delegate cannot confirm.
+- **A non-delegate's proposal is rejected with HTTP 422**, not hidden. The startup check therefore reads the delegate list (`GET /v2/delegates/?safe=&delegate=`) instead of discovering the gap at the first POST.
+- **In the Safe app a delegate's proposal appears as proposed by the owner who registered the delegate**, with `proposedByDelegate` set to the engine. The runbook says so, and the engine sets `origin` so owners can recognize it.
+- **The EIP-712 domain is `{ chainId, verifyingContract }` only**, the same for 1.3.0 and 1.4.1 and their L2 variants. Hashes were verified three ways (viem, the Safe SDK, on-chain); the vectors are the Signer's test fixtures.
+- **Non-owner execution works**, with ECDSA and `approveHash` signatures mixed in one call, sorted by owner address. A failing inner call reverts with `GS013` and leaves the Safe nonce unchanged, so the engine always simulates first, and a simulation that fails with `GS013` means the proposal can never succeed as built.
+- **The nonce moving does not mean rejection.** The engine's own execution moves it too. A proposal at nonce N is rejected or replaced only if the nonce is past N **and** the transaction executed at N has a different `safeTxHash`. Losing proposals stay `isExecuted: false` in the service forever. Several proposals can sit at one nonce, listed newest first.
+- **Public RPC reads lag after a receipt.** The watcher and the startup checks pin the block number to the receipt's block, or retry.
+- **Bundles:** 50 items cost about 1.67M gas and 6 KB of calldata. The default limit is 50, configurable up to 100 (3.3M gas); nothing above about 300.
+- **Versions and addresses:** accept Safe 1.3.0 and 1.4.1 (L1 and L2 variants) by reading `VERSION()`. `MultiSendCallOnly` is `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` for 1.4.1 and `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` for 1.3.0 (code verified on Base Sepolia; the mainnet addresses come from `@safe-global/safe-deployments` and get a read-only code check at the mainnet smoke test, which is on hold).
+- **Guards and modules** are detected on-chain: the guard storage slot `0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8`, and `getModulesPaginated`.
+- **Not tested:** the authenticated quotas, the effect of removing or expiring a delegate on posted proposals, and contract-signature owners.
 
 ## Tickets
 
