@@ -11,6 +11,7 @@ import { privateKeyToAddress } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createBackends } from './backends/index.js';
+import safeVectors from './safe-vectors.json' with { type: 'json' };
 import { buildSigner } from './startup.js';
 
 /** Privy's SDK, stood in for by wallets whose keys are local. */
@@ -192,6 +193,31 @@ describe('the Signer on Privy wallets', () => {
           solana.publicKey.toBytes(),
         ),
       ).toBe(true);
+    } finally {
+      await signer.close();
+    }
+  });
+
+  it('signs a Safe transaction’s digest through Privy, recovering to its address (ADR-0052)', async () => {
+    const { evmAddress, config } = wallets();
+    const signer = await listening(await buildSigner(env({ SIGNER_CONFIG: config }), () => {}));
+
+    try {
+      for (const { tx, safeTxHash } of safeVectors) {
+        const response = await signer.sign({
+          kind: 'safeTransaction',
+          chain: 'base',
+          curve: 'secp256k1',
+          address: evmAddress,
+          safeTransaction: tx,
+        });
+        expect(response.status).toBe(200);
+        const signature = Buffer.from(response.body.signature ?? '', 'base64');
+        expect([27, 28]).toContain(signature[64]);
+        expect(
+          await recoverAddress({ hash: safeTxHash as `0x${string}`, signature: toHex(signature) }),
+        ).toBe(evmAddress);
+      }
     } finally {
       await signer.close();
     }
