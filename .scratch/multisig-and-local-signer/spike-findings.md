@@ -81,3 +81,7 @@ Rejected: 2 of 3 voters reject (rejected[] has 2 keys) => status Rejected (times
 
 ## Spend
 Devnet funder spent 1.298 SOL in total, much of it locked in rent/ALTs/vaults and mostly reclaimable (engine key now holds 0.42 SOL, ALTs not closed).
+
+## Correction found while building the verifier (#89)
+
+The vault-transaction **account** stores the message as plain Borsh with `u32`-length vectors. The compact `SmallVec` form (what `transactionMessageToMultisigTransactionMessageBytes` produces) appears only in the **create instruction's arguments**. Anything that decodes the on-chain account (the verifier, the engine's `readProposal`) must read the Borsh layout; anything that builds the create instruction uses the compact form.

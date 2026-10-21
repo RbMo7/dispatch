@@ -90,3 +90,7 @@ Throwaway Safes: 1.4.1+L2 `0x84Ac281B68de095f6227050F56C74d93d294e609` (2-of-3),
 - Mainnet code check of the MultiSendCallOnly addresses (forbidden here; do it read-only at the smoke test).
 - Delegate removal effects on already-posted proposals; delegate expiry (`expiryDate`) semantics.
 - Service behaviour for contract-signature (v=0) owners; not in scope for EOA owners.
+
+## Correction found while building the verifier (#89)
+
+The Safe 1.3.0 test vectors in `spike-vectors/vectors-1.3.0.json` carry no `chainId` field (they match with 84532), and their v2 vector uses the 1.4.1 MultiSend address. For 1.3.0 the verifier checks against an independent viem computation. Treat the 1.4.1 vectors as the authoritative fixtures.
