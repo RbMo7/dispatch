@@ -1,4 +1,15 @@
-import { hashTypedData, hexToBytes, isAddress, isHex, type Address, type Hex } from 'viem';
+import {
+  decodeFunctionData,
+  encodeFunctionData,
+  hashTypedData,
+  hexToBytes,
+  isAddress,
+  isHex,
+  parseAbi,
+  toFunctionSelector,
+  type Address,
+  type Hex,
+} from 'viem';
 
 /**
  * A Safe transaction as it crosses the wire (ADR-0052): addresses as hex
@@ -51,7 +62,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseSafeTransaction(raw: unknown): SafeTransaction | string {
   if (!isRecord(raw)) return 'safeTransaction must be an object';
 
-  const problem = (field: string, expected: string) => `safeTransaction.${field} must be ${expected}`;
+  const problem = (field: string, expected: string) =>
+    `safeTransaction.${field} must be ${expected}`;
   const address = (field: string): Address | undefined => {
     const value = raw[field];
     return typeof value === 'string' && isAddress(value, { strict: false })
@@ -148,4 +160,59 @@ export function safeSignature(backendSignature: Uint8Array): Uint8Array {
     throw new Error('expected a 65-byte secp256k1 signature ending in a recovery bit of 0 or 1');
   }
   return Uint8Array.from([...backendSignature.subarray(0, 64), recovery + 27]);
+}
+
+const EXEC_TRANSACTION_SIGNATURE =
+  'execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)';
+const EXEC_TRANSACTION_ABI = parseAbi([`function ${EXEC_TRANSACTION_SIGNATURE}`]);
+
+/** The selector of the Safe's `execTransaction`, the one call the engine's executor sends (ADR-0051). */
+export const EXEC_TRANSACTION_SELECTOR = toFunctionSelector(EXEC_TRANSACTION_SIGNATURE);
+
+/** The fields a Safe transaction carries that policy reads, however they reached the Signer. */
+export type SafeCall = Pick<
+  SafeTransaction,
+  | 'to'
+  | 'value'
+  | 'data'
+  | 'operation'
+  | 'safeTxGas'
+  | 'baseGas'
+  | 'gasPrice'
+  | 'gasToken'
+  | 'refundReceiver'
+>;
+
+/**
+ * Reads the Safe transaction out of `execTransaction` calldata. Returns the
+ * problem as a message when the calldata isn't exactly what the ABI encodes,
+ * so no bytes go unread: the Safe contract would decode them as it likes.
+ */
+export function decodeExecTransaction(calldata: Hex): SafeCall | string {
+  try {
+    const { args } = decodeFunctionData({ abi: EXEC_TRANSACTION_ABI, data: calldata });
+    const [to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver] =
+      args;
+    if (
+      encodeFunctionData({ abi: EXEC_TRANSACTION_ABI, args }).toLowerCase() !==
+      calldata.toLowerCase()
+    ) {
+      return 'execTransaction calldata is not canonically encoded';
+    }
+    if (operation !== 0 && operation !== 1)
+      return `execTransaction operation ${operation} is not 0 or 1`;
+    return {
+      to: to.toLowerCase() as Address,
+      value,
+      data,
+      operation,
+      safeTxGas,
+      baseGas,
+      gasPrice,
+      gasToken: gasToken.toLowerCase() as Address,
+      refundReceiver: refundReceiver.toLowerCase() as Address,
+    };
+  } catch (cause) {
+    return `execTransaction calldata: ${cause instanceof Error ? cause.message : String(cause)}`;
+  }
 }

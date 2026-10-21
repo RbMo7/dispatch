@@ -110,12 +110,15 @@ describe.each(backends)('the Signer signing a Safe transaction on the %s backend
       const response = await postSign(request({ safeTransaction: tx }));
 
       expect(response.status).toBe(200);
-      const signed = Buffer.from(((await response.json()) as { signature: string }).signature, 'base64');
+      const signed = Buffer.from(
+        ((await response.json()) as { signature: string }).signature,
+        'base64',
+      );
       expect(signed).toHaveLength(65);
       expect([27, 28]).toContain(signed[64]);
-      expect(await recoverAddress({ hash: safeTxHash as `0x${string}`, signature: toHex(signed) })).toBe(
-        account.address,
-      );
+      expect(
+        await recoverAddress({ hash: safeTxHash as `0x${string}`, signature: toHex(signed) }),
+      ).toBe(account.address);
     },
   );
 
@@ -152,7 +155,11 @@ describe.each(backends)('the Signer signing a Safe transaction on the %s backend
     ['an unknown kind', request({ kind: 'typedData' }), /unsupported kind/],
     ['a null kind', request({ kind: null }), /unsupported kind/],
     ['no safeTransaction', request({ safeTransaction: undefined }), /must be an object/],
-    ['a malformed field', request({ safeTransaction: { ...safeTransaction, value: 1 } }), /value must be/],
+    [
+      'a malformed field',
+      request({ safeTransaction: { ...safeTransaction, value: 1 } }),
+      /value must be/,
+    ],
     ['an ed25519 curve', request({ curve: 'ed25519' }), /secp256k1/],
     ['no address', request({ address: undefined }), /address is required/],
   ])('answers 400 to %s, audited as rejected', async (_name, body, message) => {
@@ -176,9 +183,7 @@ describe.each(backends)('the Signer signing a Safe transaction on the %s backend
     const response = await postSign(request(), authorization);
 
     expect(response.status).toBe(401);
-    expect(audited).toEqual([
-      expect.objectContaining({ decision: 'rejected', status: 401 }),
-    ]);
+    expect(audited).toEqual([expect.objectContaining({ decision: 'rejected', status: 401 })]);
     expect(audited[0]).not.toHaveProperty('transactionId');
   });
 
@@ -201,6 +206,37 @@ describe.each(backends)('the Signer signing a Safe transaction on the %s backend
         status: 403,
       }),
     ]);
+    expect(audited[0]).not.toHaveProperty('transactionId');
+  });
+
+  it('signs a pinned Safe’s MultiSend delegatecall and audits it as signed', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await startWith({ policy: { chainIds: [84532], allowedSafe: vectors[1]?.tx.safe } });
+
+    const response = await postSign(request({ safeTransaction: vectors[1]?.tx }));
+
+    expect(response.status).toBe(200);
+    expect(audited).toEqual([
+      expect.objectContaining({ kind: 'safeTransaction', decision: 'signed', status: 200 }),
+    ]);
+  });
+
+  it('refuses a CALL for a pinned Safe with 403 { error, reason }, audited with the reason, without signing', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await startWith({ policy: { chainIds: [84532], allowedSafe: vectors[0]?.tx.safe } });
+
+    const response = await postSign(request());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'policy refused',
+      reason: 'the Safe transaction is a call; only a delegatecall to MultiSendCallOnly is allowed',
+    });
+    expect(audited[0]).toMatchObject({
+      decision: 'refused',
+      status: 403,
+      reason: 'the Safe transaction is a call; only a delegatecall to MultiSendCallOnly is allowed',
+    });
     expect(audited[0]).not.toHaveProperty('transactionId');
   });
 

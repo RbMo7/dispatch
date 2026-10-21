@@ -41,7 +41,7 @@ A second request kind, for a deployment whose Sender is a Safe (ADR-0051, ADR-00
 
 The Signer computes the EIP-712 hash of those fields itself, with the domain `{ chainId, verifyingContract: safe }` and Safe's `SafeTx` struct, and signs that 32-byte hash with the key's backend, so `keyfile`, `local`, `privy` and `aws-kms` all work. The response is the usual `{ "signature": "<base64>" }`, but `v` is 27 or 28, not the 0 or 1 a transaction signature ends in, because the Safe Transaction Service rejects the latter. The engine recomputes the hash and refuses a signature that does not recover to the key's address.
 
-A key with no policy signs this kind, for any caller with the bearer token. A key with a policy refuses it with `403 { "error", "reason" }` unless the policy pins the Safe with `allowedSafe`, which the Signer does not read yet (#81), so for now every policy refuses it. The audit line adds `kind`, `safe` and `safeNonce`, and its `transactionId` is the Safe transaction hash. It never records the call data.
+A key with no policy signs this kind, for any caller with the bearer token. A key with a policy refuses it with `403 { "error", "reason" }` unless the policy pins the Safe with `allowedSafe` and the transaction passes its checks (a delegatecall to MultiSendCallOnly, zero gas and refund fields; see [section 4](#4-write-a-policy-for-every-address)). The audit line adds `kind`, `safe` and `safeNonce`, and its `transactionId` is the Safe transaction hash. It never records the call data.
 
 ## 1. Choose a backend for each address
 
@@ -207,6 +207,7 @@ A policy is optional, but an address without one is signed for unconditionally, 
 - `allowedDestinations`. On Base, every contract or address a transaction calls. On Solana, every program it uses, besides System, Token, Token-2022, Associated Token, and ComputeBudget.
 - `maxNativePerTransaction`. The most ETH or SOL one transaction may move.
 - `maxTokenPerTransaction`. The most of each listed token one transaction may move, keyed by token contract (Base) or mint (Solana).
+- `allowedSafe` (Base only, needs `chainIds`). Pins the key to one Safe: it signs only that Safe's `execTransaction` and the matching `safeTransaction` typed data, and only as a delegatecall to MultiSendCallOnly with zero gas and refund fields. `allowedMultiSend` overrides the MultiSendCallOnly addresses (the defaults are Safe 1.4.1 and 1.3.0). Use it for a Safe's executor and delegate keys. The nested payments are not decoded; the owners' confirmation is the control.
 
 A misspelled rule, a bad address, or a bad amount stops the Signer at startup. Before you write a policy, know where it can surprise you:
 
