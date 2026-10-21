@@ -1,0 +1,28 @@
+{
+  "name": "verifier",
+  "version": "0.1.0",
+  "description": "Independent verifier: checks a Squads or Safe multisig proposal against the caller's own payment file. Shares no code with the engine or the Signer (ADR-0049).",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@10.18.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "verify": "tsx src/cli.ts verify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.99.0",
+    "viem": "^2.56.9"
+  }
+}
