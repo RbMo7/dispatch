@@ -37,6 +37,9 @@ export default tseslint.config(
       'demo/solana/internal-asset-program/**',
       '.scratch/**',
       '.claude/**',
+      // verifier/fixtures holds the one-off script that built the Squads test
+      // fixtures with @sqds/multisig, a dependency the verifier itself never has.
+      'verifier/fixtures/**',
     ],
   },
 );

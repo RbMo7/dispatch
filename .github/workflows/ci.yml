@@ -38,9 +38,14 @@ jobs:
       # (vendor SDKs the engine never installs). The root lint type-checks
       # signer/ too, so it needs them installed first.
       - run: pnpm --dir signer install --frozen-lockfile
+      # The verifier is a third, independent package (ADR-0049): it shares no
+      # code with the engine or the Signer, and the root lint type-checks it too.
+      - run: pnpm --dir verifier install --frozen-lockfile
       - run: pnpm db:migrate
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test:offline
       - run: pnpm --dir signer typecheck
       - run: pnpm --dir signer test
+      - run: pnpm --dir verifier typecheck
+      - run: pnpm --dir verifier test
