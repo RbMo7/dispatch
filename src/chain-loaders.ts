@@ -107,7 +107,6 @@ async function verifySafeSender(): Promise<void> {
     probeSigner: (executor) =>
       probeSignerForAddress(
         new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
-        config.base.chainId,
         executor,
       ),
   });

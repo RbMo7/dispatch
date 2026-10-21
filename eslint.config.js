@@ -28,6 +28,15 @@ export default tseslint.config(
     // demo/solana/internal-asset-program is its own self-contained Anchor
     // project (own package.json/tsconfig/dependency graph) — a reference
     // artifact, never linted as part of this repo's own codebase.
-    ignores: ['dist/**', 'drizzle/**', 'node_modules/**', 'demo/solana/internal-asset-program/**'],
+    // .scratch holds specs and throwaway spike scripts, and .claude holds agent
+    // worktrees (full copies of this repo): neither is this repo's own code.
+    ignores: [
+      'dist/**',
+      'drizzle/**',
+      'node_modules/**',
+      'demo/solana/internal-asset-program/**',
+      '.scratch/**',
+      '.claude/**',
+    ],
   },
 );

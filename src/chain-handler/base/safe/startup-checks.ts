@@ -1,4 +1,4 @@
-import { serializeTransaction, zeroAddress, type Address } from 'viem';
+import { zeroAddress, type Address } from 'viem';
 
 import type { SignerClient } from '../../../signer/client.js';
 import type { BaseSafeConfig } from './safe-config.js';
@@ -8,12 +8,8 @@ import { SafeTxServiceError, type SafeTxServiceClient } from './tx-service-clien
 /** ADR-0051: the Safe versions whose hashing and execution were verified (spike #79). L1 and L2 variants both report these. */
 export const SUPPORTED_SAFE_VERSIONS = ['1.3.0', '1.4.1'];
 
-/**
- * Whether the Signer holds a key for the executor. `refused` still proves
- * the key exists: ADR-0046's per-address policy refuses a transaction it
- * does not allow, and the probe is deliberately not one it allows.
- */
-export type SignerProbe = 'can-sign' | 'refused-by-policy' | 'no-key' | 'unreachable';
+/** Whether the Signer holds a key for the executor, learned without asking it to sign anything. */
+export type SignerProbe = 'has-key' | 'no-key' | 'unreachable';
 
 export type SafeStartupDeps = {
   config: BaseSafeConfig;
@@ -213,35 +209,26 @@ function isZero(address: Address): boolean {
 }
 
 /**
- * Asks the Signer whether it holds the executor's key by requesting a
- * signature over a harmless 0-value transaction to the executor itself.
- * The signature is discarded and never broadcast; the Signer's audit log
- * records the request. A 403 policy refusal still proves the key exists
- * (ADR-0046); a 404 means it does not. (The Safe typed-data request kind
- * is #80's and is not probed here.)
+ * Asks the Signer whether it holds the executor's key, without ever getting a
+ * signature: the request carries bytes that are not a transaction. The Signer
+ * looks the address up first (404 when it has no key), then applies the
+ * address's policy, which refuses what it cannot decode (403), or else fails
+ * to decode it (400). Either answer proves the key exists, and nothing was
+ * signed, so no usable signature for the executor is produced at startup. The
+ * Signer's audit log records the refused request.
  */
 export async function probeSignerForAddress(
   signerClient: SignerClient,
-  chainId: number,
   address: Address,
 ): Promise<SignerProbe> {
-  const unsigned = serializeTransaction({
-    type: 'eip1559',
-    chainId,
-    nonce: 0,
-    to: address,
-    value: 0n,
-    gas: 21_000n,
-    maxFeePerGas: 1n,
-    maxPriorityFeePerGas: 1n,
-  });
   const result = await signerClient.requestSignature({
     chain: 'base',
     curve: 'secp256k1',
     address,
-    unsignedTransaction: Buffer.from(unsigned.slice(2), 'hex').toString('base64'),
+    unsignedTransaction: Buffer.from([0x02]).toString('base64'),
   });
-  if (result.ok) return 'can-sign';
-  if (result.error.code === 'SIGNER_REFUSED') return 'refused-by-policy';
+  // A 200 means the Signer signed bytes it cannot have read; the key is there either way.
+  if (result.ok || result.error.code === 'SIGNER_REFUSED') return 'has-key';
+  if (result.error.message.endsWith('400')) return 'has-key';
   return result.error.message.endsWith('404') ? 'no-key' : 'unreachable';
 }

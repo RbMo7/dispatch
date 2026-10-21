@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { parseTransaction } from 'viem';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../../signer/client.js';
@@ -92,7 +93,7 @@ function deps(o: Overrides = {}): SafeStartupDeps {
       getDelegates: () => settle(o.delegates ?? [goodDelegate]),
     },
     readSafe: () => settle(o.chain instanceof Error ? o.chain : { ...goodChain, ...o.chain }),
-    probeSigner: () => settle(o.signer ?? 'can-sign'),
+    probeSigner: () => settle(o.signer ?? 'has-key'),
   };
 }
 
@@ -115,12 +116,6 @@ describe('runSafeStartupChecks', () => {
       runSafeStartupChecks(
         deps({ delegates: [{ ...goodDelegate, expiryDate: '2027-01-01T00:00:00Z' }] }),
       ),
-    ).resolves.toBeDefined();
-  });
-
-  it('accepts a signer whose policy refuses the probe: the key exists', async () => {
-    await expect(
-      runSafeStartupChecks(deps({ signer: 'refused-by-policy' })),
     ).resolves.toBeDefined();
   });
 
@@ -295,29 +290,54 @@ describe('probeSignerForAddress', () => {
     );
   }
 
-  it('maps 200 to can-sign, a policy 403 to refused-by-policy, 404 to no-key, anything else to unreachable', async () => {
-    expect(
-      await probeSignerForAddress(
-        await signerAnswering(200, { signature: 'AA==' }),
-        84532,
-        EXECUTOR,
-      ),
-    ).toBe('can-sign');
-    server?.close();
+  it('maps a policy 403 and a decode 400 to has-key, 404 to no-key, anything else to unreachable', async () => {
     expect(
       await probeSignerForAddress(
         await signerAnswering(403, { error: 'policy refused', reason: 'not the Safe' }),
-        84532,
         EXECUTOR,
       ),
-    ).toBe('refused-by-policy');
+    ).toBe('has-key');
     server?.close();
     expect(
-      await probeSignerForAddress(await signerAnswering(404, { error: 'no key' }), 84532, EXECUTOR),
+      await probeSignerForAddress(
+        await signerAnswering(400, { error: 'unsignedTransaction is not an EVM transaction' }),
+        EXECUTOR,
+      ),
+    ).toBe('has-key');
+    server?.close();
+    expect(
+      await probeSignerForAddress(await signerAnswering(404, { error: 'no key' }), EXECUTOR),
     ).toBe('no-key');
     server?.close();
-    expect(await probeSignerForAddress(await signerAnswering(401, {}), 84532, EXECUTOR)).toBe(
+    expect(await probeSignerForAddress(await signerAnswering(401, {}), EXECUTOR)).toBe(
       'unreachable',
     );
+    server?.close();
+    expect(await probeSignerForAddress(await signerAnswering(503, {}), EXECUTOR)).toBe(
+      'unreachable',
+    );
+  });
+
+  it('never sends a transaction the Signer could sign: the probe body is not an EVM transaction', async () => {
+    let received: { unsignedTransaction?: string } = {};
+    server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => (raw += chunk));
+      req.on('end', () => {
+        received = JSON.parse(raw) as { unsignedTransaction?: string };
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const client = new SignerClient(
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      'token',
+      2000,
+    );
+    await probeSignerForAddress(client, EXECUTOR);
+    const bytes = Buffer.from(received.unsignedTransaction ?? '', 'base64');
+    expect(bytes.length).toBeLessThan(8);
+    expect(() => parseTransaction(`0x${bytes.toString('hex')}`)).toThrow();
   });
 });

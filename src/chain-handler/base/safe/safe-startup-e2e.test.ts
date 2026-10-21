@@ -40,7 +40,7 @@ function liveDeps(executor: string) {
     chainId: BASE_SEPOLIA_CHAIN_ID,
     service: new SafeTxServiceClient({ baseUrl: config.txServiceUrl }),
     readSafe: (address: `0x${string}`) => readSafeState(client, address),
-    probeSigner: () => Promise.resolve('can-sign' as const),
+    probeSigner: () => Promise.resolve('has-key' as const),
   };
 }
 
