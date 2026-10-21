@@ -52,7 +52,7 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
-Per-item `status` is `queued | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`); the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`.
+Per-item `status` is `queued | awaiting_approval | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`); the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
 
 On Solana, an item whose transaction expired without landing is resubmitted with a fresh blockhash, up to 3 times, whatever `retryPolicy` says: the expired one was never charged, so this costs nothing extra (ADR-0042). Its `transactionHash` then changes to the resubmission's. After the third it is `failed`, as is an expired Relay Dispatch, which the engine has no key to re-sign.
 
@@ -61,6 +61,38 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
+
+## Multisig approval (`awaiting_approval` and the `approval` block)
+
+Only for a Multisig Sender, a Sender whose address is a multisig wallet (ADR-0049). Its Calls are not signed and sent one by one: the engine groups them into a Proposal for the multisig's Approvers to decide on, then executes it once approved. A Proposal holds Calls from exactly one Dispatch (ADR-0054), so a large Dispatch may become several Proposals. A Dispatch that does not use a Multisig Sender never shows any of this.
+
+While the engine has not yet put a Call into a Proposal, the item is `queued`. Once it is in one, the item is `awaiting_approval`, with `transactionHash: null`: nothing has been executed, so there is no hash. When the Proposal is approved and the engine executes it, the item becomes `broadcasting`, and then `confirmed` or `failed` as usual, with `transactionHash` set to the transaction that executed it. If someone else executes it after the engine has given up (below), the item becomes `confirmed` late, with that executor's hash.
+
+An item whose Call belongs to a Proposal carries an `approval` block. It is present whenever the Call belongs to a Proposal, including after the item is `abandoned`, `confirmed` or `failed`, and absent otherwise:
+
+```json
+{
+  "status": "awaiting_approval",
+  "transactionHash": null,
+  "error": null,
+  "approval": {
+    "state": "awaiting",
+    "approvals": 1,
+    "threshold": 3,
+    "deadline": "2026-10-24T12:00:00.000Z",
+    "expected": { "recipients": 2, "totals": [{ "asset": "USDC", "amount": "30" }] },
+    "chainRef": { "kind": "squads", "multisig": "<address>", "proposal": "<address>", "transactionIndex": 4 }
+  }
+}
+```
+
+- `state` is `awaiting | approved | approved_after_deadline`. `approved_after_deadline` is only seen on an `abandoned` item: the Proposal was approved after the deadline, and the engine does not execute it then (ADR-0053).
+- `approvals` and `threshold` are the votes so far and the votes needed.
+- `deadline` is when the engine stops waiting (ISO 8601, 72 hours from creation by default). After it the item is `abandoned` with `APPROVAL_TIMEOUT`.
+- `chainRef` is the chain's own handle for the Proposal, so an operator can open it in the multisig's app: `{ "kind": "squads", "multisig", "proposal", "transactionIndex" }` or `{ "kind": "safe", "safe", "safeTxHash", "nonce" }`.
+- `expected` is what this Proposal should pay out, built from this Dispatch's own items: how many recipients, and the total per asset. It is a mistake-catcher, not a control: it lets an Approver notice a wrong file, but it is written by the same engine that wrote the Proposal, so it proves nothing about what the Proposal's bytes really do. The independent verifier (#89) is what checks that.
+
+An `abandoned` item with `APPROVAL_TIMEOUT` is not a failure: an Approver may still approve it and someone else execute it. Check before re-sending, or the payment may happen twice.
 
 ## Bulk Call (`bulkCall`, Base)
 
@@ -123,6 +155,8 @@ Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the 
 | `SIGNER_REFUSED` | The Signer refused to sign it under its policy (ADR-0046). Definite: the Call is `FAILED` and never retried; `message` carries the Signer's reason |
 | `CHAIN_NOT_ENABLED` | The request names a chain this deployment hasn't enabled (ADR-0019) |
 | `NONCE_ALREADY_USED` | The transaction's nonce was already consumed on-chain (Base) |
+| `APPROVAL_REJECTED` | A Multisig Sender's Proposal was rejected or cancelled by its Approvers, or went stale. Definite: the item is `failed`, with `transactionHash: null` (ADR-0049, ADR-0054) |
+| `APPROVAL_TIMEOUT` | Nobody decided on the Proposal by its `deadline`. The item is `abandoned`, not `failed` (ADR-0053): the Proposal may still be approved and executed by someone else, so a caller must check before re-sending |
 
 One more code exists internally, `ALREADY_KNOWN` (the node already has these exact bytes). It is never reported: it means "sent", so the item stays `broadcasting` until it resolves.
 

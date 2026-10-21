@@ -1,24 +1,45 @@
-import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
-import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
+import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { ApprovalState, AssetAmount, Proposal, ProposalPhase } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
+import { totalCommitted } from './committed.js';
 import type {
   ChainScope,
+  CommittedHolder,
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
+  NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
+  NewUnproposedInput,
+  ProposalOutcome,
+  ProposalPatch,
 } from './dispatch-store.js';
 
 type DispatchRow = typeof dispatches.$inferSelect;
 type TransactionRow = typeof transactions.$inferSelect;
 type RelayDispatchRow = typeof relayDispatches.$inferSelect;
+type ProposalRow = typeof proposals.$inferSelect;
 
 function toDispatch(row: DispatchRow): Dispatch {
   return {
@@ -49,7 +70,41 @@ function toTransaction(row: TransactionRow): Transaction {
     lastBroadcastAt: row.lastBroadcastAt,
     replacesTransactionId: row.replacesTransactionId,
     feeBumpAttempts: row.feeBumpAttempts,
+    proposalId: row.proposalId,
+    proposalPosition: row.proposalPosition,
   };
+}
+
+function toProposal(row: ProposalRow): Proposal {
+  return {
+    id: row.id,
+    dispatchId: row.dispatchId,
+    chain: row.chain as Chain,
+    senderAddress: row.senderAddress,
+    chainRef: row.chainRef,
+    payload: row.payload,
+    proposalRef: row.proposalRef,
+    sequence: row.sequence,
+    phase: row.phase as ProposalPhase,
+    approvalState: row.approvalState as ApprovalState,
+    approvals: row.approvals,
+    threshold: row.threshold,
+    deadlineAt: row.deadlineAt,
+    executeAfter: row.executeAfter,
+    timedOutAt: row.timedOutAt,
+    resolvedAt: row.resolvedAt,
+    createdAt: row.createdAt,
+    nextCheckAt: row.nextCheckAt,
+    checkFailures: row.checkFailures,
+    proposeSignedBytes: row.proposeSignedBytes,
+    proposeHash: row.proposeHash,
+    expected: row.expected,
+    committed: row.committed,
+  };
+}
+
+function byPosition(a: Transaction, b: Transaction): number {
+  return (a.proposalPosition ?? 0) - (b.proposalPosition ?? 0);
 }
 
 function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
@@ -172,6 +227,7 @@ export class PostgresDispatchStore implements DispatchStore {
     const rows = await this.db.query.transactions.findMany({
       where: and(
         eq(transactions.status, 'ABANDONED'),
+        isNotNull(transactions.hash),
         inArray(transactions.chain, chains),
         gte(transactions.abandonedAt, notAbandonedBefore),
       ),
@@ -244,6 +300,8 @@ export class PostgresDispatchStore implements DispatchStore {
           lastBroadcastAt: now,
           replacesTransactionId: predecessor.id,
           feeBumpAttempts: predecessor.feeBumpAttempts + 1,
+          proposalId: predecessor.proposalId,
+          proposalPosition: predecessor.proposalPosition,
         })
         .returning();
       if (!row) {
@@ -471,10 +529,10 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async markAbandoned(transactionId: string): Promise<void> {
+  async markAbandoned(transactionId: string, error?: DispatchError): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'ABANDONED', abandonedAt: new Date() })
+      .set({ status: 'ABANDONED', abandonedAt: new Date(), ...(error ? { error } : {}) })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -497,6 +555,280 @@ export class PostgresDispatchStore implements DispatchStore {
       .update(transactions)
       .set({ status: 'PENDING', confirmedAt: null })
       .where(eq(transactions.id, transactionId));
+  }
+
+  async noteUnproposed(inputs: NewUnproposedInput[]): Promise<Transaction[]> {
+    if (inputs.length === 0) return [];
+    return this.db.transaction(async (tx) => {
+      const noted: Transaction[] = [];
+      for (const input of inputs) {
+        const existing = await tx.query.transactions.findFirst({
+          where: and(
+            eq(transactions.dispatchId, input.dispatchId),
+            eq(transactions.callIndex, input.callIndex),
+          ),
+        });
+        if (existing) {
+          noted.push(toTransaction(existing));
+          continue;
+        }
+        const [row] = await tx
+          .insert(transactions)
+          .values({
+            dispatchId: input.dispatchId,
+            callIndex: input.callIndex,
+            chain: input.chain,
+            status: 'UNPROPOSED',
+          })
+          .returning();
+        if (!row) throw new Error('Failed to note an UNPROPOSED Transaction');
+        noted.push(toTransaction(row));
+      }
+      return noted;
+    });
+  }
+
+  async listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+    const rows = await this.db
+      .select({ transaction: transactions })
+      .from(transactions)
+      .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+      .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+      .orderBy(dispatches.createdAt, dispatches.id, transactions.callIndex)
+      .limit(limit);
+    return rows.map((row) => toTransaction(row.transaction));
+  }
+
+  async createProposal(input: NewProposalInput): Promise<Proposal> {
+    const { transactionIds, ...fields } = input;
+    if (transactionIds.length === 0) throw new Error('A Proposal needs at least one Transaction');
+    if (new Set(transactionIds).size !== transactionIds.length) {
+      throw new Error('A Proposal cannot hold the same Transaction twice');
+    }
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(transactions)
+        .where(inArray(transactions.id, transactionIds))
+        .for('update');
+      if (rows.length !== transactionIds.length) {
+        throw new Error('A Proposal names a Transaction that does not exist');
+      }
+      for (const row of rows) {
+        if (row.status !== 'UNPROPOSED') {
+          throw new Error(`Transaction ${row.id} is ${row.status}, not UNPROPOSED`);
+        }
+        if (row.dispatchId !== input.dispatchId || row.chain !== input.chain) {
+          throw new Error(
+            `Transaction ${row.id} is not of Dispatch ${input.dispatchId} on ${input.chain}: a Proposal never mixes Dispatches`,
+          );
+        }
+      }
+
+      const [proposalRow] = await tx
+        .insert(proposals)
+        .values({
+          ...fields,
+          phase: 'noted',
+          approvalState: 'awaiting',
+          approvals: 0,
+        })
+        .returning();
+      if (!proposalRow) throw new Error('Failed to create Proposal');
+
+      for (const [position, id] of transactionIds.entries()) {
+        await tx
+          .update(transactions)
+          .set({
+            status: 'AWAITING_APPROVAL',
+            proposalId: proposalRow.id,
+            proposalPosition: position,
+          })
+          .where(eq(transactions.id, id));
+      }
+      return toProposal(proposalRow);
+    });
+  }
+
+  async getProposal(id: string): Promise<Proposal | null> {
+    const row = await this.db.query.proposals.findFirst({ where: eq(proposals.id, id) });
+    return row ? toProposal(row) : null;
+  }
+
+  async listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {
+    const rows = await this.db.query.proposals.findMany({
+      where: and(
+        ne(proposals.phase, 'resolved'),
+        inArray(proposals.chain, chains),
+        lte(proposals.nextCheckAt, now),
+      ),
+      orderBy: [proposals.nextCheckAt, proposals.createdAt],
+      limit,
+    });
+    return rows.map(toProposal);
+  }
+
+  async listProposalCalls(proposalId: string): Promise<Transaction[]> {
+    return this.currentProposalCalls(this.db, proposalId);
+  }
+
+  async updateProposal(id: string, patch: ProposalPatch): Promise<Proposal> {
+    const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    const [row] =
+      Object.keys(defined).length === 0
+        ? await this.db.select().from(proposals).where(eq(proposals.id, id))
+        : await this.db.update(proposals).set(defined).where(eq(proposals.id, id)).returning();
+    if (!row) throw new Error(`Unknown proposal: ${id}`);
+    return toProposal(row);
+  }
+
+  async markProposalExecuting(
+    proposalId: string,
+    signedBytes: string,
+    hash: string,
+  ): Promise<Transaction[]> {
+    return this.db.transaction(async (tx) => {
+      const calls = await this.currentProposalCalls(tx, proposalId, true);
+      if (calls.length === 0 || calls.some((c) => c.status !== 'AWAITING_APPROVAL')) {
+        throw new Error(`Proposal ${proposalId} has Calls that are not AWAITING_APPROVAL`);
+      }
+      const now = new Date();
+      await tx.update(proposals).set({ phase: 'executing' }).where(eq(proposals.id, proposalId));
+      const rows = await tx
+        .update(transactions)
+        .set({ status: 'PENDING', hash, signedBytes, broadcastAt: now, lastBroadcastAt: now })
+        .where(
+          inArray(
+            transactions.id,
+            calls.map((c) => c.id),
+          ),
+        )
+        .returning();
+      return rows.map(toTransaction).sort(byPosition);
+    });
+  }
+
+  async reopenProposalForExecution(proposalId: string): Promise<Transaction[]> {
+    return this.db.transaction(async (tx) => {
+      const calls = await this.currentProposalCalls(tx, proposalId, true);
+      if (calls.length === 0 || calls.some((c) => c.status !== 'FAILED')) {
+        throw new Error(`Proposal ${proposalId} has Calls that are not FAILED`);
+      }
+      await tx
+        .update(proposals)
+        .set({ phase: 'open', nextCheckAt: new Date() })
+        .where(eq(proposals.id, proposalId));
+      const rows = await tx
+        .update(transactions)
+        .set({
+          status: 'AWAITING_APPROVAL',
+          hash: null,
+          signedBytes: null,
+          error: null,
+          broadcastAt: null,
+          lastBroadcastAt: null,
+        })
+        .where(
+          inArray(
+            transactions.id,
+            calls.map((c) => c.id),
+          ),
+        )
+        .returning();
+      return rows.map(toTransaction).sort(byPosition);
+    });
+  }
+
+  async settleProposal(proposalId: string, outcome: ProposalOutcome): Promise<Transaction[]> {
+    return this.db.transaction(async (tx) => {
+      const proposal = await tx.query.proposals.findFirst({ where: eq(proposals.id, proposalId) });
+      if (!proposal) throw new Error(`Unknown proposal: ${proposalId}`);
+      const calls = await this.currentProposalCalls(tx, proposalId, true);
+      const now = new Date();
+      await tx
+        .update(proposals)
+        .set(
+          outcome.status === 'ABANDONED'
+            ? { phase: 'timed_out', timedOutAt: now }
+            : { phase: 'resolved', resolvedAt: now },
+        )
+        .where(eq(proposals.id, proposalId));
+      if (calls.length === 0) return [];
+      const rows = await tx
+        .update(transactions)
+        .set({
+          status: outcome.status,
+          error: outcome.error ?? null,
+          ...(outcome.hash === undefined ? {} : { hash: outcome.hash }),
+          ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
+        })
+        .where(
+          inArray(
+            transactions.id,
+            calls.map((c) => c.id),
+          ),
+        )
+        .returning();
+      return rows.map(toTransaction).sort(byPosition);
+    });
+  }
+
+  async listCommitted(
+    chain: Chain,
+    holder: CommittedHolder,
+    timedOutSince: Date,
+  ): Promise<AssetAmount[]> {
+    const rows = await this.db.query.proposals.findMany({
+      where: and(
+        eq(proposals.chain, chain),
+        or(
+          inArray(proposals.phase, ['noted', 'open', 'executing']),
+          and(eq(proposals.phase, 'timed_out'), gte(proposals.timedOutAt, timedOutSince)),
+        ),
+      ),
+    });
+    const unproposed =
+      holder === 'sender'
+        ? await this.db
+            .select({ callIndex: transactions.callIndex, items: dispatches.items })
+            .from(transactions)
+            .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+            .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+        : [];
+    return totalCommitted(
+      holder,
+      rows.map(toProposal),
+      unproposed.map((row) => row.items[row.callIndex]?.payment ?? null),
+    );
+  }
+
+  async listProposalsForDispatch(dispatchId: string): Promise<Proposal[]> {
+    const rows = await this.db.query.proposals.findMany({
+      where: eq(proposals.dispatchId, dispatchId),
+      orderBy: [proposals.createdAt, proposals.id],
+    });
+    return rows.map(toProposal);
+  }
+
+  /** A Proposal's Calls in position order, one per Call (never a REPLACED or DROPPED version). `lock` takes row locks, inside a transaction. */
+  private async currentProposalCalls(
+    db: Pick<Database, 'select'>,
+    proposalId: string,
+    lock = false,
+  ): Promise<Transaction[]> {
+    const query = db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.proposalId, proposalId),
+          notInArray(transactions.status, ['REPLACED', 'DROPPED']),
+        ),
+      )
+      .orderBy(transactions.proposalPosition);
+    const rows = await (lock ? query.for('update') : query);
+    return rows.map(toTransaction);
   }
 
   async createRelayDispatch<C extends Chain>(

@@ -3,8 +3,71 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction } from '../domain/transaction.js';
+
+/** ADR-0054: a multisig Call claimed, validated and funded, to be written down as `UNPROPOSED`. */
+export type NewUnproposedInput = {
+  dispatchId: string;
+  callIndex: number;
+  chain: Chain;
+};
+
+/**
+ * ADR-0054/0041: a Proposal written down before it is sent. `transactionIds`
+ * are the Dispatch's `UNPROPOSED` Transactions it holds, in position order.
+ * Everything else about the row starts at its defaults (phase `noted`,
+ * approvals 0, `nextCheckAt` now).
+ */
+export type NewProposalInput = Pick<
+  Proposal,
+  | 'dispatchId'
+  | 'chain'
+  | 'senderAddress'
+  | 'chainRef'
+  | 'payload'
+  | 'proposalRef'
+  | 'sequence'
+  | 'threshold'
+  | 'deadlineAt'
+  | 'executeAfter'
+  | 'proposeSignedBytes'
+  | 'proposeHash'
+  | 'expected'
+  | 'committed'
+> & { transactionIds: string[] };
+
+/** What the watch loop may change on a Proposal; identity (chain, ref, payload, expected) is fixed at creation. */
+export type ProposalPatch = Partial<
+  Pick<
+    Proposal,
+    | 'phase'
+    | 'approvalState'
+    | 'approvals'
+    | 'threshold'
+    | 'executeAfter'
+    | 'timedOutAt'
+    | 'resolvedAt'
+    | 'nextCheckAt'
+    | 'checkFailures'
+    | 'proposeSignedBytes'
+    | 'proposeHash'
+    | 'committed'
+  >
+>;
+
+/** How a Proposal's Calls end. ABANDONED also moves the Proposal to `timed_out`; CONFIRMED and FAILED resolve it. */
+export type ProposalOutcome = {
+  status: 'CONFIRMED' | 'FAILED' | 'ABANDONED';
+  /** The structured reason (FAILED: APPROVAL_REJECTED or a chain error; ABANDONED: APPROVAL_TIMEOUT). Cleared on CONFIRMED. */
+  error?: DispatchError | null;
+  /** The hash that executed it, when known (e.g. a late execution by someone else). Omitted leaves each Call's hash alone. */
+  hash?: string | null;
+};
+
+/** Whose balance a committed amount is held against: the multisig Sender, or the key that pays the engine's own costs. */
+export type CommittedHolder = 'sender' | 'proposer';
 
 export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
@@ -60,7 +123,7 @@ export interface DispatchStore {
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
-  /** issue 10: up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
+  /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
   listAbandonedTransactions(
     chains: ChainScope,
     limit: number,
@@ -113,11 +176,72 @@ export interface DispatchStore {
   ): Promise<RelayDispatch[]>;
   /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
   markDropped(transactionId: string): Promise<void>;
-  markAbandoned(transactionId: string): Promise<void>;
+  /** `error` (ADR-0053's APPROVAL_TIMEOUT) is recorded when given; omitted leaves the row's error untouched, as before. */
+  markAbandoned(transactionId: string, error?: DispatchError): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
   markConfirmed(transactionId: string): Promise<void>;
   /** base-chain-handler issue 07: a re-check found the receipt gone — reopens a CONFIRMED Transaction back to PENDING (clearing confirmedAt) so it re-enters the normal poll/abandonment lifecycle, rather than being left silently wrong. */
   reopenTransaction(transactionId: string): Promise<void>;
+
+  // --- Multisig approval (ADR-0054). Only a Chain Handler with an approval capability ever reaches these. ---
+
+  /**
+   * Writes each Call down as an `UNPROPOSED` Transaction (no hash, no bytes).
+   * Idempotent per (dispatchId, callIndex): a Call already written down is
+   * returned as it is, so a reclaimed Dispatch never gets a duplicate row.
+   */
+  noteUnproposed(inputs: NewUnproposedInput[]): Promise<Transaction[]>;
+  /** `chain`'s `UNPROPOSED` Transactions, first-claimed Dispatch first and by `callIndex` within one, so the caller can propose one Dispatch at a time. */
+  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]>;
+  /**
+   * Atomically writes a Proposal at phase `noted` and moves its Transactions
+   * from `UNPROPOSED` to `AWAITING_APPROVAL`, setting `proposalId` and
+   * `proposalPosition` (the index in `transactionIds`). All-or-nothing: throws,
+   * changing nothing, if any Transaction is missing, is not `UNPROPOSED`, or
+   * belongs to another Dispatch or chain (a Proposal never mixes Dispatches),
+   * or if `proposalRef` (or, on Solana, the sender's `sequence`) is taken.
+   */
+  createProposal(input: NewProposalInput): Promise<Proposal>;
+  getProposal(id: string): Promise<Proposal | null>;
+  /** Unresolved Proposals on `chains` whose `nextCheckAt` is no later than `now`, most overdue first. Does not stamp them: the watcher reschedules with `updateProposal`. */
+  listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]>;
+  /** A Proposal's Calls in position order, one Transaction per Call (never a REPLACED or DROPPED version). */
+  listProposalCalls(proposalId: string): Promise<Transaction[]>;
+  updateProposal(id: string, patch: ProposalPatch): Promise<Proposal>;
+  /**
+   * ADR-0041 for the execute transaction: atomically sets phase `executing`
+   * and moves the Proposal's `AWAITING_APPROVAL` Calls to `PENDING`, all
+   * sharing `hash` and `signedBytes` like a bundle, before anything is sent.
+   */
+  markProposalExecuting(
+    proposalId: string,
+    signedBytes: string,
+    hash: string,
+  ): Promise<Transaction[]>;
+  /**
+   * A failed execute of a still-approved Proposal (Squads, `reexecuteOnFailure`):
+   * atomically sets phase back to `open`, due now, and returns its `FAILED`
+   * Calls to `AWAITING_APPROVAL` with no hash, bytes or error. The failed
+   * send stays in each Call's Attempts.
+   */
+  reopenProposalForExecution(proposalId: string): Promise<Transaction[]>;
+  /**
+   * Atomically ends a Proposal: sets every one of its Calls (current versions)
+   * to `outcome.status` with the error and hash, and the Proposal to
+   * `timed_out` (ABANDONED, stamping `abandonedAt`/`timedOutAt`) or `resolved`
+   * (stamping `confirmedAt` for CONFIRMED, `resolvedAt`). Also used to settle a
+   * `timed_out` Proposal's Calls later (ADR-0053's late execution).
+   */
+  settleProposal(proposalId: string, outcome: ProposalOutcome): Promise<Transaction[]>;
+  /**
+   * What `chain`'s Proposals still hold back from `holder`'s balance, per asset
+   * (the Funding Check subtracts it): the `committed` of Proposals that are
+   * `noted`, `open` or `executing`, or `timed_out` since `timedOutSince` or
+   * later (ADR-0053); for `sender`, also the payments of `UNPROPOSED` Calls.
+   */
+  listCommitted(chain: Chain, holder: CommittedHolder, timedOutSince: Date): Promise<AssetAmount[]>;
+  /** Every Proposal that holds one of the Dispatch's Calls, oldest first — what `GET /v1/dispatch/:id` builds the `approval` block from. */
+  listProposalsForDispatch(dispatchId: string): Promise<Proposal[]>;
 
   /** Idempotent create (ADR-0021), mirroring createDispatch — a Relay Dispatch's own table (ADR-0031), never squeezed into `dispatches`. */
   createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;

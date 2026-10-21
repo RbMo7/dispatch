@@ -3,15 +3,22 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
+import { holdsCommitment, totalCommitted } from './committed.js';
 import type {
   ChainScope,
+  CommittedHolder,
   DispatchStore,
   NewDispatchInput,
   NewFailedCallInput,
+  NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
+  NewUnproposedInput,
+  ProposalOutcome,
+  ProposalPatch,
 } from './dispatch-store.js';
 
 /**
@@ -27,6 +34,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly transactions = new Map<string, Transaction>();
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
+  private readonly proposals = new Map<string, Proposal>();
   /** #20: when each Dispatch / Relay Dispatch was last claimed. */
   private readonly claimedAt = new Map<string, Date>();
 
@@ -99,6 +107,8 @@ export class InMemoryDispatchStore implements DispatchStore {
       lastBroadcastAt: this.now(),
       replacesTransactionId: null,
       feeBumpAttempts: 0,
+      proposalId: null,
+      proposalPosition: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -142,6 +152,8 @@ export class InMemoryDispatchStore implements DispatchStore {
       lastBroadcastAt: null,
       replacesTransactionId: null,
       feeBumpAttempts: 0,
+      proposalId: null,
+      proposalPosition: null,
     };
     this.transactions.set(transaction.id, transaction);
     this.attempts.set(transaction.id, []);
@@ -176,6 +188,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       .filter(
         (transaction) =>
           transaction.status === 'ABANDONED' &&
+          transaction.hash !== null &&
           chains.includes(transaction.chain) &&
           (transaction.abandonedAt?.getTime() ?? 0) >= notAbandonedBefore.getTime(),
       )
@@ -350,13 +363,14 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
-  markAbandoned(transactionId: string): Promise<void> {
+  markAbandoned(transactionId: string, error?: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
       this.transactions.set(transactionId, {
         ...transaction,
         status: 'ABANDONED',
         abandonedAt: this.now(),
+        ...(error ? { error } : {}),
       });
     });
   }
@@ -440,6 +454,247 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
+  noteUnproposed(inputs: NewUnproposedInput[]): Promise<Transaction[]> {
+    const noted: Transaction[] = [];
+    for (const input of inputs) {
+      const existing = [...this.transactions.values()].find(
+        (t) => t.dispatchId === input.dispatchId && t.callIndex === input.callIndex,
+      );
+      if (existing) {
+        noted.push(existing);
+        continue;
+      }
+      const transaction: Transaction = {
+        id: randomUUID(),
+        dispatchId: input.dispatchId,
+        callIndex: input.callIndex,
+        chain: input.chain,
+        hash: null,
+        signedBytes: null,
+        status: 'UNPROPOSED',
+        error: null,
+        broadcastAt: null,
+        abandonedAt: null,
+        confirmedAt: null,
+        lastCheckedAt: null,
+        lastBroadcastAt: null,
+        replacesTransactionId: null,
+        feeBumpAttempts: 0,
+        proposalId: null,
+        proposalPosition: null,
+      };
+      this.transactions.set(transaction.id, transaction);
+      this.attempts.set(transaction.id, []);
+      noted.push(transaction);
+    }
+    return Promise.resolve(noted);
+  }
+
+  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+    const dispatchOrder = new Map([...this.dispatches.keys()].map((id, index) => [id, index]));
+    const unproposed = [...this.transactions.values()]
+      .filter((t) => t.status === 'UNPROPOSED' && t.chain === chain)
+      .sort(
+        (a, b) =>
+          (dispatchOrder.get(a.dispatchId) ?? 0) - (dispatchOrder.get(b.dispatchId) ?? 0) ||
+          a.callIndex - b.callIndex,
+      )
+      .slice(0, limit);
+    return Promise.resolve(unproposed);
+  }
+
+  createProposal(input: NewProposalInput): Promise<Proposal> {
+    return this.settleWith(() => {
+      const calls = input.transactionIds.map((id) => this.requireTransaction(id));
+      if (calls.length === 0) throw new Error('A Proposal needs at least one Transaction');
+      if (new Set(input.transactionIds).size !== calls.length) {
+        throw new Error('A Proposal cannot hold the same Transaction twice');
+      }
+      for (const call of calls) {
+        if (call.status !== 'UNPROPOSED') {
+          throw new Error(`Transaction ${call.id} is ${call.status}, not UNPROPOSED`);
+        }
+        if (call.dispatchId !== input.dispatchId || call.chain !== input.chain) {
+          throw new Error(
+            `Transaction ${call.id} is not of Dispatch ${input.dispatchId} on ${input.chain}: a Proposal never mixes Dispatches`,
+          );
+        }
+      }
+      for (const other of this.proposals.values()) {
+        if (other.proposalRef === input.proposalRef) {
+          throw new Error(`proposalRef ${input.proposalRef} is already in use`);
+        }
+        if (
+          input.chain === 'solana' &&
+          input.sequence !== null &&
+          other.chain === input.chain &&
+          other.senderAddress === input.senderAddress &&
+          other.sequence === input.sequence
+        ) {
+          throw new Error(
+            `sequence ${input.sequence} is already in use for ${input.senderAddress}`,
+          );
+        }
+      }
+
+      const now = this.now();
+      const { transactionIds, ...fields } = input;
+      const proposal: Proposal = {
+        ...fields,
+        id: randomUUID(),
+        phase: 'noted',
+        approvalState: 'awaiting',
+        approvals: 0,
+        timedOutAt: null,
+        resolvedAt: null,
+        createdAt: now,
+        nextCheckAt: now,
+        checkFailures: 0,
+      };
+      this.proposals.set(proposal.id, proposal);
+      transactionIds.forEach((id, position) => {
+        const call = this.requireTransaction(id);
+        this.transactions.set(id, {
+          ...call,
+          status: 'AWAITING_APPROVAL',
+          proposalId: proposal.id,
+          proposalPosition: position,
+        });
+      });
+      return proposal;
+    });
+  }
+
+  getProposal(id: string): Promise<Proposal | null> {
+    return Promise.resolve(this.proposals.get(id) ?? null);
+  }
+
+  listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {
+    const due = [...this.proposals.values()]
+      .filter(
+        (p) =>
+          p.phase !== 'resolved' &&
+          chains.includes(p.chain) &&
+          p.nextCheckAt.getTime() <= now.getTime(),
+      )
+      .sort((a, b) => a.nextCheckAt.getTime() - b.nextCheckAt.getTime())
+      .slice(0, limit);
+    return Promise.resolve(due);
+  }
+
+  listProposalCalls(proposalId: string): Promise<Transaction[]> {
+    return Promise.resolve(this.currentProposalCalls(proposalId));
+  }
+
+  updateProposal(id: string, patch: ProposalPatch): Promise<Proposal> {
+    return this.settleWith(() => {
+      const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+      const updated = { ...this.requireProposal(id), ...defined };
+      this.proposals.set(id, updated);
+      return updated;
+    });
+  }
+
+  markProposalExecuting(
+    proposalId: string,
+    signedBytes: string,
+    hash: string,
+  ): Promise<Transaction[]> {
+    return this.settleWith(() => {
+      const proposal = this.requireProposal(proposalId);
+      const calls = this.currentProposalCalls(proposalId);
+      if (calls.length === 0 || calls.some((c) => c.status !== 'AWAITING_APPROVAL')) {
+        throw new Error(`Proposal ${proposalId} has Calls that are not AWAITING_APPROVAL`);
+      }
+      const now = this.now();
+      this.proposals.set(proposalId, { ...proposal, phase: 'executing' });
+      return calls.map((call) => {
+        const executing: Transaction = {
+          ...call,
+          status: 'PENDING',
+          hash,
+          signedBytes,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+        };
+        this.transactions.set(call.id, executing);
+        return executing;
+      });
+    });
+  }
+
+  reopenProposalForExecution(proposalId: string): Promise<Transaction[]> {
+    return this.settleWith(() => {
+      const proposal = this.requireProposal(proposalId);
+      const calls = this.currentProposalCalls(proposalId);
+      if (calls.length === 0 || calls.some((c) => c.status !== 'FAILED')) {
+        throw new Error(`Proposal ${proposalId} has Calls that are not FAILED`);
+      }
+      this.proposals.set(proposalId, { ...proposal, phase: 'open', nextCheckAt: this.now() });
+      return calls.map((call) => {
+        const reopened: Transaction = {
+          ...call,
+          status: 'AWAITING_APPROVAL',
+          hash: null,
+          signedBytes: null,
+          error: null,
+          broadcastAt: null,
+          lastBroadcastAt: null,
+        };
+        this.transactions.set(call.id, reopened);
+        return reopened;
+      });
+    });
+  }
+
+  settleProposal(proposalId: string, outcome: ProposalOutcome): Promise<Transaction[]> {
+    return this.settleWith(() => {
+      const proposal = this.requireProposal(proposalId);
+      const now = this.now();
+      const settled = this.currentProposalCalls(proposalId).map((call) => {
+        const next: Transaction = {
+          ...call,
+          status: outcome.status,
+          error: outcome.error ?? null,
+          hash: outcome.hash === undefined ? call.hash : outcome.hash,
+          ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
+        };
+        this.transactions.set(call.id, next);
+        return next;
+      });
+      this.proposals.set(
+        proposalId,
+        outcome.status === 'ABANDONED'
+          ? { ...proposal, phase: 'timed_out', timedOutAt: now }
+          : { ...proposal, phase: 'resolved', resolvedAt: now },
+      );
+      return settled;
+    });
+  }
+
+  listCommitted(
+    chain: Chain,
+    holder: CommittedHolder,
+    timedOutSince: Date,
+  ): Promise<AssetAmount[]> {
+    const proposals = [...this.proposals.values()].filter(
+      (p) => p.chain === chain && holdsCommitment(p, timedOutSince),
+    );
+    const unproposedPayments = [...this.transactions.values()]
+      .filter((t) => t.chain === chain && t.status === 'UNPROPOSED')
+      .map((t) => this.dispatches.get(t.dispatchId)?.items[t.callIndex]?.payment ?? null);
+    return Promise.resolve(totalCommitted(holder, proposals, unproposedPayments));
+  }
+
+  listProposalsForDispatch(dispatchId: string): Promise<Proposal[]> {
+    return Promise.resolve(
+      [...this.proposals.values()]
+        .filter((p) => p.dispatchId === dispatchId)
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
+    );
+  }
+
   /** Test-only inspection — not part of DispatchStore. */
   getTransaction(transactionId: string): Transaction | null {
     return this.transactions.get(transactionId) ?? null;
@@ -461,6 +716,32 @@ export class InMemoryDispatchStore implements DispatchStore {
       throw new Error(`Unknown transaction: ${transactionId}`);
     }
     return transaction;
+  }
+
+  private requireProposal(proposalId: string): Proposal {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) {
+      throw new Error(`Unknown proposal: ${proposalId}`);
+    }
+    return proposal;
+  }
+
+  /** A Proposal's Calls in position order, current versions only. */
+  private currentProposalCalls(proposalId: string): Transaction[] {
+    return [...this.transactions.values()]
+      .filter(
+        (t) => t.proposalId === proposalId && t.status !== 'REPLACED' && t.status !== 'DROPPED',
+      )
+      .sort((a, b) => (a.proposalPosition ?? 0) - (b.proposalPosition ?? 0));
+  }
+
+  /** Like `settle`, for a body that returns a value. All-or-nothing is the body's job: it must validate before it writes. */
+  private settleWith<T>(fn: () => T): Promise<T> {
+    try {
+      return Promise.resolve(fn());
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   /** Runs a synchronous body, turning a thrown error into a rejected Promise — matching what an `async` real implementation does automatically, so a Coordinator's error handling behaves the same against the fake and against Postgres. */
