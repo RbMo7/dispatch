@@ -1,5 +1,5 @@
 import { Connection } from '@solana/web3.js';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, getAddress, http, isAddress } from 'viem';
 
 import {
   BASE_ABANDONMENT_TIMEOUT_MS,
@@ -7,6 +7,7 @@ import {
   BaseChainHandler,
 } from './chain-handler/base/base-chain-handler.js';
 import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
+import { SafeApproval } from './chain-handler/base/safe/safe-approval.js';
 import { resolveBaseSafeConfig } from './chain-handler/base/safe/safe-config.js';
 import { readSafeState } from './chain-handler/base/safe/safe-reads.js';
 import {
@@ -74,7 +75,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
   },
   base: async () => {
     // #82 (ADR-0051): `single` is a no-op; `safe` refuses to start before anything is sent.
-    await verifySafeSender();
+    const safe = await verifySafeSender();
     return BaseChainHandler.create({
       rpcUrl: config.base.rpcUrl,
       chainId: config.base.chainId,
@@ -85,6 +86,8 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       feeBumpPercent: config.base.feeBumpPercent,
       bulkCallMaxBatchSize: config.base.bulkCallMaxBatchSize,
       ...(config.base.traceRpcUrl ? { traceRpcUrl: config.base.traceRpcUrl } : {}),
+      // #83: in safe mode payments go out as Safe proposals; `single` has no approval capability at all.
+      ...(safe ? { approval: safe.approval } : {}),
       // issue 15: every RPC call this client makes is aborted, not just
       // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
@@ -118,42 +121,64 @@ async function verifyMultisigSender(connection: Connection): Promise<void> {
 }
 
 /** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */
-async function verifySafeSender(): Promise<void> {
+async function verifySafeSender(): Promise<{ approval: SafeApproval } | undefined> {
   const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
-  if (safe === undefined) return;
+  if (safe === undefined) return undefined;
+  const service = new SafeTxServiceClient({
+    baseUrl: safe.txServiceUrl,
+    apiKey: safe.apiKey,
+    timeoutMs: config.rpcTimeoutMs,
+  });
+  const signerClient = new SignerClient(
+    config.signerUrl,
+    config.signerAuthToken,
+    config.rpcTimeoutMs,
+  );
+  const readClient = createPublicClient({
+    transport: http(config.base.rpcUrl, {
+      fetchFn: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+    }),
+  });
   const { warnings } = await runSafeStartupChecks({
     config: safe,
     chainId: config.base.chainId,
-    service: new SafeTxServiceClient({
-      baseUrl: safe.txServiceUrl,
-      apiKey: safe.apiKey,
-      timeoutMs: config.rpcTimeoutMs,
-    }),
-    readSafe: (address) =>
-      readSafeState(
-        createPublicClient({
-          transport: http(config.base.rpcUrl, {
-            fetchFn: fetchWithTimeout(fetch, config.rpcTimeoutMs),
-          }),
-        }),
-        address,
-      ),
-    probeSigner: (executor) =>
-      probeSignerForAddress(
-        new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
-        executor,
-      ),
+    service,
+    readSafe: (address) => readSafeState(readClient, address),
+    probeSigner: (executor) => probeSignerForAddress(signerClient, executor),
   });
   for (const warning of warnings) logger.warn(`Safe sender: ${warning}`);
   logger.info(
     { safe: safe.safeAddress, executor: safe.executorAddress },
     'Safe sender checks passed',
   );
+  return {
+    approval: new SafeApproval({
+      config: safe,
+      chainId: config.base.chainId,
+      client: readClient,
+      signer: signerClient,
+      service,
+      knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+    }),
+  };
+}
+
+/**
+ * The Sender the Coordinator treats as paying on Base: the executor key in
+ * `single` mode, the Safe in `safe` mode (ADR-0051), where the engine's own
+ * key only proposes and executes. A malformed Safe address is left as typed:
+ * the Base loader refuses to start on it, before anything is sent.
+ */
+function baseCoordinatorSender(): string {
+  const { senderMode, safeAddress } = config.base.safe;
+  const safe = safeAddress.trim();
+  if (senderMode.trim() !== 'safe' || safe === '') return config.base.senderAddress;
+  return isAddress(safe, { strict: false }) ? getAddress(safe) : safe;
 }
 
 const senderAddressByChain: Partial<Record<Chain, string>> = {
   solana: config.solana.senderAddress,
-  base: config.base.senderAddress,
+  base: baseCoordinatorSender(),
 };
 
 const abandonmentTimeoutMsByChain: Partial<Record<Chain, number>> = {

@@ -54,6 +54,7 @@ describe('resolveBaseSafeConfig', () => {
       apiKey: undefined,
       approvalDeadlineMs: 259_200_000,
       approvalRewatchWindowMs: 2_592_000_000,
+      bundleLimit: 50,
     });
     expect(DEFAULT_APPROVAL_DEADLINE_MS).toBe(72 * 3600 * 1000);
     expect(DEFAULT_APPROVAL_REWATCH_WINDOW_MS).toBe(30 * 24 * 3600 * 1000);
@@ -81,6 +82,19 @@ describe('resolveBaseSafeConfig', () => {
       approvalDeadlineMs: 1000,
       approvalRewatchWindowMs: 2000,
     });
+  });
+
+  it('takes a bundle limit from 1 to 300 and names a bad one', () => {
+    expect(resolveBaseSafeConfig({ ...safe, bundleLimit: '300' }, 84532)?.bundleLimit).toBe(300);
+    expect(resolveBaseSafeConfig({ ...safe, bundleLimit: '1' }, 84532)?.bundleLimit).toBe(1);
+    for (const bad of ['0', '301', '1.5', 'many', '-2']) {
+      expect(() => resolveBaseSafeConfig({ ...safe, bundleLimit: bad }, 84532)).toThrow(
+        /BASE_SAFE_BUNDLE_LIMIT must be a whole number from 1 to 300/,
+      );
+    }
+    expect(() => resolveBaseSafeConfig({ ...single, bundleLimit: '10' }, 84532)).toThrow(
+      /BASE_SAFE_BUNDLE_LIMIT set while BASE_SENDER_MODE is "single"/,
+    );
   });
 
   it('requires a service URL on a chain with no hosted default', () => {

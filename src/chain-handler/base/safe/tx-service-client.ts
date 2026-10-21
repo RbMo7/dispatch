@@ -46,6 +46,32 @@ export type ServiceDelegate = {
   expiryDate: string | null;
 };
 
+/**
+ * #83: the body of `POST /api/v2/safes/{safe}/multisig-transactions/`, field for
+ * field as the service documents it (spike #79). uint256 fields are decimal
+ * strings; `nonce` and `operation` are JSON numbers, as the official SDK sends them.
+ */
+export type ProposeTransactionBody = {
+  to: string;
+  value: string;
+  data: string;
+  operation: 0 | 1;
+  safeTxGas: string;
+  baseGas: string;
+  gasPrice: string;
+  gasToken: string;
+  refundReceiver: string;
+  nonce: number;
+  /** The delegate that signed. */
+  sender: string;
+  /** The delegate's raw-digest signature over `contractTransactionHash`, 65 bytes r || s || v. */
+  signature: string;
+  /** The service recomputes this and refuses a proposal whose hash does not match. */
+  contractTransactionHash: string;
+  /** A short fixed string so owners recognize the engine's proposals in the Safe app. */
+  origin: string;
+};
+
 export type SafeTxServiceClientOptions = {
   /** e.g. `https://api.safe.global/tx-service/base`, no trailing slash. */
   baseUrl: string;
@@ -122,8 +148,24 @@ export class SafeTxServiceClient {
     });
   }
 
+  /**
+   * `POST /api/v2/safes/{safe}/multisig-transactions/` — proposes a
+   * transaction as a delegate. Posting the same proposal again is
+   * idempotent on the service (it answers 201 again, no duplicate), so a
+   * repeat is plain success. A 422 means the sender is not a delegate of the
+   * Safe (or the hash or signature does not match): a definite refusal.
+   */
+  async proposeTransaction(safe: Address, body: ProposeTransactionBody): Promise<void> {
+    await this.request('POST', `/api/v2/safes/${safe}/multisig-transactions/`, body, true);
+  }
+
   /** One round trip: the bearer header only when keyed, failures mapped to a `SafeTxServiceError`. Returns the parsed JSON body. */
-  protected async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+  protected async request(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    allowEmptyResponse = false,
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -144,8 +186,11 @@ export class SafeTxServiceClient {
 
     if (!response.ok) throw await failure(response, this.baseUrl, this.apiKey !== undefined);
 
+    // A successful POST may answer 201 with no body at all.
+    const text = await response.text().catch(() => '');
+    if (allowEmptyResponse && text.trim() === '') return undefined;
     try {
-      const parsed: unknown = await response.json();
+      const parsed: unknown = JSON.parse(text);
       return parsed;
     } catch {
       throw invalid(path, 'the body is not JSON');

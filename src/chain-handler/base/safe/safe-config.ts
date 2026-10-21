@@ -14,6 +14,8 @@ export type BaseSafeConfig = {
   approvalDeadlineMs: number;
   /** ADR-0053: how long an abandoned proposal is still watched for a late execution. */
   approvalRewatchWindowMs: number;
+  /** #83: the most Calls in one Safe proposal (one MultiSend). A Dispatch bigger than this becomes several proposals, one at a time. */
+  bundleLimit: number;
 };
 
 /** The unparsed `BASE_*` settings, exactly as config.ts reads them. */
@@ -26,10 +28,17 @@ export type RawBaseSafeSettings = {
   apiKey: string;
   approvalDeadlineMs: string;
   approvalRewatchWindowMs: string;
+  /** Optional: unset or empty means the default. */
+  bundleLimit?: string;
 };
 
 export const DEFAULT_APPROVAL_DEADLINE_MS = 72 * 60 * 60 * 1000;
 export const DEFAULT_APPROVAL_REWATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Spike #79: 50 items is ~1.7M gas and ~6 KB, comfortable on-chain and still reviewable by owners. */
+export const DEFAULT_SAFE_BUNDLE_LIMIT = 50;
+/** Spike #79: the per-transaction gas cap bites near 500 items; do not go beyond ~300. */
+export const MAX_SAFE_BUNDLE_LIMIT = 300;
 
 const DEFAULT_TX_SERVICE_URLS: Record<number, string> = {
   8453: 'https://api.safe.global/tx-service/base',
@@ -56,6 +65,7 @@ export function resolveBaseSafeConfig(
         ['BASE_SAFE_ADDRESS', raw.safeAddress],
         ['BASE_SAFE_EXECUTOR_ADDRESS', raw.safeExecutorAddress],
         ['BASE_SAFE_API_KEY', raw.apiKey],
+        ['BASE_SAFE_BUNDLE_LIMIT', raw.bundleLimit ?? ''],
       ] as const
     )
       .filter(([, value]) => value.trim() !== '')
@@ -137,6 +147,18 @@ export function resolveBaseSafeConfig(
     DEFAULT_APPROVAL_REWATCH_WINDOW_MS,
   );
 
+  let bundleLimit = DEFAULT_SAFE_BUNDLE_LIMIT;
+  if ((raw.bundleLimit ?? '').trim() !== '') {
+    const parsed = Number(raw.bundleLimit);
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_SAFE_BUNDLE_LIMIT) {
+      problems.push(
+        `BASE_SAFE_BUNDLE_LIMIT must be a whole number from 1 to ${MAX_SAFE_BUNDLE_LIMIT}, got "${raw.bundleLimit}"`,
+      );
+    } else {
+      bundleLimit = parsed;
+    }
+  }
+
   if (problems.length > 0 || !safeAddress || !executorAddress) {
     throw new Error(`invalid Safe sender config:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
   }
@@ -148,5 +170,6 @@ export function resolveBaseSafeConfig(
     apiKey: raw.apiKey.trim() === '' ? undefined : raw.apiKey.trim(),
     approvalDeadlineMs,
     approvalRewatchWindowMs,
+    bundleLimit,
   };
 }
