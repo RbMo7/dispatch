@@ -1,4 +1,5 @@
 import { Connection } from '@solana/web3.js';
+import { createPublicClient, http } from 'viem';
 
 import {
   BASE_ABANDONMENT_TIMEOUT_MS,
@@ -6,6 +7,13 @@ import {
   BaseChainHandler,
 } from './chain-handler/base/base-chain-handler.js';
 import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
+import { resolveBaseSafeConfig } from './chain-handler/base/safe/safe-config.js';
+import { readSafeState } from './chain-handler/base/safe/safe-reads.js';
+import {
+  probeSignerForAddress,
+  runSafeStartupChecks,
+} from './chain-handler/base/safe/startup-checks.js';
+import { SafeTxServiceClient } from './chain-handler/base/safe/tx-service-client.js';
 import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
@@ -55,8 +63,10 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
     await handler.verifyKnownTokens();
     return handler;
   },
-  base: () =>
-    BaseChainHandler.create({
+  base: async () => {
+    // #82 (ADR-0051): `single` is a no-op; `safe` refuses to start before anything is sent.
+    await verifySafeSender();
+    return BaseChainHandler.create({
       rpcUrl: config.base.rpcUrl,
       chainId: config.base.chainId,
       senderAddress: config.base.senderAddress,
@@ -69,8 +79,44 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       // issue 15: every RPC call this client makes is aborted, not just
       // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
-    }),
+    });
+  },
 };
+
+/** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */
+async function verifySafeSender(): Promise<void> {
+  const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
+  if (safe === undefined) return;
+  const { warnings } = await runSafeStartupChecks({
+    config: safe,
+    chainId: config.base.chainId,
+    service: new SafeTxServiceClient({
+      baseUrl: safe.txServiceUrl,
+      apiKey: safe.apiKey,
+      timeoutMs: config.rpcTimeoutMs,
+    }),
+    readSafe: (address) =>
+      readSafeState(
+        createPublicClient({
+          transport: http(config.base.rpcUrl, {
+            fetchFn: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+          }),
+        }),
+        address,
+      ),
+    probeSigner: (executor) =>
+      probeSignerForAddress(
+        new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
+        config.base.chainId,
+        executor,
+      ),
+  });
+  for (const warning of warnings) logger.warn(`Safe sender: ${warning}`);
+  logger.info(
+    { safe: safe.safeAddress, executor: safe.executorAddress },
+    'Safe sender checks passed',
+  );
+}
 
 const senderAddressByChain: Partial<Record<Chain, string>> = {
   solana: config.solana.senderAddress,

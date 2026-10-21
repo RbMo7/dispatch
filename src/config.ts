@@ -35,7 +35,9 @@ export const config = {
         ? ('auto' as const)
         : Number(process.env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
     /** #43: the ceiling for an `auto` price. */
-    maxComputeUnitPriceMicroLamports: Number(process.env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
+    maxComputeUnitPriceMicroLamports: Number(
+      process.env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0,
+    ),
     /** #42: how many Solana transactions one worker may have in flight at once. */
     sendConcurrency: Number(process.env.SOLANA_SEND_CONCURRENCY || 4),
   },
@@ -44,8 +46,23 @@ export const config = {
     rpcUrl: process.env.BASE_RPC_URL ?? 'https://sepolia.base.org',
     /** Verified against the connected RPC's own eth_chainId at construction — refuses to start on mismatch. Base mainnet 8453, Base Sepolia 84532. */
     chainId: Number(process.env.BASE_CHAIN_ID ?? 84532),
-    /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. */
-    senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
+    /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. In safe mode (ADR-0051) it is the executor, so BASE_SAFE_EXECUTOR_ADDRESS alone is enough. */
+    senderAddress:
+      process.env.BASE_SENDER_ADDRESS ||
+      (process.env.BASE_SENDER_MODE === 'safe'
+        ? (process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '')
+        : ''),
+    /** #82 (ADR-0051): raw Safe Sender settings, validated by resolveBaseSafeConfig when 'base' loads — `single` (the default) ignores them. */
+    safe: {
+      senderMode: process.env.BASE_SENDER_MODE ?? '',
+      senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
+      safeAddress: process.env.BASE_SAFE_ADDRESS ?? '',
+      safeExecutorAddress: process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '',
+      txServiceUrl: process.env.BASE_SAFE_TX_SERVICE_URL ?? '',
+      apiKey: process.env.BASE_SAFE_API_KEY ?? '',
+      approvalDeadlineMs: process.env.BASE_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: process.env.BASE_APPROVAL_REWATCH_WINDOW_MS ?? '',
+    },
     /** Comma-separated `SYMBOL:contractAddress:decimals` list — parsed via known-tokens.ts's parseBaseKnownTokens. */
     knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
     /** Minimum percentage both maxFeePerGas and maxPriorityFeePerGas must be bumped by on a Retry Policy fee-bump replacement (issue 09) — go-ethereum/op-geth's own inherited PriceBump floor is 10%; a documented default with margin above that, not a verified Base-sequencer guarantee. */
