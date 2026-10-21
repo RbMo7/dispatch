@@ -10,6 +10,39 @@ The Signer is a separate process that holds each Sender's key and answers one re
 
 Only the worker signs. The API process never calls the Signer.
 
+### Signing a Safe transaction
+
+A second request kind, for a deployment whose Sender is a Safe (ADR-0051, ADR-0052), asks the Signer to sign a Safe transaction instead of a chain transaction. Nothing else about `POST /sign` changes: a request without `kind` is the ordinary one above, and any other `kind` is `400`. The engine sends it only in Safe mode.
+
+```json
+{
+  "kind": "safeTransaction",
+  "chain": "base",
+  "curve": "secp256k1",
+  "address": "0xTheSigningKey…",
+  "safeTransaction": {
+    "safe": "0xTheSafe…",
+    "chainId": 8453,
+    "to": "0x…",
+    "value": "0",
+    "data": "0x…",
+    "operation": 1,
+    "safeTxGas": "0",
+    "baseGas": "0",
+    "gasPrice": "0",
+    "gasToken": "0x0000000000000000000000000000000000000000",
+    "refundReceiver": "0x0000000000000000000000000000000000000000",
+    "nonce": "7"
+  }
+}
+```
+
+`address` is the signing key, never the Safe. Every number but `chainId` and `operation` (0 is a call, 1 a delegatecall) is a decimal string, and every field is required. A missing or malformed field is `400`.
+
+The Signer computes the EIP-712 hash of those fields itself, with the domain `{ chainId, verifyingContract: safe }` and Safe's `SafeTx` struct, and signs that 32-byte hash with the key's backend, so `keyfile`, `local`, `privy` and `aws-kms` all work. The response is the usual `{ "signature": "<base64>" }`, but `v` is 27 or 28, not the 0 or 1 a transaction signature ends in, because the Safe Transaction Service rejects the latter. The engine recomputes the hash and refuses a signature that does not recover to the key's address.
+
+A key with no policy signs this kind, for any caller with the bearer token. A key with a policy refuses it with `403 { "error", "reason" }` unless the policy pins the Safe with `allowedSafe`, which the Signer does not read yet (#81), so for now every policy refuses it. The audit line adds `kind`, `safe` and `safeNonce`, and its `transactionId` is the Safe transaction hash. It never records the call data.
+
 ## 1. Choose a backend for each address
 
 Each address in the Signer's config names its own backend, and one Signer can mix them.
@@ -290,6 +323,7 @@ Each line has these fields. A field the request didn't carry is left out.
 - `time`. When the Signer answered, in ISO 8601.
 - `address` and `chain`. The Sender and chain the request named.
 - `transactionId`. Present only when `decision` is `signed`. On Base, the hash of the signed transaction. On Solana, the transaction's signature in base58.
+- `kind`, `safe` and `safeNonce`. Only on a request to sign a Safe transaction: `"safeTransaction"`, the Safe's address, and the transaction's nonce. On a `signed` line, `transactionId` is then the Safe transaction hash.
 - `decision`. One of the four below.
 - `status`. The HTTP status the Signer answered with.
 - `reason`. Why it didn't sign: the policy's reason for `refused`, or the error otherwise.

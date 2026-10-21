@@ -3,6 +3,7 @@ import { isAddress } from 'viem';
 
 import type { Curve } from './backends/key-backend.js';
 import { decodeTransaction, type TransactionEffects } from './effects.js';
+import type { SafeTransaction } from './safe-transaction.js';
 
 /**
  * What one address may sign, per transaction. Every rule is optional and
@@ -185,4 +186,21 @@ export function evaluatePolicy(policy: Policy, curve: Curve, unsigned: Uint8Arra
     return { ok: false, reason: `undecodable transaction: ${effects.undecodable}` };
   }
   return checkPolicy(policy, effects);
+}
+
+/**
+ * The seam for a Safe transaction (ADR-0052). A key with no policy never
+ * reaches here. A key with one signs a Safe transaction only if the policy
+ * pins the Safe with `allowedSafe`, which is not built yet (#81), so every
+ * policy refuses today. #81 replaces this body with the `allowedSafe`,
+ * `chainIds` and field checks.
+ */
+export function evaluateSafeTransactionPolicy(
+  _policy: Policy,
+  _transaction: SafeTransaction,
+): PolicyDecision {
+  return {
+    ok: false,
+    reason: 'the policy has no allowedSafe, so it does not sign Safe transactions',
+  };
 }
