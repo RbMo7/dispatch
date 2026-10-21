@@ -142,6 +142,8 @@ One transaction, not a batch — this is the same per-item status vocabulary Man
 
 ## Error codes
 
+For a Multisig Sender, the Funding Check looks at two balances (ADR-0043, ADR-0054): the vault or Safe pays the payments, and the engine's own key (the Squads member key, the Safe executor) pays the network cost and any proposal rent. Both are reduced by what open Proposals already hold. An `INSUFFICIENT_FUNDS` for such a Sender names the short balance: `chainDetail` is `{ "asset": "USDC", "short": "40", "holder": "vault", "address": "<address>", "committed": "100" }`, where `holder` is `vault` or `memberKey` on Solana and `safe` or `executor` on Base, `address` is that balance's address, and `committed` is the amount of that `asset` already held back on it, in the smallest unit, by Proposals still in flight or timed out and still watched (ADR-0053), by Calls waiting to be proposed, and (on the key that proposes) by proposal rent that stays locked until the Proposal is closed. `short` is the extra the holder needs, `committed` included. A plain Sender's shortfall stays `{ "asset", "short" }`.
+
 Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the most specific human-readable reason available (on Base, the node's own words). `chainDetail` carries the raw chain-side detail (JSON-RPC code, HTTP status, revert data, the shortfall) for debugging, and its shape varies by code and chain.
 
 | `code` | Meaning |

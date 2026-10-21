@@ -19,6 +19,7 @@ import type {
  * never touches a chain, a Signer or a clock.
  */
 export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability<C> {
+  holders: ApprovalCapability<C>['holders'] = { sender: 'vault', proposer: 'memberKey' };
   proposerAddress = 'proposer-key';
   openProposalLimit = Number.POSITIVE_INFINITY;
   reexecuteOnFailure = true;

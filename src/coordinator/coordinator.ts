@@ -14,7 +14,8 @@ import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
-import type { DispatchStore } from '../repository/dispatch-store.js';
+import type { AssetAmount } from '../domain/proposal.js';
+import type { CommittedHolder, DispatchStore } from '../repository/dispatch-store.js';
 import { ApprovalFlow } from './approval-flow.js';
 
 /** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
@@ -32,6 +33,9 @@ const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
  * included," the scenario ADR-0004 exists for, without watching forever.
  */
 const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** ADR-0053: how long a timed-out Proposal is still watched, and so still counted by the Funding Check. */
+const DEFAULT_APPROVAL_REWATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** ADR-0042: how many times a Call whose transaction provably expired is resubmitted before it is reported FAILED. */
 const MAX_EXPIRY_RESUBMISSIONS = 3;
@@ -79,6 +83,8 @@ type FundingRequirement = {
   asset: string;
   required: bigint;
   items: CallRef[];
+  /** ADR-0054, a Multisig Sender only: which of its two balances this requirement is paid from. */
+  holder?: CommittedHolder;
 };
 
 export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
@@ -115,6 +121,8 @@ export type CoordinatorDeps = {
   stuckHandling?: Map<Chain, StuckHandlingConfig>;
   /** ADR-0054/0053: how long a Multisig Sender's Proposal waits for approval before its Calls are abandoned. Defaults to 72 hours; only read for a chain whose handler has an `approval` capability. */
   approvalDeadlineMs?: number;
+  /** ADR-0053: how long a timed-out Proposal still counts as committed in the Funding Check (the watch window). Defaults to 30 days; only read for a chain whose handler has an `approval` capability. */
+  approvalRewatchWindowMs?: number;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -139,6 +147,7 @@ export class Coordinator {
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
+  private readonly approvalRewatchWindowMs: number;
   private readonly reorgRecheckWindowMs: Map<Chain, number>;
   private readonly stuckHandling: Map<Chain, StuckHandlingConfig>;
   private readonly now: () => Date;
@@ -159,6 +168,8 @@ export class Coordinator {
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs =
       deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
+    this.approvalRewatchWindowMs =
+      deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
     this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
     this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
@@ -483,12 +494,18 @@ export class Coordinator {
     }
     for (const [chain, refs] of refsByChain) {
       const handler = this.requireChainHandler(chain);
-      if (!handler.networkCost) continue;
+      const approval = handler.approval;
+      // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
+      if (!approval && !handler.networkCost) continue;
       const calls = refs.flatMap(({ dispatch, callIndex }) => {
         const call = dispatch.items[callIndex]?.call;
         return call ? [call] : [];
       });
-      const cost = await handler.networkCost(calls, this.requireSenderAddress(chain));
+      const senderAddress = this.requireSenderAddress(chain);
+      const cost = approval
+        ? await approval.estimateApprovalCost(calls, senderAddress)
+        : await handler.networkCost?.(calls, senderAddress);
+      if (!cost) continue;
       if (!cost.ok) {
         this.logger.warn(
           { chain, error: cost.error },
@@ -497,22 +514,43 @@ export class Coordinator {
         await this.failFundingItems(refs, cost.error, failedKeys);
         continue;
       }
-      const key = `${chain}\u0000\u0000${cost.value.asset}`;
+      const fundedBy = approval ? approval.proposerAddress : null;
+      const key = `${chain}\u0000${fundedBy ?? ''}\u0000${cost.value.asset}`;
       const existing = requirements.get(key);
       requirements.set(key, {
         chain,
-        fundedBy: null,
+        fundedBy,
         asset: cost.value.asset,
         required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
         items: refs,
+        ...(approval ? { holder: 'proposer' as const } : {}),
       });
     }
 
-    for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
+    // ADR-0053/0054: what open Proposals already hold back, read once per holder per check.
+    const committedCache = new Map<string, Promise<AssetAmount[]>>();
+    const committedFor = (chain: Chain, holder: CommittedHolder) => {
+      const key = `${chain}\u0000${holder}`;
+      let cached = committedCache.get(key);
+      if (!cached) {
+        const timedOutSince = new Date(this.now().getTime() - this.approvalRewatchWindowMs);
+        cached = this.store.listCommitted(chain, holder, timedOutSince);
+        committedCache.set(key, cached);
+      }
+      return cached;
+    };
+
+    for (const { chain, fundedBy, asset, required, items, holder } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
+      const approval = handler.approval;
+      // A Multisig Sender's payments come out of the vault or Safe, less what open Proposals already hold.
+      const committedHolder: CommittedHolder | null = approval
+        ? (holder ?? (fundedBy === null ? 'sender' : null))
+        : null;
+      const address = fundedBy ?? senderAddress;
 
-      const balanceResult = await handler.getBalance(fundedBy ?? senderAddress, asset);
+      const balanceResult = await handler.getBalance(address, asset);
       if (!balanceResult.ok) {
         this.logger.warn(
           { chain, asset, error: balanceResult.error },
@@ -522,11 +560,24 @@ export class Coordinator {
         continue;
       }
 
-      const available = BigInt(balanceResult.value.amount);
+      const committed = committedHolder
+        ? BigInt(
+            (await committedFor(chain, committedHolder)).find((c) => c.asset === asset)?.amount ??
+              '0',
+          )
+        : 0n;
+      const available = BigInt(balanceResult.value.amount) - committed;
       if (available < required) {
         const short = (required - available).toString();
         this.logger.warn(
-          { chain, asset, required: required.toString(), available: available.toString(), short },
+          {
+            chain,
+            asset,
+            required: required.toString(),
+            available: available.toString(),
+            committed: committed.toString(),
+            short,
+          },
           'funding check: insufficient balance, failing affected calls',
         );
         await this.failFundingItems(
@@ -534,7 +585,18 @@ export class Coordinator {
           {
             code: 'INSUFFICIENT_FUNDS',
             message: `insufficient ${asset} balance`,
-            chainDetail: fundedBy ? { asset, short, fundedBy } : { asset, short },
+            chainDetail:
+              approval && committedHolder
+                ? {
+                    asset,
+                    short,
+                    holder: approval.holders[committedHolder],
+                    address,
+                    committed: committed.toString(),
+                  }
+                : fundedBy
+                  ? { asset, short, fundedBy }
+                  : { asset, short },
           },
           failedKeys,
         );

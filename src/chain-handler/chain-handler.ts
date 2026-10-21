@@ -134,6 +134,11 @@ export type ApprovalCost = {
  * `proposerAddress`, not by the Sender.
  */
 export interface ApprovalCapability<C extends Chain = Chain> {
+  /**
+   * What the Funding Check calls each balance when it names the short one
+   * (`chainDetail.holder`): Solana `vault` / `memberKey`, Base `safe` / `executor`.
+   */
+  readonly holders: { sender: 'vault' | 'safe'; proposer: 'memberKey' | 'executor' };
   /** The key that proposes (and executes): a Squads member or a Safe delegate/executor. */
   readonly proposerAddress: string;
   /** How many Proposals may be open per Sender: Squads `Infinity` (creation is serialized), Safe 1. */
