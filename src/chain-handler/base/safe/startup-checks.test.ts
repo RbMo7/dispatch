@@ -38,6 +38,7 @@ const config: BaseSafeConfig = {
   apiKey: API_KEY,
   approvalDeadlineMs: 1,
   approvalRewatchWindowMs: 1,
+  bundleLimit: 50,
 };
 
 const goodChain: SafeOnChainState = {

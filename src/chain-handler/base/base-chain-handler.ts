@@ -28,6 +28,7 @@ import { logger as defaultLogger } from '../../logger.js';
 import type { NonceHistoryStore } from '../../repository/nonce-history-store.js';
 import { SignerClient } from '../../signer/client.js';
 import type {
+  ApprovalCapability,
   Balance,
   BroadcastResult,
   ChainHandler,
@@ -93,6 +94,8 @@ export type BaseChainHandlerDeps = {
   bulkCallMaxBatchSize?: number;
   /** #11 (ADR-0038): a tracing-capable RPC for Bulk Call's per-item outcomes. Without it Bulk Call is off: validateBulkCall rejects, and getBundleStatus isn't there. */
   traceRpcUrl?: string;
+  /** #83 (ADR-0054): present only in Safe mode, where payments go through proposals the Safe's owners approve instead of this handler's own transactions. */
+  approval?: ApprovalCapability<'base'>;
   /** Injectable for the RPC client's transport (issue 15's shared per-call deadline, and test doubles). Defaults to the global fetch. */
   fetch?: typeof fetch;
   /** Defaults to the shared app logger under a `component: 'base-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
@@ -182,6 +185,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   private readonly bulkCallMaxBatchSize: number;
   private readonly traceClient: PublicClient | undefined;
   private readonly logger: Logger;
+  /** Only set in Safe mode, so a plain handler has no `approval` property at all. */
+  readonly approval?: ApprovalCapability<'base'>;
 
   /** #11: present only with a tracing RPC — the Coordinator reads its presence as "per-item outcomes are available". */
   readonly getBundleStatus?: (hash: string) => Promise<Result<BundleSlotStatus[], DispatchError>>;
@@ -201,6 +206,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     this.senderAddress = deps.senderAddress;
     this.signerClient = deps.signerClient;
     this.knownTokens = deps.knownTokens ?? {};
+    if (deps.approval) this.approval = deps.approval;
     this.nonceHistoryStore = deps.nonceHistoryStore;
     this.feeBumpPercent = deps.feeBumpPercent ?? 15;
     this.bulkCallMaxBatchSize = deps.bulkCallMaxBatchSize ?? 50;

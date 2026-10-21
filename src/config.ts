@@ -83,6 +83,7 @@ export const config = {
       apiKey: process.env.BASE_SAFE_API_KEY ?? '',
       approvalDeadlineMs: process.env.BASE_APPROVAL_DEADLINE_MS ?? '',
       approvalRewatchWindowMs: process.env.BASE_APPROVAL_REWATCH_WINDOW_MS ?? '',
+      bundleLimit: process.env.BASE_SAFE_BUNDLE_LIMIT ?? '',
     },
     /** Comma-separated `SYMBOL:contractAddress:decimals` list — parsed via known-tokens.ts's parseBaseKnownTokens. */
     knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
