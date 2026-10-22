@@ -258,6 +258,11 @@ export class ApprovalFlow {
       return false;
     }
 
+    // Confirmed sent: the proposal is open, so the next one may be built on the following sequence.
+    await this.store.updateProposal(proposalId, {
+      phase: 'open',
+      nextCheckAt: this.after(this.cadence(approval)),
+    });
     this.backoff.delete(chain);
     log.info({ proposalId, proposalRef: built.value.proposalRef }, 'proposal created');
     return true;
@@ -293,6 +298,8 @@ export class ApprovalFlow {
     chain: Chain,
     sender: string,
   ): Promise<boolean> {
+    // A proposal not yet confirmed sent holds the next sequence: another would collide with it.
+    if (await this.store.hasNotedProposal(chain, sender)) return false;
     return (await this.store.countOpenProposals(chain, sender)) < approval.openProposalLimit;
   }
 

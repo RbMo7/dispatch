@@ -210,6 +210,13 @@ export interface DispatchStore {
    * already ABANDONED), nor does a `resolved` one.
    */
   countOpenProposals(chain: Chain, senderAddress: string): Promise<number>;
+  /**
+   * Whether `senderAddress` has a Proposal still `noted`: written down but not yet
+   * confirmed sent. It holds the next sequence (a Squads index, a Safe nonce), so
+   * proposing again before it is confirmed would build a second one on the same
+   * sequence and collide with it.
+   */
+  hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean>;
   /** Unresolved Proposals on `chains` whose `nextCheckAt` is no later than `now`, most overdue first. Does not stamp them: the watcher reschedules with `updateProposal`. */
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]>;
   /** A Proposal's Calls in position order, one Transaction per Call (never a REPLACED or DROPPED version). */

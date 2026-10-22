@@ -582,6 +582,14 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(open.length);
   }
 
+  hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean> {
+    return Promise.resolve(
+      [...this.proposals.values()].some(
+        (p) => p.chain === chain && p.senderAddress === senderAddress && p.phase === 'noted',
+      ),
+    );
+  }
+
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {
     const due = [...this.proposals.values()]
       .filter(

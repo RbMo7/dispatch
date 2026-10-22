@@ -124,7 +124,7 @@ describe('ApprovalFlow: proposing a Dispatch to a Multisig Sender (ADR-0054)', (
       dispatchId: d.id,
       chain: 'solana',
       senderAddress: 'vault',
-      phase: 'noted',
+      phase: 'open', // confirmed sent, so the next proposal may use the following sequence
       proposalRef: 'prop-1',
       proposeHash: 'hash-prop-1',
       proposeSignedBytes: 'signed-prop-1',
@@ -377,6 +377,24 @@ describe('ApprovalFlow: proposing a Dispatch to a Multisig Sender (ADR-0054)', (
         proposeSignedBytes: 'signed-prop-1',
         proposeHash: 'hash-prop-1',
       });
+    });
+
+    it('builds nothing on top of a Proposal that is still noted, even once the backoff has passed', async () => {
+      const { coordinator, approval, dispatch, statuses, advance } = setup();
+      approval.submitImpl = () =>
+        Promise.resolve(err({ code: 'RPC_UNAVAILABLE', message: 'node down' }));
+      await dispatch([item(1)]);
+      const b = await dispatch([item(2)]);
+      await coordinator.processQueuedDispatches(10);
+      const built = approval.built.length;
+
+      advance(60 * 60 * 1000); // far past the backoff
+      approval.submitImpl = () => Promise.resolve(ok(undefined));
+      await coordinator.processQueuedDispatches(10);
+
+      // The first Proposal still holds the next sequence, so a second would collide with it.
+      expect(await statuses(b.id)).toEqual(['UNPROPOSED']);
+      expect(approval.built).toHaveLength(built);
     });
 
     it('a refused send leaves the Proposal noted, stops proposing and does not fail the Calls', async () => {

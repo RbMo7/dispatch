@@ -272,6 +272,21 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
         expect(await store.countOpenProposals('base', 'vault')).toBe(0);
       });
 
+      it('hasNotedProposal is true only while a sender has a Proposal that is still noted', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(false);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, { senderAddress: 'vault' }),
+        );
+
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(true);
+        expect(await store.hasNotedProposal('solana', 'other')).toBe(false);
+        expect(await store.hasNotedProposal('base', 'vault')).toBe(false);
+        await store.updateProposal(proposal.id, { phase: 'open' });
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(false);
+      });
+
       it('counts UNPROPOSED and AWAITING_APPROVAL Calls as waiting work on their chain', async () => {
         const store = makeStore();
         await seedUnproposed(store, 'solana', 2);

@@ -669,6 +669,18 @@ export class PostgresDispatchStore implements DispatchStore {
     return row?.count ?? 0;
   }
 
+  async hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean> {
+    const row = await this.db.query.proposals.findFirst({
+      columns: { id: true },
+      where: and(
+        eq(proposals.chain, chain),
+        eq(proposals.senderAddress, senderAddress),
+        eq(proposals.phase, 'noted'),
+      ),
+    });
+    return row !== undefined;
+  }
+
   async listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]> {
     const rows = await this.db.query.proposals.findMany({
       where: and(

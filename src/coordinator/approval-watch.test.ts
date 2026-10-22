@@ -157,8 +157,11 @@ function setup(options: { stuck?: boolean } = {}) {
 describe('Coordinator.watchProposals: noted and open (ADR-0054)', () => {
   it("re-sends a noted proposal's persisted bytes and moves it to open", async () => {
     const { coordinator, approval, dispatch, proposalOf } = setup();
+    approval.submitImpl = () => Promise.resolve(err(rpcDown)); // the first send does not go through
     const d = await dispatch([item(1)]);
     await coordinator.processQueuedDispatches(10);
+    expect((await proposalOf(d.id)).phase).toBe('noted');
+    approval.submitImpl = () => Promise.resolve(ok(undefined));
     approval.submitted.length = 0;
 
     await coordinator.watchProposals(10);
@@ -186,9 +189,9 @@ describe('Coordinator.watchProposals: noted and open (ADR-0054)', () => {
 
   it('leaves a noted proposal alone until its next check is due, and backs off when the re-send fails', async () => {
     const { coordinator, approval, advance, dispatch, proposalOf } = setup();
+    approval.submitImpl = () => Promise.resolve(err(rpcDown));
     const d = await dispatch([item(1)]);
     await coordinator.processQueuedDispatches(10);
-    approval.submitImpl = () => Promise.resolve(err(rpcDown));
 
     await coordinator.watchProposals(10);
     const first = await proposalOf(d.id);
