@@ -330,7 +330,7 @@ describe.skipIf(!RUN)(
     /** A human executes a Safe transaction from any EOA (here owner o1, who has the gas). */
     async function executeByHand(tx: SafeTransaction, signatures: Hex): Promise<Hex> {
       const wallet = createWalletClient({
-        account: owners[0],
+        account: owners[0] ?? (undefined as never),
         chain: baseSepolia,
         transport: http(BASE_SEPOLIA_RPC_URL),
       });
@@ -419,7 +419,7 @@ describe.skipIf(!RUN)(
         const proposed = await readServiceTx(safeTxHash);
         expect(proposed.proposedByDelegate?.toLowerCase()).toBe(executor.address.toLowerCase());
         expect(proposed.isExecuted).toBe(false);
-        expect(proposed.nonce).toBe(nonceBefore);
+        expect(Number(proposed.nonce)).toBe(nonceBefore);
         expect(proposed.operation).toBe(1);
         expect(getAddress(proposed.to)).toBe(getAddress(MULTI_SEND_CALL_ONLY['1.4.1'] as Address));
         expect(proposed.confirmations).toHaveLength(0);
