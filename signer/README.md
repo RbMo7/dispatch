@@ -1,6 +1,6 @@
 # The Signer
 
-The Signer holds each Sender's key and answers the engine's `POST /sign` (ADR-0002, ADR-0046). It is its own package: the engine never imports it, and vendor SDKs live only here.
+The Signer holds each Sender's key and answers the engine's `POST /sign` (ADR-0002, ADR-0046), and one read-only route, `GET /keys/{address}/policy` (ADR-0055). It is its own package: the engine never imports it, and vendor SDKs live only here.
 
 This is the reference. To set up and run a production Signer, follow [`docs/signer.md`](../docs/signer.md), the runbook and mainnet checklist.
 
@@ -32,9 +32,11 @@ Environment variables:
 
 Backends can be mixed in one Signer. At startup the Signer asks each backend for the address behind each `keyRef`, and refuses to start if any differs from the address it is configured under.
 
-Every request is audited as one JSON line on stdout.
+Every request is audited as one JSON line on stdout. A signed request has `decision: "signed"`; a policy read has `kind: "policy-read"` and `decision: "read"`.
 
 ## Policy
+
+`GET /keys/{address}/policy`, with the same bearer token, reports what an address is pinned to: `{ address, curve, chainIds?, allowedSafe?, allowedMultisig? }`, each pin only when the policy sets it, and nothing else (no key, key reference, recipients or limits). EVM pins come back lowercase. `401` for a wrong token, `404 no key for address …` for an address the config doesn't hold. The engine reads it at startup for a Multisig Sender and refuses to start unless the pin matches (ADR-0055). See [`docs/signer.md`](../docs/signer.md#reading-a-keys-pins).
 
 An address may carry a `policy`. The Signer then decodes each transaction before signing it and refuses one that breaks a rule, with `403 { "error": "policy refused", "reason": "..." }`. The engine reports that as `SIGNER_REFUSED`, with the reason in the message, and never retries it. The audit line records the decision as `refused`, with the same reason. An address without a policy is signed for unconditionally, though still only for a caller with the bearer token.
 
