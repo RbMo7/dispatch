@@ -407,6 +407,14 @@ export class SafeApproval implements ApprovalCapability<'base'> {
       return ok({ ...base, status: 'active', executable: false });
     }
 
+    // (2b) The service has no record of this proposal and no owner has approved its hash on-chain either
+    // (on-chain approvals count without the service, which is only a convenience): it was never posted,
+    // so the owners cannot see it. `unknown`, never `active`: a `noted` proposal is re-posted while it
+    // reads as unknown, and would be opened (waiting for approvals nobody can give) if it read as anything else.
+    if (service === null && signers.size === 0) {
+      return ok({ ...base, status: 'unknown', executable: false });
+    }
+
     // (3) Still at its nonce: approved once enough current owners confirmed.
     const approved = signers.size >= state.threshold && state.nonce === proposalNonce;
     return ok({ ...base, status: approved ? 'approved' : 'active', executable: approved });

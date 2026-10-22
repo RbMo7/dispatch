@@ -150,6 +150,15 @@ async function setup(
 }
 
 describe('readProposal', () => {
+  it('is unknown, never active, for a proposal the service has never seen', async () => {
+    const t = await setup();
+    // No route for the proposal: the service answers 404, so it was never posted.
+    expect(expectOk(await t.subject.readProposal(t.ref))).toMatchObject({
+      status: 'unknown',
+      executable: false,
+    });
+  });
+
   it('is active with no confirmations, and reads threshold and approvals from the chain', async () => {
     const t = await setup();
     t.respond(serviceTransaction({ safeTxHash: t.hash, nonce: 12 }));

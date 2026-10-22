@@ -167,6 +167,57 @@ async function setup() {
   return { node, approval, store, handler, coordinator, dispatch, outcome, fund, advance, service };
 }
 
+describe('a Safe proposal that was never posted (the watch recovers it)', () => {
+  const POST = `/api/v2/safes/${SAFE}/multisig-transactions/`;
+  const funded = async () => {
+    const t = await setup();
+    t.fund(SAFE, 'ETH', '100');
+    t.fund(executor.address, 'ETH', '1000000000000000000');
+    return t;
+  };
+
+  it('re-posts a proposal whose first POST failed, instead of opening it unposted', async () => {
+    const t = await funded();
+    t.service.routes.set(POST, { status: 503 });
+    const d = await t.dispatch([nativeItem('5')]);
+    await t.coordinator.processQueuedDispatches(10);
+    const [noted] = await t.store.listProposalsForDispatch(d.id);
+    expect(noted?.phase).toBe('noted');
+    const posts = () => t.service.hits.filter((h) => h.path === POST).length;
+    const before = posts();
+
+    t.service.routes.set(POST, { status: 201 });
+    t.advance(61_000);
+    await t.coordinator.watchProposals(10);
+
+    // The service had never seen it, so it is posted again; it is only open once that worked.
+    expect(posts()).toBe(before + 1);
+    const [opened] = await t.store.listProposalsForDispatch(d.id);
+    expect(opened?.phase).toBe('open');
+  });
+
+  it('fails the Calls when the service definitively refuses the proposal, since it never existed', async () => {
+    const t = await funded();
+    t.service.routes.set(POST, {
+      status: 422,
+      body: { nonFieldErrors: ['Sender is not an owner or delegate'] },
+    });
+    const d = await t.dispatch([nativeItem('5')]);
+    await t.coordinator.processQueuedDispatches(10);
+
+    t.advance(61_000);
+    await t.coordinator.watchProposals(10);
+
+    expect(
+      (await t.store.listTransactions(d.id)).map((row) => [row.status, row.error?.code]),
+    ).toEqual([['FAILED', 'CHAIN_REJECTED']]);
+    const [proposal] = await t.store.listProposalsForDispatch(d.id);
+    expect(proposal?.phase).toBe('resolved');
+    // Nothing is stuck behind it: the next Dispatch can be proposed.
+    expect(await t.store.hasNotedProposal('base', SAFE)).toBe(false);
+  });
+});
+
 describe('the stale-nonce guard through ApprovalFlow', () => {
   it("proposes the next Dispatch at N+1 right after the engine's own execution, though the chain read is stale", async () => {
     const t = await setup();
