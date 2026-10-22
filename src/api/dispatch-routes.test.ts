@@ -4,6 +4,7 @@ import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { BulkCallPlan, BulkCallRequest } from '../chain-handler/chain-handler.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
+import { FakeApproval } from '../chain-handler/test-support/fake-approval.js';
 import type { DispatchItem } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -488,6 +489,68 @@ describe('POST /v1/dispatch with bulkCall (#11)', () => {
       const response = await post(app, { chain: 'base', items, bulkCall });
       expect(response.statusCode).toBe(400);
     }
+  });
+});
+
+/** A handler in multisig mode (ADR-0054): `approval` is present, and its planner refuses what the multisig cannot hold. */
+class MultisigStub extends StubChainHandler {
+  readonly approval = new FakeApproval<'base'>();
+}
+
+describe('POST /v1/dispatch for a Multisig Sender (#94)', () => {
+  const transfer = { type: 'payment', recipient: '0xabc', asset: 'ETH', amount: '1' };
+  const rawCall = { type: 'call', to: '0xa', data: '0x', value: '1' };
+
+  async function setup() {
+    const handler = new MultisigStub();
+    handler.approval.planBundlesImpl = (calls) =>
+      'data' in calls[0]! && calls[0].data !== '0x'
+        ? err({ code: 'CHAIN_REJECTED', message: 'not a transfer the Safe can hold' })
+        : ok([calls.map((_, i) => i)]);
+    const { app, store } = await buildTestApp({ handler });
+    const post = (payload: object, key = 'ms-1') =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': key },
+        payload,
+      });
+    return { app, store, post };
+  }
+
+  it('still accepts transfers the multisig can hold', async () => {
+    const { post } = await setup();
+    const response = await post({ chain: 'base', items: [transfer, rawCall] });
+    expect(response.statusCode).toBe(202);
+  });
+
+  it('rejects a call the multisig cannot hold with 400 naming the item, storing nothing and keeping the key free', async () => {
+    const { store, post } = await setup();
+    const bad = { type: 'call', to: '0xa', data: '0xdeadbeef', value: '0' };
+
+    const response = await post({ chain: 'base', items: [transfer, bad] });
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json<ErrorResponseBody>();
+    expect(body.code).toBe('CHAIN_REJECTED');
+    expect(body.message).toContain('items[1]');
+
+    // Nothing was stored and the key is free: the same key now creates a Dispatch of its own.
+    const retry = await post({ chain: 'base', items: [transfer] });
+    expect(retry.statusCode).toBe(202);
+    const stored = await store.getDispatch(retry.json<PostResponseBody>().dispatchId);
+    expect(stored?.items).toHaveLength(1);
+  });
+
+  it('rejects bulkCall with 400', async () => {
+    const { post } = await setup();
+    const response = await post({
+      chain: 'base',
+      items: [transfer],
+      bulkCall: { aggregator: '0xagg' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorResponseBody>().message).toContain('multisig');
   });
 });
 
