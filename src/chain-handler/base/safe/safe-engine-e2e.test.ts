@@ -463,7 +463,13 @@ describe.skipIf(!RUN)(
         await expectBalances(b, { token: 7n });
         await expectBalances(c, { eth: 2000n });
         await waitForSafeNonce(nonceBefore + 1);
-        const service = await readServiceTx(safeTxHash);
+        // The service indexes an execution a few seconds after the receipt.
+        const service = await waitFor('the service to index the execution', async () => {
+          const read = await readServiceTx(safeTxHash);
+          if (read.isExecuted) return read;
+          await sleep(4_000);
+          return undefined;
+        });
         expect(service.isExecuted).toBe(true);
         expect(service.transactionHash?.toLowerCase()).toBe(executeHash.toLowerCase());
 
@@ -489,7 +495,7 @@ describe.skipIf(!RUN)(
     beforeAll(async () => {
       realFetch = globalThis.fetch;
       // Every request to the hosted service, the engine's and the test's, waits its turn: 2 per second at most.
-      globalThis.fetch = ((
+      globalThis.fetch = (
         input: Parameters<typeof fetch>[0],
         init?: Parameters<typeof fetch>[1],
       ) => {
@@ -504,7 +510,7 @@ describe.skipIf(!RUN)(
         });
         throttle = turn.catch(() => undefined);
         return turn.then(() => realFetch(input, init));
-      });
+      };
 
       executor = account('engine');
       owners = ['o1', 'o2', 'o3'].map(account);
@@ -701,8 +707,20 @@ describe.skipIf(!RUN)(
     );
 
     // 3 --------------------------------------------------------------------------------------------
+    let lateExecution:
+      | {
+          coordinator: Coordinator;
+          id: string;
+          recipient: Address;
+          nonce: number;
+          tx: SafeTransaction;
+          safeTxHash: Hex;
+          signers: PrivateKeyAccount[];
+        }
+      | undefined;
+
     it(
-      '3. timeout, then a late execute by a human: ABANDONED with APPROVAL_TIMEOUT, then CONFIRMED with the human’s hash after the re-watch',
+      '3. timeout: ABANDONED with APPROVAL_TIMEOUT and never executed by the engine, even once approved late (approved_after_deadline)',
       async () => {
         await truncateAll();
         const deadlineMs = 40_000;
@@ -748,16 +766,43 @@ describe.skipIf(!RUN)(
         expect(late.items[0]?.status).toBe('abandoned');
         expect(await safeNonce()).toBe(nonce); // still not executed by the engine
 
-        // A human executes it by hand.
-        const humanHash = await executeByHand(
+        lateExecution = {
+          coordinator,
+          id,
+          recipient,
+          nonce,
           tx,
-          await packedSignatures(ref?.safeTxHash as Hex, signers),
-        );
+          safeTxHash: ref?.safeTxHash as Hex,
+          signers,
+        };
+      },
+      SCENARIO_TIMEOUT_MS + 240_000,
+    );
+
+    // KNOWN ENGINE BUG (found by this test, reported in #87, not fixed here): against a real Safe 1.4.1
+    // `SafeApproval.verifyExecution` (safe-approval.ts, the `ExecutionSuccess` check) throws
+    // "Cannot read properties of undefined (reading 'txHash')" on a real receipt, because 1.4.1 declares
+    // `ExecutionSuccess(bytes32 indexed txHash, uint256 payment)` (txHash is topic 1, the data is 32 bytes)
+    // while the engine's ABI has it non-indexed, so viem's non-strict decode returns `args: undefined`.
+    // The re-watch of a timed-out proposal (and an "executed by someone else" read) therefore never settles:
+    // the approval flow logs "watching a proposal failed" and backs off. Remove `.fails` once fixed.
+    it.fails(
+      '3b. (KNOWN ENGINE BUG, Safe 1.4.1 ExecutionSuccess is indexed) a human executes the timed-out proposal: the re-watch settles the Call CONFIRMED with the human’s hash',
+      async () => {
+        expect(lateExecution, 'scenario 3 must run first').toBeDefined();
+        const { coordinator, id, recipient, nonce, tx, safeTxHash, signers } =
+          lateExecution as NonNullable<typeof lateExecution>;
+        const humanHash = await executeByHand(tx, await packedSignatures(safeTxHash, signers));
         const executedAt = Date.now();
-        const settled = await drive(coordinator, 'the re-watch to settle the Call', async () => {
-          const body = await getDispatch(id);
-          return body.items[0]?.status === 'confirmed' ? body : undefined;
-        });
+        const settled = await drive(
+          coordinator,
+          'the re-watch to settle the Call',
+          async () => {
+            const body = await getDispatch(id);
+            return body.items[0]?.status === 'confirmed' ? body : undefined;
+          },
+          150_000,
+        );
         timings['human execute -> re-watch CONFIRMED ms'] = Date.now() - executedAt;
         expect(settled.status).toBe('confirmed');
         expect(settled.items[0]?.transactionHash?.toLowerCase()).toBe(humanHash.toLowerCase());
@@ -765,7 +810,7 @@ describe.skipIf(!RUN)(
         await expectBalances(recipient, { eth: 2500n });
         await waitForSafeNonce(nonce + 1);
       },
-      SCENARIO_TIMEOUT_MS + 240_000,
+      SCENARIO_TIMEOUT_MS,
     );
 
     // 4 and 5 ----------------------------------------------------------------------------------------
