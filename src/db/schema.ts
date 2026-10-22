@@ -107,6 +107,8 @@ export const proposals = pgTable(
     executeAfter: timestamp('execute_after', { withTimezone: true }),
     timedOutAt: timestamp('timed_out_at', { withTimezone: true }),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    /** `pending` until a finished Proposal's accounts are closed (#88), then `closed`; null when never asked. */
+    closeState: text('close_state'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     nextCheckAt: timestamp('next_check_at', { withTimezone: true }).notNull().defaultNow(),
     checkFailures: integer('check_failures').notNull().default(0),

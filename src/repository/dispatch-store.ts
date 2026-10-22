@@ -49,6 +49,7 @@ export type ProposalPatch = Partial<
     | 'executeAfter'
     | 'timedOutAt'
     | 'resolvedAt'
+    | 'closeState'
     | 'nextCheckAt'
     | 'checkFailures'
     | 'proposeSignedBytes'
@@ -227,6 +228,8 @@ export interface DispatchStore {
   highestConfirmedSequence(chain: Chain, senderAddress: string): Promise<number | null>;
   /** Unresolved Proposals on `chains` whose `nextCheckAt` is no later than `now`, most overdue first. Does not stamp them: the watcher reschedules with `updateProposal`. */
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]>;
+  /** Proposals on `chains` whose `closeState` is `pending`: finished, but the chain has not yet been asked successfully to close them. Oldest first. */
+  listProposalsAwaitingClose(chains: ChainScope, limit: number): Promise<Proposal[]>;
   /** A Proposal's Calls in position order, one Transaction per Call (never a REPLACED or DROPPED version). */
   listProposalCalls(proposalId: string): Promise<Transaction[]>;
   updateProposal(id: string, patch: ProposalPatch): Promise<Proposal>;

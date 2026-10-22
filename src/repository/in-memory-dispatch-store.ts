@@ -208,6 +208,8 @@ export class InMemoryDispatchStore implements DispatchStore {
         (transaction) =>
           transaction.chain === chain &&
           transaction.status === 'CONFIRMED' &&
+          // A Call a proposal's other executor confirmed (#88) has no signed bytes of ours to re-check.
+          transaction.signedBytes !== null &&
           (transaction.confirmedAt?.getTime() ?? 0) >= notConfirmedBefore.getTime(),
       )
       .sort((a, b) => (a.confirmedAt?.getTime() ?? 0) - (b.confirmedAt?.getTime() ?? 0))
@@ -550,6 +552,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         approvals: 0,
         timedOutAt: null,
         resolvedAt: null,
+        closeState: null,
         createdAt: now,
         nextCheckAt: now,
         checkFailures: 0,
@@ -616,6 +619,15 @@ export class InMemoryDispatchStore implements DispatchStore {
       .sort((a, b) => a.nextCheckAt.getTime() - b.nextCheckAt.getTime())
       .slice(0, limit);
     return Promise.resolve(due);
+  }
+
+  listProposalsAwaitingClose(chains: ChainScope, limit: number): Promise<Proposal[]> {
+    return Promise.resolve(
+      [...this.proposals.values()]
+        .filter((p) => p.closeState === 'pending' && chains.includes(p.chain))
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .slice(0, limit),
+    );
   }
 
   listProposalCalls(proposalId: string): Promise<Transaction[]> {
