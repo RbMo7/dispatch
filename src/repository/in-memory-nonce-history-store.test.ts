@@ -6,8 +6,18 @@ describe('InMemoryNonceHistoryStore', () => {
   it('records and lists a Sender’s nonce history, ascending by nonce', async () => {
     const store = new InMemoryNonceHistoryStore();
 
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 1, hash: '0xhash1' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 1,
+      hash: '0xhash1',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xhash0',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' },
@@ -29,8 +39,18 @@ describe('InMemoryNonceHistoryStore', () => {
   it('recording the same (chain, senderAddress, nonce) again is a no-op, keeping the first hash', async () => {
     const store = new InMemoryNonceHistoryStore();
 
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xreplacement' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xoriginal',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xreplacement',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' },

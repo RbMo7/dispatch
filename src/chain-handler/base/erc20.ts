@@ -42,7 +42,10 @@ export function buildErc20TransferCall(
     });
   }
   if (!isAddress(recipient)) {
-    return err({ code: 'INVALID_RECIPIENT', message: `not a well-formed EVM address: ${recipient}` });
+    return err({
+      code: 'INVALID_RECIPIENT',
+      message: `not a well-formed EVM address: ${recipient}`,
+    });
   }
 
   const data = encodeFunctionData({

@@ -1,0 +1,906 @@
+import { describe, expect, it } from 'vitest';
+
+import type { DispatchItem } from '../domain/call.js';
+import type { Chain } from '../domain/chain.js';
+import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type { Transaction } from '../domain/transaction.js';
+import type { DispatchStore, NewProposalInput } from './dispatch-store.js';
+
+const PAST = new Date(0);
+
+const solanaItem = (amount: string): DispatchItem<'solana'> => ({
+  call: { programId: 'prog', accounts: [], data: 'ZGF0YQ==' },
+  payment: { recipient: 'r', asset: 'USDC', amount },
+});
+
+const baseItem = (amount: string): DispatchItem<'base'> => ({
+  call: { to: '0xabc', data: '0x', value: '0' },
+  payment: { recipient: '0xabc', asset: 'USDC', amount },
+});
+
+const squadsRef = (n: number): ChainProposalRef => ({
+  kind: 'squads',
+  multisig: 'ms',
+  proposal: `prop-${n}`,
+  transactionIndex: n,
+});
+
+const expected: ExpectedTotals = { recipients: 2, totals: [{ asset: 'USDC', amount: '30' }] };
+const committed: CommittedAmounts = {
+  sender: [{ asset: 'USDC', amount: '30' }],
+  proposer: [{ asset: 'SOL', amount: '5' }],
+};
+
+let counter = 0;
+
+/** A Dispatch of `n` items whose Calls are all written down `UNPROPOSED`. */
+async function seedUnproposed(store: DispatchStore, chain: Chain, n = 2) {
+  const amounts = Array.from({ length: n }, (_, i) => String((i + 1) * 10));
+  const dispatch =
+    chain === 'solana'
+      ? await store.createDispatch({
+          chain,
+          idempotencyKey: `k-${counter++}-${Math.random()}`,
+          items: amounts.map(solanaItem),
+          retryPolicy: false,
+        })
+      : await store.createDispatch({
+          chain,
+          idempotencyKey: `k-${counter++}-${Math.random()}`,
+          items: amounts.map(baseItem),
+          retryPolicy: false,
+        });
+  await store.claimQueued([chain], 100);
+  const calls = await store.noteUnproposed(
+    amounts.map((_, callIndex) => ({ dispatchId: dispatch.id, callIndex, chain })),
+  );
+  return { dispatch, calls };
+}
+
+function proposalInput(
+  dispatchId: string,
+  calls: Transaction[],
+  overrides: Partial<NewProposalInput> = {},
+): NewProposalInput {
+  const n = counter++;
+  return {
+    dispatchId,
+    chain: 'solana',
+    senderAddress: 'vault',
+    chainRef: squadsRef(n),
+    payload: 'payload',
+    proposalRef: `prop-${n}`,
+    sequence: n,
+    threshold: 2,
+    deadlineAt: new Date(Date.now() + 72 * 3_600_000),
+    executeAfter: null,
+    proposeSignedBytes: 'signed-propose',
+    proposeHash: 'propose-hash',
+    expected,
+    committed,
+    transactionIds: calls.map((c) => c.id),
+    ...overrides,
+  };
+}
+
+/**
+ * ADR-0054: the multisig approval half of DispatchStore (proposals, the two
+ * additive Transaction statuses, and the atomic writes around them). Run
+ * against both the fake and the real store so they can't drift apart.
+ */
+export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore): void {
+  describe('multisig approval (ADR-0054)', () => {
+    describe('noteUnproposed / listUnproposed', () => {
+      it('writes each Call down UNPROPOSED, with no hash, and is idempotent per Call', async () => {
+        const store = makeStore();
+        const { dispatch, calls } = await seedUnproposed(store, 'solana');
+
+        expect(calls).toHaveLength(2);
+        for (const call of calls) {
+          expect(call).toMatchObject({
+            status: 'UNPROPOSED',
+            hash: null,
+            signedBytes: null,
+            error: null,
+            proposalId: null,
+            proposalPosition: null,
+          });
+        }
+
+        const again = await store.noteUnproposed([
+          { dispatchId: dispatch.id, callIndex: 0, chain: 'solana' },
+        ]);
+        expect(again.map((c) => c.id)).toEqual([calls[0]?.id]);
+        expect(await store.listTransactions(dispatch.id)).toHaveLength(2);
+      });
+
+      it('lists one chain, first Dispatch first and by callIndex, up to the limit', async () => {
+        const store = makeStore();
+        const first = await seedUnproposed(store, 'solana', 2);
+        const second = await seedUnproposed(store, 'solana', 2);
+        await seedUnproposed(store, 'base', 1);
+
+        const all = await store.listUnproposed('solana', 100);
+        expect(all.map((c) => [c.dispatchId, c.callIndex])).toEqual([
+          [first.dispatch.id, 0],
+          [first.dispatch.id, 1],
+          [second.dispatch.id, 0],
+          [second.dispatch.id, 1],
+        ]);
+        expect(await store.listUnproposed('solana', 3)).toHaveLength(3);
+        expect(await store.listUnproposed('base', 100)).toHaveLength(1);
+      });
+
+      it('keeps a Dispatch with every Call written down out of reclaimStaleDispatches', async () => {
+        const store = makeStore();
+        await seedUnproposed(store, 'solana', 2);
+        const later = new Date(Date.now() + 60_000);
+        expect(await store.reclaimStaleDispatches(['solana'], later, 100)).toEqual([]);
+      });
+    });
+
+    describe('createProposal', () => {
+      it('atomically writes a noted Proposal and moves its Calls to AWAITING_APPROVAL, in position order', async () => {
+        const store = makeStore();
+        const { dispatch, calls } = await seedUnproposed(store, 'solana');
+        const [a, b] = calls as [Transaction, Transaction];
+
+        // Position follows the order of transactionIds, not of callIndex.
+        const proposal = await store.createProposal(
+          proposalInput(dispatch.id, [b, a], { sequence: 7 }),
+        );
+
+        expect(proposal).toMatchObject({
+          dispatchId: dispatch.id,
+          chain: 'solana',
+          phase: 'noted',
+          approvalState: 'awaiting',
+          approvals: 0,
+          threshold: 2,
+          sequence: 7,
+          timedOutAt: null,
+          resolvedAt: null,
+          checkFailures: 0,
+          proposeSignedBytes: 'signed-propose',
+          proposeHash: 'propose-hash',
+          expected,
+          committed,
+        });
+        expect(await store.getProposal(proposal.id)).toEqual(proposal);
+
+        const stored = await store.listProposalCalls(proposal.id);
+        expect(
+          stored.map((c) => [c.id, c.status, c.proposalId, c.proposalPosition, c.hash]),
+        ).toEqual([
+          [b.id, 'AWAITING_APPROVAL', proposal.id, 0, null],
+          [a.id, 'AWAITING_APPROVAL', proposal.id, 1, null],
+        ]);
+        expect(await store.listUnproposed('solana', 100)).toEqual([]);
+      });
+
+      it('changes nothing when a Call is not UNPROPOSED', async () => {
+        const store = makeStore();
+        const { dispatch, calls } = await seedUnproposed(store, 'solana');
+        const [a, b] = calls as [Transaction, Transaction];
+        await store.createProposal(proposalInput(dispatch.id, [a]));
+
+        // `a` is already in a Proposal, `b` is still free.
+        await expect(store.createProposal(proposalInput(dispatch.id, [b, a]))).rejects.toThrow();
+        expect((await store.listUnproposed('solana', 100)).map((c) => c.id)).toEqual([b.id]);
+      });
+
+      it('never mixes Dispatches (ADR-0054), and changes nothing when asked to', async () => {
+        const store = makeStore();
+        const one = await seedUnproposed(store, 'solana', 1);
+        const two = await seedUnproposed(store, 'solana', 1);
+        const mixed = [...one.calls, ...two.calls];
+
+        await expect(store.createProposal(proposalInput(one.dispatch.id, mixed))).rejects.toThrow(
+          /mixes Dispatches/,
+        );
+        expect(await store.listUnproposed('solana', 100)).toHaveLength(2);
+        expect(await store.listProposalsForDispatch(one.dispatch.id)).toEqual([]);
+      });
+
+      it('rejects a proposalRef already in use, leaving the Calls UNPROPOSED', async () => {
+        const store = makeStore();
+        const one = await seedUnproposed(store, 'solana', 1);
+        const two = await seedUnproposed(store, 'solana', 1);
+        await store.createProposal(proposalInput(one.dispatch.id, one.calls, { proposalRef: 'x' }));
+
+        await expect(
+          store.createProposal(proposalInput(two.dispatch.id, two.calls, { proposalRef: 'x' })),
+        ).rejects.toThrow();
+        expect(await store.listUnproposed('solana', 100)).toHaveLength(1);
+      });
+
+      it('keeps one Solana sequence per sender, but lets a Safe nonce be reused', async () => {
+        const store = makeStore();
+        const one = await seedUnproposed(store, 'solana', 1);
+        const two = await seedUnproposed(store, 'solana', 1);
+        const three = await seedUnproposed(store, 'solana', 1);
+        await store.createProposal(proposalInput(one.dispatch.id, one.calls, { sequence: 5 }));
+
+        await expect(
+          store.createProposal(proposalInput(two.dispatch.id, two.calls, { sequence: 5 })),
+        ).rejects.toThrow();
+        // Another sender has its own sequence.
+        await store.createProposal(
+          proposalInput(three.dispatch.id, three.calls, { sequence: 5, senderAddress: 'vault-2' }),
+        );
+
+        const safeOne = await seedUnproposed(store, 'base', 1);
+        const safeTwo = await seedUnproposed(store, 'base', 1);
+        const safeRef = (n: number): ChainProposalRef => ({
+          kind: 'safe',
+          safe: '0xsafe',
+          safeTxHash: `0xhash${n}`,
+          nonce: 9,
+        });
+        for (const [n, seeded] of [safeOne, safeTwo].entries()) {
+          await store.createProposal(
+            proposalInput(seeded.dispatch.id, seeded.calls, {
+              chain: 'base',
+              senderAddress: '0xsafe',
+              sequence: 9,
+              chainRef: safeRef(n),
+              proposalRef: `0xhash${n}`,
+            }),
+          );
+        }
+      });
+    });
+
+    describe('countOpenProposals / countWaitingWork', () => {
+      it("counts a sender's noted, open and executing Proposals only", async () => {
+        const store = makeStore();
+        const ids: string[] = [];
+        for (const sender of ['vault', 'vault', 'vault', 'vault', 'other']) {
+          const seeded = await seedUnproposed(store, 'solana', 1);
+          const proposal = await store.createProposal(
+            proposalInput(seeded.dispatch.id, seeded.calls, { senderAddress: sender }),
+          );
+          ids.push(proposal.id);
+        }
+        expect(await store.countOpenProposals('solana', 'vault')).toBe(4);
+        await store.updateProposal(ids[0] as string, { phase: 'open' });
+        await store.updateProposal(ids[1] as string, { phase: 'executing' });
+        await store.updateProposal(ids[2] as string, { phase: 'timed_out' });
+        await store.updateProposal(ids[3] as string, { phase: 'resolved' });
+        expect(await store.countOpenProposals('solana', 'vault')).toBe(2);
+        expect(await store.countOpenProposals('solana', 'other')).toBe(1);
+        expect(await store.countOpenProposals('base', 'vault')).toBe(0);
+      });
+
+      it('hasNotedProposal is true only while a sender has a Proposal that is still noted', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(false);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, { senderAddress: 'vault' }),
+        );
+
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(true);
+        expect(await store.hasNotedProposal('solana', 'other')).toBe(false);
+        expect(await store.hasNotedProposal('base', 'vault')).toBe(false);
+        await store.updateProposal(proposal.id, { phase: 'open' });
+        expect(await store.hasNotedProposal('solana', 'vault')).toBe(false);
+      });
+
+      it('counts UNPROPOSED and AWAITING_APPROVAL Calls as waiting work on their chain', async () => {
+        const store = makeStore();
+        await seedUnproposed(store, 'solana', 2);
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        await store.createProposal(proposalInput(seeded.dispatch.id, seeded.calls));
+        expect(await store.countWaitingWork(['solana', 'base'])).toEqual(new Map([['solana', 3]]));
+        expect(await store.countWaitingWork(['base'])).toEqual(new Map());
+      });
+    });
+
+    describe('listProposalsDue / updateProposal', () => {
+      it('returns unresolved Proposals on the asked chains whose check is due, most overdue first', async () => {
+        const store = makeStore();
+        const a = await seedUnproposed(store, 'solana', 1);
+        const b = await seedUnproposed(store, 'solana', 1);
+        const c = await seedUnproposed(store, 'solana', 1);
+        const d = await seedUnproposed(store, 'base', 1);
+        const now = new Date();
+        const pa = await store.createProposal(proposalInput(a.dispatch.id, a.calls));
+        const pb = await store.createProposal(proposalInput(b.dispatch.id, b.calls));
+        const pc = await store.createProposal(proposalInput(c.dispatch.id, c.calls));
+        await store.createProposal(proposalInput(d.dispatch.id, d.calls, { chain: 'base' }));
+
+        await store.updateProposal(pa.id, { nextCheckAt: new Date(now.getTime() - 1_000) });
+        await store.updateProposal(pb.id, { nextCheckAt: new Date(now.getTime() - 5_000) });
+        await store.updateProposal(pc.id, { nextCheckAt: new Date(now.getTime() + 60_000) });
+
+        const due = await store.listProposalsDue(['solana'], now, 100);
+        expect(due.map((p) => p.id)).toEqual([pb.id, pa.id]);
+        expect(await store.listProposalsDue(['solana'], now, 1)).toHaveLength(1);
+
+        await store.updateProposal(pb.id, { phase: 'resolved' });
+        expect((await store.listProposalsDue(['solana'], now, 100)).map((p) => p.id)).toEqual([
+          pa.id,
+        ]);
+      });
+
+      it('replaces the persisted propose bytes and hash (a noted proposal re-signed), leaving the rest alone', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+
+        const updated = await store.updateProposal(proposal.id, {
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+        });
+
+        expect(updated).toMatchObject({
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+          phase: 'noted',
+          payload: proposal.payload,
+        });
+        expect(await store.getProposal(proposal.id)).toMatchObject({
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+        });
+      });
+
+      it('applies a patch and leaves the rest alone', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+        const executeAfter = new Date(Date.now() + 1_000);
+
+        const updated = await store.updateProposal(proposal.id, {
+          phase: 'open',
+          approvals: 1,
+          approvalState: 'approved',
+          executeAfter,
+          checkFailures: 3,
+        });
+
+        expect(updated).toMatchObject({
+          phase: 'open',
+          approvals: 1,
+          approvalState: 'approved',
+          executeAfter,
+          checkFailures: 3,
+          proposalRef: proposal.proposalRef,
+          nextCheckAt: proposal.nextCheckAt,
+        });
+        expect(await store.getProposal(proposal.id)).toEqual(updated);
+        await expect(
+          store.updateProposal('00000000-0000-4000-8000-000000000000', {}),
+        ).rejects.toThrow();
+      });
+    });
+
+    describe('execution', () => {
+      async function openProposal(store: DispatchStore) {
+        const seeded = await seedUnproposed(store, 'solana', 2);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+        await store.updateProposal(proposal.id, { phase: 'open', approvalState: 'approved' });
+        return { ...seeded, proposal };
+      }
+
+      it('markProposalExecuting moves the Calls to PENDING, sharing one hash, before the send', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+
+        const executing = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+
+        expect(executing).toHaveLength(2);
+        for (const call of executing) {
+          expect(call).toMatchObject({
+            status: 'PENDING',
+            hash: 'exec-hash',
+            signedBytes: 'exec-bytes',
+            proposalId: proposal.id,
+          });
+          expect(call.broadcastAt).not.toBeNull();
+          expect(call.lastBroadcastAt).not.toBeNull();
+        }
+        expect((await store.getProposal(proposal.id))?.phase).toBe('executing');
+        expect(await store.listTransactionsByHash('exec-hash')).toHaveLength(2);
+        await expect(store.markProposalExecuting(proposal.id, 'again', 'again')).rejects.toThrow();
+      });
+
+      it('settleProposal as ABANDONED clears a failed execute`s hash and bytes, so the ABANDONED re-watch never sees it', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+
+        const settled = await store.settleProposal(proposal.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'not decided in time' },
+        });
+
+        expect(settled.map((c) => [c.status, c.hash, c.signedBytes])).toEqual([
+          ['ABANDONED', null, null],
+          ['ABANDONED', null, null],
+        ]);
+        expect(await store.listAbandonedTransactions(['solana'], 100, new Date(0))).toEqual([]);
+      });
+
+      it('reopenProposalForExecution returns FAILED Calls to AWAITING_APPROVAL with no hash', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        const executing = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+        for (const call of executing) {
+          await store.markFailed(call.id, { code: 'CHAIN_REJECTED', message: 'reverted' });
+        }
+
+        const reopened = await store.reopenProposalForExecution(proposal.id);
+
+        expect(reopened).toHaveLength(2);
+        for (const call of reopened) {
+          expect(call).toMatchObject({
+            status: 'AWAITING_APPROVAL',
+            hash: null,
+            signedBytes: null,
+            error: null,
+            proposalId: proposal.id,
+          });
+        }
+        const after = await store.getProposal(proposal.id);
+        expect(after?.phase).toBe('open');
+        expect(after?.nextCheckAt.getTime()).toBeGreaterThanOrEqual(proposal.nextCheckAt.getTime());
+      });
+
+      it('reopenProposalForExecution also reopens PENDING Calls directly, so a retry never passes through FAILED', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+
+        const reopened = await store.reopenProposalForExecution(proposal.id);
+
+        expect(reopened.map((c) => [c.status, c.hash, c.error])).toEqual([
+          ['AWAITING_APPROVAL', null, null],
+          ['AWAITING_APPROVAL', null, null],
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('open');
+      });
+
+      it('reopenProposalForExecution refuses once a Call of the execute is CONFIRMED', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        const executing = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+        await store.markConfirmed((executing[0] as { id: string }).id);
+
+        await expect(store.reopenProposalForExecution(proposal.id)).rejects.toThrow();
+      });
+
+      it('keeps a fee-bumped execute transaction in its Proposal, as the Call`s one current version', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        const [first] = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+        if (!first) throw new Error('no Call');
+
+        const replacement = await store.createReplacementTransaction(first.id, {
+          signedBytes: 'bumped-bytes',
+          hash: 'bumped-hash',
+        });
+
+        expect(replacement).toMatchObject({
+          proposalId: proposal.id,
+          proposalPosition: first.proposalPosition,
+        });
+        const calls = await store.listProposalCalls(proposal.id);
+        expect(calls.map((c) => c.hash)).toEqual(
+          calls.map((c) => (c.id === replacement.id ? 'bumped-hash' : 'exec-hash')),
+        );
+        expect(calls).toHaveLength(2);
+        expect(calls.some((c) => c.id === first.id)).toBe(false);
+      });
+    });
+
+    describe('settleProposal', () => {
+      async function awaiting(store: DispatchStore) {
+        const seeded = await seedUnproposed(store, 'solana', 2);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+        return { ...seeded, proposal };
+      }
+
+      it('FAILED with APPROVAL_REJECTED fails every Call and resolves the Proposal', async () => {
+        const store = makeStore();
+        const { dispatch, proposal } = await awaiting(store);
+        const error = { code: 'APPROVAL_REJECTED', message: 'rejected' } as const;
+
+        const settled = await store.settleProposal(proposal.id, { status: 'FAILED', error });
+
+        expect(settled.map((c) => [c.status, c.error, c.hash])).toEqual([
+          ['FAILED', error, null],
+          ['FAILED', error, null],
+        ]);
+        expect((await store.listTransactions(dispatch.id)).map((c) => c.status)).toEqual([
+          'FAILED',
+          'FAILED',
+        ]);
+        const after = await store.getProposal(proposal.id);
+        expect(after?.phase).toBe('resolved');
+        expect(after?.resolvedAt).not.toBeNull();
+      });
+
+      it('ABANDONED with APPROVAL_TIMEOUT times the Proposal out, and a hashless Call is never re-watched', async () => {
+        const store = makeStore();
+        const { proposal } = await awaiting(store);
+        const error = { code: 'APPROVAL_TIMEOUT', message: 'no decision' } as const;
+
+        const settled = await store.settleProposal(proposal.id, { status: 'ABANDONED', error });
+
+        for (const call of settled) {
+          expect(call).toMatchObject({ status: 'ABANDONED', error, hash: null });
+          expect(call.abandonedAt).not.toBeNull();
+        }
+        const after = await store.getProposal(proposal.id);
+        expect(after?.phase).toBe('timed_out');
+        expect(after?.timedOutAt).not.toBeNull();
+        expect(await store.listAbandonedTransactions(['solana'], 100, PAST)).toEqual([]);
+      });
+
+      it('a timed-out Proposal can still settle CONFIRMED with the hash someone else executed it under', async () => {
+        const store = makeStore();
+        const { proposal } = await awaiting(store);
+        await store.settleProposal(proposal.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'no decision' },
+        });
+
+        const settled = await store.settleProposal(proposal.id, {
+          status: 'CONFIRMED',
+          hash: 'late-hash',
+        });
+
+        for (const call of settled) {
+          expect(call).toMatchObject({ status: 'CONFIRMED', hash: 'late-hash', error: null });
+          expect(call.confirmedAt).not.toBeNull();
+        }
+        expect((await store.getProposal(proposal.id))?.phase).toBe('resolved');
+        expect(await store.listProposalCalls(proposal.id)).toHaveLength(2);
+      });
+
+      it('leaves each Call`s hash alone when the outcome names none, and skips REPLACED versions', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+        const [executing] = await store.markProposalExecuting(proposal.id, 'bytes', 'hash-1');
+        if (!executing) throw new Error('no Call');
+        const replacement = await store.createReplacementTransaction(executing.id, {
+          signedBytes: 'bytes-2',
+          hash: 'hash-2',
+        });
+
+        const settled = await store.settleProposal(proposal.id, { status: 'CONFIRMED' });
+
+        expect(settled.map((c) => [c.id, c.hash])).toEqual([[replacement.id, 'hash-2']]);
+        const all = await store.listTransactions(seeded.dispatch.id);
+        expect(all.find((c) => c.id === executing.id)?.status).toBe('REPLACED');
+      });
+
+      it('rejects an unknown Proposal', async () => {
+        const store = makeStore();
+        await expect(
+          store.settleProposal('00000000-0000-4000-8000-000000000000', { status: 'FAILED' }),
+        ).rejects.toThrow();
+      });
+    });
+
+    describe('markAbandoned / listAbandonedTransactions', () => {
+      it('records the error when given, and leaves it alone when not', async () => {
+        const store = makeStore();
+        const dispatch = await store.createDispatch({
+          chain: 'solana',
+          idempotencyKey: `k-${counter++}`,
+          items: [solanaItem('1')],
+          retryPolicy: false,
+        });
+        const withError = await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex: 0,
+          chain: 'solana',
+          signedBytes: 'b1',
+          hash: 'h1',
+        });
+        const without = await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex: 0,
+          chain: 'solana',
+          signedBytes: 'b2',
+          hash: 'h2',
+        });
+        const error = { code: 'APPROVAL_TIMEOUT', message: 'late' } as const;
+
+        await store.markAbandoned(withError.id, error);
+        await store.markAbandoned(without.id);
+
+        const rows = await store.listTransactions(dispatch.id);
+        expect(rows.find((r) => r.id === withError.id)).toMatchObject({
+          status: 'ABANDONED',
+          error,
+        });
+        expect(rows.find((r) => r.id === without.id)).toMatchObject({
+          status: 'ABANDONED',
+          error: null,
+        });
+        // Both have hashes, so both are still re-watched, as before.
+        expect(await store.listAbandonedTransactions(['solana'], 100, PAST)).toHaveLength(2);
+      });
+    });
+
+    describe('highestConfirmedSequence', () => {
+      const safeRef = (n: number): ChainProposalRef => ({
+        kind: 'safe',
+        safe: 'safe',
+        safeTxHash: `0x${n}`,
+        nonce: n,
+      });
+      const baseProposal = async (store: DispatchStore, sequence: number, sender = 'safe') => {
+        const seeded = await seedUnproposed(store, 'base', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, {
+            chain: 'base',
+            senderAddress: sender,
+            chainRef: safeRef(sequence),
+            sequence,
+          }),
+        );
+        return proposal;
+      };
+
+      it('is null when nothing is confirmed', async () => {
+        const store = makeStore();
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBeNull();
+        await baseProposal(store, 5);
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBeNull();
+      });
+
+      it('counts only CONFIRMED Proposals: failed, abandoned and open ones do not', async () => {
+        const store = makeStore();
+        const confirmed = await baseProposal(store, 7);
+        await store.settleProposal(confirmed.id, { status: 'CONFIRMED', hash: '0xh' });
+        const failed = await baseProposal(store, 9);
+        await store.settleProposal(failed.id, {
+          status: 'FAILED',
+          error: { code: 'CHAIN_REJECTED', message: 'reverted' },
+        });
+        const abandoned = await baseProposal(store, 11);
+        await store.settleProposal(abandoned.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'late' },
+        });
+        await baseProposal(store, 13);
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(7);
+
+        const later = await baseProposal(store, 8);
+        await store.settleProposal(later.id, { status: 'CONFIRMED', hash: '0xh2' });
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(8);
+      });
+
+      it('is per chain and per sender', async () => {
+        const store = makeStore();
+        const mine = await baseProposal(store, 4, 'safe');
+        await store.settleProposal(mine.id, { status: 'CONFIRMED', hash: '0xh' });
+        const other = await baseProposal(store, 40, 'another-safe');
+        await store.settleProposal(other.id, { status: 'CONFIRMED', hash: '0xh3' });
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(4);
+        expect(await store.highestConfirmedSequence('base', 'another-safe')).toBe(40);
+        expect(await store.highestConfirmedSequence('solana', 'safe')).toBeNull();
+      });
+    });
+
+    describe('listCommitted', () => {
+      it('totals in-flight and recently timed-out Proposals, plus UNPROPOSED payments for the sender', async () => {
+        const store = makeStore();
+        // 10 + 20 USDC, UNPROPOSED.
+        await seedUnproposed(store, 'solana', 2);
+        // 30 USDC / 5 SOL noted.
+        const noted = await seedUnproposed(store, 'solana', 1);
+        await store.createProposal(proposalInput(noted.dispatch.id, noted.calls));
+        // Resolved: no longer held back.
+        const done = await seedUnproposed(store, 'solana', 1);
+        const resolved = await store.createProposal(proposalInput(done.dispatch.id, done.calls));
+        await store.settleProposal(resolved.id, { status: 'CONFIRMED', hash: 'h' });
+        // Timed out just now, so inside any window that starts earlier.
+        const late = await seedUnproposed(store, 'solana', 1);
+        const timedOut = await store.createProposal(proposalInput(late.dispatch.id, late.calls));
+        await store.settleProposal(timedOut.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'late' },
+        });
+        // Another chain's Proposal is never counted.
+        const other = await seedUnproposed(store, 'base', 1);
+        await store.createProposal(
+          proposalInput(other.dispatch.id, other.calls, { chain: 'base' }),
+        );
+
+        const since = new Date(Date.now() - 60_000);
+        const sender = await store.listCommitted('solana', 'sender', since);
+        // Proposals: noted 30 + timed_out 30. UNPROPOSED: 10 + 20 (first seed). The three
+        // single-item seeds' Calls were all moved into Proposals, so none count twice.
+        expect(sender).toEqual([{ asset: 'USDC', amount: '90' }]);
+        expect(await store.listCommitted('solana', 'proposer', since)).toEqual([
+          { asset: 'SOL', amount: '10' },
+        ]);
+
+        // Outside the window the timed-out Proposal drops out.
+        const future = new Date(Date.now() + 60_000);
+        expect(await store.listCommitted('solana', 'sender', future)).toEqual([
+          { asset: 'USDC', amount: '60' },
+        ]);
+        expect(await store.listCommitted('solana', 'proposer', future)).toEqual([
+          { asset: 'SOL', amount: '5' },
+        ]);
+      });
+
+      it('is empty when nothing is committed', async () => {
+        const store = makeStore();
+        expect(await store.listCommitted('solana', 'sender', PAST)).toEqual([]);
+        expect(await store.listCommitted('solana', 'proposer', PAST)).toEqual([]);
+      });
+    });
+
+    describe('late settlement of a timed-out Proposal (#88)', () => {
+      async function timedOut(store: DispatchStore, overrides: Partial<NewProposalInput> = {}) {
+        const seeded = await seedUnproposed(store, 'solana', 2);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, overrides),
+        );
+        await store.settleProposal(proposal.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'late' },
+        });
+        return { ...seeded, proposal };
+      }
+
+      it('ABANDONED to CONFIRMED links the executed hash and resolves the Proposal, with no signed bytes', async () => {
+        const store = makeStore();
+        const { dispatch, proposal } = await timedOut(store);
+
+        const settled = await store.settleProposal(proposal.id, {
+          status: 'CONFIRMED',
+          hash: 'human-exec',
+        });
+
+        expect(settled.map((c) => [c.status, c.hash, c.signedBytes, c.error])).toEqual([
+          ['CONFIRMED', 'human-exec', null, null],
+          ['CONFIRMED', 'human-exec', null, null],
+        ]);
+        expect(settled.every((c) => c.confirmedAt !== null)).toBe(true);
+        expect((await store.listTransactions(dispatch.id)).map((c) => c.status)).toEqual([
+          'CONFIRMED',
+          'CONFIRMED',
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('resolved');
+      });
+
+      it('ABANDONED to FAILED carries the rejection and resolves the Proposal', async () => {
+        const store = makeStore();
+        const { proposal } = await timedOut(store);
+        const error = { code: 'APPROVAL_REJECTED', message: 'rejected late' } as const;
+
+        const settled = await store.settleProposal(proposal.id, { status: 'FAILED', error });
+
+        expect(settled.map((c) => [c.status, c.error])).toEqual([
+          ['FAILED', error],
+          ['FAILED', error],
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('resolved');
+      });
+
+      it('a late-settled or window-ended Proposal stops counting as committed at once', async () => {
+        const store = makeStore();
+        const settled = await timedOut(store);
+        const ended = await timedOut(store);
+        const since = new Date(Date.now() - 60_000);
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([
+          { asset: 'USDC', amount: '60' },
+        ]);
+
+        await store.settleProposal(settled.proposal.id, { status: 'CONFIRMED', hash: 'h' });
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([
+          { asset: 'USDC', amount: '30' },
+        ]);
+
+        await store.updateProposal(ended.proposal.id, {
+          phase: 'resolved',
+          resolvedAt: new Date(),
+        });
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([]);
+        expect(await store.listCommitted('solana', 'proposer', since)).toEqual([]);
+      });
+
+      it('the reorg re-check queue skips a CONFIRMED Call with no signed bytes, and keeps one with', async () => {
+        const store = makeStore();
+        const { proposal } = await timedOut(store);
+        await store.settleProposal(proposal.id, { status: 'CONFIRMED', hash: 'human-exec' });
+        const dispatch = await store.createDispatch({
+          chain: 'solana',
+          idempotencyKey: `k-${counter++}-${Math.random()}`,
+          items: [solanaItem('5')],
+          retryPolicy: false,
+        });
+        const ours = await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex: 0,
+          chain: 'solana',
+          signedBytes: 'c2lnbmVk',
+          hash: 'our-hash',
+        });
+        await store.markConfirmed(ours.id);
+
+        const queue = await store.listRecentlyConfirmedTransactions('solana', 100, PAST);
+
+        expect(queue.map((t) => t.hash)).toEqual(['our-hash']);
+      });
+    });
+
+    describe('closeState / listProposalsAwaitingClose (#88)', () => {
+      it('lists only pending closes on the asked chains, oldest first, and forgets finished ones', async () => {
+        const store = makeStore();
+        const a = await seedUnproposed(store, 'solana', 1);
+        const b = await seedUnproposed(store, 'solana', 1);
+        const c = await seedUnproposed(store, 'solana', 1);
+        const d = await seedUnproposed(store, 'base', 1);
+        const pa = await store.createProposal(proposalInput(a.dispatch.id, a.calls));
+        const pb = await store.createProposal(proposalInput(b.dispatch.id, b.calls));
+        const pc = await store.createProposal(proposalInput(c.dispatch.id, c.calls));
+        const pd = await store.createProposal(
+          proposalInput(d.dispatch.id, d.calls, { chain: 'base' }),
+        );
+        expect(pa.closeState).toBeNull();
+        expect(await store.listProposalsAwaitingClose(['solana', 'base'], 10)).toEqual([]);
+
+        for (const p of [pa, pb, pc, pd])
+          await store.updateProposal(p.id, { closeState: 'pending' });
+        expect((await store.listProposalsAwaitingClose(['solana'], 10)).map((p) => p.id)).toEqual([
+          pa.id,
+          pb.id,
+          pc.id,
+        ]);
+        expect((await store.listProposalsAwaitingClose(['solana'], 2)).map((p) => p.id)).toEqual([
+          pa.id,
+          pb.id,
+        ]);
+        expect((await store.listProposalsAwaitingClose(['base'], 10)).map((p) => p.id)).toEqual([
+          pd.id,
+        ]);
+
+        await store.updateProposal(pa.id, { closeState: 'closed' });
+        await store.updateProposal(pb.id, { closeState: 'abandoned' });
+        expect((await store.listProposalsAwaitingClose(['solana'], 10)).map((p) => p.id)).toEqual([
+          pc.id,
+        ]);
+        expect((await store.getProposal(pa.id))?.closeState).toBe('closed');
+      });
+    });
+
+    describe('listProposalsForDispatch', () => {
+      it('returns only that Dispatch`s Proposals, oldest first', async () => {
+        const store = makeStore();
+        const one = await seedUnproposed(store, 'solana', 2);
+        const other = await seedUnproposed(store, 'solana', 1);
+        const [a, b] = one.calls as [Transaction, Transaction];
+        const first = await store.createProposal(proposalInput(one.dispatch.id, [a]));
+        const second = await store.createProposal(proposalInput(one.dispatch.id, [b]));
+        await store.createProposal(proposalInput(other.dispatch.id, other.calls));
+
+        const listed = await store.listProposalsForDispatch(one.dispatch.id);
+        expect(listed.map((p) => p.id)).toEqual([first.id, second.id]);
+        expect(
+          await store.listProposalsForDispatch('00000000-0000-4000-8000-000000000000'),
+        ).toEqual([]);
+      });
+    });
+  });
+}

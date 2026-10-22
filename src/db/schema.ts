@@ -1,4 +1,7 @@
+import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
+  bigint,
   boolean,
   integer,
   jsonb,
@@ -12,6 +15,7 @@ import {
 import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
 
 export const dispatches = pgTable(
   'dispatches',
@@ -66,7 +70,61 @@ export const transactions = pgTable('transactions', {
   replacesTransactionId: uuid('replaces_transaction_id'),
   /** #9: fee-bump attempts made for this Call so far, failed ones included. */
   feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
+  /** ADR-0054: the Proposal a multisig Call belongs to — null for every other Transaction. */
+  proposalId: uuid('proposal_id').references((): AnyPgColumn => proposals.id),
+  /** ADR-0054: this Call's position inside its Proposal. */
+  proposalPosition: integer('proposal_position'),
 });
+
+/**
+ * ADR-0054: one multisig transaction proposed for Approvers to decide on,
+ * written down (phase `noted`) before it is sent (ADR-0041). Holds Calls from
+ * exactly one Dispatch, hence the foreign key to `dispatches`.
+ */
+export const proposals = pgTable(
+  'proposals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    dispatchId: uuid('dispatch_id')
+      .notNull()
+      .references(() => dispatches.id),
+    chain: text('chain').notNull(),
+    /** The multisig that is the Sender (the Squads vault or the Safe). */
+    senderAddress: text('sender_address').notNull(),
+    chainRef: jsonb('chain_ref').notNull().$type<ChainProposalRef>(),
+    /** Opaque, Chain Handler-owned: enough to re-sign, re-post or execute. */
+    payload: text('payload').notNull(),
+    /** The proposal PDA or `safeTxHash` — unique, so a re-post is idempotent. */
+    proposalRef: text('proposal_ref').notNull(),
+    /** Squads transactionIndex, Safe nonce. */
+    sequence: bigint('sequence', { mode: 'number' }),
+    phase: text('phase').notNull().default('noted'),
+    approvalState: text('approval_state').notNull().default('awaiting'),
+    approvals: integer('approvals').notNull().default(0),
+    threshold: integer('threshold').notNull(),
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
+    /** The multisig's time lock. */
+    executeAfter: timestamp('execute_after', { withTimezone: true }),
+    timedOutAt: timestamp('timed_out_at', { withTimezone: true }),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    /** `pending` until a finished Proposal's accounts are closed (#88), then `closed`; null when never asked. */
+    closeState: text('close_state'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    nextCheckAt: timestamp('next_check_at', { withTimezone: true }).notNull().defaultNow(),
+    checkFailures: integer('check_failures').notNull().default(0),
+    proposeSignedBytes: text('propose_signed_bytes'),
+    proposeHash: text('propose_hash'),
+    expected: jsonb('expected').notNull().$type<ExpectedTotals>(),
+    committed: jsonb('committed').notNull().$type<CommittedAmounts>(),
+  },
+  (table) => [
+    uniqueIndex('proposals_proposal_ref_idx').on(table.proposalRef),
+    // Squads transaction indexes are never reused; a Safe nonce is, after a timeout (ADR-0053).
+    uniqueIndex('proposals_solana_sequence_idx')
+      .on(table.chain, table.senderAddress, table.sequence)
+      .where(sql`${table.chain} = 'solana'`),
+  ],
+);
 
 export const attempts = pgTable('attempts', {
   id: uuid('id').primaryKey().defaultRandom(),

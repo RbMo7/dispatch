@@ -17,7 +17,11 @@ export type TransactionStatus =
   /** #9 (ADR-0037): a newer fee-bump replacement exists at the same nonce. Still watched — this version may be the one that lands — but never a Call's reported status. */
   | 'REPLACED'
   /** #9 (ADR-0037): another version at the same nonce settled the Call, so this one can never land. Terminal, never a Call's reported status. */
-  | 'DROPPED';
+  | 'DROPPED'
+  /** ADR-0054: a Multisig Sender's Call, claimed, validated and funded but in no Proposal yet. Holds no hash. Wire status `queued`. */
+  | 'UNPROPOSED'
+  /** ADR-0054: a Multisig Sender's Call inside a Proposal Approvers have yet to decide on. Holds no hash until the Proposal is executed. Wire status `awaiting_approval`. */
+  | 'AWAITING_APPROVAL';
 
 /**
  * One broadcastable, chain-native unit with its own hash/signature
@@ -57,6 +61,10 @@ export type Transaction = {
   replacesTransactionId: string | null;
   /** #9: fee-bump attempts made for this Call so far, failed ones included — carried onto each replacement; bumping stops at the chain's cap. Set straight to the cap once the nonce is known to be consumed (NONCE_ALREADY_USED), since no replacement could ever land. */
   feeBumpAttempts: number;
+  /** ADR-0054: the Proposal this Call belongs to — null for every non-multisig Call, and for a multisig Call still `UNPROPOSED`. Kept after the Proposal settles. */
+  proposalId: string | null;
+  /** ADR-0054: this Call's position inside its Proposal; null exactly when `proposalId` is. */
+  proposalPosition: number | null;
 };
 
 /** One broadcast/confirmation-check of a Transaction's exact signed bytes. */

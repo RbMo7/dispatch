@@ -4,6 +4,7 @@ import { PrivyClient } from '@privy-io/node';
 import { createAwsKmsBackend, createKmsApi } from './aws-kms.js';
 import type { KeyBackend } from './key-backend.js';
 import { createKeyfileBackend } from './keyfile.js';
+import { createLocalBackend, keystoreDir, keystorePassphrase } from './local.js';
 import { createPrivyApi, createPrivyBackend } from './privy.js';
 
 type Env = Record<string, string | undefined>;
@@ -18,6 +19,7 @@ function requireEnv(env: Env, name: string, neededBy: string): string {
 const BACKENDS = {
   keyfile: (env: Env) =>
     createKeyfileBackend(requireEnv(env, 'SIGNER_KEYFILE', 'the keyfile backend')),
+  local: (env: Env) => createLocalBackend(keystoreDir(env), keystorePassphrase(env)),
   privy: (env: Env) =>
     createPrivyBackend(
       createPrivyApi(

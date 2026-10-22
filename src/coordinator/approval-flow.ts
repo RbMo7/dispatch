@@ -1,0 +1,1161 @@
+import type { Logger } from 'pino';
+
+import type {
+  ApprovalCapability,
+  BuiltProposal,
+  ChainHandler,
+  ProposalSnapshot,
+} from '../chain-handler/chain-handler.js';
+import type { Chain } from '../domain/chain.js';
+import type { Dispatch } from '../domain/dispatch.js';
+import type { DispatchError } from '../domain/errors.js';
+import type { Proposal } from '../domain/proposal.js';
+import type { Transaction } from '../domain/transaction.js';
+import type { DispatchStore } from '../repository/dispatch-store.js';
+
+/** ADR-0054: how long Approvers have before the engine stops waiting and abandons the Calls (ADR-0053). */
+export const DEFAULT_APPROVAL_DEADLINE_MS = 72 * 60 * 60 * 1000;
+
+/** How many `UNPROPOSED` rows one pass reads: far above a Dispatch's size, so a Dispatch is planned whole. */
+const UNPROPOSED_PAGE = 1000;
+
+const BACKOFF_BASE_MS = 5_000;
+const BACKOFF_MAX_MS = 5 * 60 * 1000;
+
+/** How often a Proposal is read when its chain does not say (`ApprovalCapability.watchIntervalMs`). */
+export const DEFAULT_WATCH_INTERVAL_MS = 15_000;
+/** After a failed execute is reopened, how long before the next try: a persistently failing execute is not hammered every tick. */
+const EXECUTE_RETRY_DELAY_MS = 60_000;
+/** A best-effort close that failed is tried again this many times in all, each try a little later than the last. */
+const CLOSE_MAX_ATTEMPTS = 5;
+const CLOSE_RETRY_MS = 30_000;
+/** How many `pending` closes one `watch` pass looks at. */
+const CLOSE_SWEEP_LIMIT = 50;
+/** ADR-0053: a timed-out Proposal is read at the chain's normal cadence for this long, then hourly until its re-watch window ends. */
+export const DEFAULT_REWATCH_FIRST_PERIOD_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_REWATCH_LATER_INTERVAL_MS = 60 * 60 * 1000;
+/** ADR-0053: how long a Proposal is watched after it times out when its chain does not say (`*_APPROVAL_REWATCH_WINDOW_MS`). */
+export const DEFAULT_APPROVAL_REWATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** An approved-after-deadline Proposal is shouted about at most this often (per process), not on every read. */
+export const DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS = 60 * 60 * 1000;
+
+/** A (Dispatch, callIndex) pointer to one Call, as the Coordinator groups claimed work. */
+export type ApprovalCallRef = { dispatch: Dispatch; callIndex: number };
+
+export type ApprovalFlowDeps = {
+  store: DispatchStore;
+  chainHandlers: ReadonlyMap<Chain, ChainHandler>;
+  /** The multisig that is the Sender of `chain` (the vault or Safe). */
+  requireSenderAddress: (chain: Chain) => string;
+  now: () => Date;
+  logger: Logger;
+  /** How long a new Proposal waits for approval before it times out. Defaults to 72 hours. */
+  approvalDeadlineMs?: number | undefined;
+  /** Per-chain deadlines, taking precedence over `approvalDeadlineMs`. */
+  approvalDeadlineMsByChain?: Map<Chain, number> | undefined;
+  /** ADR-0053: how long after timing out a Proposal is still watched. Defaults to 30 days. */
+  approvalRewatchWindowMs?: number | undefined;
+  /** Per-chain re-watch windows, taking precedence over `approvalRewatchWindowMs`. */
+  approvalRewatchWindowMsByChain?: Map<Chain, number> | undefined;
+  /** How long a timed-out Proposal is read at the chain's normal cadence before going hourly (default 24 h). */
+  rewatchFirstPeriodMs?: number | undefined;
+  /** The gap between reads once past the first period (default 1 h). */
+  rewatchLaterIntervalMs?: number | undefined;
+  /** The least gap between two loud logs about the same approved-after-deadline Proposal (default 1 h). */
+  lateApprovalLogIntervalMs?: number | undefined;
+};
+
+/** The same two reasons a retry can help: the Signer or the node could not be reached. Everything else is a definite answer. */
+function isTransient(error: DispatchError): boolean {
+  return error.code === 'SIGNER_UNREACHABLE' || error.code === 'RPC_UNAVAILABLE';
+}
+
+/**
+ * ADR-0054: the chain-neutral state machine for a Multisig Sender, which the
+ * Coordinator delegates to for any chain whose handler has an `approval`
+ * capability. This is the propose half: Calls are written down `UNPROPOSED`,
+ * then proposed one Dispatch at a time (a Proposal never mixes Dispatches).
+ * Everything chain-specific stays behind `ApprovalCapability`.
+ */
+export class ApprovalFlow {
+  private readonly store: DispatchStore;
+  private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
+  private readonly requireSenderAddress: (chain: Chain) => string;
+  private readonly now: () => Date;
+  private readonly logger: Logger;
+  private readonly approvalDeadlineMs: number;
+  private readonly approvalDeadlineMsByChain: Map<Chain, number>;
+  private readonly approvalRewatchWindowMs: number;
+  private readonly approvalRewatchWindowMsByChain: Map<Chain, number>;
+  private readonly rewatchFirstPeriodMs: number;
+  private readonly rewatchLaterIntervalMs: number;
+  private readonly lateApprovalLogIntervalMs: number;
+  /** In memory only: when each approved-after-deadline Proposal was last logged about. A restart logs it once more, which is harmless. */
+  private readonly lateApprovalLoggedAt = new Map<string, number>();
+  /** One creation at a time per Sender: the tail of each Sender's queue. */
+  private readonly queues = new Map<string, Promise<void>>();
+  /** Per chain, in memory only: when proposing may be tried again after a transient failure. */
+  private readonly backoff = new Map<Chain, { until: number; failures: number }>();
+  /** Retry bookkeeping for Proposals whose close failed (#75). What still needs closing is durable (`closeState`, #88); only the attempt count and the wait are in memory. */
+  private readonly pendingCloses = new Map<string, { attempts: number; nextAt: number }>();
+  /** In memory only: how often a `noted` Proposal was re-signed for an expired blockhash. A restart allows a few more, still bounded by the deadline. */
+  private readonly resigns = new Map<string, number>();
+
+  constructor(deps: ApprovalFlowDeps) {
+    this.store = deps.store;
+    this.chainHandlers = deps.chainHandlers;
+    this.requireSenderAddress = deps.requireSenderAddress;
+    this.now = deps.now;
+    this.logger = deps.logger.child({ component: 'approval-flow' });
+    this.approvalDeadlineMs = deps.approvalDeadlineMs ?? DEFAULT_APPROVAL_DEADLINE_MS;
+    this.approvalDeadlineMsByChain = deps.approvalDeadlineMsByChain ?? new Map<Chain, number>();
+    this.approvalRewatchWindowMs =
+      deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
+    this.approvalRewatchWindowMsByChain =
+      deps.approvalRewatchWindowMsByChain ?? new Map<Chain, number>();
+    this.rewatchFirstPeriodMs = deps.rewatchFirstPeriodMs ?? DEFAULT_REWATCH_FIRST_PERIOD_MS;
+    this.rewatchLaterIntervalMs = deps.rewatchLaterIntervalMs ?? DEFAULT_REWATCH_LATER_INTERVAL_MS;
+    this.lateApprovalLogIntervalMs =
+      deps.lateApprovalLogIntervalMs ?? DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS;
+  }
+
+  /** The chains whose handler has an approval capability. */
+  chains(): Chain[] {
+    return [...this.chainHandlers].flatMap(([chain, handler]) => (handler.approval ? [chain] : []));
+  }
+
+  /**
+   * Validates each claimed Call and writes the valid ones down `UNPROPOSED`
+   * (idempotent, so a reclaimed Dispatch never gets a duplicate row). An
+   * invalid Call fails on its own, exactly as for a plain Sender.
+   */
+  async admit(chain: Chain, refs: ApprovalCallRef[]): Promise<void> {
+    const handler = this.requireHandler(chain);
+    const valid: ApprovalCallRef[] = [];
+    for (const ref of refs) {
+      const item = ref.dispatch.items[ref.callIndex];
+      if (!item) continue;
+      const validation = await handler.validateCall(item.call);
+      if (!validation.ok) {
+        this.logger.warn(
+          { dispatchId: ref.dispatch.id, callIndex: ref.callIndex, chain, error: validation.error },
+          'call failed validateCall',
+        );
+        await this.store.recordCallFailure({
+          dispatchId: ref.dispatch.id,
+          callIndex: ref.callIndex,
+          chain,
+          error: validation.error,
+        });
+        continue;
+      }
+      valid.push(ref);
+    }
+    if (valid.length === 0) return;
+    await this.store.noteUnproposed(
+      valid.map(({ dispatch, callIndex }) => ({ dispatchId: dispatch.id, callIndex, chain })),
+    );
+  }
+
+  /** Proposes whatever `UNPROPOSED` work `chain` has room for, serialized per Sender. */
+  proposeUnproposed(chain: Chain): Promise<void> {
+    const sender = this.requireSenderAddress(chain);
+    const key = `${chain}\u0000${sender}`;
+    const run = (this.queues.get(key) ?? Promise.resolve()).then(() =>
+      this.proposeAll(chain, sender),
+    );
+    // The queue never rejects, so one failed pass cannot wedge the next.
+    this.queues.set(
+      key,
+      run.catch(() => undefined),
+    );
+    return run;
+  }
+
+  private async proposeAll(chain: Chain, sender: string): Promise<void> {
+    const approval = this.requireHandler(chain).approval;
+    if (!approval) return;
+    const log = this.logger.child({ chain });
+
+    for (;;) {
+      if (this.isBackedOff(chain)) return;
+      if (!(await this.hasFreeSlot(approval, chain, sender))) return;
+
+      const rows = await this.store.listUnproposed(chain, UNPROPOSED_PAGE);
+      const first = rows[0];
+      if (!first) return;
+      // One Dispatch at a time (ADR-0054): the rows come first-claimed Dispatch first.
+      const group = rows.filter((row) => row.dispatchId === first.dispatchId);
+      const dispatch = await this.store.getDispatch(first.dispatchId);
+      if (!dispatch) {
+        throw new Error(`UNPROPOSED Transaction ${first.id} has no Dispatch ${first.dispatchId}`);
+      }
+
+      const calls = group.map((row) => {
+        const item = dispatch.items[row.callIndex];
+        if (!item) throw new Error(`Dispatch ${dispatch.id} has no item ${row.callIndex}`);
+        return item.call;
+      });
+
+      const plan = approval.planBundles(calls);
+      if (!plan.ok) {
+        log.warn(
+          { dispatchId: dispatch.id, error: plan.error },
+          'planBundles failed; failing calls',
+        );
+        await this.failRows(group, plan.error);
+        continue;
+      }
+      if (!isPartition(plan.value, group.length)) {
+        log.error(
+          { dispatchId: dispatch.id, plan: plan.value },
+          'planBundles gave an invalid plan',
+        );
+        await this.failRows(group, {
+          code: 'CHAIN_REJECTED',
+          message: 'the chain handler could not plan this Dispatch into proposals',
+        });
+        continue;
+      }
+
+      for (const positions of plan.value) {
+        if (!(await this.hasFreeSlot(approval, chain, sender))) return;
+        const rowsOfBundle = positions.map((p) => group[p] as Transaction);
+        const callsOfBundle = positions.map((p) => calls[p] as (typeof calls)[number]);
+        const proceed = await this.proposeBundle(
+          approval,
+          chain,
+          sender,
+          rowsOfBundle,
+          callsOfBundle,
+        );
+        if (!proceed) return;
+      }
+    }
+  }
+
+  /** Builds, signs, writes down and submits one Proposal. Returns false when proposing should stop for now. */
+  private async proposeBundle(
+    approval: ApprovalCapability,
+    chain: Chain,
+    sender: string,
+    rows: Transaction[],
+    calls: Parameters<ApprovalCapability['buildProposal']>[0]['calls'],
+  ): Promise<boolean> {
+    const dispatchId = rows[0]?.dispatchId as string;
+    const log = this.logger.child({ chain, dispatchId, calls: rows.length });
+
+    // #84: the chain's own sequence read can lag right after an execution; never build below what
+    // this engine already knows was consumed (a CONFIRMED execution; a reverted one consumed nothing).
+    const lastConfirmed = await this.store.highestConfirmedSequence(chain, sender);
+    const built = await approval.buildProposal({
+      calls,
+      sender,
+      ...(lastConfirmed === null ? {} : { minSequence: lastConfirmed + 1 }),
+    });
+    if (!built.ok) {
+      return this.handleFailure(chain, rows, built.error, 'buildProposal', log);
+    }
+
+    // The Signer is asked as the proposer, never the Sender: a vault or Safe never signs here.
+    const signed = await approval.signProposal(built.value);
+    if (!signed.ok) {
+      return this.handleFailure(chain, rows, signed.error, 'signProposal', log);
+    }
+
+    // ADR-0041: written down (and the Calls moved to AWAITING_APPROVAL) before anything is sent.
+    let proposalId: string;
+    try {
+      const proposal = await this.store.createProposal({
+        dispatchId,
+        chain,
+        senderAddress: sender,
+        chainRef: built.value.chainRef,
+        payload: built.value.payload,
+        proposalRef: built.value.proposalRef,
+        sequence: built.value.sequence,
+        threshold: built.value.threshold,
+        deadlineAt: new Date(
+          this.now().getTime() +
+            (this.approvalDeadlineMsByChain.get(chain) ?? this.approvalDeadlineMs),
+        ),
+        executeAfter: built.value.executeAfter,
+        proposeSignedBytes: signed.value.signedBytes,
+        proposeHash: signed.value.hash,
+        expected: built.value.expected,
+        committed: built.value.committed,
+        transactionIds: rows.map((row) => row.id),
+      });
+      proposalId = proposal.id;
+    } catch (error) {
+      // Nothing was written (it is atomic), so the rows stay UNPROPOSED. Not sent, so nothing to lose.
+      log.error({ err: error }, 'createProposal failed; calls stay UNPROPOSED');
+      this.noteTransientFailure(chain);
+      return false;
+    }
+
+    const submitted = await approval.submitProposal(signed.value);
+    if (!submitted.ok) {
+      // The Proposal is `noted` with its bytes persisted: the watch loop re-sends the same bytes.
+      log.warn(
+        { proposalId, stage: 'submitProposal', error: submitted.error },
+        'proposal written down but not confirmed sent; left noted',
+      );
+      this.noteTransientFailure(chain);
+      return false;
+    }
+
+    // Confirmed sent: the proposal is open, so the next one may be built on the following sequence.
+    await this.store.updateProposal(proposalId, {
+      phase: 'open',
+      nextCheckAt: this.after(this.cadence(approval)),
+    });
+    this.backoff.delete(chain);
+    log.info({ proposalId, proposalRef: built.value.proposalRef }, 'proposal created');
+    return true;
+  }
+
+  /** A transient error leaves the rows `UNPROPOSED` and backs the chain off; a definite one fails them for good. */
+  private async handleFailure(
+    chain: Chain,
+    rows: Transaction[],
+    error: DispatchError,
+    stage: string,
+    log: Logger,
+  ): Promise<boolean> {
+    if (isTransient(error)) {
+      log.warn(
+        { stage, error },
+        'proposing failed transiently; calls stay UNPROPOSED, backing off',
+      );
+      this.noteTransientFailure(chain);
+      return false;
+    }
+    log.warn({ stage, error }, 'proposing failed; failing calls');
+    await this.failRows(rows, error);
+    return true;
+  }
+
+  private async failRows(rows: Transaction[], error: DispatchError): Promise<void> {
+    for (const row of rows) await this.store.markFailed(row.id, error);
+  }
+
+  private async hasFreeSlot(
+    approval: ApprovalCapability,
+    chain: Chain,
+    sender: string,
+  ): Promise<boolean> {
+    // A proposal not yet confirmed sent holds the next sequence: another would collide with it.
+    if (await this.store.hasNotedProposal(chain, sender)) return false;
+    return (await this.store.countOpenProposals(chain, sender)) < approval.openProposalLimit;
+  }
+
+  private isBackedOff(chain: Chain): boolean {
+    const state = this.backoff.get(chain);
+    return state !== undefined && this.now().getTime() < state.until;
+  }
+
+  private noteTransientFailure(chain: Chain): void {
+    const failures = (this.backoff.get(chain)?.failures ?? 0) + 1;
+    const delay = Math.min(BACKOFF_BASE_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
+    this.backoff.set(chain, { until: this.now().getTime() + delay, failures });
+  }
+
+  // ---------------------------------------------------------------------
+  // The watch half (ADR-0054, ADR-0053): decide what each Proposal needs next.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Reads the Proposals whose `nextCheckAt` has passed, up to `limit`, and
+   * moves each as far as it can go. One Proposal failing never stops the rest.
+   */
+  async watch(limit: number): Promise<void> {
+    const chains = this.chains();
+    if (chains.length === 0) return;
+    await this.retryCloses();
+    for (const proposal of await this.store.listProposalsDue(chains, this.now(), limit)) {
+      try {
+        await this.watchOne(proposal);
+      } catch (error) {
+        this.logger.error({ err: error, proposalId: proposal.id }, 'watching a proposal failed');
+        await this.backOff(proposal, 'unexpected error').catch(() => undefined);
+      }
+    }
+  }
+
+  private async watchOne(proposal: Proposal): Promise<void> {
+    const approval = this.requireHandler(proposal.chain).approval;
+    if (!approval) return;
+    switch (proposal.phase) {
+      case 'noted':
+        return this.watchNoted(proposal, approval);
+      case 'open':
+        return this.watchOpen(proposal, approval);
+      case 'executing':
+        return this.watchExecuting(proposal, approval);
+      case 'timed_out':
+        return this.watchTimedOut(proposal, approval);
+      case 'resolved':
+        return;
+    }
+  }
+
+  /** `noted`: the propose transaction may never have been sent (a crash, a failed send), so send the same persisted bytes again. */
+  private async watchNoted(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+    // A proposal that never got confirmed sent and is past its deadline is not worth sending now: its
+    // approvers' time is over. It may still have landed earlier, so it is ABANDONED, not FAILED (ADR-0053).
+    if (this.deadlinePassed(proposal)) {
+      return this.timeOut(
+        proposal,
+        'the proposal could not be sent before its deadline and may not exist on-chain; check the multisig before sending again',
+      );
+    }
+
+    // (1) Ask the chain first: an earlier, ambiguous send may have landed. Never send again if so.
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) {
+      log.warn({ error: read.error }, 'noted proposal could not be read; backing off');
+      await this.backOff(proposal, read.error.code);
+      return;
+    }
+    if (read.value.status !== 'unknown') {
+      log.info({ status: read.value.status }, 'noted proposal already exists on-chain; now open');
+      this.resigns.delete(proposal.id);
+      await this.store.updateProposal(proposal.id, {
+        phase: 'open',
+        checkFailures: 0,
+        nextCheckAt: this.now(),
+      });
+      return;
+    }
+
+    // (2) It does not exist (yet): send the persisted bytes again.
+    if (!proposal.proposeSignedBytes || !proposal.proposeHash) {
+      log.error('noted proposal has no persisted propose bytes; cannot re-send');
+      await this.backOff(proposal, 'no propose bytes');
+      return;
+    }
+    let submitted = await approval.submitProposal({
+      signedBytes: proposal.proposeSignedBytes,
+      hash: proposal.proposeHash,
+    });
+
+    // (3) An expired blockhash: the bytes can never land, so sign the same payload again, write the new
+    // bytes down (ADR-0041), then send them.
+    if (!submitted.ok && isBlockhashExpired(submitted.error)) {
+      const used = this.resigns.get(proposal.id) ?? 0;
+      if (used >= MAX_NOTED_RESIGNS) {
+        log.error(
+          { error: submitted.error, resigns: used },
+          'noted proposal keeps expiring after re-signing; backing off until its deadline',
+        );
+        await this.backOff(proposal, submitted.error.code);
+        return;
+      }
+      this.resigns.set(proposal.id, used + 1);
+      const signed = await approval.signProposal(builtFrom(proposal));
+      if (!signed.ok) {
+        if (signed.error.code === 'SIGNER_REFUSED') {
+          return this.failNotSent(proposal, signed.error, 'signProposal');
+        }
+        log.warn({ error: signed.error }, 'noted proposal could not be re-signed; backing off');
+        await this.backOff(proposal, signed.error.code);
+        return;
+      }
+      await this.store.updateProposal(proposal.id, {
+        proposeSignedBytes: signed.value.signedBytes,
+        proposeHash: signed.value.hash,
+      });
+      submitted = await approval.submitProposal(signed.value);
+    }
+
+    if (!submitted.ok) {
+      if (isDefiniteRefusal(submitted.error)) {
+        return this.failNotSent(proposal, submitted.error, 'submitProposal');
+      }
+      log.warn({ error: submitted.error }, 'noted proposal re-send failed; backing off');
+      await this.backOff(proposal, submitted.error.code);
+      return;
+    }
+    log.info('noted proposal sent; now open');
+    this.resigns.delete(proposal.id);
+    await this.store.updateProposal(proposal.id, {
+      phase: 'open',
+      checkFailures: 0,
+      nextCheckAt: this.after(this.cadence(approval)),
+    });
+  }
+
+  /**
+   * A `noted` proposal the chain refused for good. Only called right after the chain said it does not
+   * exist, so nothing can ever execute: the Calls are FAILED (not ABANDONED) and the Sender is free again.
+   */
+  private async failNotSent(
+    proposal: Proposal,
+    error: DispatchError,
+    stage: string,
+  ): Promise<void> {
+    this.logger.error(
+      {
+        proposalId: proposal.id,
+        dispatchId: proposal.dispatchId,
+        chain: proposal.chain,
+        stage,
+        error,
+      },
+      'noted proposal was refused and does not exist on-chain; calls failed',
+    );
+    this.resigns.delete(proposal.id);
+    await this.store.settleProposal(proposal.id, { status: 'FAILED', error });
+  }
+
+  /** `open`: the order matters and is fixed (ADR-0053): someone else executed it, rejected, deadline, then execute. */
+  private async watchOpen(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) {
+      // The deadline is elapsed time only: a chain that cannot be read must not keep a Proposal waiting forever.
+      if (this.deadlinePassed(proposal)) return this.timeOut(proposal);
+      log.warn({ error: read.error }, 'readProposal failed; backing off');
+      await this.backOff(proposal, read.error.code);
+      return;
+    }
+    const snapshot = read.value;
+    const current = await this.store.updateProposal(proposal.id, {
+      approvals: snapshot.approvals,
+      threshold: snapshot.threshold,
+      approvalState: snapshot.status === 'approved' ? 'approved' : 'awaiting',
+      executeAfter: snapshot.executeAfter ?? proposal.executeAfter,
+      checkFailures: 0,
+    });
+
+    // (1) Executed by someone else: the money moved, whatever the deadline says.
+    if (snapshot.status === 'executed') {
+      log.info({ executedHash: snapshot.executedHash }, 'proposal executed by someone else');
+      await this.store.settleProposal(proposal.id, {
+        status: 'CONFIRMED',
+        ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
+      });
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    // (2) Rejected, cancelled, or stale and not approved (an approved stale one is just `approved`).
+    if (
+      snapshot.status === 'rejected' ||
+      snapshot.status === 'cancelled' ||
+      snapshot.status === 'stale'
+    ) {
+      log.info({ status: snapshot.status }, 'proposal rejected');
+      await this.store.settleProposal(proposal.id, {
+        status: 'FAILED',
+        error: {
+          code: 'APPROVAL_REJECTED',
+          message:
+            snapshot.status === 'stale'
+              ? 'the proposal was invalidated by a multisig change before it was approved'
+              : `the proposal was ${snapshot.status} by its Approvers`,
+          chainDetail: { status: snapshot.status },
+        },
+      });
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    // (3) The deadline, before any execute: a late approval is never executed (ADR-0053).
+    if (this.deadlinePassed(current)) return this.timeOut(current);
+    // (4) Approved, and past any time lock: execute.
+    if (
+      snapshot.status === 'approved' &&
+      (current.executeAfter === null || this.now() >= current.executeAfter)
+    ) {
+      return this.execute(current, approval, snapshot);
+    }
+    await this.reschedule(current, this.cadence(approval));
+  }
+
+  private async timeOut(proposal: Proposal, message?: string): Promise<void> {
+    this.logger.warn(
+      { proposalId: proposal.id, chain: proposal.chain, deadlineAt: proposal.deadlineAt },
+      'proposal not decided by its deadline; calls abandoned and never executed by the engine',
+    );
+    await this.store.settleProposal(proposal.id, {
+      status: 'ABANDONED',
+      error: {
+        code: 'APPROVAL_TIMEOUT',
+        message:
+          message ??
+          'the proposal was not approved before its deadline; check it before sending again',
+        chainDetail: { deadlineAt: proposal.deadlineAt.toISOString() },
+      },
+    });
+    await this.store.updateProposal(proposal.id, {
+      checkFailures: 0,
+      nextCheckAt: this.after(this.cadence(this.requireApproval(proposal.chain))),
+    });
+  }
+
+  /**
+   * `timed_out` (ADR-0053): the Calls are ABANDONED and the engine never
+   * executes the Proposal, but it keeps reading the Proposal itself for the
+   * re-watch window, because someone else can still execute or reject it.
+   * ABANDONED becomes CONFIRMED only on a proven execution and FAILED only on
+   * a definitive rejection, each written straight from ABANDONED.
+   */
+  private async watchTimedOut(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    const log = this.logger.child({
+      proposalId: proposal.id,
+      dispatchId: proposal.dispatchId,
+      chain: proposal.chain,
+    });
+    const windowMs =
+      this.approvalRewatchWindowMsByChain.get(proposal.chain) ?? this.approvalRewatchWindowMs;
+    const since = (proposal.timedOutAt ?? proposal.deadlineAt).getTime();
+    if (this.now().getTime() >= since + windowMs) {
+      // The Calls stay ABANDONED: a late execution after this goes unseen (ADR-0053).
+      log.warn({ windowMs, timedOutAt: new Date(since) }, 'rewatch_window_ended');
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+      return;
+    }
+
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) {
+      log.warn({ error: read.error }, 'readProposal failed for a timed-out proposal; backing off');
+      await this.backOff(proposal, read.error.code);
+      return;
+    }
+    const snapshot = read.value;
+
+    if (snapshot.status === 'executed') {
+      log.warn(
+        { executedHash: snapshot.executedHash },
+        'late_execution_detected: a timed-out proposal was executed by someone else',
+      );
+      await this.store.settleProposal(proposal.id, {
+        status: 'CONFIRMED',
+        ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
+      });
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    if (
+      snapshot.status === 'rejected' ||
+      snapshot.status === 'cancelled' ||
+      snapshot.status === 'stale'
+    ) {
+      log.info({ status: snapshot.status }, 'timed-out proposal was rejected; calls failed');
+      await this.store.settleProposal(proposal.id, {
+        status: 'FAILED',
+        error: {
+          code: 'APPROVAL_REJECTED',
+          message:
+            snapshot.status === 'stale'
+              ? 'the proposal was invalidated by a multisig change before it was approved'
+              : `the proposal was ${snapshot.status} after its deadline`,
+          chainDetail: { status: snapshot.status, afterDeadline: true },
+        },
+      });
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    if (snapshot.status === 'unknown') {
+      log.warn('timed-out proposal state is unknown; backing off');
+      await this.backOff(proposal, 'unknown proposal state');
+      return;
+    }
+
+    const lateApproved = snapshot.status === 'approved';
+    const current = await this.store.updateProposal(proposal.id, {
+      approvals: snapshot.approvals,
+      threshold: snapshot.threshold,
+      approvalState: lateApproved ? 'approved_after_deadline' : 'awaiting',
+      checkFailures: 0,
+    });
+    if (lateApproved) this.logLateApproval(current);
+    await this.store.updateProposal(proposal.id, {
+      nextCheckAt: this.after(this.rewatchDelay(current, approval)),
+    });
+  }
+
+  /** Never executed by the engine: the operator decides, in the multisig app. Logged loudly, but at most once per interval. */
+  private logLateApproval(proposal: Proposal): void {
+    const last = this.lateApprovalLoggedAt.get(proposal.id);
+    const now = this.now().getTime();
+    if (last !== undefined && now - last < this.lateApprovalLogIntervalMs) return;
+    this.lateApprovalLoggedAt.set(proposal.id, now);
+    this.logger.error(
+      {
+        proposalId: proposal.id,
+        dispatchId: proposal.dispatchId,
+        chain: proposal.chain,
+        proposalRef: proposal.proposalRef,
+        deadlineAt: proposal.deadlineAt,
+      },
+      'approved_after_deadline: a timed-out proposal is approved but the engine will NOT execute it; execute or reject it in the multisig app, and check before re-sending its payments',
+    );
+  }
+
+  /** The normal cadence for the first period after timing out, then hourly. */
+  private rewatchDelay(proposal: Proposal, approval: ApprovalCapability): number {
+    const since = (proposal.timedOutAt ?? proposal.deadlineAt).getTime();
+    return this.now().getTime() - since < this.rewatchFirstPeriodMs
+      ? this.cadence(approval)
+      : this.rewatchLaterIntervalMs;
+  }
+
+  /** Sign as the proposer, write down (ADR-0041), then broadcast; the Coordinator's poll loop takes over from `PENDING`. */
+  private async execute(
+    proposal: Proposal,
+    approval: ApprovalCapability,
+    snapshot: ProposalSnapshot,
+  ): Promise<void> {
+    const handler = this.requireHandler(proposal.chain);
+    const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+
+    const prepared = await approval.prepareExecution(proposal);
+    if (!prepared.ok) {
+      log.warn({ error: prepared.error }, 'prepareExecution failed; retrying until the deadline');
+      // Even a definite refusal (a simulation) can clear while the Proposal stays approved.
+      await this.backOff(proposal, prepared.error.code);
+      return;
+    }
+    const signed = await handler.sign(prepared.value, approval.proposerAddress);
+    if (!signed.ok) {
+      if (signed.error.code === 'SIGNER_REFUSED') {
+        // The engine cannot execute, but the proposal can still be executed by anyone, so the Calls are not
+        // FAILED (ADR-0053): the engine keeps trying (an operator fixing the Signer's policy lets it through)
+        // and the deadline abandons the Calls if nothing changes.
+        log.error(
+          { error: signed.error },
+          'the Signer refused the execute of an approved proposal; fix its policy. The proposal can still be executed by others, so the calls are not failed; retrying until the deadline',
+        );
+        await this.backOff(proposal, signed.error.code);
+        return;
+      }
+      log.warn({ error: signed.error }, 'signing the execute failed; retrying next time');
+      await this.backOff(proposal, signed.error.code);
+      return;
+    }
+    const hash = handler.transactionHash(signed.value);
+    if (!hash.ok) {
+      log.warn({ error: hash.error }, 'hashing the execute failed; retrying next time');
+      await this.backOff(proposal, hash.error.code);
+      return;
+    }
+
+    // ADR-0041: the signed execute is written down, the Calls PENDING, before anything is sent.
+    const rows = await this.store.markProposalExecuting(proposal.id, signed.value, hash.value);
+    await this.reschedule(proposal, this.cadence(approval));
+    log.info({ hash: hash.value, approvals: snapshot.approvals }, 'executing approved proposal');
+
+    const sent = await handler.broadcast(signed.value);
+    if (sent.ok) {
+      for (const row of rows) await this.store.recordSent(row.id, sent.value.hash);
+      return;
+    }
+    if (sent.error.code === 'RPC_UNAVAILABLE' || sent.error.code === 'ALREADY_KNOWN') {
+      log.warn({ error: sent.error }, 'execute broadcast ambiguous; left PENDING');
+      return;
+    }
+    log.warn({ error: sent.error }, 'execute broadcast refused');
+    const first = rows[0];
+    if (first) await this.failExecution(first, sent.error);
+  }
+
+  /** `executing`: the Coordinator's poll loop owns the execute transaction; this only ends the Proposal once its Calls are final. */
+  private async watchExecuting(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    const calls = await this.store.listProposalCalls(proposal.id);
+    if (calls.length > 0 && calls.every((c) => c.status === 'FAILED')) {
+      // A crash between failing the Calls and deciding what next.
+      if (!(await this.failOrReopen(proposal, approval, null))) {
+        await this.backOff(proposal, 'readProposal failed');
+      }
+      return;
+    }
+    if (calls.every((c) => c.status === 'CONFIRMED' || c.status === 'FAILED')) {
+      await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+      // The execute landed: the accounts are Executed and closable, and their rent is the member key's to take back.
+      if (calls.some((c) => c.status === 'CONFIRMED')) await this.closeFinished(proposal, approval);
+      return;
+    }
+    await this.reschedule(proposal, this.cadence(approval));
+  }
+
+  /**
+   * The execute transaction of `transaction`'s Proposal failed on-chain (or
+   * was refused at broadcast). A Squads Proposal that is still approved and
+   * before its deadline is not failed: its Calls go back to
+   * `AWAITING_APPROVAL` and the watch loop executes it again. Anything else
+   * fails the Calls. Returns false when that cannot be decided yet (the
+   * Proposal could not be read, or this is an older version), leaving the
+   * Calls `PENDING` to be checked again.
+   */
+  async failExecution(transaction: Transaction, error: DispatchError): Promise<boolean> {
+    const proposalId = transaction.proposalId;
+    if (!proposalId) throw new Error(`Transaction ${transaction.id} has no Proposal`);
+    const proposal = await this.store.getProposal(proposalId);
+    if (!proposal) throw new Error(`Unknown proposal ${proposalId}`);
+    const approval = this.requireHandler(proposal.chain).approval;
+    if (!approval) throw new Error(`Chain ${proposal.chain} has no approval capability`);
+
+    const current = (await this.store.listProposalCalls(proposalId)).find(
+      (c) => c.callIndex === transaction.callIndex,
+    );
+    // An older (REPLACED) version failing says nothing about the live one.
+    if (!current || current.id !== transaction.id) return false;
+    // Already handled this tick through a sibling that shared the same send.
+    if (current.status !== 'PENDING' || current.hash !== transaction.hash) return true;
+
+    this.logger.warn(
+      { proposalId, failedHash: transaction.hash, error },
+      'execute transaction failed',
+    );
+    return this.failOrReopen(proposal, approval, error);
+  }
+
+  /**
+   * An execute attempt failed. ADR-0053: whatever the chain says about the
+   * attempt, the Calls are FAILED only once the Proposal itself can no longer
+   * execute, because anyone may execute an approved Proposal, on either chain.
+   * So the Proposal is always read: executed by someone else settles the
+   * Calls CONFIRMED; still approved (or active) goes back to waiting, and past
+   * the deadline abandons the Calls instead; rejected, cancelled or stale is
+   * the only FAILED. A Proposal that cannot be read, or whose state is unknown,
+   * leaves the Calls PENDING to be checked again.
+   */
+  private async failOrReopen(
+    proposal: Proposal,
+    approval: ApprovalCapability,
+    error: DispatchError | null,
+  ): Promise<boolean> {
+    const calls = await this.store.listProposalCalls(proposal.id);
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) return false; // cannot tell whether it can still execute: never report FAILED yet
+    const snapshot = read.value;
+
+    if (snapshot.status === 'executed') {
+      // Someone else executed it while this attempt was failing: the money moved, whatever the failed attempt said.
+      this.logger.info(
+        { proposalId: proposal.id, executedHash: snapshot.executedHash },
+        'execute failed but the proposal was executed by someone else',
+      );
+      await this.store.settleProposal(proposal.id, {
+        status: 'CONFIRMED',
+        ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
+      });
+      await this.closeFinished(proposal, approval);
+      return true;
+    }
+    if (snapshot.status === 'unknown') return false;
+
+    const live = snapshot.status === 'approved' || snapshot.status === 'active';
+    if (live && calls.every((c) => c.status === 'PENDING' || c.status === 'FAILED')) {
+      if (this.deadlinePassed(proposal)) {
+        // It can still execute (by someone else), so it is not FAILED: abandoned, as for any undecided proposal.
+        await this.timeOut(proposal);
+        return true;
+      }
+      // A Call that will be executed again is never marked FAILED, not even for an instant: a poll
+      // (or a crash) in between would report a terminal failure for a proposal that can still pay.
+      // The Calls go straight from PENDING back to AWAITING_APPROVAL.
+      this.logger.info(
+        { proposalId: proposal.id },
+        'execute failed but the proposal can still execute; will try again',
+      );
+      await this.store.reopenProposalForExecution(proposal.id);
+      await this.store.updateProposal(proposal.id, {
+        checkFailures: 0,
+        nextCheckAt: this.after(EXECUTE_RETRY_DELAY_MS),
+      });
+      return true;
+    }
+
+    // Rejected, cancelled or stale: it can never execute, so the failure is definitive.
+    if (error) {
+      for (const call of calls.filter((c) => c.status === 'PENDING')) {
+        await this.store.markFailed(call.id, error);
+      }
+    }
+    await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+    await this.closeFinished(proposal, approval);
+    return true;
+  }
+
+  /**
+   * An execute transaction that provably expired (Solana, ADR-0042): the
+   * Calls are resubmitted as a new transaction rebuilt by
+   * `prepareExecution`, not from the Dispatch's items, since a Proposal's
+   * transaction is not made of them. `members` all share one hash.
+   */
+  async resubmitExpiredExecution(
+    members: Transaction[],
+    maxResubmissions: number,
+    log: Logger,
+  ): Promise<void> {
+    const first = members[0];
+    const proposalId = first?.proposalId;
+    if (!first || !proposalId) return;
+    const proposal = await this.store.getProposal(proposalId);
+    if (!proposal) throw new Error(`Unknown proposal ${proposalId}`);
+    const handler = this.requireHandler(proposal.chain);
+    const approval = handler.approval;
+    if (!approval) throw new Error(`Chain ${proposal.chain} has no approval capability`);
+
+    // ADR-0053: the engine never executes after the deadline. An execute that expired is not sent again then;
+    // the proposal is read instead (executed by someone else: CONFIRMED; still live: ABANDONED; dead: FAILED).
+    if (this.deadlinePassed(proposal)) {
+      log.warn({ proposalId }, 'expired execute not resubmitted: the approval deadline has passed');
+      await this.failOrReopen(proposal, approval, {
+        code: 'CHAIN_REJECTED',
+        message: `${proposal.chain} execute transaction expired and the approval deadline has passed, so it was not resubmitted`,
+      });
+      return;
+    }
+    if (members.some((m) => m.feeBumpAttempts >= maxResubmissions)) {
+      log.warn({ proposalId }, 'expired execute out of resubmissions');
+      await this.failExecution(first, {
+        code: 'CHAIN_REJECTED',
+        message: `${proposal.chain} execute transaction expired without landing and was not resubmitted`,
+      });
+      return;
+    }
+    const prepared = await approval.prepareExecution(proposal);
+    if (!prepared.ok) {
+      if (isTransient(prepared.error)) {
+        log.warn(
+          { error: prepared.error },
+          'execute resubmission prepare failed; retried next tick',
+        );
+      } else {
+        log.warn({ error: prepared.error }, 'execute resubmission prepare failed');
+        await this.failExecution(first, prepared.error);
+      }
+      return;
+    }
+    const signed = await handler.sign(prepared.value, approval.proposerAddress);
+    if (!signed.ok) {
+      if (signed.error.code === 'SIGNER_REFUSED') {
+        // The Calls are failed only if the proposal can no longer execute (ADR-0053): otherwise they go back to
+        // waiting, and the execute is tried again (and refused again, loudly) until the deadline abandons them.
+        log.error(
+          { error: signed.error },
+          'the Signer refused the resubmitted execute of an approved proposal; fix its policy',
+        );
+        await this.failOrReopen(proposal, approval, signed.error);
+      } else {
+        log.warn({ error: signed.error }, 'execute resubmission signing failed; retried next tick');
+      }
+      return;
+    }
+    const newHash = handler.transactionHash(signed.value);
+    if (!newHash.ok) {
+      log.warn({ error: newHash.error }, 'execute resubmission hashing failed; retried next tick');
+      return;
+    }
+
+    // ADR-0041: written down before it is sent; the dead predecessor is dropped at once.
+    const replacements: Transaction[] = [];
+    for (const member of members) {
+      replacements.push(
+        await this.store.createReplacementTransaction(member.id, {
+          signedBytes: signed.value,
+          hash: newHash.value,
+        }),
+      );
+      await this.store.markDropped(member.id);
+    }
+    const broadcast = await handler.broadcast(signed.value);
+    if (broadcast.ok) {
+      log.info({ resubmittedHash: broadcast.value.hash }, 'expired execute resubmitted');
+      for (const replacement of replacements) {
+        await this.store.recordSent(replacement.id, broadcast.value.hash);
+      }
+    } else if (
+      broadcast.error.code === 'RPC_UNAVAILABLE' ||
+      broadcast.error.code === 'ALREADY_KNOWN'
+    ) {
+      log.warn(
+        { error: broadcast.error },
+        'execute resubmission broadcast ambiguous — left PENDING',
+      );
+    } else {
+      log.warn({ error: broadcast.error }, 'execute resubmission refused');
+      const replacement = replacements[0];
+      if (replacement) await this.failExecution(replacement, broadcast.error);
+    }
+  }
+
+  /**
+   * A reorg dropped an execute that had been CONFIRMED, so the proposal may be executable again, by anyone.
+   * Its Calls are ABANDONED, never FAILED (ADR-0053), with no hash, and the re-watch of a timed-out proposal
+   * settles them from what the proposal then turns out to be.
+   */
+  async abandonAfterReorg(transaction: Transaction): Promise<void> {
+    const proposalId = transaction.proposalId;
+    if (!proposalId) throw new Error(`Transaction ${transaction.id} has no Proposal`);
+    this.logger.error(
+      { proposalId, droppedHash: transaction.hash },
+      'a confirmed execute now reports failed after a reorg; the proposal may be executable again, so its calls are abandoned and watched',
+    );
+    await this.store.settleProposal(proposalId, {
+      status: 'ABANDONED',
+      error: {
+        code: 'CHAIN_REJECTED',
+        message:
+          'the execute transaction was dropped by a reorg; check the proposal before sending again',
+      },
+    });
+  }
+
+  /**
+   * Best effort, after a Proposal is known to be finished (executed, rejected,
+   * cancelled or stale): asks the chain to close it and take its rent back.
+   * Whatever happens here never changes what the Calls reported. A failure is
+   * logged and tried again a few times, from `watch`. What still needs closing
+   * is written down first (`closeState`, #88), so a restart carries on.
+   */
+  private async closeFinished(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    if (!approval.closeProposal) return;
+    await this.store.updateProposal(proposal.id, { closeState: 'pending' });
+    await this.tryClose(proposal, 0);
+  }
+
+  private async retryCloses(): Promise<void> {
+    const due = await this.store.listProposalsAwaitingClose(this.chains(), CLOSE_SWEEP_LIMIT);
+    for (const proposal of due) {
+      const entry = this.pendingCloses.get(proposal.id);
+      if (entry && entry.nextAt > this.now().getTime()) continue;
+      await this.tryClose(proposal, entry?.attempts ?? 0);
+    }
+  }
+
+  /** Ends the Proposal's close work for good: `closed`, or `abandoned` when it is given up on (the rent stays locked). */
+  private async finishClose(proposal: Proposal, state: 'closed' | 'abandoned'): Promise<void> {
+    this.pendingCloses.delete(proposal.id);
+    await this.store.updateProposal(proposal.id, { closeState: state });
+  }
+
+  private async tryClose(proposal: Proposal, previousAttempts: number): Promise<void> {
+    const approval = this.chainHandlers.get(proposal.chain)?.approval;
+    if (!approval?.closeProposal) return;
+    const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+    let error: DispatchError | undefined;
+    try {
+      const result = await approval.closeProposal(proposal);
+      if (result.ok) {
+        await this.finishClose(proposal, 'closed');
+        return;
+      }
+      error = result.error;
+    } catch (cause) {
+      error = { code: 'RPC_UNAVAILABLE', message: String(cause) };
+    }
+    const reason = (error.chainDetail as { reason?: unknown } | undefined)?.reason;
+    if (reason === 'RENT_RECLAMATION_DISABLED') {
+      // Permanent: no number of tries changes it. The chain handler has already said so.
+      await this.finishClose(proposal, 'abandoned');
+      return;
+    }
+    const attempts = previousAttempts + 1;
+    if (attempts >= CLOSE_MAX_ATTEMPTS) {
+      log.warn(
+        { error, attempts },
+        'closing the finished proposal failed; giving up (its rent stays locked)',
+      );
+      await this.finishClose(proposal, 'abandoned');
+      return;
+    }
+    log.warn({ error, attempts }, 'closing the finished proposal failed; will try again');
+    this.pendingCloses.set(proposal.id, {
+      attempts,
+      nextAt: this.now().getTime() + CLOSE_RETRY_MS * attempts,
+    });
+  }
+
+  private cadence(approval: ApprovalCapability): number {
+    return approval.watchIntervalMs ?? DEFAULT_WATCH_INTERVAL_MS;
+  }
+
+  private after(ms: number): Date {
+    return new Date(this.now().getTime() + ms);
+  }
+
+  private deadlinePassed(proposal: Proposal): boolean {
+    return this.now().getTime() >= proposal.deadlineAt.getTime();
+  }
+
+  private async reschedule(proposal: Proposal, ms: number): Promise<void> {
+    await this.store.updateProposal(proposal.id, { nextCheckAt: this.after(ms) });
+  }
+
+  /** A read or send that could not be completed: the next try waits twice as long as the last, up to 5 minutes. */
+  private async backOff(proposal: Proposal, reason: string): Promise<void> {
+    const approval = this.requireHandler(proposal.chain).approval;
+    const base = approval ? this.cadence(approval) : DEFAULT_WATCH_INTERVAL_MS;
+    const failures = proposal.checkFailures + 1;
+    const delay = Math.min(base * 2 ** Math.min(failures, 16), BACKOFF_MAX_MS);
+    this.logger.debug({ proposalId: proposal.id, failures, delay, reason }, 'proposal backed off');
+    await this.store.updateProposal(proposal.id, {
+      checkFailures: failures,
+      nextCheckAt: this.after(delay),
+    });
+  }
+
+  private requireApproval(chain: Chain): ApprovalCapability {
+    const approval = this.requireHandler(chain).approval;
+    if (!approval) throw new Error(`Chain ${chain} has no approval capability`);
+    return approval;
+  }
+
+  private requireHandler(chain: Chain): ChainHandler {
+    const handler = this.chainHandlers.get(chain);
+    if (!handler) throw new Error(`No ChainHandler registered for chain: ${chain}`);
+    return handler;
+  }
+}
+
+/** Re-signing a `noted` Proposal for an expired blockhash is tried this many times per process before it just backs off. */
+const MAX_NOTED_RESIGNS = 5;
+
+function isBlockhashExpired(error: DispatchError): boolean {
+  return (
+    error.code === 'RPC_UNAVAILABLE' &&
+    (error.chainDetail as { reason?: unknown } | undefined)?.reason === 'BLOCKHASH_EXPIRED'
+  );
+}
+
+/** Only these two are an answer rather than a failure to get one; anything else may have landed. */
+function isDefiniteRefusal(error: DispatchError): boolean {
+  return error.code === 'CHAIN_REJECTED' || error.code === 'SIGNER_REFUSED';
+}
+
+/** The `BuiltProposal` a stored Proposal was made from: all a handler needs to sign it again. */
+function builtFrom(proposal: Proposal): BuiltProposal {
+  return {
+    chainRef: proposal.chainRef,
+    proposalRef: proposal.proposalRef,
+    payload: proposal.payload,
+    sequence: proposal.sequence,
+    threshold: proposal.threshold,
+    executeAfter: proposal.executeAfter,
+    expected: proposal.expected,
+    committed: proposal.committed,
+  };
+}
+
+/** Every position 0..size-1 appears in exactly one bundle, and no bundle is empty. */
+function isPartition(plan: number[][], size: number): boolean {
+  const seen = new Set<number>();
+  for (const bundle of plan) {
+    if (bundle.length === 0) return false;
+    for (const position of bundle) {
+      if (!Number.isInteger(position) || position < 0 || position >= size || seen.has(position)) {
+        return false;
+      }
+      seen.add(position);
+    }
+  }
+  return seen.size === size;
+}

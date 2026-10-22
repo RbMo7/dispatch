@@ -8,7 +8,12 @@ import type { NonceHistoryRecord, NonceHistoryStore } from './nonce-history-stor
 type NonceHistoryRow = typeof nonceHistory.$inferSelect;
 
 function toRecord(row: NonceHistoryRow): NonceHistoryRecord {
-  return { chain: row.chain as Chain, senderAddress: row.senderAddress, nonce: row.nonce, hash: row.hash };
+  return {
+    chain: row.chain as Chain,
+    senderAddress: row.senderAddress,
+    nonce: row.nonce,
+    hash: row.hash,
+  };
 }
 
 /** The real persistence behind NonceHistoryStore (ADR-0008/ADR-0011). */

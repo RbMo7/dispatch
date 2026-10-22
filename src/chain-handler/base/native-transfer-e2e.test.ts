@@ -118,8 +118,8 @@ describe('BaseChainHandler native ETH transfer (real Base Sepolia)', () => {
     expect(await waitForBalance(client, recipient, amount)).toBe(amount);
 
     const history = await nonceHistoryStore.listNonceHistory('base', sender.address);
-    expect(history.some((h) => h.hash.toLowerCase() === broadcastResult.value.hash.toLowerCase())).toBe(
-      true,
-    );
+    expect(
+      history.some((h) => h.hash.toLowerCase() === broadcastResult.value.hash.toLowerCase()),
+    ).toBe(true);
   }, 60_000);
 });

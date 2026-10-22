@@ -4,6 +4,7 @@ import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
+import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
@@ -16,6 +17,7 @@ describe('InMemoryDispatchStore', () => {
   });
 
   runChainScopeConformanceSuite(() => new InMemoryDispatchStore());
+  runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

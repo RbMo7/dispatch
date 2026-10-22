@@ -12,7 +12,11 @@ export type DispatchErrorCode =
   /** #9 (ADR-0037): the transaction's nonce was already consumed on-chain. For a fee-bump, some version already landed, so bumping stops (never reported). On a first broadcast it fails that Call, e.g. after a stale nonce counter. */
   | 'NONCE_ALREADY_USED'
   /** #20 review (ADR-0041): the node already has these exact bytes pooled — sent, not refused. Ambiguous, never a Call's FAILED. */
-  | 'ALREADY_KNOWN';
+  | 'ALREADY_KNOWN'
+  /** ADR-0049/0054: the multisig's Approvers rejected (or cancelled) the Proposal, or it went stale. Definite: the Call is FAILED. */
+  | 'APPROVAL_REJECTED'
+  /** ADR-0053: nobody decided on the Proposal by its deadline. The Call is ABANDONED, not FAILED: an Approver may still approve it and someone else execute it. */
+  | 'APPROVAL_TIMEOUT';
 
 export type DispatchError = {
   code: DispatchErrorCode;

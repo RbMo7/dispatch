@@ -15,8 +15,18 @@ describe('PostgresNonceHistoryStore (real Postgres)', () => {
   });
 
   it('persists and lists a Sender’s nonce history, ascending by nonce', async () => {
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 1, hash: '0xhash1' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 1,
+      hash: '0xhash1',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xhash0',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xhash0' },
@@ -25,8 +35,18 @@ describe('PostgresNonceHistoryStore (real Postgres)', () => {
   });
 
   it('the real unique index makes recordNonce a no-op for an already-recorded (chain, sender, nonce)', async () => {
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' });
-    await store.recordNonce({ chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xreplacement' });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xoriginal',
+    });
+    await store.recordNonce({
+      chain: 'base',
+      senderAddress: '0xsender',
+      nonce: 0,
+      hash: '0xreplacement',
+    });
 
     expect(await store.listNonceHistory('base', '0xsender')).toEqual([
       { chain: 'base', senderAddress: '0xsender', nonce: 0, hash: '0xoriginal' },

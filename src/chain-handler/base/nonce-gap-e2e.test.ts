@@ -99,7 +99,10 @@ describe('Base nonce gaps (#24, real Base Sepolia)', () => {
       req.on('end', () => {
         void fetch(new URL('/sign', testSigner.url), {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: req.headers.authorization ?? '' },
+          headers: {
+            'content-type': 'application/json',
+            authorization: req.headers.authorization ?? '',
+          },
           body: Buffer.concat(chunks),
         })
           .then((r) => r.json() as Promise<{ signature: string }>)

@@ -14,7 +14,9 @@ import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
-import type { DispatchStore } from '../repository/dispatch-store.js';
+import type { AssetAmount } from '../domain/proposal.js';
+import type { CommittedHolder, DispatchStore } from '../repository/dispatch-store.js';
+import { ApprovalFlow, DEFAULT_APPROVAL_REWATCH_WINDOW_MS } from './approval-flow.js';
 
 /** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
 const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
@@ -78,6 +80,8 @@ type FundingRequirement = {
   asset: string;
   required: bigint;
   items: CallRef[];
+  /** ADR-0054, a Multisig Sender only: which of its two balances this requirement is paid from. */
+  holder?: CommittedHolder;
 };
 
 export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
@@ -112,6 +116,14 @@ export type CoordinatorDeps = {
    * 'solana') is never touched. Defaults to an empty map.
    */
   stuckHandling?: Map<Chain, StuckHandlingConfig>;
+  /** ADR-0054/0053: how long a Multisig Sender's Proposal waits for approval before its Calls are abandoned. Defaults to 72 hours; only read for a chain whose handler has an `approval` capability. */
+  approvalDeadlineMs?: number;
+  /** ADR-0053: how long a timed-out Proposal still counts as committed in the Funding Check (the watch window). Defaults to 30 days; only read for a chain whose handler has an `approval` capability. */
+  approvalRewatchWindowMs?: number;
+  /** Per-chain override of `approvalRewatchWindowMs` (`SOLANA_…` / `BASE_APPROVAL_REWATCH_WINDOW_MS`). */
+  approvalRewatchWindowMsByChain?: Map<Chain, number>;
+  /** Per-chain override of `approvalDeadlineMs` (the deadline is `SOLANA_…` / `BASE_APPROVAL_DEADLINE_MS`). */
+  approvalDeadlineMsByChain?: Map<Chain, number>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -136,11 +148,15 @@ export class Coordinator {
   private readonly senderAddresses: Map<Chain, string>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
+  private readonly approvalRewatchWindowMs: number;
+  private readonly approvalRewatchWindowMsByChain: Map<Chain, number>;
   private readonly reorgRecheckWindowMs: Map<Chain, number>;
   private readonly stuckHandling: Map<Chain, StuckHandlingConfig>;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger: Logger;
+  /** ADR-0054: the chain-neutral multisig state machine; only ever touched for a chain whose handler has `.approval`. */
+  private readonly approvalFlow: ApprovalFlow;
   /** #20 review: Dispatches this Coordinator is processing right now — never reclaimed out from under itself. */
   private readonly inFlight = new Set<string>();
   /** #11: one bundle trace per hash per poll tick — cleared at the start of every tick. */
@@ -154,11 +170,26 @@ export class Coordinator {
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs =
       deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
+    this.approvalRewatchWindowMs =
+      deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
+    this.approvalRewatchWindowMsByChain =
+      deps.approvalRewatchWindowMsByChain ?? new Map<Chain, number>();
     this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
     this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? sleep;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
+    this.approvalFlow = new ApprovalFlow({
+      store: this.store,
+      chainHandlers: this.chainHandlers,
+      requireSenderAddress: (chain) => this.requireSenderAddress(chain),
+      now: this.now,
+      logger: this.logger,
+      approvalDeadlineMs: deps.approvalDeadlineMs,
+      approvalDeadlineMsByChain: deps.approvalDeadlineMsByChain,
+      approvalRewatchWindowMs: this.approvalRewatchWindowMs,
+      approvalRewatchWindowMsByChain: this.approvalRewatchWindowMsByChain,
+    });
   }
 
   /**
@@ -180,6 +211,8 @@ export class Coordinator {
     const dispatches = await this.store.claimQueued(this.enabledChains, limit);
     if (dispatches.length === 0) {
       this.logger.debug({ limit }, 'no queued dispatches to claim');
+      // ADR-0054: Calls left UNPROPOSED (a full slot, an unreachable Signer) are retried every tick.
+      await this.proposeUnproposed();
       return;
     }
     this.logger.info(
@@ -192,6 +225,23 @@ export class Coordinator {
       await this.processClaimedDispatches(dispatches);
     } finally {
       for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+    }
+    await this.proposeUnproposed();
+  }
+
+  /**
+   * ADR-0054: watches up to `limit` Proposals whose next check is due —
+   * executing the approved, failing the rejected, abandoning the undecided
+   * (ADR-0053). Touches nothing for a chain without an approval capability.
+   */
+  async watchProposals(limit: number): Promise<void> {
+    await this.approvalFlow.watch(limit);
+  }
+
+  /** ADR-0054: proposes what is waiting on every chain with an approval capability; nothing at all for any other chain. */
+  private async proposeUnproposed(): Promise<void> {
+    for (const chain of this.approvalFlow.chains()) {
+      await this.approvalFlow.proposeUnproposed(chain);
     }
   }
 
@@ -211,6 +261,10 @@ export class Coordinator {
 
     for (const [chain, items] of itemsByChain) {
       const handler = this.requireChainHandler(chain);
+      if (handler.approval) {
+        await this.approvalFlow.admit(chain, items);
+        continue;
+      }
       const senderAddress = this.requireSenderAddress(chain);
       await this.processChainBatch(handler, senderAddress, chain, items);
     }
@@ -456,12 +510,18 @@ export class Coordinator {
     }
     for (const [chain, refs] of refsByChain) {
       const handler = this.requireChainHandler(chain);
-      if (!handler.networkCost) continue;
+      const approval = handler.approval;
+      // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
+      if (!approval && !handler.networkCost) continue;
       const calls = refs.flatMap(({ dispatch, callIndex }) => {
         const call = dispatch.items[callIndex]?.call;
         return call ? [call] : [];
       });
-      const cost = await handler.networkCost(calls, this.requireSenderAddress(chain));
+      const senderAddress = this.requireSenderAddress(chain);
+      const cost = approval
+        ? await approval.estimateApprovalCost(calls, senderAddress)
+        : await handler.networkCost?.(calls, senderAddress);
+      if (!cost) continue;
       if (!cost.ok) {
         this.logger.warn(
           { chain, error: cost.error },
@@ -470,22 +530,45 @@ export class Coordinator {
         await this.failFundingItems(refs, cost.error, failedKeys);
         continue;
       }
-      const key = `${chain}\u0000\u0000${cost.value.asset}`;
+      const fundedBy = approval ? approval.proposerAddress : null;
+      const key = `${chain}\u0000${fundedBy ?? ''}\u0000${cost.value.asset}`;
       const existing = requirements.get(key);
       requirements.set(key, {
         chain,
-        fundedBy: null,
+        fundedBy,
         asset: cost.value.asset,
         required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
         items: refs,
+        ...(approval ? { holder: 'proposer' as const } : {}),
       });
     }
 
-    for (const { chain, fundedBy, asset, required, items } of requirements.values()) {
+    // ADR-0053/0054: what open Proposals already hold back, read once per holder per check.
+    const committedCache = new Map<string, Promise<AssetAmount[]>>();
+    const committedFor = (chain: Chain, holder: CommittedHolder) => {
+      const key = `${chain}\u0000${holder}`;
+      let cached = committedCache.get(key);
+      if (!cached) {
+        const window =
+          this.approvalRewatchWindowMsByChain.get(chain) ?? this.approvalRewatchWindowMs;
+        const timedOutSince = new Date(this.now().getTime() - window);
+        cached = this.store.listCommitted(chain, holder, timedOutSince);
+        committedCache.set(key, cached);
+      }
+      return cached;
+    };
+
+    for (const { chain, fundedBy, asset, required, items, holder } of requirements.values()) {
       const handler = this.requireChainHandler(chain);
       const senderAddress = this.requireSenderAddress(chain);
+      const approval = handler.approval;
+      // A Multisig Sender's payments come out of the vault or Safe, less what open Proposals already hold.
+      const committedHolder: CommittedHolder | null = approval
+        ? (holder ?? (fundedBy === null ? 'sender' : null))
+        : null;
+      const address = fundedBy ?? senderAddress;
 
-      const balanceResult = await handler.getBalance(fundedBy ?? senderAddress, asset);
+      const balanceResult = await handler.getBalance(address, asset);
       if (!balanceResult.ok) {
         this.logger.warn(
           { chain, asset, error: balanceResult.error },
@@ -495,11 +578,24 @@ export class Coordinator {
         continue;
       }
 
-      const available = BigInt(balanceResult.value.amount);
+      const committed = committedHolder
+        ? BigInt(
+            (await committedFor(chain, committedHolder)).find((c) => c.asset === asset)?.amount ??
+              '0',
+          )
+        : 0n;
+      const available = BigInt(balanceResult.value.amount) - committed;
       if (available < required) {
         const short = (required - available).toString();
         this.logger.warn(
-          { chain, asset, required: required.toString(), available: available.toString(), short },
+          {
+            chain,
+            asset,
+            required: required.toString(),
+            available: available.toString(),
+            committed: committed.toString(),
+            short,
+          },
           'funding check: insufficient balance, failing affected calls',
         );
         await this.failFundingItems(
@@ -507,7 +603,18 @@ export class Coordinator {
           {
             code: 'INSUFFICIENT_FUNDS',
             message: `insufficient ${asset} balance`,
-            chainDetail: fundedBy ? { asset, short, fundedBy } : { asset, short },
+            chainDetail:
+              approval && committedHolder
+                ? {
+                    asset,
+                    short,
+                    holder: approval.holders[committedHolder],
+                    address,
+                    committed: committed.toString(),
+                  }
+                : fundedBy
+                  ? { asset, short, fundedBy }
+                  : { asset, short },
           },
           failedKeys,
         );
@@ -572,12 +679,18 @@ export class Coordinator {
       );
       this.inFlight.add(dispatch.id);
       try {
-        await this.processChainBatch(
-          this.requireChainHandler(dispatch.chain),
-          this.requireSenderAddress(dispatch.chain),
-          dispatch.chain,
-          unsent,
-        );
+        const handler = this.requireChainHandler(dispatch.chain);
+        if (handler.approval) {
+          // ADR-0054: a multisig Call is never signed as the Sender; it is noted and proposed.
+          await this.approvalFlow.admit(dispatch.chain, unsent);
+        } else {
+          await this.processChainBatch(
+            handler,
+            this.requireSenderAddress(dispatch.chain),
+            dispatch.chain,
+            unsent,
+          );
+        }
       } finally {
         this.inFlight.delete(dispatch.id);
       }
@@ -607,12 +720,25 @@ export class Coordinator {
       if (!handler.restoreInFlight) continue;
       const unsettled = await this.store.listUnsettledTransactions(chain);
       const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
+      // ADR-0054: a propose transaction written down but maybe never sent holds a nonce too.
+      if (handler.approval) signed.push(...(await this.unsettledProposeBytes(chain)));
       await handler.restoreInFlight(signed);
       this.logger.info(
         { chain, restored: signed.length },
         'restored handler state from in-flight transactions',
       );
     }
+  }
+
+  /** The signed propose bytes of `chain`'s Proposals that are not yet settled (`noted`, `open` or `executing`). */
+  private async unsettledProposeBytes(chain: Chain): Promise<string[]> {
+    const farFuture = new Date(8.64e15);
+    const proposals = await this.store.listProposalsDue([chain], farFuture, 10_000);
+    return proposals.flatMap((p) =>
+      p.proposeSignedBytes && ['noted', 'open', 'executing'].includes(p.phase)
+        ? [p.proposeSignedBytes]
+        : [],
+    );
   }
 
   /**
@@ -847,6 +973,11 @@ export class Coordinator {
       return;
     }
     if (statusResult.value === 'FAILED') {
+      if (transaction.proposalId) {
+        // ADR-0053: a proposal whose execute was reorged out may be executable again, so never FAILED.
+        await this.approvalFlow.abandonAfterReorg(transaction);
+        return;
+      }
       log.warn('reorg recheck: now reports failed after a reorg — marking failed');
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',
@@ -925,7 +1056,11 @@ export class Coordinator {
   ): Promise<'bumped' | 'handled' | 'failed'> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const handler = this.requireChainHandler(transaction.chain);
-    const senderAddress = this.requireSenderAddress(transaction.chain);
+    // ADR-0054: a Proposal's execute is signed by the proposer, never the multisig Sender.
+    const senderAddress =
+      transaction.proposalId && handler.approval
+        ? handler.approval.proposerAddress
+        : this.requireSenderAddress(transaction.chain);
     const members = await this.pendingMembersOf(hash);
     const recordAttempts = async (feeBumpAttempts: number) => {
       for (const member of members) await this.store.setFeeBumpAttempts(member.id, feeBumpAttempts);
@@ -1004,6 +1139,11 @@ export class Coordinator {
     const { hash } = this.requireBroadcast(transaction);
     const chain = transaction.chain;
     const members = await this.pendingMembersOf(hash);
+    // ADR-0054: an execute transaction is rebuilt by the approval capability, not from the Dispatch's items.
+    if (members.some((m) => m.proposalId !== null)) {
+      await this.approvalFlow.resubmitExpiredExecution(members, MAX_EXPIRY_RESUBMISSIONS, log);
+      return;
+    }
     const refs: { member: Transaction; call: Call }[] = [];
     for (const member of members) {
       const call = (await this.store.getDispatch(member.dispatchId))?.items[member.callIndex]?.call;
@@ -1237,6 +1377,13 @@ export class Coordinator {
     }
 
     if (statusResult.ok && statusResult.value === 'FAILED') {
+      if (transaction.proposalId) {
+        // ADR-0054: a still-approved Proposal is not FAILED while it can still execute.
+        return this.approvalFlow.failExecution(transaction, {
+          code: 'CHAIN_REJECTED',
+          message: `${transaction.chain} reported this transaction as failed`,
+        });
+      }
       log.info({ settledHash: transaction.hash }, 'transaction failed');
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',
@@ -1266,6 +1413,9 @@ export class Coordinator {
     hash: string,
   ): Promise<Result<{ slot: number; slotStatus: BundleSlotStatus }, DispatchError> | undefined> {
     if (!handler.getBundleStatus) return undefined;
+    // A proposal's execute is one transaction for the whole proposal, not a Bulk Call bundle: its failure
+    // goes through the approval flow (ADR-0053), never straight to FAILED.
+    if (transaction.proposalId) return undefined;
     const dispatch = await this.store.getDispatch(transaction.dispatchId);
     // allowFailure false (the default): the transaction's own status is
     // every member's status — a revert fails them all, no trace needed.

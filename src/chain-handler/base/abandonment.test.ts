@@ -4,7 +4,11 @@ import { Coordinator } from '../../coordinator/coordinator.js';
 import { InMemoryDispatchStore } from '../../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../../repository/in-memory-nonce-history-store.js';
 import { BASE_ABANDONMENT_TIMEOUT_MS, BaseChainHandler } from './base-chain-handler.js';
-import { BASE_SEPOLIA_CHAIN_ID, BASE_SEPOLIA_RPC_URL, getDevSenderAccount } from './test-support/base-fixtures.js';
+import {
+  BASE_SEPOLIA_CHAIN_ID,
+  BASE_SEPOLIA_RPC_URL,
+  getDevSenderAccount,
+} from './test-support/base-fixtures.js';
 
 /**
  * issue 08: a Base transaction whose getStatus keeps returning PENDING past
@@ -21,7 +25,7 @@ import { BASE_SEPOLIA_CHAIN_ID, BASE_SEPOLIA_RPC_URL, getDevSenderAccount } from
  * at all and still lands on ABANDONED.
  */
 describe('Base ABANDONED timeout (issue 08, real Base Sepolia getStatus)', () => {
-  it('marks a Base transaction ABANDONED — distinct from FAILED — once past the timeout, using the Coordinator\'s existing generic mechanism unchanged', async () => {
+  it("marks a Base transaction ABANDONED — distinct from FAILED — once past the timeout, using the Coordinator's existing generic mechanism unchanged", async () => {
     const sender = getDevSenderAccount();
     const handler = await BaseChainHandler.create({
       rpcUrl: BASE_SEPOLIA_RPC_URL,

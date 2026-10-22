@@ -11,6 +11,7 @@ import { privateKeyToAddress } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createBackends } from './backends/index.js';
+import safeVectors from './safe-vectors.json' with { type: 'json' };
 import { buildSigner } from './startup.js';
 
 /** AWS KMS, stood in for by keys generated locally; the SDK's real command classes are kept. */
@@ -149,6 +150,42 @@ describe('the Signer on AWS KMS keys', () => {
           },
         }),
       ).toBe(address);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('signs a Safe transaction’s digest through KMS, recovering to its address (ADR-0052)', async () => {
+    const address = kmsKey('kms-key');
+    const config = writeJson({
+      [address]: { curve: 'secp256k1', backend: 'aws-kms', keyRef: 'kms-key' },
+    });
+    const server = await buildSigner(env(config), () => {});
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+
+    try {
+      const { port } = server.address() as AddressInfo;
+      for (const { tx, safeTxHash } of safeVectors) {
+        const response = await fetch(`http://127.0.0.1:${port}/sign`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer test-token' },
+          body: JSON.stringify({
+            kind: 'safeTransaction',
+            chain: 'base',
+            curve: 'secp256k1',
+            address,
+            safeTransaction: tx,
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { signature: string };
+        const signature = Buffer.from(body.signature, 'base64');
+        expect([27, 28]).toContain(signature[64]);
+        expect(
+          await recoverAddress({ hash: safeTxHash as `0x${string}`, signature: toHex(signature) }),
+        ).toBe(address);
+      }
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

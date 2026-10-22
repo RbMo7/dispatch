@@ -1,8 +1,18 @@
+import { hexToNumber, recoverAddress, size, slice, type Address, type Hex } from 'viem';
+
 import type { Chain } from '../domain/chain.js';
 import type { Curve } from '../domain/curve.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { DEFAULT_RPC_TIMEOUT_MS } from '../rpc-timeout.js';
+import { safeTransactionHash, type SafeTransaction } from './safe-transaction.js';
+
+export type SafeSignRequest = {
+  chain: Chain;
+  /** The signing key's address: the delegate or executor, not the Safe. */
+  address: Address;
+  safeTransaction: SafeTransaction;
+};
 
 export type SignRequest = {
   chain: Chain;
@@ -32,6 +42,52 @@ export class SignerClient {
   ) {}
 
   async requestSignature(request: SignRequest): Promise<Result<SignResponse, DispatchError>> {
+    return this.post(request);
+  }
+
+  /**
+   * ADR-0052: the Signer signs a Safe transaction's EIP-712 hash itself,
+   * from the fields. The signature comes back as 0x-hex `r || s || v` with
+   * `v` 27 or 28, as the Safe Transaction Service requires, and is only
+   * returned once it recovers to `address` over the hash the engine computed
+   * itself, as for a transaction (ADR-0046).
+   */
+  async signSafeTransaction(request: SafeSignRequest): Promise<Result<Hex, DispatchError>> {
+    const signed = await this.post({
+      kind: 'safeTransaction',
+      chain: request.chain,
+      curve: 'secp256k1',
+      address: request.address,
+      safeTransaction: request.safeTransaction,
+    });
+    if (!signed.ok) return signed;
+
+    const signature: Hex = `0x${Buffer.from(signed.value.signature, 'base64').toString('hex')}`;
+    const hash = safeTransactionHash(request.safeTransaction);
+    const wrong = (message: string, chainDetail?: unknown): Result<Hex, DispatchError> =>
+      err({ code: 'SIGNER_UNREACHABLE', message, chainDetail });
+    // Anything but 27/28 is a signature the Transaction Service would reject.
+    if (size(signature) !== 65 || ![27, 28].includes(hexToNumber(slice(signature, 64)))) {
+      return wrong(
+        'signer returned a Safe signature that is not 65 bytes r || s || v with v 27 or 28',
+      );
+    }
+    let recovered: Address;
+    try {
+      recovered = await recoverAddress({ hash, signature });
+    } catch (cause) {
+      return wrong(
+        'signer returned a signature that recovers to no address',
+        cause instanceof Error ? cause.message : cause,
+      );
+    }
+    if (recovered.toLowerCase() !== request.address.toLowerCase()) {
+      return wrong(`signer returned a signature for ${recovered}, expected ${request.address}`);
+    }
+    return ok(signature);
+  }
+
+  private async post(payload: unknown): Promise<Result<SignResponse, DispatchError>> {
     let response: Response;
     try {
       response = await fetch(new URL('/sign', this.signerUrl), {
@@ -40,7 +96,7 @@ export class SignerClient {
           'content-type': 'application/json',
           ...(this.authToken === undefined ? {} : { authorization: `Bearer ${this.authToken}` }),
         },
-        body: JSON.stringify(request),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (cause) {

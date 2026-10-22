@@ -6,7 +6,8 @@ import { keccak256, parseTransaction, serializeTransaction, toHex } from 'viem';
 
 import { CURVES, type Curve, type KeyBackend } from './backends/key-backend.js';
 import { lookupKey, type AddressEntry } from './config.js';
-import { evaluatePolicy } from './policy.js';
+import { evaluatePolicy, evaluateSafeTransactionPolicy } from './policy.js';
+import { parseSafeTransaction, safeSignature, safeTransactionDigest } from './safe-transaction.js';
 
 /** A configured address with the backend holding its key. */
 export type KeyringEntry = { entry: AddressEntry; backend: KeyBackend };
@@ -26,6 +27,10 @@ export type AuditRecord = {
   chain?: string | undefined;
   /** The id the chain will know the signed transaction by: its EVM hash, or its Solana signature. */
   transactionId?: string | undefined;
+  /** Present only on a Safe transaction request (ADR-0052), with the Safe and the nonce the request named. */
+  kind?: 'safeTransaction' | undefined;
+  safe?: string | undefined;
+  safeNonce?: string | undefined;
   decision: AuditDecision;
   status: number;
   reason?: string | undefined;
@@ -44,6 +49,9 @@ type Outcome = {
   address?: string;
   chain?: string;
   transactionId?: string;
+  kind?: 'safeTransaction';
+  safe?: string;
+  safeNonce?: string;
 };
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -87,7 +95,7 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
     return { status: 400, body: { error: 'the body must be a JSON object' } };
   }
 
-  const { chain, curve, address, unsignedTransaction } = body as Record<string, unknown>;
+  const { kind, chain, curve, address, unsignedTransaction } = body as Record<string, unknown>;
   const known = {
     ...(typeof address === 'string' ? { address } : {}),
     ...(typeof chain === 'string' ? { chain } : {}),
@@ -97,6 +105,9 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
     body: { error },
     ...known,
   });
+
+  if (kind === 'safeTransaction') return handleSafeTransaction(body as Record<string, unknown>, keyring);
+  if (kind !== undefined) return reject(400, `unsupported kind: ${JSON.stringify(kind)}`);
 
   if (!isCurve(curve)) return reject(400, `unsupported curve: ${String(curve)}`);
   if (typeof unsignedTransaction !== 'string')
@@ -110,7 +121,7 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
 
   const unsigned = Buffer.from(unsignedTransaction, 'base64');
   if (key.entry.policy) {
-    const decision = evaluatePolicy(key.entry.policy, curve, unsigned);
+    const decision = evaluatePolicy(key.entry.policy, curve, unsigned, key.entry.address);
     if (!decision.ok) {
       return { status: 403, body: { error: 'policy refused', reason: decision.reason }, ...known };
     }
@@ -140,6 +151,64 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
     transactionId: evmTransaction
       ? evmTransactionHash(evmTransaction, signature)
       : bs58.encode(signature),
+  };
+}
+
+/**
+ * ADR-0052: a Safe transaction, signed as the EIP-712 digest the Safe
+ * contract checks. The Signer hashes the fields itself rather than being
+ * handed a digest, so it never signs a hash it can't read.
+ */
+async function handleSafeTransaction(
+  body: Record<string, unknown>,
+  keyring: Keyring,
+): Promise<Outcome> {
+  const { chain, curve, address, safeTransaction } = body;
+  const parsed = parseSafeTransaction(safeTransaction);
+  const known = {
+    kind: 'safeTransaction' as const,
+    ...(typeof address === 'string' ? { address } : {}),
+    ...(typeof chain === 'string' ? { chain } : {}),
+    ...(typeof parsed === 'object'
+      ? { safe: parsed.safe, safeNonce: parsed.nonce.toString() }
+      : {}),
+  };
+  const reject = (status: number, error: string): Outcome => ({
+    status,
+    body: { error },
+    ...known,
+  });
+
+  if (curve !== 'secp256k1') {
+    return reject(400, `a Safe transaction is signed on secp256k1, not ${String(curve)}`);
+  }
+  if (typeof address !== 'string') return reject(400, 'address is required');
+  if (typeof parsed === 'string') return reject(400, parsed);
+
+  const key = keyring.get(lookupKey(curve, address));
+  if (!key || key.entry.curve !== curve) {
+    return reject(404, `no key for address ${address} on curve ${curve}`);
+  }
+  if (key.entry.policy) {
+    const decision = evaluateSafeTransactionPolicy(key.entry.policy, parsed);
+    if (!decision.ok) {
+      return { status: 403, body: { error: 'policy refused', reason: decision.reason }, ...known };
+    }
+  }
+
+  const digest = safeTransactionDigest(parsed);
+  let signature: Uint8Array;
+  try {
+    // The same digest primitive as an EVM transaction; only `v` differs.
+    signature = safeSignature(await key.backend.sign(curve, key.entry.keyRef, digest));
+  } catch (cause) {
+    return reject(500, `signing failed: ${errorMessage(cause)}`);
+  }
+  return {
+    status: 200,
+    body: { signature: Buffer.from(signature).toString('base64') },
+    ...known,
+    transactionId: toHex(digest),
   };
 }
 
@@ -189,7 +258,7 @@ export function createSignerServer({
   }
 
   return createServer((req, res) => {
-    void answer(req).then(({ status, body, address, chain, transactionId }) => {
+    void answer(req).then(({ status, body, address, chain, transactionId, kind, safe, safeNonce }) => {
       // Audited before answering, so no signature leaves without its line.
       // A policy refusal's own reason says more than its `error`.
       const reason = body.reason ?? body.error;
@@ -198,6 +267,9 @@ export function createSignerServer({
         address,
         chain,
         transactionId,
+        kind,
+        safe,
+        safeNonce,
         decision: decisionFor(status),
         status,
         reason: typeof reason === 'string' ? reason : undefined,

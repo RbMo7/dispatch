@@ -21,7 +21,9 @@ import { err, ok, type Result } from '../../domain/result.js';
 /** Deterministic PDA derivation only — never touches the network, never throws for a well-formed owner/mint (both already validated by the time a Call reaches here). */
 /** #41: the classic Token program or Token-2022 — the two programs a token payment may go through. */
 export function isTokenProgram(programId: string): boolean {
-  return programId === TOKEN_PROGRAM_ID.toBase58() || programId === TOKEN_2022_PROGRAM_ID.toBase58();
+  return (
+    programId === TOKEN_PROGRAM_ID.toBase58() || programId === TOKEN_2022_PROGRAM_ID.toBase58()
+  );
 }
 
 export function deriveAssociatedTokenAddress(
@@ -29,7 +31,14 @@ export function deriveAssociatedTokenAddress(
   mint: PublicKey,
   tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
 ): PublicKey {
-  return getAssociatedTokenAddressSync(mint, owner, false, tokenProgram, ASSOCIATED_TOKEN_PROGRAM_ID);
+  // Off-curve owners are allowed: a multisig vault (a PDA) is both the Sender and a legitimate recipient.
+  return getAssociatedTokenAddressSync(
+    mint,
+    owner,
+    true,
+    tokenProgram,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
 }
 
 /**

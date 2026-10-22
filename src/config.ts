@@ -1,11 +1,21 @@
 import { existsSync } from 'node:fs';
 
+import {
+  deriveVaultAddress,
+  parsePublicKey,
+} from './chain-handler/solana/multisig/multisig-config.js';
 import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
 
 // A local, gitignored .env (RPC URLs, keys) for the API, the worker and
 // drizzle-kit alike — real environment variables always win, and a deploy
 // without one is unaffected.
 if (existsSync('.env')) process.loadEnvFile('.env');
+
+/** The vault of SOLANA_MULTISIG_ADDRESS, or '' when it is unset or invalid (resolveSolanaMultisigConfig reports that at startup). */
+function solanaVaultFromEnv(): string {
+  const multisig = parsePublicKey((process.env.SOLANA_MULTISIG_ADDRESS ?? '').trim());
+  return multisig ? deriveVaultAddress(multisig).toBase58() : '';
+}
 
 export const config = {
   port: Number(process.env.PORT ?? 8420),
@@ -25,8 +35,19 @@ export const config = {
   /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */
   solana: {
     rpcUrl: process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com',
-    /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. */
-    senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
+    /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. In multisig mode (ADR-0049) it is the multisig's vault, derived from SOLANA_MULTISIG_ADDRESS. */
+    senderAddress:
+      process.env.SOLANA_SENDER_ADDRESS ||
+      (process.env.SOLANA_SENDER_MODE === 'multisig' ? solanaVaultFromEnv() : ''),
+    /** #73 (ADR-0049): raw Multisig Sender settings, validated by resolveSolanaMultisigConfig when 'solana' loads — `single` (the default) ignores them. */
+    multisig: {
+      senderMode: process.env.SOLANA_SENDER_MODE ?? '',
+      senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
+      multisigAddress: process.env.SOLANA_MULTISIG_ADDRESS ?? '',
+      memberAddress: process.env.SOLANA_MULTISIG_MEMBER_ADDRESS ?? '',
+      approvalDeadlineMs: process.env.SOLANA_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: process.env.SOLANA_APPROVAL_REWATCH_WINDOW_MS ?? '',
+    },
     /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
     knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
     /** #34: priority fee in micro-lamports per compute unit on every transaction the engine builds. 0 (default) adds none — a priority fee costs more, so it's opt-in (ADR-0003). */
@@ -35,7 +56,9 @@ export const config = {
         ? ('auto' as const)
         : Number(process.env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
     /** #43: the ceiling for an `auto` price. */
-    maxComputeUnitPriceMicroLamports: Number(process.env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
+    maxComputeUnitPriceMicroLamports: Number(
+      process.env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0,
+    ),
     /** #42: how many Solana transactions one worker may have in flight at once. */
     sendConcurrency: Number(process.env.SOLANA_SEND_CONCURRENCY || 4),
   },
@@ -44,8 +67,24 @@ export const config = {
     rpcUrl: process.env.BASE_RPC_URL ?? 'https://sepolia.base.org',
     /** Verified against the connected RPC's own eth_chainId at construction — refuses to start on mismatch. Base mainnet 8453, Base Sepolia 84532. */
     chainId: Number(process.env.BASE_CHAIN_ID ?? 84532),
-    /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. */
-    senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
+    /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. In safe mode (ADR-0051) it is the executor, so BASE_SAFE_EXECUTOR_ADDRESS alone is enough. */
+    senderAddress:
+      process.env.BASE_SENDER_ADDRESS ||
+      (process.env.BASE_SENDER_MODE === 'safe'
+        ? (process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '')
+        : ''),
+    /** #82 (ADR-0051): raw Safe Sender settings, validated by resolveBaseSafeConfig when 'base' loads — `single` (the default) ignores them. */
+    safe: {
+      senderMode: process.env.BASE_SENDER_MODE ?? '',
+      senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
+      safeAddress: process.env.BASE_SAFE_ADDRESS ?? '',
+      safeExecutorAddress: process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '',
+      txServiceUrl: process.env.BASE_SAFE_TX_SERVICE_URL ?? '',
+      apiKey: process.env.BASE_SAFE_API_KEY ?? '',
+      approvalDeadlineMs: process.env.BASE_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: process.env.BASE_APPROVAL_REWATCH_WINDOW_MS ?? '',
+      bundleLimit: process.env.BASE_SAFE_BUNDLE_LIMIT ?? '',
+    },
     /** Comma-separated `SYMBOL:contractAddress:decimals` list — parsed via known-tokens.ts's parseBaseKnownTokens. */
     knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
     /** Minimum percentage both maxFeePerGas and maxPriorityFeePerGas must be bumped by on a Retry Policy fee-bump replacement (issue 09) — go-ethereum/op-geth's own inherited PriceBump floor is 10%; a documented default with margin above that, not a verified Base-sequencer guarantee. */

@@ -4,11 +4,12 @@ import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { db } from '../db/client.js';
-import { attempts, dispatches, relayDispatches, transactions } from '../db/schema.js';
+import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
+import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
@@ -25,7 +26,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${relayDispatches}, ${dispatches} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -38,6 +39,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   });
 
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
+  runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

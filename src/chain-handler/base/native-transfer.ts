@@ -10,7 +10,10 @@ export function buildNativeTransferCall(
   amount: string,
 ): Result<EvmCall, DispatchError> {
   if (!isAddress(recipient)) {
-    return err({ code: 'INVALID_RECIPIENT', message: `not a well-formed EVM address: ${recipient}` });
+    return err({
+      code: 'INVALID_RECIPIENT',
+      message: `not a well-formed EVM address: ${recipient}`,
+    });
   }
   return ok({ to: recipient, data: '0x', value: amount });
 }

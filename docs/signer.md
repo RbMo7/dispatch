@@ -10,6 +10,39 @@ The Signer is a separate process that holds each Sender's key and answers one re
 
 Only the worker signs. The API process never calls the Signer.
 
+### Signing a Safe transaction
+
+A second request kind, for a deployment whose Sender is a Safe (ADR-0051, ADR-0052), asks the Signer to sign a Safe transaction instead of a chain transaction. Nothing else about `POST /sign` changes: a request without `kind` is the ordinary one above, and any other `kind` is `400`. The engine sends it only in Safe mode.
+
+```json
+{
+  "kind": "safeTransaction",
+  "chain": "base",
+  "curve": "secp256k1",
+  "address": "0xTheSigningKey…",
+  "safeTransaction": {
+    "safe": "0xTheSafe…",
+    "chainId": 8453,
+    "to": "0x…",
+    "value": "0",
+    "data": "0x…",
+    "operation": 1,
+    "safeTxGas": "0",
+    "baseGas": "0",
+    "gasPrice": "0",
+    "gasToken": "0x0000000000000000000000000000000000000000",
+    "refundReceiver": "0x0000000000000000000000000000000000000000",
+    "nonce": "7"
+  }
+}
+```
+
+`address` is the signing key, never the Safe. Every number but `chainId` and `operation` (0 is a call, 1 a delegatecall) is a decimal string, and every field is required. A missing or malformed field is `400`.
+
+The Signer computes the EIP-712 hash of those fields itself, with the domain `{ chainId, verifyingContract: safe }` and Safe's `SafeTx` struct, and signs that 32-byte hash with the key's backend, so `keyfile`, `local`, `privy` and `aws-kms` all work. The response is the usual `{ "signature": "<base64>" }`, but `v` is 27 or 28, not the 0 or 1 a transaction signature ends in, because the Safe Transaction Service rejects the latter. The engine recomputes the hash and refuses a signature that does not recover to the key's address.
+
+A key with no policy signs this kind, for any caller with the bearer token. A key with a policy refuses it with `403 { "error", "reason" }` unless the policy pins the Safe with `allowedSafe` and the transaction passes its checks (a delegatecall to MultiSendCallOnly, zero gas and refund fields; see [section 4](#4-write-a-policy-for-every-address)). The audit line adds `kind`, `safe` and `safeNonce`, and its `transactionId` is the Safe transaction hash. It never records the call data.
+
 ## 1. Choose a backend for each address
 
 Each address in the Signer's config names its own backend, and one Signer can mix them.
@@ -17,8 +50,11 @@ Each address in the Signer's config names its own backend, and one Signer can mi
 | Backend | Use it for | Base (`secp256k1`) | Solana (`ed25519`) |
 | --- | --- | --- | --- |
 | `keyfile` | Development only. Never mainnet. The private key sits in a file and in process memory. | yes | yes |
-| `privy` | Production. Keys live in Privy server wallets. | an Ethereum wallet | a Solana wallet |
-| `aws-kms` | Production. Keys live in AWS KMS. | key spec `ECC_SECG_P256K1` | key spec `ECC_NIST_EDWARDS25519` |
+| `aws-kms` | Production, the strongest option. Keys live in AWS KMS and never reach the host. | key spec `ECC_SECG_P256K1` | key spec `ECC_NIST_EDWARDS25519` |
+| `privy` | Production. Keys live in Privy server wallets and never reach the host. | an Ethereum wallet | a Solana wallet |
+| `local` | Production when you have neither of the above. Keys are encrypted files, decrypted into the Signer's process memory. The weakest production option. | yes | yes |
+
+Rank them `aws-kms`, then `privy`, then `local`. With `local`, a compromise of the Signer's host exposes the key, so rely on a tight [policy](#4-write-a-policy-for-every-address) and keep little in the Sender.
 
 The Privy backend has been run against real Privy on Base Sepolia and Solana devnet (`RUN_PRIVY=1`). The AWS KMS backend has been tested only against mocks. Its live test has not yet been run against a real key (#61). The [mainnet checklist](#mainnet-checklist) says what to do about that.
 
@@ -88,6 +124,40 @@ Generate a fresh authorization key for mainnet. Never paste it into chat, a tick
 
    Replace the placeholder with the derived address. A Solana key works the same way under any placeholder.
 
+### Local
+
+Each key is one encrypted file in a directory. scrypt turns your passphrase into the encryption key, and AES-256-GCM encrypts the private key. The Signer decrypts every key it is configured for when it starts, and keeps them in memory (ADR-0050).
+
+1. Choose a keystore directory and a passphrase. Put the passphrase in a file only the Signer's user can read, such as a mounted secret. Use a long random one, for example `openssl rand -hex 32`.
+
+   ```sh
+   export SIGNER_KEYSTORE_DIR=/var/lib/signer/keystore
+   export SIGNER_KEYSTORE_PASSPHRASE_FILE=/run/secrets/keystore-passphrase
+   ```
+
+   `SIGNER_KEYSTORE_PASSPHRASE` works too. The passphrase is never a command-line argument.
+
+2. Create a key with the CLI, run from the `signer/` package (`pnpm signer keys ...`), or `node dist/cli.js keys ...` inside the image. It prints the key's address and nothing secret:
+
+   ```sh
+   pnpm signer keys new --curve secp256k1 --name base-sender
+   pnpm signer keys new --curve ed25519 --name solana-sender
+   ```
+
+   To bring an existing key, pipe it in on stdin as 64 hex characters (32 bytes). Reading it with `read -rs` keeps it out of your shell history and the process list:
+
+   ```sh
+   read -rs KEY && printf %s "$KEY" | pnpm signer keys import --curve secp256k1 --name base-sender; unset KEY
+   ```
+
+   `pnpm signer keys list` shows each key's name, curve and address, and `pnpm signer keys export-public --name <name>` prints one address. Neither needs the passphrase. The CLI has no command that prints or exports a private key, and it never overwrites a key.
+
+3. Use the address it printed in the config file, with `"backend": "local"` and the key's name as `keyRef`. See [Write the config file](#3-write-the-config-file).
+
+The directory is created `0700` and each file `0600`. The Signer logs a warning if the directory is open to other users.
+
+Back up the passphrase and the key files, separately and somewhere safe. **If you lose the passphrase, the keys are lost.** The CLI cannot recover them, and it cannot change a passphrase. If you want to move funds off a key, do it before you lose access.
+
 ## 3. Write the config file
 
 The config file is JSON. `SIGNER_CONFIG` holds its path. It maps each Sender's address to its `curve`, `backend`, `keyRef`, and an optional `policy`. [`signer/README.md`](../signer/README.md#configuration) has the full shape.
@@ -137,6 +207,8 @@ A policy is optional, but an address without one is signed for unconditionally, 
 - `allowedDestinations`. On Base, every contract or address a transaction calls. On Solana, every program it uses, besides System, Token, Token-2022, Associated Token, and ComputeBudget.
 - `maxNativePerTransaction`. The most ETH or SOL one transaction may move.
 - `maxTokenPerTransaction`. The most of each listed token one transaction may move, keyed by token contract (Base) or mint (Solana).
+- `allowedSafe` (Base only, needs `chainIds`). Pins the key to one Safe: it signs only that Safe's `execTransaction` and the matching `safeTransaction` typed data, and only as a delegatecall to MultiSendCallOnly with zero gas and refund fields. `allowedMultiSend` overrides the MultiSendCallOnly addresses (the defaults are Safe 1.4.1 and 1.3.0). Use it for a Safe's executor and delegate keys. The nested payments are not decoded; the owners' confirmation is the control.
+- `allowedMultisig` (Solana only). Pins the key to one Squads multisig: it signs only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the ComputeBudget instructions that accompany them, with itself as fee payer. It refuses votes (approve, reject, cancel), config transactions and every other program. The nested payments are not decoded; the Approvers' vote is the control. If you also set `allowedDestinations`, list the Squads program in it.
 
 A misspelled rule, a bad address, or a bad amount stops the Signer at startup. Before you write a policy, know where it can surprise you:
 
@@ -148,6 +220,10 @@ A misspelled rule, a bad address, or a bad amount stops the Signer at startup. B
 - **On Solana, `allowedDestinations` doesn't restrict recipients.** It lists programs. Cap the amounts to limit how much leaves.
 - **What the Signer can't read, it refuses.** With a policy set, it refuses bytes it can't decode, such as an unknown transaction type or malformed calldata. It also refuses any call to a capped token that it can't count, such as `approve`. The refusal names what it couldn't read.
 - **An allowed contract is trusted with whatever it does next.** The Signer reads the transaction's own call and every call inside `aggregate3Value`. Whatever a listed contract does after that, the policy never sees. List only contracts you trust that far.
+
+### Keys for a Multisig Sender
+
+A Multisig Sender (Squads on Solana, Safe on Base) needs one more key behind the Signer: the engine's own, which proposes and executes but can never approve. It is an ordinary key on any backend, with a policy that pins it to one multisig with `allowedMultisig` or one Safe with `allowedSafe`, as above. Setting up the multisig, the key's permissions and the delegate registration is in [`docs/multisig.md`](./multisig.md). The Signer's own startup does not check that the multisig's members or the Safe's owners exclude the key. The engine checks that when it starts.
 
 ## 5. Create the bearer token
 
@@ -219,13 +295,15 @@ Before it listens, the Signer reads the config, builds each backend it names, an
 | `SIGNER_CONFIG <path> is unreadable` | The file is missing, or it is not valid JSON. |
 | `SIGNER_CONFIG is invalid:` and one line per problem | An entry has a bad `curve`, `backend`, `keyRef`, or `policy`. Each line names the address. |
 | `PRIVY_APP_ID is required by the privy backend`, and the like | The config names a backend whose credentials are not set. |
+| `SIGNER_KEYSTORE_DIR is required` or `SIGNER_KEYSTORE_PASSPHRASE or SIGNER_KEYSTORE_PASSPHRASE_FILE is required` | The config names the `local` backend and its keystore settings are not set. |
+| `the key file did not decrypt: the passphrase is wrong, or the file was altered` | A `local` key. Check the passphrase first, then whether the file changed. |
 | `these addresses don't match their keys:` and `expected …, derived …` | The key behind a `keyRef` has a different address. Fix the address or the `keyRef`. |
 | `these addresses don't match their keys:` and a backend error | The backend could not produce the key's address. Examples are missing AWS credentials or region, a KMS key with the wrong key spec or usage, and a wrong Privy wallet ID. |
 | `SIGNER_AUTH_TOKEN is required` | The token is unset. The Signer checks it after the keys, so this can appear after every key is proven. |
 
 On success it prints `signer listening on :8421` on stderr.
 
-A line starting `WARNING: the keyfile backend holds raw private keys` means some address uses the `keyfile` backend. It must never appear on a mainnet Signer.
+A line starting `WARNING: the keyfile backend holds raw private keys` means some address uses the `keyfile` backend. It must never appear on a mainnet Signer. A line starting `NOTICE: the local backend decrypts keys` means some address uses `local`: the keys are in this process's memory.
 
 ## 8. Point the engine at the Signer
 
@@ -251,6 +329,7 @@ Each line has these fields. A field the request didn't carry is left out.
 - `time`. When the Signer answered, in ISO 8601.
 - `address` and `chain`. The Sender and chain the request named.
 - `transactionId`. Present only when `decision` is `signed`. On Base, the hash of the signed transaction. On Solana, the transaction's signature in base58.
+- `kind`, `safe` and `safeNonce`. Only on a request to sign a Safe transaction: `"safeTransaction"`, the Safe's address, and the transaction's nonce. On a `signed` line, `transactionId` is then the Safe transaction hash.
 - `decision`. One of the four below.
 - `status`. The HTTP status the Signer answered with.
 - `reason`. Why it didn't sign: the policy's reason for `refused`, or the error otherwise.
@@ -295,6 +374,7 @@ When a Call's first signing fails, the Call is `FAILED` with a structured error 
 Clear every item before the first mainnet transaction.
 
 - [ ] No address in the mainnet Signer's config uses the `keyfile` backend, and its startup log has no `WARNING: the keyfile backend` line.
+- [ ] If any address uses `local`: the passphrase and the key files are backed up separately, the passphrase comes from a mounted secret file, the keystore directory is `0700`, and every `local` address has a tight policy and holds little.
 - [ ] `SIGNER_AUTH_TOKEN` is a fresh random value (`openssl rand -hex 32`), set identically on the worker and the Signer, used in no other environment, and not Compose's `dev-only-signer-token`.
 - [ ] Every address has a policy. On Base it has `chainIds: [8453]`. Every address has `allowedDestinations` and caps sized to what one transaction should ever move.
 - [ ] Every Privy wallet has an owner (`owner_id` set), `PRIVY_AUTHORIZATION_KEY` is set on the Signer, and the authorization key is a fresh one made for mainnet that has never been pasted into chat, a ticket, or a commit.
@@ -304,3 +384,20 @@ Clear every item before the first mainnet transaction.
 - [ ] The audit log goes somewhere durable, with alerts on `refused`, `failed`, and `rejected` 401 and 404 lines.
 - [ ] A small mainnet smoke test has landed first: one small Payment per enabled chain, confirmed on-chain, with a matching `signed` audit line, before any real volume.
 - [ ] Every mainnet chain in `ENABLED_CHAINS` stays enabled while it has transactions in flight. Removing a chain with a `PENDING` transaction stops confirmation tracking for every chain until #57 is fixed.
+- [ ] If you use a Multisig Sender, the engine's key can never approve. On Solana the member key holds exactly Initiate and Execute (permission mask 5) and never Vote. On Base the executor is not an owner of the Safe and is registered as a delegate. The engine refuses to start otherwise, but check it in the multisig's app yourself.
+- [ ] Every multisig key has `allowedMultisig` (Solana) or `allowedSafe` and `chainIds: [8453]` (Base) in its policy, pinned to the one multisig. The engine's startup does not check the Signer's policy.
+- [ ] A multisig's engine key on `local` is a weaker choice than on `aws-kms` or `privy`: a host compromise exposes it. It can only propose, execute and close, so the policy pin matters most for it.
+- [ ] Solana: the multisig's rent collector is the member key's address. Without it, proposal rent is never refunded and the member key drains.
+- [ ] Solana: the Squads `ProgramConfig` creation fee and the mainnet rent rate (`getMinimumBalanceForRentExemption`) are read on mainnet before sizing the member key's balance. The spike measured devnet only. The member key must hold the rent of every proposal open at once, plus fees.
+- [ ] Base: `BASE_SAFE_API_KEY` is set to a key on a production plan of the Safe Transaction Service, and its monthly quota, read from the Safe developer dashboard, covers about one request a minute for each open proposal. Unauthenticated use (2 requests a second, 5,000 a month) is not enough.
+- [ ] Base: the `MultiSendCallOnly` addresses have code on Base mainnet. The spikes ran on Base Sepolia only, and the mainnet check has never been done. A read-only check for each of `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` (Safe 1.4.1), `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` and `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D` (Safe 1.3.0): the result must not be `0x`. Repeat it for each address.
+
+  ```sh
+  curl -s https://mainnet.base.org -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x9641d764fc13c8B624c04430C7356C1C7C8102e2","latest"]}'
+  ```
+
+- [ ] The approval deadline (`SOLANA_APPROVAL_DEADLINE_MS`, `BASE_APPROVAL_DEADLINE_MS`, 72 hours by default) is longer than the multisig's time lock plus the time your Approvers take to vote. The engine abandons an approved proposal that is still waiting out its time lock when the deadline passes.
+- [ ] The Approvers know to compare each proposal with their own record of the payments, not with the engine's `expected` totals, and have the verifier (`verifier/`) installed and working against your RPC. `expected` is not a control.
+- [ ] Your callers treat `APPROVAL_TIMEOUT` as ambiguous and check the multisig before sending again. The engine re-watches a timed-out proposal for 30 days by default, so a late execution is reported only inside that window.
+- [ ] Treasury: the hot Sender's working balance is sized to what you accept losing with its key, and its policy caps match.

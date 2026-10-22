@@ -10,6 +10,7 @@ import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { Proposal } from '../domain/proposal.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
@@ -135,6 +136,11 @@ function toWireItemStatus(status: TransactionStatus): string {
       return 'failed';
     case 'ABANDONED':
       return 'abandoned';
+    // ADR-0054: claimed but in no Proposal yet reads as `queued`; inside one, `awaiting_approval`.
+    case 'UNPROPOSED':
+      return 'queued';
+    case 'AWAITING_APPROVAL':
+      return 'awaiting_approval';
     case 'REPLACED':
     case 'DROPPED':
       throw new Error(`a ${status} Transaction is never a Call's reported version (ADR-0037)`);
@@ -159,14 +165,31 @@ function isCurrentVersion(transaction: Transaction): boolean {
 function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {
   if (dispatch.status === 'queued') return 'queued';
 
+  // ADR-0054: a Call waiting to be proposed or approved is still in progress, and the Dispatch gains no status of its own for it.
   const stillPending =
-    transactions.length < dispatch.items.length || transactions.some((t) => t.status === 'PENDING');
+    transactions.length < dispatch.items.length ||
+    transactions.some(
+      (t) =>
+        t.status === 'PENDING' || t.status === 'UNPROPOSED' || t.status === 'AWAITING_APPROVAL',
+    );
   if (stillPending) return 'broadcasting';
 
   const confirmedCount = transactions.filter((t) => t.status === 'CONFIRMED').length;
   if (confirmedCount === transactions.length) return 'confirmed';
   if (confirmedCount === 0) return 'failed';
   return 'partial';
+}
+
+/** docs/api.md's per-item `approval` block: what the Approvers have done about the Proposal this Call is in. */
+function toWireApproval(proposal: Proposal) {
+  return {
+    state: proposal.approvalState,
+    approvals: proposal.approvals,
+    threshold: proposal.threshold,
+    deadline: proposal.deadlineAt.toISOString(),
+    expected: proposal.expected,
+    chainRef: proposal.chainRef,
+  };
 }
 
 function checkAuth(authToken: string) {
@@ -285,16 +308,26 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (dispatch) {
         const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
         const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
+        // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
+        const proposalById = new Map(
+          transactions.some((t) => t.proposalId !== null)
+            ? (await store.listProposalsForDispatch(dispatch.id)).map((p) => [p.id, p])
+            : [],
+        );
 
         const items = dispatch.items.map((_, index) => {
           const transaction = transactionByCallIndex.get(index);
           if (!transaction) {
             return { status: 'queued', transactionHash: null, error: null };
           }
+          const proposal = transaction.proposalId
+            ? proposalById.get(transaction.proposalId)
+            : undefined;
           return {
             status: toWireItemStatus(transaction.status),
             transactionHash: transaction.hash,
             error: transaction.error,
+            ...(proposal ? { approval: toWireApproval(proposal) } : {}),
           };
         });
 

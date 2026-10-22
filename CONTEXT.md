@@ -45,8 +45,24 @@ _Avoid_: Network, Environment, Tier, Sandbox/Live (config values within a Chain,
 **Sender Pool** (roadmap — not yet built):
 Several Sender wallets under one logical operator, each with its own independent nonce sequence, that a large Managed Dispatch batch spreads across — inspired by Stellar SDP's channel accounts. The purpose is fault isolation, not raw throughput: a transaction stuck in one Sender's sequence only blocks that Sender's own remaining queue, not the whole batch. Requires pre-funding/allocation across the pool and each member registered with a Signer — deferred out of the first phase; single-Sender sequential dispatch (already safe via the atomic nonce counter and the `ABANDONED`/Retry Policy handling) ships first.
 
+**Approver**:
+One member of a multisig wallet whose vote counts toward its threshold. A human holding their own key, outside the engine and outside any Signer — the engine never holds a key that can approve, so no single host can reach a threshold alone.
+_Avoid_: Signer (that is the key-holding service, not a multisig member), Cosigner, Owner
+
+**Treasury**:
+A multisig wallet that funds a Sender but is never itself one: the engine never builds a transaction from it. The Sender stays an ordinary single-Signer wallet, and its Approvers move money from the Treasury to it. A shortfall surfaces as `INSUFFICIENT_FUNDS` (Funding Check), which names the exact top-up amount.
+_Avoid_: Vault (a chain-specific object a Treasury may be built on), Reserve
+
+**Proposal**:
+One multisig transaction the engine proposes for Approvers to decide on, holding Calls from exactly one Dispatch, so an Approver can check it against that caller's own record. A large Dispatch splits into several Proposals, and a Safe holds one open Proposal at a time (ADR-0051, ADR-0054). It is written down before it is sent, and ends executed, rejected, or timed out (ADR-0053).
+_Avoid_: Bundle (a Proposal is the multisig's unit; a bundle is how Calls are grouped into one), Request
+
+**Multisig Sender**:
+A Sender whose address is a multisig wallet, so its Managed Dispatch transactions are only executed once enough Approvers have approved. The engine proposes them and executes them after approval, but never approves. A multisig cannot sign for itself, so the engine acts through its own key, which pays fees and owns the nonce, and which is never an Approver. Opt-in per Sender; a Treasury and a Multisig Sender are independent choices, and either, both or neither may apply to a deployment.
+_Avoid_: Approval Sender, Multisig Wallet (ambiguous with a Treasury)
+
 **Transaction**:
-One broadcastable, chain-native unit with its own hash/signature. Always written down, hash included, *before* it is sent (ADR-0041), so a crash or an ambiguous send can never lose track of one that may land. Its status is `PENDING`, `CONFIRMED`, `FAILED` or `ABANDONED`. A fee-bumped Call also has `REPLACED` versions (superseded, still watched) and `DROPPED` ones (another version settled the Call, or, for a Solana Call resubmitted after its blockhash expired, the version provably can never land, ADR-0042). Those two are never a Call's reported status.
+One broadcastable, chain-native unit with its own hash/signature. Always written down, hash included, *before* it is sent (ADR-0041), so a crash or an ambiguous send can never lose track of one that may land. Its status is `PENDING`, `CONFIRMED`, `FAILED` or `ABANDONED`, or, for a Multisig Sender's Call, `UNPROPOSED` (claimed, in no Proposal yet) or `AWAITING_APPROVAL` (inside a Proposal), which hold no hash until the Proposal is executed (ADR-0054). A fee-bumped Call also has `REPLACED` versions (superseded, still watched) and `DROPPED` ones (another version settled the Call, or, for a Solana Call resubmitted after its blockhash expired, the version provably can never land, ADR-0042). Those two are never a Call's reported status.
 
 **Attempt**:
 One broadcast/confirmation-check of a Transaction's exact signed bytes. Resubmitting identical bytes (e.g. after an RPC timeout, or a Stuck Transaction's rebroadcast) is a new Attempt of the same Transaction, recorded even when the node answers "already known". Anything that changes the signed bytes (a fee-bump replacement, a refreshed Solana blockhash) is a new Transaction, not a new Attempt of the old one.
@@ -56,7 +72,7 @@ The setting, defaulting off and configurable per Managed Dispatch request (with 
 _Avoid_: Fee Bump (the mechanism the policy turns on, not the policy itself), Auto-retry
 
 **ABANDONED**:
-The terminal status for a transaction the engine has stopped actively tracking without a definitive on-chain outcome — e.g. an EVM transaction that never confirmed within its timeout while Retry Policy is off. Distinct from `FAILED`, which means the chain itself rejected or reverted the transaction: an `ABANDONED` transaction may still land later, so the engine keeps a low-frequency background check running for it, for a bounded window, and reports if it does. With Retry Policy on, abandonment waits only while the transaction can still be fee-bumped.
+The terminal status for a transaction the engine has stopped actively tracking without a definitive on-chain outcome — e.g. an EVM transaction that never confirmed within its timeout while Retry Policy is off, or a multisig proposal nobody decided on by its deadline (ADR-0053). Distinct from `FAILED`, which means the chain itself rejected or reverted the transaction: an `ABANDONED` transaction may still land later, so the engine keeps a low-frequency background check running for it, for a bounded window, and reports if it does. With Retry Policy on, abandonment waits only while the transaction can still be fee-bumped.
 _Avoid_: FAILED (reserved for a definitive on-chain outcome only), CANCELLED (implies an action stopped it — nothing did)
 
 **Bulk Call**:

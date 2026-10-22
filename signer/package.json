@@ -11,6 +11,7 @@
   },
   "scripts": {
     "dev": "SIGNER_CONFIG=signer.config.dev.json SIGNER_KEYFILE=keys.dev.json tsx watch src/index.ts",
+    "signer": "tsx src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

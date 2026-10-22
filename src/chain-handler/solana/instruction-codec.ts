@@ -92,7 +92,11 @@ export function createdTokenAccount(
   call: SolanaCall,
 ): { account: string; mint: string; tokenProgram: string } | undefined {
   if (!isSplTransferWithRecipientBookkeeping(call)) return undefined;
-  return { account: call.accounts[2]!.pubkey, mint: call.accounts[1]!.pubkey, tokenProgram: call.programId };
+  return {
+    account: call.accounts[2]!.pubkey,
+    mint: call.accounts[1]!.pubkey,
+    tokenProgram: call.programId,
+  };
 }
 
 export function isNativeTransferCall(call: SolanaCall): boolean {

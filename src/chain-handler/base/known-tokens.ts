@@ -15,7 +15,10 @@ export type BaseTokenRegistry = Readonly<Record<string, KnownToken>>;
 
 export const NATIVE_ASSET_SYMBOL = 'ETH';
 
-export function resolveKnownToken(registry: BaseTokenRegistry, asset: string): KnownToken | undefined {
+export function resolveKnownToken(
+  registry: BaseTokenRegistry,
+  asset: string,
+): KnownToken | undefined {
   return registry[asset];
 }
 

@@ -832,3 +832,219 @@ describe('GET /v1/dispatch/:id', () => {
     });
   });
 });
+
+describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
+  type ApprovalGetBody = {
+    status: string;
+    items: {
+      status: string;
+      transactionHash: string | null;
+      error: { code: string } | null;
+      approval?: Record<string, unknown>;
+    }[];
+  };
+
+  const squadsRef = {
+    kind: 'squads',
+    multisig: 'ms',
+    proposal: 'prop',
+    transactionIndex: 4,
+  } as const;
+  const expected = { recipients: 2, totals: [{ asset: 'USDC', amount: '30' }] };
+
+  async function setup(itemCount = 2) {
+    const { app, store } = await buildTestApp();
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'key-1',
+      items: Array.from({ length: itemCount }, () => ({
+        call: { to: '0xabc', data: '0x', value: '0' },
+        payment: null,
+      })),
+      retryPolicy: false,
+    });
+    await store.claimQueued(CHAINS, 10);
+    const calls = await store.noteUnproposed(
+      Array.from({ length: itemCount }, (_, callIndex) => ({
+        dispatchId: dispatch.id,
+        callIndex,
+        chain: 'base' as const,
+      })),
+    );
+    const get = async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${dispatch.id}`,
+        headers: AUTH_HEADERS,
+      });
+      return response.json<ApprovalGetBody>();
+    };
+    const propose = (transactionIds: string[], proposalRef: string) =>
+      store.createProposal({
+        dispatchId: dispatch.id,
+        chain: 'base',
+        senderAddress: '0xsafe',
+        chainRef: squadsRef,
+        payload: 'payload',
+        proposalRef,
+        sequence: 4,
+        threshold: 3,
+        deadlineAt: new Date('2026-10-24T12:00:00.000Z'),
+        executeAfter: null,
+        proposeSignedBytes: null,
+        proposeHash: null,
+        expected,
+        committed: { sender: [], proposer: [] },
+        transactionIds,
+      });
+    return { store, dispatch, calls, get, propose };
+  }
+
+  it('reports Calls not yet in a Proposal as queued, with no approval block, and the Dispatch as broadcasting', async () => {
+    const { get } = await setup();
+
+    expect(await get()).toEqual({
+      status: 'broadcasting',
+      dispatchId: expect.any(String) as string,
+      mode: 'managed',
+      items: [
+        { status: 'queued', transactionHash: null, error: null },
+        { status: 'queued', transactionHash: null, error: null },
+      ],
+    });
+  });
+
+  it('reports Calls inside a Proposal as awaiting_approval, with the approval block and no hash', async () => {
+    const { get, calls, store, propose } = await setup();
+    const proposal = await propose(
+      calls.map((c) => c.id),
+      'prop',
+    );
+    await store.updateProposal(proposal.id, { phase: 'open', approvals: 1 });
+
+    const body = await get();
+
+    expect(body.status).toBe('broadcasting');
+    const approval = {
+      state: 'awaiting',
+      approvals: 1,
+      threshold: 3,
+      deadline: '2026-10-24T12:00:00.000Z',
+      expected,
+      chainRef: squadsRef,
+    };
+    expect(body.items).toEqual([
+      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
+      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
+    ]);
+  });
+
+  it('keeps the approval block once executed and confirmed, now with the executed hash', async () => {
+    const { get, calls, store, propose } = await setup();
+    const proposal = await propose(
+      calls.map((c) => c.id),
+      'prop',
+    );
+    await store.updateProposal(proposal.id, { phase: 'open', approvalState: 'approved' });
+    await store.markProposalExecuting(proposal.id, 'bytes', 'exec-hash');
+    expect((await get()).items.map((i) => i.status)).toEqual(['broadcasting', 'broadcasting']);
+
+    await store.settleProposal(proposal.id, { status: 'CONFIRMED' });
+
+    const body = await get();
+    expect(body.status).toBe('confirmed');
+    for (const item of body.items) {
+      expect(item).toMatchObject({
+        status: 'confirmed',
+        transactionHash: 'exec-hash',
+        approval: { state: 'approved', approvals: 0, threshold: 3 },
+      });
+    }
+  });
+
+  it('keeps the block after APPROVAL_REJECTED (failed) and APPROVAL_TIMEOUT (abandoned)', async () => {
+    const { get, calls, store, propose } = await setup(1);
+    const proposal = await propose([calls[0]?.id ?? ''], 'prop');
+
+    await store.settleProposal(proposal.id, {
+      status: 'FAILED',
+      error: { code: 'APPROVAL_REJECTED', message: 'rejected' },
+    });
+    let body = await get();
+    expect(body.status).toBe('failed');
+    expect(body.items[0]).toMatchObject({
+      status: 'failed',
+      transactionHash: null,
+      error: { code: 'APPROVAL_REJECTED' },
+      approval: { state: 'awaiting' },
+    });
+
+    await store.settleProposal(proposal.id, {
+      status: 'ABANDONED',
+      error: { code: 'APPROVAL_TIMEOUT', message: 'no decision' },
+    });
+    await store.updateProposal(proposal.id, { approvalState: 'approved_after_deadline' });
+    body = await get();
+    expect(body.items[0]).toMatchObject({
+      status: 'abandoned',
+      transactionHash: null,
+      error: { code: 'APPROVAL_TIMEOUT' },
+      approval: { state: 'approved_after_deadline' },
+    });
+  });
+
+  it('gives each Call the block of its own Proposal when a Dispatch has several', async () => {
+    const { get, calls, store, propose } = await setup();
+    const first = await propose([calls[0]?.id ?? ''], 'prop-a');
+    const second = await propose([calls[1]?.id ?? ''], 'prop-b');
+    await store.updateProposal(second.id, { approvals: 2, approvalState: 'approved' });
+
+    const body = await get();
+
+    expect(first.id).not.toBe(second.id);
+    expect(body.items.map((i) => [i.status, i.approval?.state, i.approval?.approvals])).toEqual([
+      ['awaiting_approval', 'awaiting', 0],
+      ['awaiting_approval', 'approved', 2],
+    ]);
+  });
+
+  it('serializes a Dispatch with no Proposals exactly as before, without even looking for them', async () => {
+    const { app, store } = await buildTestApp();
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'key-1',
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+    await store.claimQueued(CHAINS, 10);
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'base',
+      signedBytes: 'bytes',
+      hash: 'hash-1',
+    });
+    await store.markConfirmed(transaction.id);
+    const lookups: string[] = [];
+    store.listProposalsForDispatch = (id) => {
+      lookups.push(id);
+      return Promise.resolve([]);
+    };
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.body).toBe(
+      JSON.stringify({
+        dispatchId: dispatch.id,
+        mode: 'managed',
+        status: 'confirmed',
+        items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+      }),
+    );
+    expect(lookups).toEqual([]);
+  });
+});

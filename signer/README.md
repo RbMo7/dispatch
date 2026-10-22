@@ -91,6 +91,9 @@ A Solana Sender that may use no program beyond the default ones, up to 1 SOL and
 - `maxTokenPerTransaction`, keyed by token contract address (EVM) or mint (Solana).
   - EVM. ERC-20 `transfer(address,uint256)` calls to a capped token, at the top level or inside `aggregate3Value`, summed per token. Any other call to a capped token (`approve`, `transferFrom`, an unknown function) is refused, since it could move the token without being counted. Tokens without a cap are not looked at.
   - Solana. `TransferChecked` instructions (Token and Token-2022), summed per mint. While any token cap is set, every other Token or Token-2022 instruction (`Transfer`, which names no mint, `Approve`, and the rest) is refused for the same reason, as is a `TransferChecked` in a v0 message whose mint comes from an address lookup table, which the Signer can't resolve offline.
+- `allowedSafe` (EVM only, requires `chainIds`). Pins the key to one Safe (ADR-0052). The key then signs only an EIP-1559 `execTransaction` `to` that Safe, and a `safeTransaction` typed-data request for it. Both must be a delegatecall (`operation` 1) to an allowed MultiSendCallOnly, with `safeTxGas`, `baseGas` and `gasPrice` zero and `gasToken` and `refundReceiver` the zero address, so a proposal can never make the Safe refund its executor. Anything else, including calldata that does not decode exactly, is refused. The payments nested inside the MultiSend are not decoded: the owners' confirmation is the control (ADR-0049). Setting it on an `ed25519` address, or with a malformed address, is a config error. Without it, a key that has a policy refuses every Safe transaction.
+- `allowedMultiSend` (only with `allowedSafe`). The MultiSendCallOnly contracts a Safe transaction may delegatecall. Defaults to 1.4.1 `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` and 1.3.0 `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` and `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D`.
+- `allowedMultisig` (Solana only). Pins the key to one Squads multisig (ADR-0049). The key then signs only transactions made of the Squads v4 program's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus ComputeBudget `requestHeapFrame`, `setComputeUnitLimit` and `setComputeUnitPrice`, where each Squads instruction's first account is that multisig and the signing address is the fee payer. Votes (`proposalApprove`, `proposalReject`, both cancels), config transactions, any other program (the System program included) and anything undecodable are refused. The payments nested in the vault transaction are not decoded: the Approvers' vote is the control. `allowedDestinations` still applies, so list the Squads program there if you set it. Setting it on a `secp256k1` address, or with a malformed address, is a config error.
 
 With a policy set, a transaction the Signer can't read is refused, and the reason names what it couldn't read: bytes that aren't a transaction, an EVM transaction type other than legacy, EIP-2930 or EIP-1559, malformed `aggregate3Value` or `transfer` calldata, System instruction data that doesn't parse, or a Solana message with bytes left over after decoding. An empty `policy: {}` has no rules, but still refuses what it can't read.
 
@@ -107,6 +110,17 @@ For development only. It reads raw private keys from a JSON file, `{ "secp256k1"
 - `SIGNER_KEYFILE`: the file's path.
 
 `keys.dev.json` and `signer.config.dev.json` are the committed dev keys and their config, which Compose and `pnpm dev` use.
+
+### `local`
+
+Keys in encrypted files, decrypted into process memory at startup (ADR-0050). The weakest production backend, since the key sits on the Signer's host; prefer `aws-kms` or `privy`. `keyRef` is the key's name. One file per key, `<name>.json`, holding its curve, its address and the key encrypted with AES-256-GCM under a scrypt-derived key, for either curve.
+
+- `SIGNER_KEYSTORE_DIR`: the directory of key files.
+- `SIGNER_KEYSTORE_PASSPHRASE` or `SIGNER_KEYSTORE_PASSPHRASE_FILE` (one of the two): the passphrase, or the path to a file holding it.
+
+Manage keys with `pnpm signer keys new|import|list|export-public` (`node dist/cli.js keys ...` in the image). `new` and `import` print only the address; `import` reads the private key (64 hex characters) from stdin. No command prints a private key. [`docs/signer.md`](../docs/signer.md#local) has the walkthrough.
+
+The Signer refuses to start on a wrong passphrase, a damaged file or an address that differs from the config. Losing the passphrase loses the keys.
 
 ### `privy`
 
