@@ -582,6 +582,21 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(open.length);
   }
 
+  highestConfirmedSequence(chain: Chain, senderAddress: string): Promise<number | null> {
+    let highest: number | null = null;
+    for (const proposal of this.proposals.values()) {
+      if (proposal.chain !== chain || proposal.senderAddress !== senderAddress) continue;
+      if (proposal.sequence === null) continue;
+      const confirmed = [...this.transactions.values()].some(
+        (t) => t.proposalId === proposal.id && t.status === 'CONFIRMED',
+      );
+      if (confirmed && (highest === null || proposal.sequence > highest)) {
+        highest = proposal.sequence;
+      }
+    }
+    return Promise.resolve(highest);
+  }
+
   hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean> {
     return Promise.resolve(
       [...this.proposals.values()].some(

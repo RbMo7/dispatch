@@ -159,6 +159,13 @@ export interface ApprovalCapability<C extends Chain = Chain> {
   buildProposal(input: {
     calls: CallForChain<C>[];
     sender: string;
+    /**
+     * Optional, Safe only (#84): the lowest sequence the Proposal may take, the engine's own
+     * knowledge of what is already consumed (last CONFIRMED sequence + 1). A chain read right
+     * after an execution can still be stale; the Proposal then takes `max(chain, minSequence)`.
+     * Squads ignores it.
+     */
+    minSequence?: number;
   }): Promise<Result<BuiltProposal, DispatchError>>;
   /** Signs the propose transaction through the Signer as `proposerAddress`. `SIGNER_REFUSED` is definite; `SIGNER_UNREACHABLE` is retried. */
   signProposal(built: BuiltProposal): Promise<Result<SignedProposal, DispatchError>>;

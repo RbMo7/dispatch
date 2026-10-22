@@ -101,7 +101,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
   base: async () => {
     // #82 (ADR-0051): `single` is a no-op; `safe` refuses to start before anything is sent.
     const safe = await verifySafeSender();
-    return BaseChainHandler.create({
+    const handler = await BaseChainHandler.create({
       rpcUrl: config.base.rpcUrl,
       chainId: config.base.chainId,
       senderAddress: config.base.senderAddress,
@@ -117,6 +117,9 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
     });
+    // #84: the Safe's execute goes through this handler's own `prepare` (nonce authority, fees).
+    safe?.bindHandler(handler);
+    return handler;
   },
 };
 
@@ -149,7 +152,9 @@ async function verifyMultisigSender(
 }
 
 /** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */
-async function verifySafeSender(): Promise<{ approval: SafeApproval } | undefined> {
+async function verifySafeSender(): Promise<
+  { approval: SafeApproval; bindHandler: (handler: BaseChainHandler) => void } | undefined
+> {
   const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
   if (safe === undefined) return undefined;
   const service = new SafeTxServiceClient({
@@ -179,6 +184,8 @@ async function verifySafeSender(): Promise<{ approval: SafeApproval } | undefine
     { safe: safe.safeAddress, executor: safe.executorAddress },
     'Safe sender checks passed',
   );
+  // The handler is built after the approval (it takes the approval as a dependency), so `prepare` is bound late.
+  let handler: BaseChainHandler | undefined;
   return {
     approval: new SafeApproval({
       config: safe,
@@ -187,7 +194,14 @@ async function verifySafeSender(): Promise<{ approval: SafeApproval } | undefine
       signer: signerClient,
       service,
       knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+      prepare: (items, sender) => {
+        if (!handler) throw new Error('the Base handler is not ready to prepare a Safe execute');
+        return handler.prepare(items, sender);
+      },
     }),
+    bindHandler: (built) => {
+      handler = built;
+    },
   };
 }
 

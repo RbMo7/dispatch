@@ -189,4 +189,79 @@ describe('SafeTxServiceClient', () => {
       kind: 'invalid-response',
     });
   });
+
+  describe('reading a proposed transaction (#84)', () => {
+    const HASH = `0x${'ab'.repeat(32)}`;
+
+    it('reads confirmations, isExecuted and the executing hash from the v2 path', async () => {
+      const { baseUrl, seen } = await startService(() => ({
+        status: 200,
+        body: {
+          safeTxHash: HASH,
+          nonce: '12',
+          isExecuted: true,
+          transactionHash: `0x${'cd'.repeat(32)}`,
+          confirmations: [
+            { owner: OWNER, signature: '0x12', signatureType: 'EOA', submissionDate: 'x' },
+            { owner: OWNER, signature: null, signatureType: 'APPROVED_HASH' },
+          ],
+          extra: 'ignored',
+        },
+      }));
+      const tx = await new SafeTxServiceClient({ baseUrl, apiKey: KEY }).getMultisigTransaction(
+        HASH,
+      );
+      expect(seen[0]?.url).toBe(`/tx-service/basesep/api/v2/multisig-transactions/${HASH}/`);
+      expect(seen[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
+      expect(tx).toEqual({
+        safeTxHash: HASH,
+        nonce: 12,
+        isExecuted: true,
+        transactionHash: `0x${'cd'.repeat(32)}`,
+        confirmations: [
+          { owner: OWNER, signature: '0x12', signatureType: 'EOA' },
+          { owner: OWNER, signature: '', signatureType: 'APPROVED_HASH' },
+        ],
+      });
+    });
+
+    it('answers null for a 404, and throws the typed errors for the rest', async () => {
+      const { baseUrl } = await startService((url) =>
+        url.includes('aaaa')
+          ? { status: 404, body: { detail: 'Not found.' } }
+          : url.includes('bbbb')
+            ? { status: 429 }
+            : { status: 200, body: { safeTxHash: HASH, nonce: 1, isExecuted: 'yes' } },
+      );
+      const client = new SafeTxServiceClient({ baseUrl, apiKey: KEY });
+      expect(await client.getMultisigTransaction('0xaaaa')).toBeNull();
+      await expect(client.getMultisigTransaction('0xbbbb')).rejects.toMatchObject({
+        kind: 'rate-limited',
+      });
+      await expect(client.getMultisigTransaction('0xcccc')).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    });
+
+    it('lists the proposals at a nonce from the Safe path', async () => {
+      const { baseUrl, seen } = await startService(() => ({
+        status: 200,
+        body: {
+          count: 2,
+          results: [
+            { safeTxHash: HASH, isExecuted: false, transactionHash: null },
+            { safeTxHash: `0x${'ef'.repeat(32)}`, isExecuted: true, transactionHash: '0x01' },
+          ],
+        },
+      }));
+      const entries = await new SafeTxServiceClient({ baseUrl }).listTransactionsAtNonce(SAFE, 1);
+      expect(seen[0]?.url).toBe(
+        `/tx-service/basesep/api/v2/safes/${SAFE}/multisig-transactions/?nonce=1`,
+      );
+      expect(entries).toEqual([
+        { safeTxHash: HASH, isExecuted: false, transactionHash: null },
+        { safeTxHash: `0x${'ef'.repeat(32)}`, isExecuted: true, transactionHash: '0x01' },
+      ]);
+    });
+  });
 });

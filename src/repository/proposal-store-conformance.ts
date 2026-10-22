@@ -597,6 +597,67 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
       });
     });
 
+    describe('highestConfirmedSequence', () => {
+      const safeRef = (n: number): ChainProposalRef => ({
+        kind: 'safe',
+        safe: 'safe',
+        safeTxHash: `0x${n}`,
+        nonce: n,
+      });
+      const baseProposal = async (store: DispatchStore, sequence: number, sender = 'safe') => {
+        const seeded = await seedUnproposed(store, 'base', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, {
+            chain: 'base',
+            senderAddress: sender,
+            chainRef: safeRef(sequence),
+            sequence,
+          }),
+        );
+        return proposal;
+      };
+
+      it('is null when nothing is confirmed', async () => {
+        const store = makeStore();
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBeNull();
+        await baseProposal(store, 5);
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBeNull();
+      });
+
+      it('counts only CONFIRMED Proposals: failed, abandoned and open ones do not', async () => {
+        const store = makeStore();
+        const confirmed = await baseProposal(store, 7);
+        await store.settleProposal(confirmed.id, { status: 'CONFIRMED', hash: '0xh' });
+        const failed = await baseProposal(store, 9);
+        await store.settleProposal(failed.id, {
+          status: 'FAILED',
+          error: { code: 'CHAIN_REJECTED', message: 'reverted' },
+        });
+        const abandoned = await baseProposal(store, 11);
+        await store.settleProposal(abandoned.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'late' },
+        });
+        await baseProposal(store, 13);
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(7);
+
+        const later = await baseProposal(store, 8);
+        await store.settleProposal(later.id, { status: 'CONFIRMED', hash: '0xh2' });
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(8);
+      });
+
+      it('is per chain and per sender', async () => {
+        const store = makeStore();
+        const mine = await baseProposal(store, 4, 'safe');
+        await store.settleProposal(mine.id, { status: 'CONFIRMED', hash: '0xh' });
+        const other = await baseProposal(store, 40, 'another-safe');
+        await store.settleProposal(other.id, { status: 'CONFIRMED', hash: '0xh3' });
+        expect(await store.highestConfirmedSequence('base', 'safe')).toBe(4);
+        expect(await store.highestConfirmedSequence('base', 'another-safe')).toBe(40);
+        expect(await store.highestConfirmedSequence('solana', 'safe')).toBeNull();
+      });
+    });
+
     describe('listCommitted', () => {
       it('totals in-flight and recently timed-out Proposals, plus UNPROPOSED payments for the sender', async () => {
         const store = makeStore();

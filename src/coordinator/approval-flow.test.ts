@@ -251,6 +251,29 @@ describe('ApprovalFlow: proposing a Dispatch to a Multisig Sender (ADR-0054)', (
     expect(await proposalsOf(b.id)).toHaveLength(1);
   });
 
+  it('hands the Chain Handler minSequence = the highest CONFIRMED sequence + 1, and nothing when none is confirmed (#84)', async () => {
+    const { coordinator, store, approval, dispatch, proposalsOf } = setup();
+    const a = await dispatch([item(1)]);
+    await coordinator.processQueuedDispatches(10);
+    expect(approval.built[0]).not.toHaveProperty('minSequence');
+
+    // Only a CONFIRMED execution is known to have consumed its sequence.
+    const [first] = await proposalsOf(a.id);
+    await store.settleProposal(first?.id as string, { status: 'CONFIRMED', hash: 'h1' });
+    const b = await dispatch([item(2)]);
+    await coordinator.processQueuedDispatches(10);
+    expect(approval.built[1]?.minSequence).toBe(2); // the first was built at sequence 1
+
+    const [second] = await proposalsOf(b.id);
+    await store.settleProposal(second?.id as string, {
+      status: 'FAILED',
+      error: { code: 'CHAIN_REJECTED', message: 'reverted' },
+    });
+    await dispatch([item(3)]);
+    await coordinator.processQueuedDispatches(10);
+    expect(approval.built[2]?.minSequence).toBe(2); // the failed one (sequence 2) consumed nothing
+  });
+
   it('with an unlimited open-proposal limit, both Dispatches get Proposals in one tick', async () => {
     const { coordinator, dispatch, statuses } = setup();
     const a = await dispatch([item(1)]);

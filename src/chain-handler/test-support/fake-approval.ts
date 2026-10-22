@@ -32,7 +32,12 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
   private nextSequence = 1;
 
   readonly planned: CallForChain<C>[][] = [];
-  readonly built: { calls: CallForChain<C>[]; sender: string; proposal: BuiltProposal }[] = [];
+  readonly built: {
+    calls: CallForChain<C>[];
+    sender: string;
+    minSequence?: number;
+    proposal: BuiltProposal;
+  }[] = [];
   readonly signed: BuiltProposal[] = [];
   readonly submitted: SignedProposal[] = [];
   /** The order the steps ran in, e.g. `build:prop-1`, `sign:prop-1`, `submit:hash-prop-1`. */
@@ -104,6 +109,7 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
   async buildProposal(input: {
     calls: CallForChain<C>[];
     sender: string;
+    minSequence?: number;
   }): Promise<Result<BuiltProposal, DispatchError>> {
     const result = await this.buildImpl(input);
     if (result.ok) {
