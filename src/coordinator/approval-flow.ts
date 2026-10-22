@@ -637,9 +637,14 @@ export class ApprovalFlow {
     const signed = await handler.sign(prepared.value, approval.proposerAddress);
     if (!signed.ok) {
       if (signed.error.code === 'SIGNER_REFUSED') {
-        // ADR-0046: deliberate, so retrying cannot help.
-        log.warn({ error: signed.error }, 'execute refused by the Signer; calls failed');
-        await this.store.settleProposal(proposal.id, { status: 'FAILED', error: signed.error });
+        // The engine cannot execute, but the proposal can still be executed by anyone, so the Calls are not
+        // FAILED (ADR-0053): the engine keeps trying (an operator fixing the Signer's policy lets it through)
+        // and the deadline abandons the Calls if nothing changes.
+        log.error(
+          { error: signed.error },
+          'the Signer refused the execute of an approved proposal; fix its policy. The proposal can still be executed by others, so the calls are not failed; retrying until the deadline',
+        );
+        await this.backOff(proposal, signed.error.code);
         return;
       }
       log.warn({ error: signed.error }, 'signing the execute failed; retrying next time');
@@ -811,6 +816,16 @@ export class ApprovalFlow {
     const approval = handler.approval;
     if (!approval) throw new Error(`Chain ${proposal.chain} has no approval capability`);
 
+    // ADR-0053: the engine never executes after the deadline. An execute that expired is not sent again then;
+    // the proposal is read instead (executed by someone else: CONFIRMED; still live: ABANDONED; dead: FAILED).
+    if (this.deadlinePassed(proposal)) {
+      log.warn({ proposalId }, 'expired execute not resubmitted: the approval deadline has passed');
+      await this.failOrReopen(proposal, approval, {
+        code: 'CHAIN_REJECTED',
+        message: `${proposal.chain} execute transaction expired and the approval deadline has passed, so it was not resubmitted`,
+      });
+      return;
+    }
     if (members.some((m) => m.feeBumpAttempts >= maxResubmissions)) {
       log.warn({ proposalId }, 'expired execute out of resubmissions');
       await this.failExecution(first, {
@@ -835,9 +850,13 @@ export class ApprovalFlow {
     const signed = await handler.sign(prepared.value, approval.proposerAddress);
     if (!signed.ok) {
       if (signed.error.code === 'SIGNER_REFUSED') {
-        log.warn({ error: signed.error }, 'execute resubmission refused by the Signer — failed');
-        for (const member of members) await this.store.markFailed(member.id, signed.error);
-        await this.store.updateProposal(proposalId, { phase: 'resolved', resolvedAt: this.now() });
+        // The Calls are failed only if the proposal can no longer execute (ADR-0053): otherwise they go back to
+        // waiting, and the execute is tried again (and refused again, loudly) until the deadline abandons them.
+        log.error(
+          { error: signed.error },
+          'the Signer refused the resubmitted execute of an approved proposal; fix its policy',
+        );
+        await this.failOrReopen(proposal, approval, signed.error);
       } else {
         log.warn({ error: signed.error }, 'execute resubmission signing failed; retried next tick');
       }
@@ -879,6 +898,28 @@ export class ApprovalFlow {
       const replacement = replacements[0];
       if (replacement) await this.failExecution(replacement, broadcast.error);
     }
+  }
+
+  /**
+   * A reorg dropped an execute that had been CONFIRMED, so the proposal may be executable again, by anyone.
+   * Its Calls are ABANDONED, never FAILED (ADR-0053), with no hash, and the re-watch of a timed-out proposal
+   * settles them from what the proposal then turns out to be.
+   */
+  async abandonAfterReorg(transaction: Transaction): Promise<void> {
+    const proposalId = transaction.proposalId;
+    if (!proposalId) throw new Error(`Transaction ${transaction.id} has no Proposal`);
+    this.logger.error(
+      { proposalId, droppedHash: transaction.hash },
+      'a confirmed execute now reports failed after a reorg; the proposal may be executable again, so its calls are abandoned and watched',
+    );
+    await this.store.settleProposal(proposalId, {
+      status: 'ABANDONED',
+      error: {
+        code: 'CHAIN_REJECTED',
+        message:
+          'the execute transaction was dropped by a reorg; check the proposal before sending again',
+      },
+    });
   }
 
   /**

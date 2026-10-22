@@ -89,7 +89,7 @@ class MultisigHandler implements ChainHandler<'solana'> {
   restoreInFlight = vi.fn((_signed: string[]): Promise<void> => Promise.resolve());
 }
 
-function setup(options: { stuck?: boolean } = {}) {
+function setup(options: { stuck?: boolean; reorg?: boolean } = {}) {
   let currentTime = new Date('2024-01-01T00:00:00.000Z');
   const clock = () => currentTime;
   const advance = (ms: number) => {
@@ -106,6 +106,7 @@ function setup(options: { stuck?: boolean } = {}) {
       ...(options.stuck
         ? { stuckHandling: new Map([['solana', { stuckAfterMs: 60_000, maxFeeBumps: 3 }]]) }
         : {}),
+      ...(options.reorg ? { reorgRecheckWindowMs: new Map([['solana', HOUR]]) } : {}),
       now: clock,
       sleep: () => Promise.resolve(),
       logger: pino({ level: 'silent' }),
@@ -503,23 +504,45 @@ describe('Coordinator.watchProposals: backoff', () => {
 });
 
 describe('Coordinator.watchProposals: the signer on execute', () => {
-  it('fails the Calls on SIGNER_REFUSED and does not try again', async () => {
+  it('does not fail the Calls on SIGNER_REFUSED while the proposal can still execute: it retries until the deadline abandons them', async () => {
     const { coordinator, handler, approval, openProposal, advance, rows, proposalOf } = setup();
     const d = await openProposal([item(1)]);
     approval.readImpl = () => Promise.resolve(ok(approved()));
     handler.sign.mockResolvedValue(err(signerRefused));
 
     await coordinator.watchProposals(10);
-    expect((await rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
-      ['FAILED', 'SIGNER_REFUSED'],
-    ]);
-    expect((await proposalOf(d.id)).phase).toBe('resolved');
+    // Refused, but anyone can still execute the proposal: not FAILED, still waiting.
+    expect((await rows(d.id)).map((t) => t.status)).toEqual(['AWAITING_APPROVAL']);
+    expect((await proposalOf(d.id)).phase).toBe('open');
 
     for (let i = 0; i < 3; i++) {
       advance(HOUR);
       await coordinator.watchProposals(10);
     }
-    expect(handler.sign).toHaveBeenCalledTimes(1);
+    expect(handler.sign.mock.calls.length).toBeGreaterThan(1);
+    expect((await rows(d.id)).map((t) => t.status)).toEqual(['AWAITING_APPROVAL']);
+
+    // An operator fixes the Signer's policy: the next try executes it.
+    handler.sign.mockImplementation(() => Promise.resolve(ok('signed-fixed')));
+    advance(HOUR);
+    await coordinator.watchProposals(10);
+    expect((await rows(d.id)).map((t) => t.status)).toEqual(['PENDING']);
+  });
+
+  it('abandons, never fails, the Calls when the Signer keeps refusing until the deadline', async () => {
+    const { coordinator, handler, approval, openProposal, advance, rows, proposalOf } = setup();
+    const d = await openProposal([item(1)]);
+    approval.readImpl = () => Promise.resolve(ok(approved()));
+    handler.sign.mockResolvedValue(err(signerRefused));
+    await coordinator.watchProposals(10);
+
+    advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    await coordinator.watchProposals(10);
+
+    expect((await rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['ABANDONED', 'APPROVAL_TIMEOUT'],
+    ]);
+    expect((await proposalOf(d.id)).phase).toBe('timed_out');
   });
 
   it('retries on SIGNER_UNREACHABLE, with backoff, leaving the Calls awaiting', async () => {
@@ -764,7 +787,7 @@ describe('the execute transaction in the existing machinery', () => {
     expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
   });
 
-  it('a Signer refusal while resubmitting an expired execute fails the Calls', async () => {
+  it('a Signer refusal while resubmitting an expired execute puts the Calls back to waiting while the proposal can still execute', async () => {
     const s = setup();
     const d = await s.openProposal([item(1)]);
     s.approval.readImpl = () => Promise.resolve(ok(approved()));
@@ -773,9 +796,87 @@ describe('the execute transaction in the existing machinery', () => {
     s.handler.sign.mockResolvedValueOnce(err(signerRefused));
 
     await s.coordinator.pollPendingTransactions(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.hash])).toEqual([
+      ['AWAITING_APPROVAL', null],
+    ]);
+  });
+
+  it('a Signer refusal while resubmitting fails the Calls only once the proposal can no longer execute', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1)]);
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    s.handler.statuses.set('hash-of-signed-1', 'EXPIRED');
+    s.handler.sign.mockResolvedValueOnce(err(signerRefused));
+    s.approval.readImpl = () =>
+      Promise.resolve(ok({ status: 'rejected', approvals: 0, threshold: 2, executable: false }));
+
+    await s.coordinator.pollPendingTransactions(10);
+
     expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
       ['FAILED', 'SIGNER_REFUSED'],
     ]);
+  });
+
+  it('an execute that expired after the deadline is not sent again: the Calls are abandoned while the proposal can still execute', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1)]);
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    s.handler.statuses.set('hash-of-signed-1', 'EXPIRED');
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    const signs = s.handler.sign.mock.calls.length;
+    const broadcasts = s.handler.broadcast.mock.calls.length;
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect(s.handler.sign.mock.calls.length).toBe(signs);
+    expect(s.handler.broadcast.mock.calls.length).toBe(broadcasts);
+    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code, t.hash])).toEqual([
+      ['ABANDONED', 'APPROVAL_TIMEOUT', null],
+    ]);
+  });
+
+  it('an execute that expired after the deadline settles CONFIRMED when someone else executed the proposal', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1)]);
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    s.handler.statuses.set('hash-of-signed-1', 'EXPIRED');
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    s.approval.readImpl = () =>
+      Promise.resolve(
+        ok({
+          status: 'executed',
+          approvals: 2,
+          threshold: 2,
+          executable: false,
+          executedHash: 'their-hash',
+        }),
+      );
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.hash])).toEqual([
+      ['CONFIRMED', 'their-hash'],
+    ]);
+  });
+
+  it('a confirmed execute that a reorg turns into a failure is abandoned, never failed, and watched', async () => {
+    const s = setup({ reorg: true });
+    const d = await s.openProposal([item(1)]);
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    s.handler.statuses.set('hash-of-signed-1', 'CONFIRMED');
+    await s.coordinator.pollPendingTransactions(10);
+    expect(await s.statuses(d.id)).toEqual(['CONFIRMED']);
+
+    s.handler.statuses.set('hash-of-signed-1', 'FAILED');
+    await s.coordinator.recheckRecentlyConfirmedTransactions(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.hash])).toEqual([['ABANDONED', null]]);
+    expect((await s.proposalOf(d.id)).phase).toBe('timed_out');
   });
 
   it("fee-bumps a stuck execute under the Dispatch's own Retry Policy, signed as the proposer", async () => {

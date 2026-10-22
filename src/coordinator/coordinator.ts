@@ -16,7 +16,7 @@ import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
 import type { AssetAmount } from '../domain/proposal.js';
 import type { CommittedHolder, DispatchStore } from '../repository/dispatch-store.js';
-import { ApprovalFlow } from './approval-flow.js';
+import { ApprovalFlow, DEFAULT_APPROVAL_REWATCH_WINDOW_MS } from './approval-flow.js';
 
 /** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
 const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
@@ -33,9 +33,6 @@ const RELAY_BROADCAST_RETRY_BASE_DELAY_MS = 250;
  * included," the scenario ADR-0004 exists for, without watching forever.
  */
 const DEFAULT_ABANDONED_REWATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/** ADR-0053: how long a timed-out Proposal is still watched, and so still counted by the Funding Check. */
-const DEFAULT_APPROVAL_REWATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** ADR-0042: how many times a Call whose transaction provably expired is resubmitted before it is reported FAILED. */
 const MAX_EXPIRY_RESUBMISSIONS = 3;
@@ -976,6 +973,11 @@ export class Coordinator {
       return;
     }
     if (statusResult.value === 'FAILED') {
+      if (transaction.proposalId) {
+        // ADR-0053: a proposal whose execute was reorged out may be executable again, so never FAILED.
+        await this.approvalFlow.abandonAfterReorg(transaction);
+        return;
+      }
       log.warn('reorg recheck: now reports failed after a reorg — marking failed');
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',
@@ -1411,6 +1413,9 @@ export class Coordinator {
     hash: string,
   ): Promise<Result<{ slot: number; slotStatus: BundleSlotStatus }, DispatchError> | undefined> {
     if (!handler.getBundleStatus) return undefined;
+    // A proposal's execute is one transaction for the whole proposal, not a Bulk Call bundle: its failure
+    // goes through the approval flow (ADR-0053), never straight to FAILED.
+    if (transaction.proposalId) return undefined;
     const dispatch = await this.store.getDispatch(transaction.dispatchId);
     // allowFailure false (the default): the transaction's own status is
     // every member's status — a revert fails them all, no trace needed.
