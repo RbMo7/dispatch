@@ -72,6 +72,32 @@ export type ProposeTransactionBody = {
   origin: string;
 };
 
+/** One owner confirmation as the service lists it. Only an ECDSA one carries a usable signature; the engine re-verifies it. */
+export type ServiceConfirmation = {
+  owner: Address;
+  /** 0x hex, 65 bytes for an EOA signature. */
+  signature: string;
+  /** `EOA`, `ETH_SIGN`, `APPROVED_HASH`, `CONTRACT_SIGNATURE`. */
+  signatureType: string;
+};
+
+/** What the service knows of one proposed Safe transaction (`GET /api/v2/multisig-transactions/{hash}/`). A convenience: never the authority on owners or thresholds. */
+export type ServiceMultisigTransaction = {
+  safeTxHash: string;
+  nonce: number;
+  isExecuted: boolean;
+  /** The Ethereum transaction that executed it, when it has been. */
+  transactionHash: string | null;
+  confirmations: ServiceConfirmation[];
+};
+
+/** One of the transactions the service holds at a Safe nonce (several may compete for it). */
+export type ServiceNonceEntry = {
+  safeTxHash: string;
+  isExecuted: boolean;
+  transactionHash: string | null;
+};
+
 export type SafeTxServiceClientOptions = {
   /** e.g. `https://api.safe.global/tx-service/base`, no trailing slash. */
   baseUrl: string;
@@ -157,6 +183,59 @@ export class SafeTxServiceClient {
    */
   async proposeTransaction(safe: Address, body: ProposeTransactionBody): Promise<void> {
     await this.request('POST', `/api/v2/safes/${safe}/multisig-transactions/`, body, true);
+  }
+
+  /**
+   * `GET /api/v2/multisig-transactions/{safeTxHash}/`: confirmations and
+   * `isExecuted` in one request (spike #79). Null on a 404: the service has
+   * not (yet) indexed it, which says nothing about the chain.
+   */
+  async getMultisigTransaction(safeTxHash: string): Promise<ServiceMultisigTransaction | null> {
+    let raw: unknown;
+    try {
+      raw = await this.request('GET', `/api/v2/multisig-transactions/${safeTxHash}/`);
+    } catch (cause) {
+      if (cause instanceof SafeTxServiceError && cause.kind === 'not-found') return null;
+      throw cause;
+    }
+    const body = asRecord(raw, 'multisig-transaction');
+    const confirmations = body.confirmations;
+    if (confirmations !== null && confirmations !== undefined && !Array.isArray(confirmations)) {
+      throw invalid('multisig-transaction', 'confirmations is not an array');
+    }
+    return {
+      safeTxHash: str(body, 'safeTxHash'),
+      nonce: intLike(body, 'nonce'),
+      isExecuted: bool(body, 'isExecuted'),
+      transactionHash: nullableStr(body, 'transactionHash'),
+      confirmations: (confirmations ?? []).map((entry) => {
+        const item = asRecord(entry, 'confirmations[]');
+        return {
+          owner: addr(item, 'owner'),
+          signature: nullableStr(item, 'signature') ?? '',
+          signatureType: str(item, 'signatureType'),
+        };
+      }),
+    };
+  }
+
+  /** `GET /api/v2/safes/{safe}/multisig-transactions/?nonce=N`: every proposal at that nonce, executed or not (spike #79, section 6). */
+  async listTransactionsAtNonce(safe: Address, nonce: number): Promise<ServiceNonceEntry[]> {
+    const query = new URLSearchParams({ nonce: String(nonce) });
+    const body = asRecord(
+      await this.request('GET', `/api/v2/safes/${safe}/multisig-transactions/?${query.toString()}`),
+      'multisig-transactions',
+    );
+    const results = body.results;
+    if (!Array.isArray(results)) throw invalid('multisig-transactions', 'results is not an array');
+    return results.map((entry) => {
+      const item = asRecord(entry, 'multisig-transactions.results[]');
+      return {
+        safeTxHash: str(item, 'safeTxHash'),
+        isExecuted: bool(item, 'isExecuted'),
+        transactionHash: nullableStr(item, 'transactionHash'),
+      };
+    });
   }
 
   /** One round trip: the bearer header only when keyed, failures mapped to a `SafeTxServiceError`. Returns the parsed JSON body. */
@@ -258,6 +337,30 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
 function str(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   if (typeof value !== 'string') throw invalid(key, 'not a string');
+  return value;
+}
+
+/** The service sends uint256 fields as decimal strings (the live `nonce` is `"6"`); a JSON integer is accepted too. */
+function intLike(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  const parsed =
+    typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : (value as number);
+  if (typeof parsed !== 'number' || !Number.isSafeInteger(parsed)) {
+    throw invalid(key, 'not an integer');
+  }
+  return parsed;
+}
+
+function bool(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  if (typeof value !== 'boolean') throw invalid(key, 'not a boolean');
+  return value;
+}
+
+function nullableStr(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw invalid(key, 'neither null nor a string');
   return value;
 }
 

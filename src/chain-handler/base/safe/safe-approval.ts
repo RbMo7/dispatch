@@ -1,15 +1,20 @@
 import {
+  concat,
   decodeFunctionData,
+  decodeFunctionResult,
   encodeFunctionData,
   encodePacked,
-  concat,
   getAddress,
+  hashMessage,
   isAddress,
+  pad,
   parseAbi,
+  recoverAddress,
   size,
   zeroAddress,
   type Address,
   type Hex,
+  type PublicClient,
 } from 'viem';
 
 import type { CallForChain, EvmCall } from '../../../domain/call.js';
@@ -28,13 +33,22 @@ import type {
 } from '../../chain-handler.js';
 import { validateEvmCall } from '../call-validation.js';
 import { ERC20_ABI } from '../erc20.js';
+import { isRpcOutage, mapBaseFailure } from '../error-mapping.js';
 import { NATIVE_ASSET_SYMBOL, type BaseTokenRegistry } from '../known-tokens.js';
+import { decodeUnsignedTransaction, encodeUnsignedTransaction } from '../transaction-codec.js';
+import { encodeExecTransaction, EXEC_TRANSACTION_ABI, withGasMargin } from './execution-cost.js';
 import { MAX_SAFE_BUNDLE_LIMIT, type BaseSafeConfig } from './safe-config.js';
-import { readSafeState, type SafeReadClient } from './safe-reads.js';
+import {
+  readSafeSigners,
+  readSafeState,
+  type SafeReadClient,
+  type SafeSignerState,
+} from './safe-reads.js';
 import {
   SafeTxServiceError,
   type ProposeTransactionBody,
   type SafeTxServiceClient,
+  type ServiceMultisigTransaction,
 } from './tx-service-client.js';
 
 /**
@@ -65,13 +79,31 @@ type BundleItem = {
 /** What `buildProposal` keeps in `BuiltProposal.payload`: the whole Safe transaction, enough to re-sign and re-post. */
 type SafeProposalPayload = SafeTransaction & { safeTxHash: Hex };
 
+/** What the Safe half needs of the node: `SafeReadClient`, plus `eth_call`, gas estimation and the fee reads. */
+export type SafeApprovalClient = SafeReadClient &
+  Pick<PublicClient, 'call' | 'estimateGas' | 'getBlock'>;
+
 export type SafeApprovalDeps = {
   config: BaseSafeConfig;
   chainId: number;
-  /** Reads the Safe's `nonce()` and threshold, pinned to one block (safe-reads.ts). */
-  client: SafeReadClient;
+  /** Reads the Safe's state pinned to one block (safe-reads.ts), simulates and prices the execute. */
+  client: SafeApprovalClient;
   signer: Pick<SignerClient, 'signSafeTransaction'>;
-  service: Pick<SafeTxServiceClient, 'proposeTransaction'>;
+  service: Pick<
+    SafeTxServiceClient,
+    'proposeTransaction' | 'getMultisigTransaction' | 'listTransactionsAtNonce'
+  >;
+  /**
+   * The Base handler's own `prepare` (ADR-0039, ADR-0037): the execute goes
+   * through it as one ordinary call to the Safe, so nonce authority and fee
+   * estimation stay in one place.
+   */
+  prepare: (
+    items: EvmCall[],
+    sender: string,
+  ) => Promise<Result<PreparedTransaction[], DispatchError>>;
+  /** How long to wait before re-reading a stale block, ms. Default 250; tests use 0. */
+  staleReadRetryDelayMs?: number;
   /** The same registry the Base handler resolves a Payment's asset against; an ERC-20 item must go to one of these. */
   knownTokens: BaseTokenRegistry;
 };
@@ -92,8 +124,12 @@ export class SafeApproval implements ApprovalCapability<'base'> {
   readonly openProposalLimit = 1;
   /** A failed `execTransaction` leaves the Safe nonce unchanged, so retrying cannot help: the Calls fail on a `GS013` simulation (#84). */
   readonly reexecuteOnFailure = false;
+  /** Spike #79: 60 s while awaiting approval is about 43,000 service requests a month, inside a keyed quota; 15 s would not be. */
+  readonly watchIntervalMs = 60_000;
 
   private readonly bundleLimit: number;
+  /** The highest block any signer read came from: a later read from an older block is a stale node. */
+  private highestBlockRead = 0n;
 
   constructor(private readonly deps: SafeApprovalDeps) {
     this.proposerAddress = deps.config.executorAddress;
@@ -123,6 +159,7 @@ export class SafeApproval implements ApprovalCapability<'base'> {
   async buildProposal(input: {
     calls: CallForChain<'base'>[];
     sender: string;
+    minSequence?: number;
   }): Promise<Result<BuiltProposal, DispatchError>> {
     const { config, chainId } = this.deps;
     if (input.sender.toLowerCase() !== config.safeAddress.toLowerCase()) {
@@ -174,28 +211,37 @@ export class SafeApproval implements ApprovalCapability<'base'> {
       });
     }
 
+    // #84: a read right after the engine's own execution can still say the old nonce (spike #79,
+    // finding 5). The engine knows which sequences it has seen consumed; never build below that.
+    const chainNonce = state.nonce;
+    const nonceBig =
+      input.minSequence !== undefined && BigInt(input.minSequence) > chainNonce
+        ? BigInt(input.minSequence)
+        : chainNonce;
+    const nonce = Number(nonceBig);
+    if (!Number.isSafeInteger(nonce)) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `the Safe nonce ${nonceBig} is out of range`,
+      });
+    }
+
+    const data = encodeMultiSendCall(items);
     const tx: SafeTransaction = {
       safe: config.safeAddress,
       chainId,
       to: multiSend,
       value: '0',
-      data: encodeMultiSendCall(items),
+      data,
       operation: 1,
       safeTxGas: '0',
       baseGas: '0',
       gasPrice: '0',
       gasToken: zeroAddress,
       refundReceiver: zeroAddress,
-      nonce: state.nonce.toString(),
+      nonce: nonceBig.toString(),
     };
     const safeTxHash = safeTransactionHash(tx);
-    const nonce = Number(state.nonce);
-    if (!Number.isSafeInteger(nonce)) {
-      return err({
-        code: 'CHAIN_REJECTED',
-        message: `the Safe nonce ${state.nonce} is out of range`,
-      });
-    }
 
     const chainRef: ChainProposalRef = {
       kind: 'safe',
@@ -282,19 +328,242 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     }
   }
 
-  readProposal(_ref: ChainProposalRef): Promise<Result<ProposalSnapshot, DispatchError>> {
-    return Promise.resolve(notImplemented('reading a Safe proposal', '#84'));
+  async readProposal(ref: ChainProposalRef): Promise<Result<ProposalSnapshot, DispatchError>> {
+    if (ref.kind !== 'safe') {
+      return err({ code: 'CHAIN_REJECTED', message: 'not a Safe proposal reference' });
+    }
+    const view = await this.viewProposal(ref.safe, ref.safeTxHash);
+    if (!view.ok) return view;
+    const { state, service, signers } = view.value;
+    const base = { approvals: signers.size, threshold: state.threshold };
+    const proposalNonce = BigInt(ref.nonce);
+
+    // (1) Executed: the service says so. Its transaction is the proof of payment.
+    if (service?.isExecuted) {
+      return ok({
+        ...base,
+        status: 'executed',
+        ...(service.transactionHash ? { executedHash: service.transactionHash } : {}),
+        executable: false,
+      });
+    }
+
+    // (2) The nonce moved past this proposal. The engine's own execution moves it too, so that alone
+    // proves nothing: only the transaction executed AT this nonce says which of the two happened.
+    if (state.nonce > proposalNonce) {
+      let entries;
+      try {
+        entries = await this.deps.service.listTransactionsAtNonce(
+          this.deps.config.safeAddress,
+          ref.nonce,
+        );
+      } catch (cause) {
+        return err(mapServiceError(cause));
+      }
+      const winner = entries.find((entry) => entry.isExecuted);
+      if (winner) {
+        if (winner.safeTxHash.toLowerCase() === ref.safeTxHash.toLowerCase()) {
+          return ok({
+            ...base,
+            status: 'executed',
+            ...(winner.transactionHash ? { executedHash: winner.transactionHash } : {}),
+            executable: false,
+          });
+        }
+        // A different transaction took this nonce: a rejection or a replacement (spike #79, section 6).
+        return ok({ ...base, status: 'rejected', executable: false });
+      }
+      // The nonce moved but the service has not indexed what executed yet: not provably rejected, so
+      // keep watching. Never `approved`: this proposal can no longer execute at this nonce.
+      return ok({ ...base, status: 'active', executable: false });
+    }
+
+    // (3) Still at its nonce: approved once enough current owners confirmed.
+    const approved = signers.size >= state.threshold && state.nonce === proposalNonce;
+    return ok({ ...base, status: approved ? 'approved' : 'active', executable: approved });
   }
 
-  prepareExecution(_proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>> {
-    return Promise.resolve(notImplemented('executing a Safe proposal', '#84'));
+  async prepareExecution(proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>> {
+    const { config, chainId } = this.deps;
+    const ref = proposal.chainRef;
+    if (ref.kind !== 'safe') {
+      return err({ code: 'CHAIN_REJECTED', message: 'not a Safe proposal' });
+    }
+    const parsed = parsePayload(proposal.payload);
+    if (!parsed.ok) return parsed;
+    const { safeTxHash, ...tx } = parsed.value;
+    // The engine's own hash, never one carried in the payload (as in signProposal).
+    if (
+      safeTransactionHash(tx) !== safeTxHash ||
+      safeTxHash.toLowerCase() !== ref.safeTxHash.toLowerCase() ||
+      ref.safe.toLowerCase() !== config.safeAddress.toLowerCase() ||
+      tx.safe.toLowerCase() !== config.safeAddress.toLowerCase() ||
+      tx.chainId !== chainId
+    ) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'the Safe proposal payload does not match its own hash, Safe or chain',
+      });
+    }
+
+    const view = await this.viewProposal(tx.safe, safeTxHash);
+    if (!view.ok) return view;
+    const { state, signers } = view.value;
+    const nonce = BigInt(tx.nonce);
+    if (state.nonce > nonce) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `the Safe nonce is ${state.nonce}, past this proposal's ${nonce}: it can never execute`,
+      });
+    }
+    if (state.nonce < nonce || signers.size < state.threshold) {
+      // A stale or lagging read, or a confirmation not visible yet: not a verdict on the proposal.
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: `cannot assemble ${state.threshold} valid signatures yet (${signers.size} readable, Safe nonce ${state.nonce}, proposal nonce ${nonce})`,
+      });
+    }
+
+    // Ascending owner address, as many as the threshold needs (spike #79, section 5).
+    const chosen = [...signers.values()]
+      .sort((a, b) => (a.owner.toLowerCase() < b.owner.toLowerCase() ? -1 : 1))
+      .slice(0, state.threshold);
+    const calldata = encodeExecTransaction(tx, concat(chosen.map((entry) => entry.signature)));
+
+    const request = { account: config.executorAddress, to: tx.safe, data: calldata } as const;
+    // Always simulated first: a revert (GS013 and any other) means the proposal can never succeed as built.
+    try {
+      const simulated = await this.deps.client.call(request);
+      if (simulated.data !== undefined) {
+        const success = decodeFunctionResult({
+          abi: EXEC_TRANSACTION_ABI,
+          functionName: 'execTransaction',
+          data: simulated.data,
+        });
+        if (!success) throw new Error('execTransaction returned false');
+      }
+    } catch (cause) {
+      return err(simulationFailure(cause));
+    }
+    let estimate: bigint;
+    try {
+      estimate = await this.deps.client.estimateGas(request);
+    } catch (cause) {
+      return err(simulationFailure(cause));
+    }
+
+    // Through the Base handler's own prepare: nonce authority (ADR-0039) and fees (ADR-0037) stay there.
+    const prepared = await this.deps.prepare(
+      [{ to: tx.safe, value: '0', data: calldata }],
+      config.executorAddress,
+    );
+    if (!prepared.ok) return prepared;
+    const first = prepared.value[0];
+    if (!first || prepared.value.length !== 1) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'the Base handler did not prepare exactly one transaction',
+      });
+    }
+    // The estimate ran 2 to 3 percent under real usage (spike #79) and a short gas limit reverts the
+    // whole execute: use our own estimate with a margin, never less than what prepare chose.
+    const encoded = decodeUnsignedTransaction(first.unsignedTransaction);
+    const margin = withGasMargin(estimate);
+    if (margin > BigInt(encoded.gas)) encoded.gas = margin.toString();
+    return ok({
+      callIndex: first.callIndex,
+      unsignedTransaction: encodeUnsignedTransaction(encoded),
+    });
   }
 
   estimateApprovalCost(
     _calls: CallForChain<'base'>[],
     _sender: string,
   ): Promise<Result<ApprovalCost, DispatchError>> {
-    return Promise.resolve(notImplemented('estimating a Safe proposal cost', '#85'));
+    return Promise.resolve(
+      err({
+        code: 'CHAIN_REJECTED',
+        message: 'estimating a Safe proposal cost is not implemented (ticket #85)',
+        chainDetail: { notImplemented: '#85' },
+      }),
+    );
+  }
+
+  /**
+   * Everything one read of a proposal needs: the Safe's owners, threshold and
+   * nonce from the chain (the authority, ADR-0051), the service's view of the
+   * transaction, and the valid confirmations: DISTINCT current owners with an
+   * ECDSA signature that recovers to them over the `safeTxHash`, or an
+   * on-chain `approveHash`. The engine's own key never counts (ADR-0049).
+   */
+  private async viewProposal(
+    safe: string,
+    safeTxHash: string,
+  ): Promise<
+    Result<
+      {
+        state: SafeSignerState;
+        service: ServiceMultisigTransaction | null;
+        signers: Map<string, { owner: Address; signature: Hex }>;
+      },
+      DispatchError
+    >
+  > {
+    const { config } = this.deps;
+    if (safe.toLowerCase() !== config.safeAddress.toLowerCase()) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: `the proposal is for ${safe}, but this engine's Safe is ${config.safeAddress}`,
+      });
+    }
+    let state: SafeSignerState;
+    try {
+      state = await readSafeSigners(this.deps.client, config.safeAddress, safeTxHash as Hex, {
+        minBlock: this.highestBlockRead,
+        retryDelayMs: this.deps.staleReadRetryDelayMs ?? 250,
+      });
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: `could not read the Safe ${config.safeAddress}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    }
+    if (state.blockNumber > this.highestBlockRead) this.highestBlockRead = state.blockNumber;
+
+    let service: ServiceMultisigTransaction | null;
+    try {
+      service = await this.deps.service.getMultisigTransaction(safeTxHash);
+    } catch (cause) {
+      return err(mapServiceError(cause));
+    }
+    if (service !== null && service.safeTxHash.toLowerCase() !== safeTxHash.toLowerCase()) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: 'the Safe Transaction Service answered for a different transaction',
+      });
+    }
+
+    const owners = new Map(state.owners.map((owner) => [owner.toLowerCase(), owner]));
+    owners.delete(config.executorAddress.toLowerCase());
+    const signers = new Map<string, { owner: Address; signature: Hex }>();
+    for (const confirmation of service?.confirmations ?? []) {
+      const key = confirmation.owner.toLowerCase();
+      const owner = owners.get(key);
+      if (owner === undefined || signers.has(key)) continue;
+      if (confirmation.signatureType === 'APPROVED_HASH') continue; // counted from the chain below
+      if (await signatureIsFrom(owner, safeTxHash as Hex, confirmation.signature)) {
+        signers.set(key, { owner, signature: confirmation.signature as Hex });
+      }
+    }
+    for (const [key, owner] of owners) {
+      if (signers.has(key) || state.approved.get(key) !== true) continue;
+      // r = the owner padded to 32 bytes, s = 0, v = 1: the Safe checks `approvedHashes` itself.
+      signers.set(key, {
+        owner,
+        signature: concat([pad(owner, { size: 32 }), pad('0x00', { size: 32 }), '0x01']),
+      });
+    }
+    return ok({ state, service, signers });
   }
 
   /**
@@ -443,10 +712,46 @@ function mapServiceError(cause: unknown): DispatchError {
   }
 }
 
-function notImplemented(what: string, ticket: string): Result<never, DispatchError> {
-  return err({
+/**
+ * Whether `signature` is `owner`'s signature over `safeTxHash`: the raw-digest
+ * kind (v 27 or 28) or the `eth_sign` kind (v 31 or 32, which the Safe unwraps
+ * itself). Anything else (a contract signature, garbage) is not counted.
+ */
+async function signatureIsFrom(
+  owner: Address,
+  safeTxHash: Hex,
+  signature: string,
+): Promise<boolean> {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return false;
+  const v = Number.parseInt(signature.slice(-2), 16);
+  try {
+    let recovered: Address;
+    if (v === 27 || v === 28) {
+      recovered = await recoverAddress({ hash: safeTxHash, signature: signature as Hex });
+    } else if (v === 31 || v === 32) {
+      const plain = `${signature.slice(0, -2)}${(v - 4).toString(16)}` as Hex;
+      recovered = await recoverAddress({
+        hash: hashMessage({ raw: safeTxHash }),
+        signature: plain,
+      });
+    } else {
+      return false;
+    }
+    return recovered.toLowerCase() === owner.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** A simulation that did not pass: an outage is retried, anything else (GS013, GS026, a revert) means the proposal cannot succeed as built. */
+function simulationFailure(cause: unknown): DispatchError {
+  const mapped = mapBaseFailure(cause);
+  if (mapped.code === 'RPC_UNAVAILABLE' || isRpcOutage(cause)) {
+    return { ...mapped, code: 'RPC_UNAVAILABLE' };
+  }
+  return {
     code: 'CHAIN_REJECTED',
-    message: `${what} is not implemented (ticket ${ticket})`,
-    chainDetail: { notImplemented: ticket },
-  });
+    message: `simulating the Safe execTransaction failed, so it can never succeed as built: ${mapped.message}`,
+    ...(mapped.chainDetail === undefined ? {} : { chainDetail: mapped.chainDetail }),
+  };
 }

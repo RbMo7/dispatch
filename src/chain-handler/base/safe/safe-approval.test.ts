@@ -14,10 +14,10 @@ import {
   SAFE_PROPOSAL_ORIGIN,
   SafeApproval,
   encodeMultiSendCall,
+  type SafeApprovalClient,
   type SafeApprovalDeps,
 } from './safe-approval.js';
 import type { BaseSafeConfig } from './safe-config.js';
-import type { SafeReadClient } from './safe-reads.js';
 import { SafeTxServiceClient } from './tx-service-client.js';
 
 const SAFE = '0x84Ac281B68de095f6227050F56C74d93d294e609';
@@ -87,7 +87,12 @@ function fakeChain(
       reads.push({ method: 'getStorageAt', blockNumber: a.blockNumber });
       return Promise.resolve('0x0');
     },
+    getBlock: () => Promise.resolve({ baseFeePerGas: 1_000_000n }),
+    call: () => Promise.reject(new Error('not expected')),
+    estimateGas: () => Promise.reject(new Error('not expected')),
     readContract: (a: { functionName: string; blockNumber?: bigint }) => {
+      // The L1 data fee read is the oracle's, not the Safe's: not a pinned Safe read.
+      if (a.functionName === 'getL1Fee') return Promise.resolve(1_000n);
       reads.push({ method: a.functionName, blockNumber: a.blockNumber });
       switch (a.functionName) {
         case 'VERSION':
@@ -103,7 +108,7 @@ function fakeChain(
       }
     },
   };
-  return { client: client as unknown as SafeReadClient, reads };
+  return { client: client as unknown as SafeApprovalClient, reads };
 }
 
 /** A Signer that really signs the digest (v 27 or 28, as the real one answers), so the body's signature is checkable. */
@@ -129,6 +134,8 @@ function realSigner(): { signer: SafeApprovalDeps['signer']; requests: SafeSignR
 
 const neverCalled: SafeApprovalDeps['service'] = {
   proposeTransaction: () => Promise.reject(new Error('not expected')),
+  getMultisigTransaction: () => Promise.reject(new Error('not expected')),
+  listTransactionsAtNonce: () => Promise.reject(new Error('not expected')),
 };
 
 function approval(
@@ -143,6 +150,7 @@ function approval(
     signer,
     service: neverCalled,
     knownTokens: { USDC: { contractAddress: USDC, decimals: 6 } },
+    prepare: () => Promise.reject(new Error('not expected')),
     ...extra,
   };
   return { subject: new SafeApproval(deps), deps, requests, chain };
@@ -159,6 +167,7 @@ describe('SafeApproval constants', () => {
     expect(subject.proposerAddress).toBe(executor.address);
     expect(subject.openProposalLimit).toBe(1);
     expect(subject.reexecuteOnFailure).toBe(false);
+    expect(subject.watchIntervalMs).toBe(60_000);
   });
 
   it('refuses a bundle limit outside 1..300', () => {
@@ -329,7 +338,7 @@ describe('buildProposal', () => {
     const down = {
       getChainId: () => Promise.reject(new Error('connect ECONNREFUSED')),
       getBlockNumber: () => Promise.reject(new Error('connect ECONNREFUSED')),
-    } as unknown as SafeReadClient;
+    } as unknown as SafeApprovalClient;
     const result = await approval(fakeChain(), { client: down }).subject.buildProposal({
       calls: [nativeCall(A, '1')],
       sender: SAFE,
@@ -520,19 +529,5 @@ describe('submitProposal', () => {
       ok: false,
     });
     expect(await subject.submitProposal({ ...signed, hash: '0xabc' })).toMatchObject({ ok: false });
-  });
-});
-
-describe('the half that belongs to later tickets', () => {
-  it('answers with typed errors, never a throw', async () => {
-    const { subject } = approval();
-    const ref = { kind: 'safe', safe: SAFE, safeTxHash: BUNDLE_VECTOR.hash, nonce: 12 } as const;
-    const read = await subject.readProposal(ref);
-    expect(read).toMatchObject({ ok: false, error: { code: 'CHAIN_REJECTED' } });
-    expect(read.ok ? '' : read.error.message).toMatch(/#84/);
-    const execute = await subject.prepareExecution({} as never);
-    expect(execute.ok ? '' : execute.error.message).toMatch(/#84/);
-    const cost = await subject.estimateApprovalCost([], SAFE);
-    expect(cost.ok ? '' : cost.error.message).toMatch(/#85/);
   });
 });

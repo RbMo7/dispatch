@@ -15,6 +15,7 @@ export const SAFE_GUARD_STORAGE_SLOT: Hex =
 const SENTINEL_MODULES: Address = '0x0000000000000000000000000000000000000001';
 
 const SAFE_ABI = parseAbi([
+  'function approvedHashes(address owner, bytes32 hash) view returns (uint256)',
   'function VERSION() view returns (string)',
   'function getOwners() view returns (address[])',
   'function getThreshold() view returns (uint256)',
@@ -105,5 +106,74 @@ export async function readSafeState(
     nonce,
     guard,
     modules: [...modulePage[0]],
+  };
+}
+
+export type SafeSignerState = {
+  blockNumber: bigint;
+  owners: Address[];
+  threshold: number;
+  nonce: bigint;
+  /** Lowercased owner address -> whether that owner has called `approveHash(safeTxHash)` on-chain. */
+  approved: Map<string, boolean>;
+};
+
+/**
+ * What approving a proposal depends on, all read from the chain (the
+ * authority, ADR-0051) at one block: owners, threshold, nonce, and each
+ * owner's `approvedHashes` for `safeTxHash`. `minBlock` guards against a
+ * node answering from an older block than one already seen (stale public-RPC
+ * reads, spike #79 finding 5): the block number is re-read a few times, then
+ * the read fails rather than guess from stale state.
+ */
+export async function readSafeSigners(
+  client: Pick<SafeReadClient, 'getBlockNumber' | 'readContract'>,
+  safe: Address,
+  safeTxHash: Hex,
+  options: { minBlock?: bigint; attempts?: number; retryDelayMs?: number } = {},
+): Promise<SafeSignerState> {
+  const attempts = options.attempts ?? 3;
+  let blockNumber = await client.getBlockNumber();
+  for (
+    let attempt = 1;
+    options.minBlock !== undefined && blockNumber < options.minBlock;
+    attempt++
+  ) {
+    if (attempt >= attempts) {
+      throw new Error(
+        `the node answered from block ${blockNumber}, older than block ${options.minBlock} already read: a stale read`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs ?? 250));
+    blockNumber = await client.getBlockNumber();
+  }
+
+  const [owners, threshold, nonce] = await Promise.all([
+    client.readContract({ address: safe, abi: SAFE_ABI, functionName: 'getOwners', blockNumber }),
+    client.readContract({
+      address: safe,
+      abi: SAFE_ABI,
+      functionName: 'getThreshold',
+      blockNumber,
+    }),
+    client.readContract({ address: safe, abi: SAFE_ABI, functionName: 'nonce', blockNumber }),
+  ]);
+  const flags = await Promise.all(
+    owners.map((owner) =>
+      client.readContract({
+        address: safe,
+        abi: SAFE_ABI,
+        functionName: 'approvedHashes',
+        args: [owner, safeTxHash],
+        blockNumber,
+      }),
+    ),
+  );
+  return {
+    blockNumber,
+    owners: [...owners],
+    threshold: Number(threshold),
+    nonce,
+    approved: new Map(owners.map((owner, i) => [owner.toLowerCase(), (flags[i] ?? 0n) !== 0n])),
   };
 }
