@@ -695,7 +695,16 @@ export class InMemoryDispatchStore implements DispatchStore {
           ...call,
           status: outcome.status,
           error: outcome.error ?? null,
-          hash: outcome.hash === undefined ? call.hash : outcome.hash,
+          hash:
+            outcome.hash === undefined
+              ? outcome.status === 'ABANDONED'
+                ? null
+                : call.hash
+              : outcome.hash,
+          // A timed-out Proposal's Calls carry no execute: a failed attempt's hash must not feed the ABANDONED re-watch.
+          ...(outcome.status === 'ABANDONED' && outcome.hash === undefined
+            ? { signedBytes: null }
+            : {}),
           ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
           ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
         };

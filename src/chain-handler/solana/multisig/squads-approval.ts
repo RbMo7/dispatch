@@ -190,8 +190,6 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
   readonly proposerAddress: string;
   /** Creation is serialized per multisig by ApprovalFlow, so any number of Proposals may be open. */
   readonly openProposalLimit = Number.POSITIVE_INFINITY;
-  /** An execute that fails inside an approved Proposal leaves it approved, so it can be tried again (spike #70). */
-  readonly reexecuteOnFailure = true;
   /** Who holds what, for the Funding Check's INSUFFICIENT_FUNDS detail (#76): the vault pays out, the member key pays fees and rent. */
   readonly holders = { sender: 'vault', proposer: 'memberKey' } as const;
 

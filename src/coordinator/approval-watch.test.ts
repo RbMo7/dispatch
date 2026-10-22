@@ -560,7 +560,7 @@ describe('Coordinator.watchProposals: the signer on execute', () => {
   });
 });
 
-describe('a failed execute (reexecuteOnFailure)', () => {
+describe('a failed execute (ADR-0053: FAILED only once the proposal can no longer execute)', () => {
   const failFirstExecute = async (s: ReturnType<typeof setup>) => {
     const d = await s.openProposal([item(1), item(2)]);
     s.approval.readImpl = () => Promise.resolve(ok(approved()));
@@ -604,9 +604,26 @@ describe('a failed execute (reexecuteOnFailure)', () => {
     expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL', 'AWAITING_APPROVAL']);
   });
 
-  it('fails the Calls for good once the deadline has passed', async () => {
+  it('abandons, never fails, the Calls once the deadline has passed while the proposal can still execute', async () => {
     const s = setup();
     const d = await failFirstExecute(s);
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    // Someone else may still execute it, so a FAILED here could make a caller pay twice (ADR-0053).
+    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code, t.hash])).toEqual([
+      ['ABANDONED', 'APPROVAL_TIMEOUT', null],
+      ['ABANDONED', 'APPROVAL_TIMEOUT', null],
+    ]);
+    expect((await s.proposalOf(d.id)).phase).toBe('timed_out');
+  });
+
+  it('fails the Calls for good once the deadline has passed and the proposal was rejected', async () => {
+    const s = setup();
+    const d = await failFirstExecute(s);
+    s.approval.readImpl = () =>
+      Promise.resolve(ok({ status: 'rejected', approvals: 0, threshold: 2, executable: false }));
     s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
 
     await s.coordinator.pollPendingTransactions(10);
@@ -615,20 +632,45 @@ describe('a failed execute (reexecuteOnFailure)', () => {
     expect((await s.proposalOf(d.id)).phase).toBe('resolved');
   });
 
+  it('settles the Calls CONFIRMED when someone else executed the proposal after the failed attempt', async () => {
+    const s = setup();
+    const d = await failFirstExecute(s);
+    s.approval.readImpl = () =>
+      Promise.resolve(
+        ok({
+          status: 'executed',
+          approvals: 2,
+          threshold: 2,
+          executable: false,
+          executedHash: 'their-hash',
+        }),
+      );
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.hash])).toEqual([
+      ['CONFIRMED', 'their-hash'],
+      ['CONFIRMED', 'their-hash'],
+    ]);
+  });
+
+  it('leaves the Calls PENDING when the proposal state is unknown', async () => {
+    const s = setup();
+    const d = await failFirstExecute(s);
+    s.approval.readImpl = () =>
+      Promise.resolve(ok({ status: 'unknown', approvals: 0, threshold: 2, executable: false }));
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect(await s.statuses(d.id)).toEqual(['PENDING', 'PENDING']);
+  });
+
   it('fails the Calls when the proposal is no longer approved', async () => {
     const s = setup();
     const d = await failFirstExecute(s);
     s.approval.readImpl = () =>
       Promise.resolve(ok({ status: 'cancelled', approvals: 0, threshold: 2, executable: false }));
 
-    await s.coordinator.pollPendingTransactions(10);
-    expect(await s.statuses(d.id)).toEqual(['FAILED', 'FAILED']);
-  });
-
-  it('fails the Calls when the chain does not allow re-executing', async () => {
-    const s = setup();
-    s.approval.reexecuteOnFailure = false;
-    const d = await failFirstExecute(s);
     await s.coordinator.pollPendingTransactions(10);
     expect(await s.statuses(d.id)).toEqual(['FAILED', 'FAILED']);
   });

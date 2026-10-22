@@ -28,7 +28,6 @@ Status: accepted 2026-10-21 (ADR-0054). Written from an architect pass over the 
 interface ApprovalCapability<C> {
   readonly proposerAddress: string;            // member key / executor
   readonly openProposalLimit: number;          // Squads: Infinity (creation serialized); Safe: 1
-  readonly reexecuteOnFailure: boolean;        // Squads true, Safe false
   planBundles(calls: CallForChain<C>[]): Result<number[][], DispatchError>; // pure, size-aware, one Dispatch only
   buildProposal(i: {calls; sender; sequenceHint?}): Promise<Result<BuiltProposal>>; // {ref, payload, expected, sequence}
   signProposal(b: BuiltProposal): Promise<Result<{signedBytes; hash}>>;

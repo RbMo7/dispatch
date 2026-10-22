@@ -388,6 +388,23 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
         await expect(store.markProposalExecuting(proposal.id, 'again', 'again')).rejects.toThrow();
       });
 
+      it('settleProposal as ABANDONED clears a failed execute`s hash and bytes, so the ABANDONED re-watch never sees it', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+
+        const settled = await store.settleProposal(proposal.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'not decided in time' },
+        });
+
+        expect(settled.map((c) => [c.status, c.hash, c.signedBytes])).toEqual([
+          ['ABANDONED', null, null],
+          ['ABANDONED', null, null],
+        ]);
+        expect(await store.listAbandonedTransactions(['solana'], 100, new Date(0))).toEqual([]);
+      });
+
       it('reopenProposalForExecution returns FAILED Calls to AWAITING_APPROVAL with no hash', async () => {
         const store = makeStore();
         const { proposal } = await openProposal(store);

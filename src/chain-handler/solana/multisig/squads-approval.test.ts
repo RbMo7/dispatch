@@ -623,6 +623,5 @@ describe('SquadsApproval.estimateApprovalCost', () => {
     const a = approval();
     expect(a.holders).toEqual({ sender: 'vault', proposer: 'memberKey' });
     expect(a.openProposalLimit).toBe(Infinity);
-    expect(a.reexecuteOnFailure).toBe(true);
   });
 });

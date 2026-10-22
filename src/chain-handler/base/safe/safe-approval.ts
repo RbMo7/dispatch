@@ -129,8 +129,6 @@ export class SafeApproval implements ApprovalCapability<'base'> {
   readonly proposerAddress: string;
   /** ADR-0051: one open proposal per Safe, because every proposal takes the Safe's next nonce. */
   readonly openProposalLimit = 1;
-  /** A failed `execTransaction` leaves the Safe nonce unchanged, so retrying cannot help: the Calls fail on a `GS013` simulation (#84). */
-  readonly reexecuteOnFailure = false;
   /** Spike #79: 60 s while awaiting approval is about 43,000 service requests a month, inside a keyed quota; 15 s would not be. */
   readonly watchIntervalMs = 60_000;
 

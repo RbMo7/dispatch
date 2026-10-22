@@ -143,8 +143,6 @@ export interface ApprovalCapability<C extends Chain = Chain> {
   readonly proposerAddress: string;
   /** How many Proposals may be open per Sender: Squads `Infinity` (creation is serialized), Safe 1. */
   readonly openProposalLimit: number;
-  /** A failed execute of a still-approved Proposal is tried again until its deadline (Squads true, Safe false). */
-  readonly reexecuteOnFailure: boolean;
   /** How often the watch loop reads one of this chain's open Proposals, in ms (default 15 s; Safe 60 s, for the Safe service's quota). */
   readonly watchIntervalMs?: number;
 

@@ -241,8 +241,8 @@ export interface DispatchStore {
     hash: string,
   ): Promise<Transaction[]>;
   /**
-   * A failed execute of a still-approved Proposal (Squads, `reexecuteOnFailure`):
-   * atomically sets phase back to `open`, due now, and returns its `FAILED`
+   * A failed execute of a Proposal that can still execute (ADR-0053): atomically
+   * sets phase back to `open`, due now, and returns its `PENDING` or `FAILED`
    * Calls to `AWAITING_APPROVAL` with no hash, bytes or error. The failed
    * send stays in each Call's Attempts.
    */

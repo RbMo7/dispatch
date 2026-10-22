@@ -582,44 +582,54 @@ export class ApprovalFlow {
     return this.failOrReopen(proposal, approval, error);
   }
 
+  /**
+   * An execute attempt failed. ADR-0053: whatever the chain says about the
+   * attempt, the Calls are FAILED only once the Proposal itself can no longer
+   * execute, because anyone may execute an approved Proposal, on either chain.
+   * So the Proposal is always read: executed by someone else settles the
+   * Calls CONFIRMED; still approved (or active) goes back to waiting, and past
+   * the deadline abandons the Calls instead; rejected, cancelled or stale is
+   * the only FAILED. A Proposal that cannot be read, or whose state is unknown,
+   * leaves the Calls PENDING to be checked again.
+   */
   private async failOrReopen(
     proposal: Proposal,
     approval: ApprovalCapability,
     error: DispatchError | null,
   ): Promise<boolean> {
     const calls = await this.store.listProposalCalls(proposal.id);
-    const pending = calls.filter((c) => c.status === 'PENDING');
-    let retry = false;
-    let finished = false;
-    if (approval.reexecuteOnFailure && !this.deadlinePassed(proposal)) {
-      const read = await approval.readProposal(proposal.chainRef);
-      if (!read.ok) return false; // cannot tell whether it can still execute: never report FAILED yet
-      if (read.value.status === 'executed') {
-        // Someone else executed it while this attempt was failing: the money moved, whatever the failed attempt said.
-        this.logger.info(
-          { proposalId: proposal.id, executedHash: read.value.executedHash },
-          'execute failed but the proposal was executed by someone else',
-        );
-        await this.store.settleProposal(proposal.id, {
-          status: 'CONFIRMED',
-          ...(read.value.executedHash === undefined ? {} : { hash: read.value.executedHash }),
-        });
-        await this.closeFinished(proposal, approval);
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) return false; // cannot tell whether it can still execute: never report FAILED yet
+    const snapshot = read.value;
+
+    if (snapshot.status === 'executed') {
+      // Someone else executed it while this attempt was failing: the money moved, whatever the failed attempt said.
+      this.logger.info(
+        { proposalId: proposal.id, executedHash: snapshot.executedHash },
+        'execute failed but the proposal was executed by someone else',
+      );
+      await this.store.settleProposal(proposal.id, {
+        status: 'CONFIRMED',
+        ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
+      });
+      await this.closeFinished(proposal, approval);
+      return true;
+    }
+    if (snapshot.status === 'unknown') return false;
+
+    const live = snapshot.status === 'approved' || snapshot.status === 'active';
+    if (live && calls.every((c) => c.status === 'PENDING' || c.status === 'FAILED')) {
+      if (this.deadlinePassed(proposal)) {
+        // It can still execute (by someone else), so it is not FAILED: abandoned, as for any undecided proposal.
+        await this.timeOut(proposal);
         return true;
       }
-      retry = read.value.status === 'approved';
-      finished =
-        read.value.status === 'rejected' ||
-        read.value.status === 'cancelled' ||
-        read.value.status === 'stale';
-    }
-    // A Call that will be executed again is never marked FAILED, not even for an instant: a poll
-    // (or a crash) in between would report a terminal failure for a proposal that can still pay
-    // (ADR-0053). The Calls go straight from PENDING back to AWAITING_APPROVAL.
-    if (retry && calls.every((c) => c.status === 'PENDING' || c.status === 'FAILED')) {
+      // A Call that will be executed again is never marked FAILED, not even for an instant: a poll
+      // (or a crash) in between would report a terminal failure for a proposal that can still pay.
+      // The Calls go straight from PENDING back to AWAITING_APPROVAL.
       this.logger.info(
         { proposalId: proposal.id },
-        'execute failed but the proposal is still approved; will execute again',
+        'execute failed but the proposal can still execute; will try again',
       );
       await this.store.reopenProposalForExecution(proposal.id);
       await this.store.updateProposal(proposal.id, {
@@ -628,11 +638,15 @@ export class ApprovalFlow {
       });
       return true;
     }
+
+    // Rejected, cancelled or stale: it can never execute, so the failure is definitive.
     if (error) {
-      for (const call of pending) await this.store.markFailed(call.id, error);
+      for (const call of calls.filter((c) => c.status === 'PENDING')) {
+        await this.store.markFailed(call.id, error);
+      }
     }
     await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
-    if (finished) await this.closeFinished(proposal, approval);
+    await this.closeFinished(proposal, approval);
     return true;
   }
 

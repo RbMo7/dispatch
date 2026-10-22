@@ -166,7 +166,6 @@ describe('SafeApproval constants', () => {
     const { subject } = approval();
     expect(subject.proposerAddress).toBe(executor.address);
     expect(subject.openProposalLimit).toBe(1);
-    expect(subject.reexecuteOnFailure).toBe(false);
     expect(subject.watchIntervalMs).toBe(60_000);
   });
 
