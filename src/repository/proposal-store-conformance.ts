@@ -324,6 +324,30 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
         ]);
       });
 
+      it('replaces the persisted propose bytes and hash (a noted proposal re-signed), leaving the rest alone', async () => {
+        const store = makeStore();
+        const seeded = await seedUnproposed(store, 'solana', 1);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls),
+        );
+
+        const updated = await store.updateProposal(proposal.id, {
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+        });
+
+        expect(updated).toMatchObject({
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+          phase: 'noted',
+          payload: proposal.payload,
+        });
+        expect(await store.getProposal(proposal.id)).toMatchObject({
+          proposeSignedBytes: 're-signed',
+          proposeHash: 're-hash',
+        });
+      });
+
       it('applies a patch and leaves the rest alone', async () => {
         const store = makeStore();
         const seeded = await seedUnproposed(store, 'solana', 1);

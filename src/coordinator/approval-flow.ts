@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 
 import type {
   ApprovalCapability,
+  BuiltProposal,
   ChainHandler,
   ProposalSnapshot,
 } from '../chain-handler/chain-handler.js';
@@ -97,6 +98,8 @@ export class ApprovalFlow {
   private readonly backoff = new Map<Chain, { until: number; failures: number }>();
   /** Retry bookkeeping for Proposals whose close failed (#75). What still needs closing is durable (`closeState`, #88); only the attempt count and the wait are in memory. */
   private readonly pendingCloses = new Map<string, { attempts: number; nextAt: number }>();
+  /** In memory only: how often a `noted` Proposal was re-signed for an expired blockhash. A restart allows a few more, still bounded by the deadline. */
+  private readonly resigns = new Map<string, number>();
 
   constructor(deps: ApprovalFlowDeps) {
     this.store = deps.store;
@@ -402,27 +405,109 @@ export class ApprovalFlow {
     const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
     // A proposal that never got confirmed sent and is past its deadline is not worth sending now: its
     // approvers' time is over. It may still have landed earlier, so it is ABANDONED, not FAILED (ADR-0053).
-    if (this.deadlinePassed(proposal)) return this.timeOut(proposal);
+    if (this.deadlinePassed(proposal)) {
+      return this.timeOut(
+        proposal,
+        'the proposal could not be sent before its deadline and may not exist on-chain; check the multisig before sending again',
+      );
+    }
+
+    // (1) Ask the chain first: an earlier, ambiguous send may have landed. Never send again if so.
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) {
+      log.warn({ error: read.error }, 'noted proposal could not be read; backing off');
+      await this.backOff(proposal, read.error.code);
+      return;
+    }
+    if (read.value.status !== 'unknown') {
+      log.info({ status: read.value.status }, 'noted proposal already exists on-chain; now open');
+      this.resigns.delete(proposal.id);
+      await this.store.updateProposal(proposal.id, {
+        phase: 'open',
+        checkFailures: 0,
+        nextCheckAt: this.now(),
+      });
+      return;
+    }
+
+    // (2) It does not exist (yet): send the persisted bytes again.
     if (!proposal.proposeSignedBytes || !proposal.proposeHash) {
       log.error('noted proposal has no persisted propose bytes; cannot re-send');
       await this.backOff(proposal, 'no propose bytes');
       return;
     }
-    const submitted = await approval.submitProposal({
+    let submitted = await approval.submitProposal({
       signedBytes: proposal.proposeSignedBytes,
       hash: proposal.proposeHash,
     });
+
+    // (3) An expired blockhash: the bytes can never land, so sign the same payload again, write the new
+    // bytes down (ADR-0041), then send them.
+    if (!submitted.ok && isBlockhashExpired(submitted.error)) {
+      const used = this.resigns.get(proposal.id) ?? 0;
+      if (used >= MAX_NOTED_RESIGNS) {
+        log.error(
+          { error: submitted.error, resigns: used },
+          'noted proposal keeps expiring after re-signing; backing off until its deadline',
+        );
+        await this.backOff(proposal, submitted.error.code);
+        return;
+      }
+      this.resigns.set(proposal.id, used + 1);
+      const signed = await approval.signProposal(builtFrom(proposal));
+      if (!signed.ok) {
+        if (signed.error.code === 'SIGNER_REFUSED') {
+          return this.failNotSent(proposal, signed.error, 'signProposal');
+        }
+        log.warn({ error: signed.error }, 'noted proposal could not be re-signed; backing off');
+        await this.backOff(proposal, signed.error.code);
+        return;
+      }
+      await this.store.updateProposal(proposal.id, {
+        proposeSignedBytes: signed.value.signedBytes,
+        proposeHash: signed.value.hash,
+      });
+      submitted = await approval.submitProposal(signed.value);
+    }
+
     if (!submitted.ok) {
+      if (isDefiniteRefusal(submitted.error)) {
+        return this.failNotSent(proposal, submitted.error, 'submitProposal');
+      }
       log.warn({ error: submitted.error }, 'noted proposal re-send failed; backing off');
       await this.backOff(proposal, submitted.error.code);
       return;
     }
     log.info('noted proposal sent; now open');
+    this.resigns.delete(proposal.id);
     await this.store.updateProposal(proposal.id, {
       phase: 'open',
       checkFailures: 0,
       nextCheckAt: this.after(this.cadence(approval)),
     });
+  }
+
+  /**
+   * A `noted` proposal the chain refused for good. Only called right after the chain said it does not
+   * exist, so nothing can ever execute: the Calls are FAILED (not ABANDONED) and the Sender is free again.
+   */
+  private async failNotSent(
+    proposal: Proposal,
+    error: DispatchError,
+    stage: string,
+  ): Promise<void> {
+    this.logger.error(
+      {
+        proposalId: proposal.id,
+        dispatchId: proposal.dispatchId,
+        chain: proposal.chain,
+        stage,
+        error,
+      },
+      'noted proposal was refused and does not exist on-chain; calls failed',
+    );
+    this.resigns.delete(proposal.id);
+    await this.store.settleProposal(proposal.id, { status: 'FAILED', error });
   }
 
   /** `open`: the order matters and is fixed (ADR-0053): someone else executed it, rejected, deadline, then execute. */
@@ -488,7 +573,7 @@ export class ApprovalFlow {
     await this.reschedule(current, this.cadence(approval));
   }
 
-  private async timeOut(proposal: Proposal): Promise<void> {
+  private async timeOut(proposal: Proposal, message?: string): Promise<void> {
     this.logger.warn(
       { proposalId: proposal.id, chain: proposal.chain, deadlineAt: proposal.deadlineAt },
       'proposal not decided by its deadline; calls abandoned and never executed by the engine',
@@ -497,7 +582,9 @@ export class ApprovalFlow {
       status: 'ABANDONED',
       error: {
         code: 'APPROVAL_TIMEOUT',
-        message: 'the proposal was not approved before its deadline; check it before sending again',
+        message:
+          message ??
+          'the proposal was not approved before its deadline; check it before sending again',
         chainDetail: { deadlineAt: proposal.deadlineAt.toISOString() },
       },
     });
@@ -986,6 +1073,35 @@ export class ApprovalFlow {
     if (!handler) throw new Error(`No ChainHandler registered for chain: ${chain}`);
     return handler;
   }
+}
+
+/** Re-signing a `noted` Proposal for an expired blockhash is tried this many times per process before it just backs off. */
+const MAX_NOTED_RESIGNS = 5;
+
+function isBlockhashExpired(error: DispatchError): boolean {
+  return (
+    error.code === 'RPC_UNAVAILABLE' &&
+    (error.chainDetail as { reason?: unknown } | undefined)?.reason === 'BLOCKHASH_EXPIRED'
+  );
+}
+
+/** Only these two are an answer rather than a failure to get one; anything else may have landed. */
+function isDefiniteRefusal(error: DispatchError): boolean {
+  return error.code === 'CHAIN_REJECTED' || error.code === 'SIGNER_REFUSED';
+}
+
+/** The `BuiltProposal` a stored Proposal was made from: all a handler needs to sign it again. */
+function builtFrom(proposal: Proposal): BuiltProposal {
+  return {
+    chainRef: proposal.chainRef,
+    proposalRef: proposal.proposalRef,
+    payload: proposal.payload,
+    sequence: proposal.sequence,
+    threshold: proposal.threshold,
+    executeAfter: proposal.executeAfter,
+    expected: proposal.expected,
+    committed: proposal.committed,
+  };
 }
 
 /** Every position 0..size-1 appears in exactly one bundle, and no bundle is empty. */
