@@ -29,7 +29,15 @@ function liveDeps(overrides: Partial<typeof raw> = {}) {
     config,
     senderAddress: config.vaultAddress,
     readMultisig: (address: string) => readMultisigState(connection, address),
-    probeSigner: () => Promise.resolve('has-key' as const),
+    readSignerPins: () =>
+      Promise.resolve({
+        kind: 'pins' as const,
+        pins: {
+          address: config.memberAddress,
+          curve: 'ed25519' as const,
+          allowedMultisig: config.multisigAddress,
+        },
+      }),
   };
 }
 

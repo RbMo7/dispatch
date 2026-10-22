@@ -1,5 +1,4 @@
-import type { SignerClient } from '../../../signer/client.js';
-import { probeSignerWith, type SignerProbe } from '../../base/safe/startup-checks.js';
+import type { PolicyRead } from '../../../signer/client.js';
 import {
   PERMISSION_EXECUTE,
   PERMISSION_INITIATE,
@@ -13,10 +12,12 @@ import {
   type SolanaMultisigConfig,
 } from './multisig-config.js';
 
-export type { SignerProbe };
-
 /** What the engine's member key must hold: Initiate + Execute, and never Vote. */
 export const REQUIRED_MEMBER_PERMISSIONS = PERMISSION_INITIATE | PERMISSION_EXECUTE;
+
+/** ADR-0055: a Signer without the policy route cannot be checked, and is refused rather than trusted. */
+const OLD_SIGNER_MESSAGE =
+  'the Signer has no policy route, so it is an older Signer that cannot say what its keys are pinned to: upgrade the Signer (ADR-0055)';
 
 export type MultisigStartupDeps = {
   config: SolanaMultisigConfig;
@@ -24,7 +25,8 @@ export type MultisigStartupDeps = {
   senderAddress: string;
   /** Reads the multisig account, at one slot (multisig-account.ts). */
   readMultisig: (address: string) => Promise<MultisigOnChainState>;
-  probeSigner: (member: string) => Promise<SignerProbe>;
+  /** ADR-0055: what the Signer says the member's key is pinned to. */
+  readSignerPins: (member: string) => Promise<PolicyRead>;
 };
 
 /** One thing wrong that stops startup: `check` names it, so an operator can tell which. */
@@ -154,17 +156,24 @@ export async function runMultisigStartupChecks(
   }
 
   const signer = await deps
-    .probeSigner(config.memberAddress)
-    .catch((): SignerProbe => 'unreachable');
-  if (signer === 'no-key') {
+    .readSignerPins(config.memberAddress)
+    .catch((cause: unknown): PolicyRead => ({ kind: 'unreachable', message: errorText(cause) }));
+  if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the member',
-      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/signer.md)`,
+      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/signer.md), pinned to the multisig by policy`,
     );
-  } else if (signer === 'unreachable') {
+  } else if (signer.kind === 'unreachable') {
     fail(
       'signer can sign for the member',
-      `could not ask the Signer about ${config.memberAddress}: it is unreachable or refused our token (SIGNER_URL, SIGNER_AUTH_TOKEN)`,
+      `could not ask the Signer about ${config.memberAddress}: ${signer.message} (SIGNER_URL, SIGNER_AUTH_TOKEN)`,
+    );
+  } else if (signer.kind === 'old-signer') {
+    fail('signer pins the multisig', OLD_SIGNER_MESSAGE);
+  } else if (signer.pins.allowedMultisig !== config.multisigAddress) {
+    fail(
+      'signer pins the multisig',
+      `the Signer's policy for ${config.memberAddress} pins ${signer.pins.allowedMultisig ?? 'no multisig'}, but SOLANA_MULTISIG_ADDRESS is ${config.multisigAddress}: set policy.allowedMultisig for this key in the Signer's config (docs/signer.md)`,
     );
   }
 
@@ -174,25 +183,4 @@ export async function runMultisigStartupChecks(
 
 function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-/**
- * Asks the Signer whether it holds the member's key, without ever getting a
- * signature that could be used: the request carries one byte, which is not a
- * Solana transaction (a message needs a header, account keys and a blockhash),
- * so a signature over it can never authorize anything. The Signer looks the
- * address up first (404 when it has no key), then applies the address's
- * policy, which refuses what it cannot decode (403). Either answer proves the
- * key exists. The Signer's audit log records the request.
- */
-export function probeSignerForSolanaAddress(
-  signerClient: SignerClient,
-  address: string,
-): Promise<SignerProbe> {
-  return probeSignerWith(signerClient, {
-    chain: 'solana',
-    curve: 'ed25519',
-    address,
-    unsignedTransaction: Buffer.from([0x01]).toString('base64'),
-  });
 }

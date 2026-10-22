@@ -1,6 +1,6 @@
 import { zeroAddress, type Address } from 'viem';
 
-import type { SignerClient, SignRequest } from '../../../signer/client.js';
+import type { PolicyRead } from '../../../signer/client.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import type { SafeOnChainState } from './safe-reads.js';
 import { SafeTxServiceError, type SafeTxServiceClient } from './tx-service-client.js';
@@ -8,8 +8,9 @@ import { SafeTxServiceError, type SafeTxServiceClient } from './tx-service-clien
 /** ADR-0051: the Safe versions whose hashing and execution were verified (spike #79). L1 and L2 variants both report these. */
 export const SUPPORTED_SAFE_VERSIONS = ['1.3.0', '1.4.1'];
 
-/** Whether the Signer holds a key for the executor, learned without asking it to sign anything. */
-export type SignerProbe = 'has-key' | 'no-key' | 'unreachable';
+/** ADR-0055: a Signer without the policy route cannot be checked, and is refused rather than trusted. */
+const OLD_SIGNER_MESSAGE =
+  'the Signer has no policy route, so it is an older Signer that cannot say what its keys are pinned to: upgrade the Signer (ADR-0055)';
 
 export type SafeStartupDeps = {
   config: BaseSafeConfig;
@@ -18,7 +19,8 @@ export type SafeStartupDeps = {
   service: Pick<SafeTxServiceClient, 'about' | 'getSafe' | 'getDelegates'>;
   /** Reads the Safe from the chain, pinned to one block (safe-reads.ts). */
   readSafe: (safe: Address) => Promise<SafeOnChainState>;
-  probeSigner: (executor: Address) => Promise<SignerProbe>;
+  /** ADR-0055: what the Signer says the executor's key is pinned to. */
+  readSignerPins: (executor: Address) => Promise<PolicyRead>;
   now?: () => number;
 };
 
@@ -115,18 +117,34 @@ export async function runSafeStartupChecks(deps: SafeStartupDeps): Promise<{ war
   }
 
   const signer = await deps
-    .probeSigner(config.executorAddress)
-    .catch((): SignerProbe => 'unreachable');
-  if (signer === 'no-key') {
+    .readSignerPins(config.executorAddress)
+    .catch((cause: unknown): PolicyRead => ({ kind: 'unreachable', message: errorText(cause) }));
+  if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the executor',
       `the Signer has no key for ${config.executorAddress}: add it to the Signer's config (docs/signer.md), pinned to the Safe by policy`,
     );
-  } else if (signer === 'unreachable') {
+  } else if (signer.kind === 'unreachable') {
     fail(
       'signer can sign for the executor',
-      `could not ask the Signer about ${config.executorAddress}: it is unreachable or refused our token (SIGNER_URL, SIGNER_AUTH_TOKEN)`,
+      `could not ask the Signer about ${config.executorAddress}: ${signer.message} (SIGNER_URL, SIGNER_AUTH_TOKEN)`,
     );
+  } else if (signer.kind === 'old-signer') {
+    fail('signer pins the Safe', OLD_SIGNER_MESSAGE);
+  } else {
+    const { allowedSafe, chainIds } = signer.pins;
+    if (allowedSafe === undefined || !sameAddress(allowedSafe, config.safeAddress)) {
+      fail(
+        'signer pins the Safe',
+        `the Signer's policy for ${config.executorAddress} pins ${allowedSafe ?? 'no Safe'}, but BASE_SAFE_ADDRESS is ${config.safeAddress}: set policy.allowedSafe for this key in the Signer's config (docs/signer.md)`,
+      );
+    }
+    if (chainIds === undefined || !chainIds.includes(deps.chainId)) {
+      fail(
+        'signer pins the Safe',
+        `the Signer's policy for ${config.executorAddress} allows chain ${chainIds?.join(', ') ?? 'any'}, which does not include BASE_CHAIN_ID ${deps.chainId}: set policy.chainIds to include it`,
+      );
+    }
   }
 
   if (config.apiKey === undefined) {
@@ -206,40 +224,4 @@ function sameAddress(a: string, b: string): boolean {
 
 function isZero(address: Address): boolean {
   return sameAddress(address, zeroAddress);
-}
-
-/**
- * Asks the Signer whether it holds the executor's key, without ever getting a
- * signature: the request carries bytes that are not a transaction. The Signer
- * looks the address up first (404 when it has no key), then applies the
- * address's policy, which refuses what it cannot decode (403), or else fails
- * to decode it (400). Either answer proves the key exists, and nothing was
- * signed, so no usable signature for the executor is produced at startup. The
- * Signer's audit log records the refused request.
- */
-export async function probeSignerForAddress(
-  signerClient: SignerClient,
-  address: Address,
-): Promise<SignerProbe> {
-  return probeSignerWith(signerClient, {
-    chain: 'base',
-    curve: 'secp256k1',
-    address,
-    unsignedTransaction: Buffer.from([0x02]).toString('base64'),
-  });
-}
-
-/**
- * The chain-neutral half of the probe: sends `request` (whose bytes must not
- * be a transaction of its chain) and reads the Signer's answer as above.
- */
-export async function probeSignerWith(
-  signerClient: SignerClient,
-  request: SignRequest,
-): Promise<SignerProbe> {
-  const result = await signerClient.requestSignature(request);
-  // A 200 means the Signer signed bytes it cannot have read; the key is there either way.
-  if (result.ok || result.error.code === 'SIGNER_REFUSED') return 'has-key';
-  if (result.error.message.endsWith('400')) return 'has-key';
-  return result.error.message.endsWith('404') ? 'no-key' : 'unreachable';
 }

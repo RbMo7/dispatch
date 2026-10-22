@@ -40,7 +40,16 @@ function liveDeps(executor: string) {
     chainId: BASE_SEPOLIA_CHAIN_ID,
     service: new SafeTxServiceClient({ baseUrl: config.txServiceUrl }),
     readSafe: (address: `0x${string}`) => readSafeState(client, address),
-    probeSigner: () => Promise.resolve('has-key' as const),
+    readSignerPins: () =>
+      Promise.resolve({
+        kind: 'pins' as const,
+        pins: {
+          address: executor,
+          curve: 'secp256k1' as const,
+          allowedSafe: config.safeAddress.toLowerCase(),
+          chainIds: [BASE_SEPOLIA_CHAIN_ID],
+        },
+      }),
   };
 }
 

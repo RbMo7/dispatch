@@ -7,7 +7,7 @@ This guide is for an operator who wants people to approve the money the engine m
 
 Read [`docs/signer.md`](./signer.md) first. Every key in this guide lives behind the Signer, and the mainnet checklist at the end of that file includes the multisig items. The decisions behind this feature are ADR-0049 to ADR-0054.
 
-**What is built, and what is not.** This guide describes what the code does. Batch proposals on Solana are **not built** (issue #91). Follow-ups not done: a startup check that the Signer pins the multisig or Safe (#95), and human checks before mainnet (#96: the Squads app's labels and rent collector screen, Safe plan quotas, delegate removal, self-hosting, mainnet read-only facts). [Section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout) covers what happens after a timeout. Nothing here has been run on mainnet. The whole path (the API, the Coordinator, a real Signer enforcing the policy, and the chain) is proven end to end against Solana devnet (`RUN_SQUADS=1`, issue #78: approve, reject, timeout then a human's late execution, Funding Check, Signer policy) and against Base Sepolia with the hosted Safe Transaction Service (`RUN_SAFE=1`, issue #87: the same, plus the one-open-proposal queue and the stale-nonce guard). Both are opt-in, spend a little testnet funds, and are not part of CI (`docs/agents/`, ADR-0013).
+**What is built, and what is not.** This guide describes what the code does. Batch proposals on Solana are **not built** (issue #91). Follow-up not done: human checks before mainnet (#96: the Squads app's labels and rent collector screen, Safe plan quotas, delegate removal, self-hosting, mainnet read-only facts). [Section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout) covers what happens after a timeout. Nothing here has been run on mainnet. The whole path (the API, the Coordinator, a real Signer enforcing the policy, and the chain) is proven end to end against Solana devnet (`RUN_SQUADS=1`, issue #78: approve, reject, timeout then a human's late execution, Funding Check, Signer policy) and against Base Sepolia with the hosted Safe Transaction Service (`RUN_SAFE=1`, issue #87: the same, plus the one-open-proposal queue and the stale-nonce guard). Both are opt-in, spend a little testnet funds, and are not part of CI (`docs/agents/`, ADR-0013).
 
 Contents:
 
@@ -199,6 +199,7 @@ Start the worker. Before anything is sent it checks, and refuses to start on:
 | `[member can initiate and execute]` | It lacks Initiate or Execute. |
 | `[member permission mask is exactly 5]` | Any other mask. |
 | `[signer can sign for the member]` | The Signer has no key for the member address, or the engine cannot reach it. |
+| `[signer pins the multisig]` | The Signer's policy for the member key pins another multisig or none (`allowedMultisig`), or the Signer is too old to say (upgrade it). ADR-0055. |
 | `[sender is the vault]` | The configured Sender is not the vault. |
 
 It only **warns** (in the log, then carries on) when the threshold is 1, when the threshold is higher than the number of voting members, when there is no rent collector or it is not the member key, and when the multisig's time lock is longer than `SOLANA_APPROVAL_DEADLINE_MS`. On success it logs `Solana multisig sender checks passed` with the multisig, vault and member.
@@ -377,6 +378,7 @@ The worker refuses to start, printing `Safe sender startup checks failed (nothin
 | `[service matches chain]` | The service's owners or threshold differ from the chain's, or it has no such Safe: usually the wrong service URL. |
 | `[executor is a registered delegate]` | Step 4 was not done, or the registration expired. |
 | `[signer can sign for the executor]` | The Signer has no key for the executor, or cannot be reached. |
+| `[signer pins the Safe]` | The Signer's policy for the executor pins another Safe or none (`allowedSafe`), lacks `BASE_CHAIN_ID` in `chainIds`, or the Signer is too old to say (upgrade it). ADR-0055. |
 
 Warnings only: a threshold of 1, a guard, enabled modules, and a missing `BASE_SAFE_API_KEY`. Success logs `Safe sender checks passed`.
 
