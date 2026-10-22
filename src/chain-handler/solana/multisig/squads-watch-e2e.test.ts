@@ -189,7 +189,7 @@ describe.runIf(RUN)(
           maxSupportedTransactionVersion: 0,
         });
         const units = detail?.meta?.computeUnitsConsumed;
-        // eslint-disable-next-line no-console
+         
         console.log(
           `[squads-watch] ${label}: ${calls.length} calls, execute used ${units} compute units`,
         );
@@ -257,7 +257,7 @@ describe.runIf(RUN)(
       });
       const plan = approval.planBundles(everyCall);
       if (!plan.ok) throw new Error('plan failed');
-      // eslint-disable-next-line no-console
+       
       console.log(
         `[squads-watch] 12 SPL transfers with token-account creation plan as ${JSON.stringify(plan.value.map((b) => b.length))}`,
       );
