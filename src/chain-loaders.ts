@@ -10,10 +10,7 @@ import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
 import { SafeApproval } from './chain-handler/base/safe/safe-approval.js';
 import { resolveBaseSafeConfig } from './chain-handler/base/safe/safe-config.js';
 import { readSafeState } from './chain-handler/base/safe/safe-reads.js';
-import {
-  probeSignerForAddress,
-  runSafeStartupChecks,
-} from './chain-handler/base/safe/startup-checks.js';
+import { runSafeStartupChecks } from './chain-handler/base/safe/startup-checks.js';
 import { SafeTxServiceClient } from './chain-handler/base/safe/tx-service-client.js';
 import { readMultisigState } from './chain-handler/solana/multisig/multisig-account.js';
 import {
@@ -21,10 +18,7 @@ import {
   type SolanaMultisigConfig,
 } from './chain-handler/solana/multisig/multisig-config.js';
 import { SquadsApproval } from './chain-handler/solana/multisig/squads-approval.js';
-import {
-  probeSignerForSolanaAddress,
-  runMultisigStartupChecks,
-} from './chain-handler/solana/multisig/startup-checks.js';
+import { runMultisigStartupChecks } from './chain-handler/solana/multisig/startup-checks.js';
 import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
@@ -133,9 +127,8 @@ async function verifyMultisigSender(
     config: multisig,
     senderAddress: config.solana.senderAddress,
     readMultisig: (address) => readMultisigState(connection, address),
-    probeSigner: (member) =>
-      probeSignerForSolanaAddress(
-        new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
+    readSignerPins: (member) =>
+      new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs).readPins(
         member,
       ),
   });
@@ -177,7 +170,7 @@ async function verifySafeSender(): Promise<
     chainId: config.base.chainId,
     service,
     readSafe: (address) => readSafeState(readClient, address),
-    probeSigner: (executor) => probeSignerForAddress(signerClient, executor),
+    readSignerPins: (executor) => signerClient.readPins(executor),
   });
   for (const warning of warnings) logger.warn(`Safe sender: ${warning}`);
   logger.info(

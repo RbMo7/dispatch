@@ -39,7 +39,7 @@ Never in the response: key material, seed, backend reference, allowed recipients
 - **Safe:** `allowedSafe` equals the configured Safe, and `chainIds` contains the configured chain ID (the loader already requires `chainIds` with `allowedSafe`).
 - Mismatch, missing pin, 404 for the address or a Signer without the route: refuse to start. Each message names the address, what was reported and what was expected; the "old Signer" message says to upgrade it.
 - Unreachable Signer: the existing startup behavior (fail with `SIGNER_UNREACHABLE`).
-- The key probe is still used for a Sender that is not a Multisig Sender.
+- The old key probe is removed: it only ever ran in these two startup checks, and the pin read answers the same question (`no-key`). A plain Sender never had a Signer startup check.
 
 ## Out of scope
 
@@ -50,7 +50,7 @@ Never in the response: key material, seed, backend reference, allowed recipients
 ## Testing
 
 - Signer: route returns only pins; 401 without the token; 404 for an unknown address; audit line written; a key with no pins returns no pin fields; the response never contains a key (assert on a known seed).
-- Engine, against a fake Signer client: a matching pin starts; a missing pin, a wrong multisig, a wrong Safe, a Safe on the wrong chain and an old-Signer 404 each refuse with the right message; the key probe still runs for a plain Sender.
+- Engine, against a fake Signer client: a matching pin starts; a missing pin, a wrong multisig, a wrong Safe, a Safe on the wrong chain and an old-Signer 404 each refuse with the right message; the old probe is gone.
 - Live tier: extend the existing multisig e2e fixtures so the real Signer is read once (`RUN_SQUADS=1`, `RUN_SAFE=1`); not part of CI (ADR-0013).
 
 ## Proposed issues

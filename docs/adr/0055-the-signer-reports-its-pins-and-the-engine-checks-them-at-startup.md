@@ -8,8 +8,8 @@ ADR-0051 and ADR-0049 say a Multisig Sender's key is pinned in the Signer's poli
 
 - **A read-only Signer route.** `GET /keys/{address}/policy`, behind the same bearer token as `/sign` (ADR-0046), audited like every other request. It answers `200 { address, curve, chainIds?, allowedSafe?, allowedMultisig? }`: only the pins, and only when set. It never returns a key, a seed, a backend reference or any other part of the policy. An address with no key is `404`.
 - **The engine checks the pin at startup, for a Multisig Sender only.** Solana: `allowedMultisig` must equal the configured multisig. Base: `allowedSafe` must equal the configured Safe and `chainIds` must contain the configured chain. A missing or different pin refuses to start, with a message naming what the Signer reported and what the engine expected.
-- **A Signer that has no such route refuses too.** The engine tells "an old Signer" from "no key for this address" by the response body, and asks for an upgrade. It does not fall back to the key probe: that would turn the check back off for exactly the deployments that never updated the Signer.
-- **The key probe stays** for every Sender that is not a Multisig Sender. The new route replaces it only where a pin is expected.
+- **A Signer that has no such route refuses too.** The engine tells "an old Signer" from "no key for this address" by the response body, and asks for an upgrade. It does not fall back to a key probe: that would turn the check back off for exactly the deployments that never updated the Signer.
+- **The key probe is removed.** It ran only in the two Multisig Sender startup checks, so the pin read replaces it (a `404 no key for address` still says the key is missing). A plain Sender has no Signer startup check, as before.
 - **This is a guard against misconfiguration, not a security control.** A compromised Signer can report anything. The control is still the Signer enforcing its policy at `/sign` (ADR-0046); this check makes sure the operator wrote that policy.
 
 ## Considered options

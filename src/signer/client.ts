@@ -26,6 +26,26 @@ export type SignResponse = {
   signature: string;
 };
 
+/** ADR-0055: what the Signer says a key is pinned to. Each pin is present only when set; EVM addresses come back lowercase. */
+export type SignerPins = {
+  address: string;
+  curve: Curve;
+  chainIds?: number[];
+  allowedSafe?: string;
+  allowedMultisig?: string;
+};
+
+/**
+ * The answer to a policy read. `no-key` is the Signer's own "no key for
+ * address" 404; any other 404 is a Signer without the route (`old-signer`),
+ * which must not read as a missing key, so the operator is told to upgrade it.
+ */
+export type PolicyRead =
+  | { kind: 'pins'; pins: SignerPins }
+  | { kind: 'no-key' }
+  | { kind: 'old-signer' }
+  | { kind: 'unreachable'; message: string };
+
 /**
  * The engine's only way to reach a Signer (ADR-0002): a single concrete
  * client, no interface layered on top (ADR-0012) — the real variability in
@@ -40,6 +60,40 @@ export class SignerClient {
     /** issue 15: aborts the request past this deadline rather than letting a hung Signer block the caller forever — see rpc-timeout.ts. */
     private readonly timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS,
   ) {}
+
+  /**
+   * ADR-0055: asks the Signer what `address` is pinned to, never getting a signature. The engine
+   * reads it at startup for a Multisig Sender; it is a check against misconfiguration, since a
+   * compromised Signer could report anything.
+   */
+  async readPins(address: string): Promise<PolicyRead> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.signerUrl}/keys/${encodeURIComponent(address)}/policy`, {
+        headers: this.authToken === undefined ? {} : { authorization: `Bearer ${this.authToken}` },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      return {
+        kind: 'unreachable',
+        message: `failed to reach signer at ${this.signerUrl}: ${detail}`,
+      };
+    }
+    const text = await response.text().catch(() => '');
+    if (response.status === 404) {
+      return /^\{"error":"no key for address /.test(text)
+        ? { kind: 'no-key' }
+        : { kind: 'old-signer' };
+    }
+    if (!response.ok) {
+      return { kind: 'unreachable', message: `signer responded with ${response.status}` };
+    }
+    const pins = parsePins(text);
+    return pins
+      ? { kind: 'pins', pins }
+      : { kind: 'unreachable', message: 'signer answered a policy read with an unreadable body' };
+  }
 
   async requestSignature(request: SignRequest): Promise<Result<SignResponse, DispatchError>> {
     return this.post(request);
@@ -157,4 +211,35 @@ function parseRefusal(text: string | undefined): { error: string; reason: string
   if (typeof body !== 'object' || body === null) return undefined;
   const { error, reason } = body as Record<string, unknown>;
   return typeof error === 'string' && typeof reason === 'string' ? { error, reason } : undefined;
+}
+
+function parsePins(text: string): SignerPins | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { address, curve, chainIds, allowedSafe, allowedMultisig } = body as Record<
+    string,
+    unknown
+  >;
+  if (typeof address !== 'string' || (curve !== 'secp256k1' && curve !== 'ed25519'))
+    return undefined;
+  if (
+    chainIds !== undefined &&
+    !(Array.isArray(chainIds) && chainIds.every((id) => Number.isSafeInteger(id)))
+  ) {
+    return undefined;
+  }
+  if (allowedSafe !== undefined && typeof allowedSafe !== 'string') return undefined;
+  if (allowedMultisig !== undefined && typeof allowedMultisig !== 'string') return undefined;
+  return {
+    address,
+    curve,
+    ...(chainIds !== undefined ? { chainIds: chainIds as number[] } : {}),
+    ...(allowedSafe !== undefined ? { allowedSafe } : {}),
+    ...(allowedMultisig !== undefined ? { allowedMultisig } : {}),
+  };
 }

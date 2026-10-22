@@ -6,7 +6,7 @@ Work through it in order. [`signer/README.md`](../signer/README.md) is the refer
 
 ## What the Signer is
 
-The Signer is a separate process that holds each Sender's key and answers one request, `POST /sign` (ADR-0002, ADR-0046). The engine's worker sends it the whole unsigned transaction with `Authorization: Bearer <SIGNER_AUTH_TOKEN>`. The Signer checks the token, decodes the transaction, checks it against the Sender's policy, signs it, and writes one audit line. The engine never holds a key, and it checks every signature it gets back against the Sender's address before using it.
+The Signer is a separate process that holds each Sender's key and answers `POST /sign` (ADR-0002, ADR-0046), plus one read-only route, `GET /keys/{address}/policy` ([below](#reading-a-keys-pins)). The engine's worker sends it the whole unsigned transaction with `Authorization: Bearer <SIGNER_AUTH_TOKEN>`. The Signer checks the token, decodes the transaction, checks it against the Sender's policy, signs it, and writes one audit line. The engine never holds a key, and it checks every signature it gets back against the Sender's address before using it.
 
 Only the worker signs. The API process never calls the Signer.
 
@@ -316,6 +316,16 @@ Set these on the worker:
 
 [`.env.example`](../.env.example) documents the rest of the engine's settings. If `SIGNER_AUTH_TOKEN` is unset, the engine still starts, logs a warning, and every signing request gets `401`.
 
+### Reading a key's pins
+
+`GET /keys/{address}/policy`, with the same `Authorization: Bearer <SIGNER_AUTH_TOKEN>`, tells the engine what a key is pinned to (ADR-0055). The engine reads it at startup for a Multisig Sender, so a key with no pin, or pinned to the wrong multisig or Safe, stops the worker before the first Proposal.
+
+```json
+{"address":"0xYourExecutor…","curve":"secp256k1","chainIds":[8453],"allowedSafe":"0xyoursafe…"}
+```
+
+The answer carries only `address`, `curve`, `chainIds`, `allowedSafe` and `allowedMultisig`, each present only when the policy sets it. Never a key, a key reference, or any other part of the policy (recipients, limits, MultiSend lists). EVM addresses come back lowercase, as the policy stores them. A wrong token is `401`. An address the config doesn't hold is `404 no key for address …`. A Signer from before ADR-0055 answers `404 not found` for the route, and the engine refuses to start against it: upgrade the Signer. This check guards against a misconfigured policy. It does not defend against a compromised Signer, which could report anything. The real control is the Signer refusing at `/sign`.
+
 ## 9. Read the audit log
 
 The Signer writes one JSON line per request to stdout, before it answers. Everything else it logs goes to stderr, so stdout carries only the audit log. Ship stdout somewhere durable, such as your log platform or object storage with retention.
@@ -329,16 +339,17 @@ Each line has these fields. A field the request didn't carry is left out.
 - `time`. When the Signer answered, in ISO 8601.
 - `address` and `chain`. The Sender and chain the request named.
 - `transactionId`. Present only when `decision` is `signed`. On Base, the hash of the signed transaction. On Solana, the transaction's signature in base58.
-- `kind`, `safe` and `safeNonce`. Only on a request to sign a Safe transaction: `"safeTransaction"`, the Safe's address, and the transaction's nonce. On a `signed` line, `transactionId` is then the Safe transaction hash.
-- `decision`. One of the four below.
+- `kind`, `safe` and `safeNonce`. Only on a request to sign a Safe transaction: `"safeTransaction"`, the Safe's address, and the transaction's nonce. On a `signed` line, `transactionId` is then the Safe transaction hash. A pin read has `kind: "policy-read"` and the address.
+- `decision`. One of the five below.
 - `status`. The HTTP status the Signer answered with.
 - `reason`. Why it didn't sign: the policy's reason for `refused`, or the error otherwise.
 
 | `decision` | `status` | What happened |
 | --- | --- | --- |
 | `signed` | 200 | The Signer signed. |
+| `read` | 200 | A policy read was answered. Nothing was signed. |
 | `refused` | 403 | The policy refused the transaction. The engine reports `SIGNER_REFUSED`. |
-| `rejected` | 400, 401, 404 | The Signer would never sign this request. 400 is a malformed request, 401 a missing or wrong token, 404 an address the config doesn't hold. |
+| `rejected` | 400, 401, 404 | The Signer would never sign this request. 400 is a malformed request, 401 a missing or wrong token, 404 an address the config doesn't hold (also a policy read for one). |
 | `failed` | 500 | The backend failed to sign, for example Privy or KMS was unreachable or refused the credentials. |
 
 To match a signature with the engine's records, look up `transactionId`. The engine reports the same value as an item's `transactionHash` in `GET /v1/dispatch/:id` ([`docs/api.md`](./api.md)). A Base fee-bump or a Solana resubmission is a new transaction, so it has its own `signed` line and its own `transactionId`. A `signed` line with no matching engine transaction means the worker stopped, or rejected the signature, before writing the transaction down. The engine writes every transaction down before sending it (ADR-0041), so it sent nothing in either case.
@@ -364,6 +375,7 @@ When a Call's first signing fails, the Call is `FAILED` with a structured error 
 | `signer responded with 401` | `SIGNER_AUTH_TOKEN` differs between the worker and the Signer, or the worker has none. |
 | `signer responded with 404` | The Sender address is not in the Signer's config. |
 | `signer responded with 500` | The backend failed. The Signer's audit line for the request has the reason. |
+| `[signer pins the multisig]` or `[signer pins the Safe]` at startup | The Signer's policy for the engine's key pins a different account, none, or (Base) lacks the chain. Fix `allowedMultisig`, or `allowedSafe` and `chainIds`, for that key. An "older Signer" message means upgrade the Signer (ADR-0055). |
 | `signer responded with 400` | The Signer could not parse the request. The usual cause is an engine and a Signer from different versions of the contract. Upgrade them together (ADR-0046). The audit line has the error. |
 | `signer responded with 403` | Something in front of the Signer, such as a proxy, refused the request. A policy refusal always has the Signer's reason and is reported as `SIGNER_REFUSED` instead. |
 | `signer returned a signature for 0x…, expected 0x…` | Base. The Signer signed with a different key than the Sender's. The nonce is released and nothing is sent. Check the `keyRef`. |
@@ -385,7 +397,7 @@ Clear every item before the first mainnet transaction.
 - [ ] A small mainnet smoke test has landed first: one small Payment per enabled chain, confirmed on-chain, with a matching `signed` audit line, before any real volume.
 - [ ] Every mainnet chain in `ENABLED_CHAINS` stays enabled while it has transactions in flight. Removing a chain with a `PENDING` transaction stops confirmation tracking for every chain until #57 is fixed.
 - [ ] If you use a Multisig Sender, the engine's key can never approve. On Solana the member key holds exactly Initiate and Execute (permission mask 5) and never Vote. On Base the executor is not an owner of the Safe and is registered as a delegate. The engine refuses to start otherwise, but check it in the multisig's app yourself.
-- [ ] Every multisig key has `allowedMultisig` (Solana) or `allowedSafe` and `chainIds: [8453]` (Base) in its policy, pinned to the one multisig. The engine's startup does not check the Signer's policy.
+- [ ] Every multisig key has `allowedMultisig` (Solana) or `allowedSafe` and `chainIds: [8453]` (Base) in its policy, pinned to the one multisig. The engine's startup checks this (ADR-0055): it refuses to start if the Signer reports a different pin or none, so confirm the worker's startup log has `checks passed`.
 - [ ] A multisig's engine key on `local` is a weaker choice than on `aws-kms` or `privy`: a host compromise exposes it. It can only propose, execute and close, so the policy pin matters most for it.
 - [ ] Solana: the multisig's rent collector is the member key's address. Without it, proposal rent is never refunded and the member key drains.
 - [ ] Solana: the Squads `ProgramConfig` creation fee and the mainnet rent rate (`getMinimumBalanceForRentExemption`) are read on mainnet before sizing the member key's balance. The spike measured devnet only. The member key must hold the rent of every proposal open at once, plus fees.

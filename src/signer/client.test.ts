@@ -235,3 +235,78 @@ describe('SignerClient.signSafeTransaction (ADR-0052)', () => {
     expect(!result.ok && result.error.code).toBe('SIGNER_UNREACHABLE');
   });
 });
+
+describe('SignerClient.readPins (ADR-0055)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const pins = { address: '0xabc', curve: 'secp256k1', allowedSafe: '0xdef', chainIds: [84532] };
+
+  it('GETs /keys/<address>/policy with its bearer token and returns the pins', async () => {
+    const fetchMock = respondWith(new Response(JSON.stringify(pins), { status: 200 }));
+
+    const result = await new SignerClient('http://signer.local', 'tok-1').readPins('0xabc');
+
+    expect(result).toEqual({ kind: 'pins', pins });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://signer.local/keys/0xabc/policy',
+      expect.objectContaining({ headers: { authorization: 'Bearer tok-1' } }),
+    );
+  });
+
+  it('reads a key with no pins as pins with none set', async () => {
+    respondWith(new Response(JSON.stringify({ address: 'a', curve: 'ed25519' }), { status: 200 }));
+
+    const result = await new SignerClient('http://signer.local', 'tok').readPins('a');
+
+    expect(result).toEqual({ kind: 'pins', pins: { address: 'a', curve: 'ed25519' } });
+  });
+
+  it('tells a missing key (the Signer’s own 404 wording) from a Signer without the route', async () => {
+    respondWith(
+      new Response(
+        JSON.stringify({ error: 'no key for address 0xabc on curve secp256k1 or ed25519' }),
+        {
+          status: 404,
+        },
+      ),
+    );
+    expect(await new SignerClient('http://signer.local', 'tok').readPins('0xabc')).toEqual({
+      kind: 'no-key',
+    });
+
+    respondWith(new Response(JSON.stringify({ error: 'not found' }), { status: 404 }));
+    expect(await new SignerClient('http://signer.local', 'tok').readPins('0xabc')).toEqual({
+      kind: 'old-signer',
+    });
+  });
+
+  it.each([
+    ['a 401', new Response('{}', { status: 401 })],
+    ['a 500', new Response('boom', { status: 500 })],
+    ['an unreadable body', new Response('not json', { status: 200 })],
+    ['a body without a curve', new Response(JSON.stringify({ address: 'a' }), { status: 200 })],
+    [
+      'a pin of the wrong type',
+      new Response(JSON.stringify({ address: 'a', curve: 'secp256k1', allowedSafe: 5 }), {
+        status: 200,
+      }),
+    ],
+  ])('reads %s as unreachable', async (_, response) => {
+    respondWith(response);
+
+    const result = await new SignerClient('http://signer.local', 'tok').readPins('0xabc');
+
+    expect(result.kind).toBe('unreachable');
+  });
+
+  it('reads a connection failure as unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
+
+    const result = await new SignerClient('http://signer.local', 'tok').readPins('0xabc');
+
+    expect(result.kind).toBe('unreachable');
+    expect(result.kind === 'unreachable' && result.message).toContain('ECONNREFUSED');
+  });
+});

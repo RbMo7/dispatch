@@ -1,19 +1,9 @@
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { describe, expect, it } from 'vitest';
 
-import { parseTransaction } from 'viem';
-import { afterEach, describe, expect, it } from 'vitest';
-
-import { SignerClient } from '../../../signer/client.js';
+import type { PolicyRead } from '../../../signer/client.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import type { SafeOnChainState } from './safe-reads.js';
-import {
-  probeSignerForAddress,
-  runSafeStartupChecks,
-  SafeStartupError,
-  type SafeStartupDeps,
-  type SignerProbe,
-} from './startup-checks.js';
+import { runSafeStartupChecks, SafeStartupError, type SafeStartupDeps } from './startup-checks.js';
 import {
   SafeTxServiceError,
   type ServiceDelegate,
@@ -69,13 +59,23 @@ const goodDelegate: ServiceDelegate = {
   expiryDate: null,
 };
 
+/** What a correctly configured Signer reports for the executor (ADR-0055); EVM pins come back lowercase. */
+const goodPins = {
+  address: EXECUTOR,
+  curve: 'secp256k1' as const,
+  allowedSafe: SAFE.toLowerCase(),
+  chainIds: [84532],
+};
+const pinned: PolicyRead = { kind: 'pins', pins: goodPins };
+const NO_KEY: PolicyRead = { kind: 'no-key' };
+
 type Overrides = {
   config?: Partial<BaseSafeConfig>;
   chain?: Partial<SafeOnChainState> | Error;
   about?: Error;
   info?: Partial<ServiceSafeInfo> | Error;
   delegates?: ServiceDelegate[] | Error;
-  signer?: SignerProbe | Error;
+  signer?: PolicyRead | Error;
 };
 
 function deps(o: Overrides = {}): SafeStartupDeps {
@@ -94,7 +94,7 @@ function deps(o: Overrides = {}): SafeStartupDeps {
       getDelegates: () => settle(o.delegates ?? [goodDelegate]),
     },
     readSafe: () => settle(o.chain instanceof Error ? o.chain : { ...goodChain, ...o.chain }),
-    probeSigner: () => settle(o.signer ?? 'has-key'),
+    readSignerPins: () => settle(o.signer ?? pinned),
   };
 }
 
@@ -159,17 +159,63 @@ describe('runSafeStartupChecks', () => {
   });
 
   it('refuses when the Signer has no key for the executor', async () => {
-    const error = await failureOf({ signer: 'no-key' });
+    const error = await failureOf({ signer: NO_KEY });
     expect(error.message).toMatch(/\[signer can sign for the executor\].*no key for/);
   });
 
-  it('refuses when the Signer is unreachable, including a probe that throws', async () => {
-    expect((await failureOf({ signer: 'unreachable' })).message).toMatch(
-      /unreachable or refused our token/,
+  it('refuses when the Signer is unreachable, including a read that throws', async () => {
+    const unreachable: PolicyRead = { kind: 'unreachable', message: 'signer responded with 401' };
+    expect((await failureOf({ signer: unreachable })).message).toMatch(
+      /could not ask the Signer.*401.*SIGNER_AUTH_TOKEN/,
     );
     expect((await failureOf({ signer: new Error('boom') })).message).toMatch(
-      /unreachable or refused our token/,
+      /could not ask the Signer.*boom/,
     );
+  });
+
+  it('accepts the Safe pin whatever its case, since the Signer reports EVM pins lowercase', async () => {
+    const pins = goodPins;
+    await expect(
+      runSafeStartupChecks(
+        deps({
+          signer: {
+            kind: 'pins',
+            pins: { ...pins, allowedSafe: SAFE.toUpperCase().replace('0X', '0x') },
+          },
+        }),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('refuses a key pinned to another Safe, to none, or not to this chain', async () => {
+    const pins = goodPins;
+    const other = '0x1111111111111111111111111111111111111111';
+    const wrong = await failureOf({
+      signer: { kind: 'pins', pins: { ...pins, allowedSafe: other } },
+    });
+    expect(wrong.failures).toEqual([expect.objectContaining({ check: 'signer pins the Safe' })]);
+    expect(wrong.message).toContain(`pins ${other}`);
+    expect(wrong.message).toContain(`BASE_SAFE_ADDRESS is ${SAFE}`);
+
+    const noSafe = { address: EXECUTOR, curve: 'secp256k1' as const, chainIds: [84532] };
+    expect((await failureOf({ signer: { kind: 'pins', pins: noSafe } })).message).toMatch(
+      /pins no Safe/,
+    );
+
+    const otherChain = await failureOf({
+      signer: { kind: 'pins', pins: { ...pins, chainIds: [8453] } },
+    });
+    expect(otherChain.message).toMatch(/allows chain 8453.*BASE_CHAIN_ID 84532/);
+    const noChains = { address: EXECUTOR, curve: 'secp256k1' as const, allowedSafe: SAFE };
+    expect((await failureOf({ signer: { kind: 'pins', pins: noChains } })).message).toMatch(
+      /allows chain any/,
+    );
+  });
+
+  it('refuses a Signer without the policy route, and tells the operator to upgrade it', async () => {
+    const error = await failureOf({ signer: { kind: 'old-signer' } });
+    expect(error.failures).toEqual([expect.objectContaining({ check: 'signer pins the Safe' })]);
+    expect(error.message).toMatch(/older Signer.*upgrade the Signer/);
   });
 
   it('refuses when the service is down and still reports the chain-side checks it can make', async () => {
@@ -226,7 +272,7 @@ describe('runSafeStartupChecks', () => {
     const error = await failureOf({
       chain: { version: '1.0.0', owners: [EXECUTOR] },
       delegates: [],
-      signer: 'no-key',
+      signer: NO_KEY,
     });
     expect(error.failures.map((f) => f.check)).toEqual([
       'safe version',
@@ -268,77 +314,8 @@ describe('runSafeStartupChecks', () => {
 
       const keyed = await runSafeStartupChecks(deps());
       expect(JSON.stringify(keyed)).not.toContain(API_KEY);
-      const error = await failureOf({ delegates: [], signer: 'no-key' });
+      const error = await failureOf({ delegates: [], signer: NO_KEY });
       expect(error.message).not.toContain(API_KEY);
     });
-  });
-});
-
-describe('probeSignerForAddress', () => {
-  let server: Server | undefined;
-  afterEach(() => server?.close());
-
-  async function signerAnswering(status: number, body: unknown): Promise<SignerClient> {
-    server = createServer((_req, res) => {
-      res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(body));
-    });
-    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
-    return new SignerClient(
-      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-      'token',
-      2000,
-    );
-  }
-
-  it('maps a policy 403 and a decode 400 to has-key, 404 to no-key, anything else to unreachable', async () => {
-    expect(
-      await probeSignerForAddress(
-        await signerAnswering(403, { error: 'policy refused', reason: 'not the Safe' }),
-        EXECUTOR,
-      ),
-    ).toBe('has-key');
-    server?.close();
-    expect(
-      await probeSignerForAddress(
-        await signerAnswering(400, { error: 'unsignedTransaction is not an EVM transaction' }),
-        EXECUTOR,
-      ),
-    ).toBe('has-key');
-    server?.close();
-    expect(
-      await probeSignerForAddress(await signerAnswering(404, { error: 'no key' }), EXECUTOR),
-    ).toBe('no-key');
-    server?.close();
-    expect(await probeSignerForAddress(await signerAnswering(401, {}), EXECUTOR)).toBe(
-      'unreachable',
-    );
-    server?.close();
-    expect(await probeSignerForAddress(await signerAnswering(503, {}), EXECUTOR)).toBe(
-      'unreachable',
-    );
-  });
-
-  it('never sends a transaction the Signer could sign: the probe body is not an EVM transaction', async () => {
-    let received: { unsignedTransaction?: string } = {};
-    server = createServer((req, res) => {
-      let raw = '';
-      req.on('data', (chunk) => (raw += chunk));
-      req.on('end', () => {
-        received = JSON.parse(raw) as { unsignedTransaction?: string };
-        res.writeHead(400, { 'content-type': 'application/json' });
-        res.end('{}');
-      });
-    });
-    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
-    const client = new SignerClient(
-      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-      'token',
-      2000,
-    );
-    await probeSignerForAddress(client, EXECUTOR);
-    const bytes = Buffer.from(received.unsignedTransaction ?? '', 'base64');
-    expect(bytes.length).toBeLessThan(8);
-    expect(() => parseTransaction(`0x${bytes.toString('hex')}`)).toThrow();
   });
 });

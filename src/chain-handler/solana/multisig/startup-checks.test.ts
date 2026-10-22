@@ -1,19 +1,14 @@
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { Keypair } from '@solana/web3.js';
+import { describe, expect, it } from 'vitest';
 
-import { Keypair, VersionedMessage } from '@solana/web3.js';
-import { afterEach, describe, expect, it } from 'vitest';
-
-import { SignerClient } from '../../../signer/client.js';
+import type { PolicyRead } from '../../../signer/client.js';
 import fixture from './devnet-multisig-fixture.json' with { type: 'json' };
 import type { MultisigAccount, MultisigOnChainState } from './multisig-account.js';
 import { resolveSolanaMultisigConfig, SQUADS_PROGRAM_ID } from './multisig-config.js';
 import {
   MultisigStartupError,
-  probeSignerForSolanaAddress,
   runMultisigStartupChecks,
   type MultisigStartupDeps,
-  type SignerProbe,
 } from './startup-checks.js';
 
 const MEMBER = fixture.member;
@@ -41,13 +36,20 @@ const goodMultisig: MultisigAccount = {
   ],
 };
 
+/** What a correctly configured Signer reports for the member (ADR-0055). */
+const pinned: PolicyRead = {
+  kind: 'pins',
+  pins: { address: MEMBER, curve: 'ed25519', allowedMultisig: fixture.multisig },
+};
+const NO_KEY: PolicyRead = { kind: 'no-key' };
+
 type Overrides = {
   config?: Partial<typeof config>;
   senderAddress?: string;
   multisig?: Partial<MultisigAccount>;
   owner?: string;
   state?: MultisigOnChainState | Error;
-  signer?: SignerProbe | Error;
+  signer?: PolicyRead | Error;
 };
 
 function deps(o: Overrides = {}): MultisigStartupDeps {
@@ -62,8 +64,8 @@ function deps(o: Overrides = {}): MultisigStartupDeps {
     config: { ...config, ...o.config },
     senderAddress: o.senderAddress ?? config.vaultAddress,
     readMultisig: () => (state instanceof Error ? Promise.reject(state) : Promise.resolve(state)),
-    probeSigner: () =>
-      o.signer instanceof Error ? Promise.reject(o.signer) : Promise.resolve(o.signer ?? 'has-key'),
+    readSignerPins: () =>
+      o.signer instanceof Error ? Promise.reject(o.signer) : Promise.resolve(o.signer ?? pinned),
   };
 }
 
@@ -164,16 +166,44 @@ describe('runMultisigStartupChecks', () => {
   });
 
   it('refuses a Signer that has no key for the member, or cannot be reached', async () => {
-    const none = await failureOf({ signer: 'no-key' });
+    const none = await failureOf({ signer: NO_KEY });
     expect(none.failures).toEqual([
       expect.objectContaining({ check: 'signer can sign for the member' }),
     ]);
     expect(none.message).toContain(`no key for ${MEMBER}`);
 
-    for (const signer of ['unreachable', new Error('ECONNREFUSED')] as const) {
+    for (const signer of [
+      { kind: 'unreachable', message: 'ECONNREFUSED' } as const,
+      new Error('ECONNREFUSED'),
+    ]) {
       const error = await failureOf({ signer });
       expect(error.message).toMatch(/could not ask the Signer.*SIGNER_AUTH_TOKEN/);
     }
+  });
+
+  it('refuses a key the Signer does not pin to this multisig, or pins to none', async () => {
+    const other = Keypair.generate().publicKey.toBase58();
+    const wrong = await failureOf({
+      signer: { kind: 'pins', pins: { address: MEMBER, curve: 'ed25519', allowedMultisig: other } },
+    });
+    expect(wrong.failures).toEqual([
+      expect.objectContaining({ check: 'signer pins the multisig' }),
+    ]);
+    expect(wrong.message).toContain(`pins ${other}`);
+    expect(wrong.message).toContain(`SOLANA_MULTISIG_ADDRESS is ${fixture.multisig}`);
+
+    const none = await failureOf({
+      signer: { kind: 'pins', pins: { address: MEMBER, curve: 'ed25519' } },
+    });
+    expect(none.message).toMatch(/\[signer pins the multisig\].*pins no multisig/);
+  });
+
+  it('refuses a Signer without the policy route, and tells the operator to upgrade it', async () => {
+    const error = await failureOf({ signer: { kind: 'old-signer' } });
+    expect(error.failures).toEqual([
+      expect.objectContaining({ check: 'signer pins the multisig' }),
+    ]);
+    expect(error.message).toMatch(/older Signer.*upgrade the Signer/);
   });
 
   it('refuses when the Sender address is not the derived vault', async () => {
@@ -185,7 +215,7 @@ describe('runMultisigStartupChecks', () => {
   it('lists every failed check at once', async () => {
     const error = await failureOf({
       state: { slot: 1, account: undefined },
-      signer: 'no-key',
+      signer: NO_KEY,
       senderAddress: Keypair.generate().publicKey.toBase58(),
     });
     expect(error.failures.map((f) => f.check)).toEqual([
@@ -236,65 +266,5 @@ describe('runMultisigStartupChecks', () => {
       const { warnings } = await runMultisigStartupChecks(deps({ multisig: { threshold: 3 } }));
       expect(warnings).toEqual([expect.stringMatching(/threshold \(3\).*voting members \(2\)/)]);
     });
-  });
-});
-
-describe('probeSignerForSolanaAddress', () => {
-  let server: Server | undefined;
-  afterEach(() => server?.close());
-
-  async function signerAnswering(status: number, body: unknown): Promise<SignerClient> {
-    server = createServer((_req, res) => {
-      res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(body));
-    });
-    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
-    return new SignerClient(
-      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-      'token',
-      2000,
-    );
-  }
-
-  it('maps a policy 403 and a decode 400 to has-key, 404 to no-key, anything else to unreachable', async () => {
-    const answer = async (status: number, body: unknown) => {
-      const result = await probeSignerForSolanaAddress(await signerAnswering(status, body), MEMBER);
-      server?.close();
-      return result;
-    };
-    expect(await answer(403, { error: 'policy refused', reason: 'cannot decode' })).toBe('has-key');
-    expect(await answer(400, { error: 'bad' })).toBe('has-key');
-    expect(await answer(404, { error: 'no key' })).toBe('no-key');
-    expect(await answer(401, {})).toBe('unreachable');
-    expect(await answer(503, {})).toBe('unreachable');
-  });
-
-  it('asks about the member on solana/ed25519 and sends bytes that are not a transaction', async () => {
-    let received: {
-      chain?: string;
-      curve?: string;
-      address?: string;
-      unsignedTransaction?: string;
-    } = {};
-    server = createServer((req, res) => {
-      let raw = '';
-      req.on('data', (chunk) => (raw += chunk));
-      req.on('end', () => {
-        received = JSON.parse(raw) as typeof received;
-        res.writeHead(403, { 'content-type': 'application/json' });
-        res.end('{}');
-      });
-    });
-    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
-    const client = new SignerClient(
-      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-      'token',
-      2000,
-    );
-    await probeSignerForSolanaAddress(client, MEMBER);
-    expect(received).toMatchObject({ chain: 'solana', curve: 'ed25519', address: MEMBER });
-    const bytes = Buffer.from(received.unsignedTransaction ?? '', 'base64');
-    expect(bytes.length).toBeLessThan(8);
-    expect(() => VersionedMessage.deserialize(bytes)).toThrow();
   });
 });
