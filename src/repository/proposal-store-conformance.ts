@@ -377,13 +377,10 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
         const store = makeStore();
         const { proposal } = await openProposal(store);
         const executing = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
-
-        // Only a failed execute can be reopened.
-        await expect(store.reopenProposalForExecution(proposal.id)).rejects.toThrow();
-
         for (const call of executing) {
           await store.markFailed(call.id, { code: 'CHAIN_REJECTED', message: 'reverted' });
         }
+
         const reopened = await store.reopenProposalForExecution(proposal.id);
 
         expect(reopened).toHaveLength(2);
@@ -399,6 +396,29 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
         const after = await store.getProposal(proposal.id);
         expect(after?.phase).toBe('open');
         expect(after?.nextCheckAt.getTime()).toBeGreaterThanOrEqual(proposal.nextCheckAt.getTime());
+      });
+
+      it('reopenProposalForExecution also reopens PENDING Calls directly, so a retry never passes through FAILED', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+
+        const reopened = await store.reopenProposalForExecution(proposal.id);
+
+        expect(reopened.map((c) => [c.status, c.hash, c.error])).toEqual([
+          ['AWAITING_APPROVAL', null, null],
+          ['AWAITING_APPROVAL', null, null],
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('open');
+      });
+
+      it('reopenProposalForExecution refuses once a Call of the execute is CONFIRMED', async () => {
+        const store = makeStore();
+        const { proposal } = await openProposal(store);
+        const executing = await store.markProposalExecuting(proposal.id, 'exec-bytes', 'exec-hash');
+        await store.markConfirmed((executing[0] as { id: string }).id);
+
+        await expect(store.reopenProposalForExecution(proposal.id)).rejects.toThrow();
       });
 
       it('keeps a fee-bumped execute transaction in its Proposal, as the Call`s one current version', async () => {

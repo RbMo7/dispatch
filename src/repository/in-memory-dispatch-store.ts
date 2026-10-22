@@ -640,8 +640,11 @@ export class InMemoryDispatchStore implements DispatchStore {
     return this.settleWith(() => {
       const proposal = this.requireProposal(proposalId);
       const calls = this.currentProposalCalls(proposalId);
-      if (calls.length === 0 || calls.some((c) => c.status !== 'FAILED')) {
-        throw new Error(`Proposal ${proposalId} has Calls that are not FAILED`);
+      if (
+        calls.length === 0 ||
+        calls.some((c) => c.status !== 'FAILED' && c.status !== 'PENDING')
+      ) {
+        throw new Error(`Proposal ${proposalId} has Calls that are neither PENDING nor FAILED`);
       }
       this.proposals.set(proposalId, { ...proposal, phase: 'open', nextCheckAt: this.now() });
       return calls.map((call) => {

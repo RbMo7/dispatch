@@ -350,6 +350,9 @@ export class ApprovalFlow {
   /** `noted`: the propose transaction may never have been sent (a crash, a failed send), so send the same persisted bytes again. */
   private async watchNoted(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
     const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+    // A proposal that never got confirmed sent and is past its deadline is not worth sending now: its
+    // approvers' time is over. It may still have landed earlier, so it is ABANDONED, not FAILED (ADR-0053).
+    if (this.deadlinePassed(proposal)) return this.timeOut(proposal);
     if (!proposal.proposeSignedBytes || !proposal.proposeHash) {
       log.error('noted proposal has no persisted propose bytes; cannot re-send');
       await this.backOff(proposal, 'no propose bytes');
@@ -565,11 +568,10 @@ export class ApprovalFlow {
       if (!read.ok) return false; // cannot tell whether it can still execute: never report FAILED yet
       retry = read.value.status === 'approved';
     }
-    if (error) {
-      for (const call of pending) await this.store.markFailed(call.id, error);
-    }
-    const allFailed = calls.every((c) => c.status === 'FAILED' || pending.includes(c));
-    if (retry && allFailed) {
+    // A Call that will be executed again is never marked FAILED, not even for an instant: a poll
+    // (or a crash) in between would report a terminal failure for a proposal that can still pay
+    // (ADR-0053). The Calls go straight from PENDING back to AWAITING_APPROVAL.
+    if (retry && calls.every((c) => c.status === 'PENDING' || c.status === 'FAILED')) {
       this.logger.info(
         { proposalId: proposal.id },
         'execute failed but the proposal is still approved; will execute again',
@@ -579,9 +581,12 @@ export class ApprovalFlow {
         checkFailures: 0,
         nextCheckAt: this.after(EXECUTE_RETRY_DELAY_MS),
       });
-    } else {
-      await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+      return true;
     }
+    if (error) {
+      for (const call of pending) await this.store.markFailed(call.id, error);
+    }
+    await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
     return true;
   }
 

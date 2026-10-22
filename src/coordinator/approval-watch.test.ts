@@ -400,6 +400,24 @@ describe('Coordinator.watchProposals: the deadline (ADR-0053)', () => {
     expect((await proposalOf(d.id)).phase).toBe('timed_out');
   });
 
+  it('abandons a noted proposal whose send never succeeded once its deadline passes, without sending it again', async () => {
+    const { coordinator, approval, advance, dispatch, proposalOf, rows } = setup();
+    approval.submitImpl = () => Promise.resolve(err(rpcDown));
+    const d = await dispatch([item(1)]);
+    await coordinator.processQueuedDispatches(10);
+    expect((await proposalOf(d.id)).phase).toBe('noted');
+    const events = approval.events.length;
+
+    advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    await coordinator.watchProposals(10);
+
+    expect((await rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['ABANDONED', 'APPROVAL_TIMEOUT'],
+    ]);
+    expect(approval.events).toHaveLength(events);
+    expect((await proposalOf(d.id)).phase).toBe('timed_out');
+  });
+
   it('never executes a proposal approved after its deadline', async () => {
     const { coordinator, handler, approval, openProposal, advance, statuses, proposalOf } = setup();
     const d = await openProposal([item(1)]);
@@ -570,6 +588,17 @@ describe('a failed execute (reexecuteOnFailure)', () => {
     s.handler.statuses.set('hash-of-signed-2', 'CONFIRMED');
     await s.coordinator.pollPendingTransactions(10);
     expect(await s.statuses(d.id)).toEqual(['CONFIRMED', 'CONFIRMED']);
+  });
+
+  it('never marks the Calls FAILED on the way to reopening them', async () => {
+    const s = setup();
+    const d = await failFirstExecute(s);
+    const markFailed = vi.spyOn(s.store, 'markFailed');
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL', 'AWAITING_APPROVAL']);
   });
 
   it('fails the Calls for good once the deadline has passed', async () => {

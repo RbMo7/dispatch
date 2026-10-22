@@ -725,8 +725,11 @@ export class PostgresDispatchStore implements DispatchStore {
   async reopenProposalForExecution(proposalId: string): Promise<Transaction[]> {
     return this.db.transaction(async (tx) => {
       const calls = await this.currentProposalCalls(tx, proposalId, true);
-      if (calls.length === 0 || calls.some((c) => c.status !== 'FAILED')) {
-        throw new Error(`Proposal ${proposalId} has Calls that are not FAILED`);
+      if (
+        calls.length === 0 ||
+        calls.some((c) => c.status !== 'FAILED' && c.status !== 'PENDING')
+      ) {
+        throw new Error(`Proposal ${proposalId} has Calls that are neither PENDING nor FAILED`);
       }
       await tx
         .update(proposals)
