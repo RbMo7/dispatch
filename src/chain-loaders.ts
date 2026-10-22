@@ -217,11 +217,24 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
   abandonmentTimeoutMs: Map<Chain, number>;
   reorgRecheckWindowMs: Map<Chain, number>;
   stuckHandling: Map<Chain, StuckHandlingConfig>;
+  /** ADR-0053: per chain, how long a Proposal waits for approval. Only chains with a multisig Sender have an entry. */
+  approvalDeadlineMsByChain: Map<Chain, number>;
+  /** ADR-0053: per chain, how long a timed-out Proposal is still watched. Only chains with a multisig Sender have an entry. */
+  approvalRewatchWindowMsByChain: Map<Chain, number>;
 } {
   const senderAddresses = new Map<Chain, string>();
   const abandonmentTimeoutMs = new Map<Chain, number>();
   const reorgRecheckWindowMs = new Map<Chain, number>();
   const stuckHandling = new Map<Chain, StuckHandlingConfig>();
+  const approvalDeadlineMsByChain = new Map<Chain, number>();
+  const approvalRewatchWindowMsByChain = new Map<Chain, number>();
+
+  const approvalConfigs: Partial<
+    Record<Chain, { approvalDeadlineMs: number; approvalRewatchWindowMs: number } | undefined>
+  > = {
+    solana: resolveSolanaMultisigConfig(config.solana.multisig),
+    base: resolveBaseSafeConfig(config.base.safe, config.base.chainId),
+  };
 
   for (const chain of registry.handlers.keys()) {
     const senderAddress = senderAddressByChain[chain];
@@ -239,7 +252,20 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
 
     const stuckHandlingConfig = stuckHandlingByChain[chain];
     if (stuckHandlingConfig !== undefined) stuckHandling.set(chain, stuckHandlingConfig);
+
+    const approval = approvalConfigs[chain];
+    if (approval !== undefined) {
+      approvalDeadlineMsByChain.set(chain, approval.approvalDeadlineMs);
+      approvalRewatchWindowMsByChain.set(chain, approval.approvalRewatchWindowMs);
+    }
   }
 
-  return { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling };
+  return {
+    senderAddresses,
+    abandonmentTimeoutMs,
+    reorgRecheckWindowMs,
+    stuckHandling,
+    approvalDeadlineMsByChain,
+    approvalRewatchWindowMsByChain,
+  };
 }

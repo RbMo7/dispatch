@@ -115,6 +115,8 @@ export type CoordinatorDeps = {
   stuckHandling?: Map<Chain, StuckHandlingConfig>;
   /** ADR-0054/0053: how long a Multisig Sender's Proposal waits for approval before its Calls are abandoned. Defaults to 72 hours; only read for a chain whose handler has an `approval` capability. */
   approvalDeadlineMs?: number;
+  /** Per-chain override of `approvalDeadlineMs` (the deadline is `SOLANA_…` / `BASE_APPROVAL_DEADLINE_MS`). */
+  approvalDeadlineMsByChain?: Map<Chain, number>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
   /** Injectable so relay-dispatch issue 01's broadcast-retry backoff is testable without real sleeps. */
@@ -171,6 +173,7 @@ export class Coordinator {
       now: this.now,
       logger: this.logger,
       approvalDeadlineMs: deps.approvalDeadlineMs,
+      approvalDeadlineMsByChain: deps.approvalDeadlineMsByChain,
     });
   }
 
@@ -209,6 +212,15 @@ export class Coordinator {
       for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
     }
     await this.proposeUnproposed();
+  }
+
+  /**
+   * ADR-0054: watches up to `limit` Proposals whose next check is due —
+   * executing the approved, failing the rejected, abandoning the undecided
+   * (ADR-0053). Touches nothing for a chain without an approval capability.
+   */
+  async watchProposals(limit: number): Promise<void> {
+    await this.approvalFlow.watch(limit);
   }
 
   /** ADR-0054: proposes what is waiting on every chain with an approval capability; nothing at all for any other chain. */
@@ -640,12 +652,25 @@ export class Coordinator {
       if (!handler.restoreInFlight) continue;
       const unsettled = await this.store.listUnsettledTransactions(chain);
       const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
+      // ADR-0054: a propose transaction written down but maybe never sent holds a nonce too.
+      if (handler.approval) signed.push(...(await this.unsettledProposeBytes(chain)));
       await handler.restoreInFlight(signed);
       this.logger.info(
         { chain, restored: signed.length },
         'restored handler state from in-flight transactions',
       );
     }
+  }
+
+  /** The signed propose bytes of `chain`'s Proposals that are not yet settled (`noted`, `open` or `executing`). */
+  private async unsettledProposeBytes(chain: Chain): Promise<string[]> {
+    const farFuture = new Date(8.64e15);
+    const proposals = await this.store.listProposalsDue([chain], farFuture, 10_000);
+    return proposals.flatMap((p) =>
+      p.proposeSignedBytes && ['noted', 'open', 'executing'].includes(p.phase)
+        ? [p.proposeSignedBytes]
+        : [],
+    );
   }
 
   /**
@@ -958,7 +983,11 @@ export class Coordinator {
   ): Promise<'bumped' | 'handled' | 'failed'> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const handler = this.requireChainHandler(transaction.chain);
-    const senderAddress = this.requireSenderAddress(transaction.chain);
+    // ADR-0054: a Proposal's execute is signed by the proposer, never the multisig Sender.
+    const senderAddress =
+      transaction.proposalId && handler.approval
+        ? handler.approval.proposerAddress
+        : this.requireSenderAddress(transaction.chain);
     const members = await this.pendingMembersOf(hash);
     const recordAttempts = async (feeBumpAttempts: number) => {
       for (const member of members) await this.store.setFeeBumpAttempts(member.id, feeBumpAttempts);
@@ -1037,6 +1066,11 @@ export class Coordinator {
     const { hash } = this.requireBroadcast(transaction);
     const chain = transaction.chain;
     const members = await this.pendingMembersOf(hash);
+    // ADR-0054: an execute transaction is rebuilt by the approval capability, not from the Dispatch's items.
+    if (members.some((m) => m.proposalId !== null)) {
+      await this.approvalFlow.resubmitExpiredExecution(members, MAX_EXPIRY_RESUBMISSIONS, log);
+      return;
+    }
     const refs: { member: Transaction; call: Call }[] = [];
     for (const member of members) {
       const call = (await this.store.getDispatch(member.dispatchId))?.items[member.callIndex]?.call;
@@ -1270,6 +1304,13 @@ export class Coordinator {
     }
 
     if (statusResult.ok && statusResult.value === 'FAILED') {
+      if (transaction.proposalId) {
+        // ADR-0054: a still-approved Proposal is not FAILED while it can still execute.
+        return this.approvalFlow.failExecution(transaction, {
+          code: 'CHAIN_REJECTED',
+          message: `${transaction.chain} reported this transaction as failed`,
+        });
+      }
       log.info({ settledHash: transaction.hash }, 'transaction failed');
       await this.store.markFailed(transaction.id, {
         code: 'CHAIN_REJECTED',

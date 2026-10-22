@@ -22,6 +22,7 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
   proposerAddress = 'proposer-key';
   openProposalLimit = Number.POSITIVE_INFINITY;
   reexecuteOnFailure = true;
+  watchIntervalMs: number | undefined = undefined;
 
   /** Largest bundle `planBundles` makes by default; Infinity puts a Dispatch in one Proposal. */
   bundleSize = Number.POSITIVE_INFINITY;
