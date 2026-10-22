@@ -765,7 +765,10 @@ export class ApprovalFlow {
     }
     const attempts = entry.attempts + 1;
     if (attempts >= CLOSE_MAX_ATTEMPTS) {
-      log.warn({ error, attempts }, 'closing the finished proposal failed; giving up (its rent stays locked)');
+      log.warn(
+        { error, attempts },
+        'closing the finished proposal failed; giving up (its rent stays locked)',
+      );
       this.pendingCloses.delete(proposal.id);
       return;
     }

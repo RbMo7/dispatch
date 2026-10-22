@@ -876,3 +876,180 @@ describe('chains without the capability', () => {
     expect(listDue).not.toHaveBeenCalled();
   });
 });
+
+describe('closing finished proposals (#75)', () => {
+  const closeFailed: DispatchError = { code: 'RPC_UNAVAILABLE', message: 'node down' };
+  const executed = (hash = 'human-exec'): ProposalSnapshot => ({
+    status: 'executed',
+    approvals: 2,
+    threshold: 2,
+    executedHash: hash,
+    executable: false,
+  });
+
+  it('closes a proposal someone else executed, once, after the Calls are CONFIRMED', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1), item(2)]);
+    const closed: string[] = [];
+    s.approval.closeImpl = async (proposal) => {
+      closed.push(`${proposal.id}:${(await s.statuses(d.id)).join(',')}`);
+      return ok(undefined);
+    };
+    s.approval.readImpl = () => Promise.resolve(ok(executed()));
+
+    await s.coordinator.watchProposals(10);
+
+    expect(closed).toEqual([`${(await s.proposalOf(d.id)).id}:CONFIRMED,CONFIRMED`]);
+    s.advance(HOUR);
+    await s.coordinator.watchProposals(10);
+    expect(closed).toHaveLength(1);
+  });
+
+  for (const status of ['rejected', 'cancelled', 'stale'] as const) {
+    it(`closes a ${status} proposal after failing its Calls`, async () => {
+      const s = setup();
+      const d = await s.openProposal([item(1)]);
+      const closeImpl = vi.fn(() => Promise.resolve(ok(undefined)));
+      s.approval.closeImpl = closeImpl;
+      s.approval.readImpl = () =>
+        Promise.resolve(ok({ status, approvals: 0, threshold: 2, executable: false }));
+
+      await s.coordinator.watchProposals(10);
+
+      expect(closeImpl).toHaveBeenCalledTimes(1);
+      expect(await s.statuses(d.id)).toEqual(['FAILED']);
+    });
+  }
+
+  it('closes the proposal once the engine’s own execute is CONFIRMED', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1), item(2)]);
+    const closeImpl = vi.fn(() => Promise.resolve(ok(undefined)));
+    s.approval.closeImpl = closeImpl;
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    expect(closeImpl).not.toHaveBeenCalled(); // an approved proposal is not closable yet
+
+    s.handler.statuses.set('hash-of-signed-1', 'CONFIRMED');
+    await s.coordinator.pollPendingTransactions(10);
+    expect(await s.statuses(d.id)).toEqual(['CONFIRMED', 'CONFIRMED']);
+    s.advance(DEFAULT_WATCH_INTERVAL_MS);
+    await s.coordinator.watchProposals(10);
+
+    expect(closeImpl).toHaveBeenCalledTimes(1);
+    expect((await s.proposalOf(d.id)).phase).toBe('resolved');
+  });
+
+  it('never closes a timed-out proposal (that is #88)', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1)]);
+    const closeImpl = vi.fn(() => Promise.resolve(ok(undefined)));
+    s.approval.closeImpl = closeImpl;
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    await s.coordinator.watchProposals(10);
+    expect(await s.statuses(d.id)).toEqual(['ABANDONED']);
+    expect(closeImpl).not.toHaveBeenCalled();
+  });
+
+  it('a failed close, an error result or a throw never changes what the Calls reported', async () => {
+    for (const closeImpl of [
+      () => Promise.resolve(err(closeFailed)),
+      () => Promise.reject(new Error('boom')),
+    ]) {
+      const s = setup();
+      const d = await s.openProposal([item(1), item(2)]);
+      s.approval.closeImpl = closeImpl;
+      s.approval.readImpl = () => Promise.resolve(ok(executed()));
+
+      await s.coordinator.watchProposals(10);
+
+      expect(await s.statuses(d.id)).toEqual(['CONFIRMED', 'CONFIRMED']);
+      expect((await s.proposalOf(d.id)).phase).toBe('resolved');
+    }
+  });
+
+  it('tries a failed close again on a later tick, stops once it works, and gives up after five tries', async () => {
+    const s = setup();
+    await s.openProposal([item(1)]);
+    let attempts = 0;
+    s.approval.closeImpl = () => {
+      attempts += 1;
+      return Promise.resolve(attempts < 3 ? err(closeFailed) : ok(undefined));
+    };
+    s.approval.readImpl = () => Promise.resolve(ok(executed()));
+    await s.coordinator.watchProposals(10);
+    expect(attempts).toBe(1);
+
+    await s.coordinator.watchProposals(10); // too soon
+    expect(attempts).toBe(1);
+    s.advance(60_000);
+    await s.coordinator.watchProposals(10);
+    expect(attempts).toBe(2);
+    s.advance(120_000);
+    await s.coordinator.watchProposals(10);
+    expect(attempts).toBe(3);
+    s.advance(HOUR);
+    await s.coordinator.watchProposals(10);
+    expect(attempts).toBe(3); // done
+
+    const never = setup();
+    await never.openProposal([item(1)]);
+    const always = vi.fn(() => Promise.resolve(err(closeFailed)));
+    never.approval.closeImpl = always;
+    never.approval.readImpl = () => Promise.resolve(ok(executed()));
+    await never.coordinator.watchProposals(10);
+    for (let i = 0; i < 10; i++) {
+      never.advance(HOUR);
+      await never.coordinator.watchProposals(10);
+    }
+    expect(always).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not retry a multisig that cannot reclaim rent', async () => {
+    const s = setup();
+    await s.openProposal([item(1)]);
+    const noCollector: DispatchError = {
+      code: 'CHAIN_REJECTED',
+      message: 'no rent collector',
+      chainDetail: { reason: 'RENT_RECLAMATION_DISABLED' },
+    };
+    const closeImpl = vi.fn(() => Promise.resolve(err(noCollector)));
+    s.approval.closeImpl = closeImpl;
+    s.approval.readImpl = () => Promise.resolve(ok(executed()));
+    await s.coordinator.watchProposals(10);
+    s.advance(HOUR);
+    await s.coordinator.watchProposals(10);
+    expect(closeImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('a chain handler with no closeProposal simply is not asked', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1)]);
+    (s.approval as { closeProposal?: unknown }).closeProposal = undefined;
+    s.approval.readImpl = () => Promise.resolve(ok(executed()));
+    await s.coordinator.watchProposals(10);
+    expect(await s.statuses(d.id)).toEqual(['CONFIRMED']);
+  });
+
+  it('a failed execute that someone else then completed is CONFIRMED, never FAILED, and is closed', async () => {
+    const s = setup();
+    const d = await s.openProposal([item(1), item(2)]);
+    const closeImpl = vi.fn(() => Promise.resolve(ok(undefined)));
+    s.approval.closeImpl = closeImpl;
+    s.approval.readImpl = () => Promise.resolve(ok(approved()));
+    await s.coordinator.watchProposals(10);
+    s.handler.statuses.set('hash-of-signed-1', 'FAILED');
+    const markFailed = vi.spyOn(s.store, 'markFailed');
+    // Between the failed attempt and the check, an Approver with Execute ran it.
+    s.approval.readImpl = () => Promise.resolve(ok(executed('human-exec')));
+
+    await s.coordinator.pollPendingTransactions(10);
+
+    expect(markFailed).not.toHaveBeenCalled();
+    expect((await s.rows(d.id)).map((t) => [t.status, t.hash])).toEqual([
+      ['CONFIRMED', 'human-exec'],
+      ['CONFIRMED', 'human-exec'],
+    ]);
+    expect(closeImpl).toHaveBeenCalledTimes(1);
+  });
+});
