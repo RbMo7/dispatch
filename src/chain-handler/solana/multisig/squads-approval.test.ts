@@ -604,7 +604,7 @@ describe('SquadsApproval.submitProposal', () => {
   });
 });
 
-describe('SquadsApproval.estimateApprovalCost and the #75 stubs', () => {
+describe('SquadsApproval.estimateApprovalCost', () => {
   it('sums the fees and rent of every proposal, and reports the rent that is locked', async () => {
     const a = approval();
     const calls = Array.from({ length: 13 }, () => sol(wallet(), 1n)); // two proposals
@@ -619,14 +619,8 @@ describe('SquadsApproval.estimateApprovalCost and the #75 stubs', () => {
     expect(BigInt(cost.value.amount)).toBeGreaterThan(BigInt(cost.value.rentLocked));
   });
 
-  it('answers with a structured error, never a throw, for reading, executing and closing', async () => {
+  it('reports its holders and limits', () => {
     const a = approval();
-    const read = await a.readProposal();
-    const exec = await a.prepareExecution({} as never);
-    const close = await a.closeProposal({} as never);
-    for (const r of [read, exec, close]) {
-      expect(!r.ok && r.error.message).toContain('#74');
-    }
     expect(a.holders).toEqual({ sender: 'vault', proposer: 'memberKey' });
     expect(a.openProposalLimit).toBe(Infinity);
     expect(a.reexecuteOnFailure).toBe(true);

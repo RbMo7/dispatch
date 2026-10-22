@@ -25,6 +25,9 @@ const BACKOFF_MAX_MS = 5 * 60 * 1000;
 export const DEFAULT_WATCH_INTERVAL_MS = 15_000;
 /** After a failed execute is reopened, how long before the next try: a persistently failing execute is not hammered every tick. */
 const EXECUTE_RETRY_DELAY_MS = 60_000;
+/** A best-effort close that failed is tried again this many times in all, each try a little later than the last. */
+const CLOSE_MAX_ATTEMPTS = 5;
+const CLOSE_RETRY_MS = 30_000;
 /** A timed-out Proposal waits for the re-watch window (#88); until that exists it is only parked, not read. */
 const TIMED_OUT_PARK_MS = 60 * 60 * 1000;
 
@@ -68,6 +71,11 @@ export class ApprovalFlow {
   private readonly queues = new Map<string, Promise<void>>();
   /** Per chain, in memory only: when proposing may be tried again after a transient failure. */
   private readonly backoff = new Map<Chain, { until: number; failures: number }>();
+  /** Finished Proposals whose accounts still need closing (#75), in memory only: a restart forgets them, which costs only rent. */
+  private readonly pendingCloses = new Map<
+    string,
+    { proposal: Proposal; attempts: number; nextAt: number }
+  >();
 
   constructor(deps: ApprovalFlowDeps) {
     this.store = deps.store;
@@ -325,6 +333,7 @@ export class ApprovalFlow {
   async watch(limit: number): Promise<void> {
     const chains = this.chains();
     if (chains.length === 0) return;
+    await this.retryCloses();
     for (const proposal of await this.store.listProposalsDue(chains, this.now(), limit)) {
       try {
         await this.watchOne(proposal);
@@ -409,6 +418,7 @@ export class ApprovalFlow {
         status: 'CONFIRMED',
         ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
       });
+      await this.closeFinished(proposal, approval);
       return;
     }
     // (2) Rejected, cancelled, or stale and not approved (an approved stale one is just `approved`).
@@ -429,6 +439,7 @@ export class ApprovalFlow {
           chainDetail: { status: snapshot.status },
         },
       });
+      await this.closeFinished(proposal, approval);
       return;
     }
     // (3) The deadline, before any execute: a late approval is never executed (ADR-0053).
@@ -525,6 +536,8 @@ export class ApprovalFlow {
     }
     if (calls.every((c) => c.status === 'CONFIRMED' || c.status === 'FAILED')) {
       await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+      // The execute landed: the accounts are Executed and closable, and their rent is the member key's to take back.
+      if (calls.some((c) => c.status === 'CONFIRMED')) await this.closeFinished(proposal, approval);
       return;
     }
     await this.reschedule(proposal, this.cadence(approval));
@@ -570,10 +583,28 @@ export class ApprovalFlow {
     const calls = await this.store.listProposalCalls(proposal.id);
     const pending = calls.filter((c) => c.status === 'PENDING');
     let retry = false;
+    let finished = false;
     if (approval.reexecuteOnFailure && !this.deadlinePassed(proposal)) {
       const read = await approval.readProposal(proposal.chainRef);
       if (!read.ok) return false; // cannot tell whether it can still execute: never report FAILED yet
+      if (read.value.status === 'executed') {
+        // Someone else executed it while this attempt was failing: the money moved, whatever the failed attempt said.
+        this.logger.info(
+          { proposalId: proposal.id, executedHash: read.value.executedHash },
+          'execute failed but the proposal was executed by someone else',
+        );
+        await this.store.settleProposal(proposal.id, {
+          status: 'CONFIRMED',
+          ...(read.value.executedHash === undefined ? {} : { hash: read.value.executedHash }),
+        });
+        await this.closeFinished(proposal, approval);
+        return true;
+      }
       retry = read.value.status === 'approved';
+      finished =
+        read.value.status === 'rejected' ||
+        read.value.status === 'cancelled' ||
+        read.value.status === 'stale';
     }
     // A Call that will be executed again is never marked FAILED, not even for an instant: a poll
     // (or a crash) in between would report a terminal failure for a proposal that can still pay
@@ -594,6 +625,7 @@ export class ApprovalFlow {
       for (const call of pending) await this.store.markFailed(call.id, error);
     }
     await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+    if (finished) await this.closeFinished(proposal, approval);
     return true;
   }
 
@@ -685,6 +717,64 @@ export class ApprovalFlow {
       const replacement = replacements[0];
       if (replacement) await this.failExecution(replacement, broadcast.error);
     }
+  }
+
+  /**
+   * Best effort, after a Proposal is known to be finished (executed, rejected,
+   * cancelled or stale): asks the chain to close it and take its rent back.
+   * Whatever happens here never changes what the Calls reported. A failure is
+   * logged and tried again a few times, from `watch`; closing the Proposals of
+   * timed-out Calls is #88's.
+   */
+  private async closeFinished(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    if (!approval.closeProposal) return;
+    await this.tryClose({ proposal, attempts: 0, nextAt: 0 });
+  }
+
+  private async retryCloses(): Promise<void> {
+    for (const entry of [...this.pendingCloses.values()]) {
+      if (entry.nextAt <= this.now().getTime()) await this.tryClose(entry);
+    }
+  }
+
+  private async tryClose(entry: {
+    proposal: Proposal;
+    attempts: number;
+    nextAt: number;
+  }): Promise<void> {
+    const { proposal } = entry;
+    const approval = this.chainHandlers.get(proposal.chain)?.approval;
+    if (!approval?.closeProposal) return;
+    const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
+    let error: DispatchError | undefined;
+    try {
+      const result = await approval.closeProposal(proposal);
+      if (result.ok) {
+        this.pendingCloses.delete(proposal.id);
+        return;
+      }
+      error = result.error;
+    } catch (cause) {
+      error = { code: 'RPC_UNAVAILABLE', message: String(cause) };
+    }
+    const reason = (error.chainDetail as { reason?: unknown } | undefined)?.reason;
+    if (reason === 'RENT_RECLAMATION_DISABLED') {
+      // Permanent: no number of tries changes it. The chain handler has already said so.
+      this.pendingCloses.delete(proposal.id);
+      return;
+    }
+    const attempts = entry.attempts + 1;
+    if (attempts >= CLOSE_MAX_ATTEMPTS) {
+      log.warn({ error, attempts }, 'closing the finished proposal failed; giving up (its rent stays locked)');
+      this.pendingCloses.delete(proposal.id);
+      return;
+    }
+    log.warn({ error, attempts }, 'closing the finished proposal failed; will try again');
+    this.pendingCloses.set(proposal.id, {
+      proposal,
+      attempts,
+      nextAt: this.now().getTime() + CLOSE_RETRY_MS * attempts,
+    });
   }
 
   private cadence(approval: ApprovalCapability): number {
