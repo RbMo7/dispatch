@@ -1055,9 +1055,15 @@ describe.skipIf(!RUN)(
           ).toString('base64'),
         });
         expect(plain.status).toBe(403);
-        expect(
-          audit.filter((line) => line.decision === 'refused' && line.status === 403),
-        ).toHaveLength(3);
+        // Three refusals in the audit log, on top of the startup probe's own.
+        const refusals = audit.filter(
+          (line) =>
+            line.decision === 'refused' &&
+            line.status === 403 &&
+            !/undecodable transaction/.test(line.reason ?? ''),
+        );
+        expect(refusals).toHaveLength(3);
+        expect(plain.body.reason).toMatch(/allowedSafe|safe|destination/i);
       },
       SCENARIO_TIMEOUT_MS + 120_000,
     );
