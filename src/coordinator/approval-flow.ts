@@ -205,7 +205,14 @@ export class ApprovalFlow {
     const dispatchId = rows[0]?.dispatchId as string;
     const log = this.logger.child({ chain, dispatchId, calls: rows.length });
 
-    const built = await approval.buildProposal({ calls, sender });
+    // #84: the chain's own sequence read can lag right after an execution; never build below what
+    // this engine already knows was consumed (a CONFIRMED execution; a reverted one consumed nothing).
+    const lastConfirmed = await this.store.highestConfirmedSequence(chain, sender);
+    const built = await approval.buildProposal({
+      calls,
+      sender,
+      ...(lastConfirmed === null ? {} : { minSequence: lastConfirmed + 1 }),
+    });
     if (!built.ok) {
       return this.handleFailure(chain, rows, built.error, 'buildProposal', log);
     }

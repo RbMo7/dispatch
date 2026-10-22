@@ -217,6 +217,14 @@ export interface DispatchStore {
    * sequence and collide with it.
    */
   hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean>;
+  /**
+   * The highest `sequence` among `senderAddress`'s Proposals on `chain` that
+   * have a CONFIRMED Call, or null when none: the engine's own knowledge of
+   * the last sequence (Safe nonce) known to be consumed. Only a CONFIRMED
+   * execution counts: a reverted execute leaves a Safe's nonce unchanged
+   * (stale-nonce guard, #84).
+   */
+  highestConfirmedSequence(chain: Chain, senderAddress: string): Promise<number | null>;
   /** Unresolved Proposals on `chains` whose `nextCheckAt` is no later than `now`, most overdue first. Does not stamp them: the watcher reschedules with `updateProposal`. */
   listProposalsDue(chains: ChainScope, now: Date, limit: number): Promise<Proposal[]>;
   /** A Proposal's Calls in position order, one Transaction per Call (never a REPLACED or DROPPED version). */

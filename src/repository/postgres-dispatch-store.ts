@@ -669,6 +669,20 @@ export class PostgresDispatchStore implements DispatchStore {
     return row?.count ?? 0;
   }
 
+  async highestConfirmedSequence(chain: Chain, senderAddress: string): Promise<number | null> {
+    const [row] = await this.db
+      .select({ highest: sql<number | null>`max(${proposals.sequence})::float8` })
+      .from(proposals)
+      .where(
+        and(
+          eq(proposals.chain, chain),
+          eq(proposals.senderAddress, senderAddress),
+          sql`exists (select 1 from ${transactions} where ${transactions.proposalId} = ${proposals.id} and ${transactions.status} = 'CONFIRMED')`,
+        ),
+      );
+    return row?.highest ?? null;
+  }
+
   async hasNotedProposal(chain: Chain, senderAddress: string): Promise<boolean> {
     const row = await this.db.query.proposals.findFirst({
       columns: { id: true },
