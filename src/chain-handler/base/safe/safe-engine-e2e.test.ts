@@ -136,11 +136,26 @@ describe.skipIf(!RUN)(
       route: string,
       body?: unknown,
     ): Promise<{ status: number; body: T }> {
-      const response = await fetch(`${SERVICE}/api${route}`, {
-        method,
-        headers: { 'content-type': 'application/json' },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
+      // A connect timeout or a 429 on the unauthenticated service is the network, not the engine: retry a few times.
+      let response: Response | undefined;
+      for (let attempt = 1; response === undefined; attempt += 1) {
+        try {
+          const attempted = await fetch(`${SERVICE}/api${route}`, {
+            method,
+            headers: { 'content-type': 'application/json' },
+            signal: AbortSignal.timeout(20_000),
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          });
+          if ((attempted.status === 429 || attempted.status >= 500) && attempt < 4) {
+            await sleep(3_000 * attempt);
+            continue;
+          }
+          response = attempted;
+        } catch (cause) {
+          if (attempt >= 4) throw cause;
+          await sleep(3_000 * attempt);
+        }
+      }
       const text = await response.text();
       let parsed: unknown = text;
       try {
@@ -965,7 +980,14 @@ describe.skipIf(!RUN)(
             line.status === 200,
         );
         expect(execute, 'the accepted execTransaction in the audit log').toBeDefined();
-        expect(audit.filter((line) => line.decision === 'refused')).toEqual([]); // the engine never tripped a policy
+        // The engine never tripped a policy. The one refusal is the startup check's own probe: an empty
+        // transaction, refused as undecodable on purpose, which proves the Signer holds the executor's key.
+        expect(
+          audit.filter(
+            (line) =>
+              line.decision === 'refused' && !/undecodable transaction/.test(line.reason ?? ''),
+          ),
+        ).toEqual([]);
 
         const sign = async (body: unknown) => {
           const response = await fetch(`${signerUrl}/sign`, {
