@@ -269,6 +269,29 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         translated.push(result.value);
       }
 
+      // #94 (ADR-0054): a Multisig Sender only proposes transfers it can describe. The claim-time
+      // `planBundles` stays as the safety net, but there it fails every Call of the Dispatch, after
+      // the caller already holds a 202 — so ask the same pure planner about each item here.
+      if (handler.approval) {
+        if (bulkCall !== undefined) {
+          return reply.code(400).send({
+            code: 'CHAIN_REJECTED',
+            message: `chain ${chain} is in multisig mode, which has no Bulk Call mode: every transfer is its own item in a Proposal`,
+          } satisfies DispatchError);
+        }
+        for (let i = 0; i < translated.length; i++) {
+          const item = translated[i];
+          if (!item) continue;
+          const plan = handler.approval.planBundles([item.call]);
+          if (!plan.ok) {
+            return reply.code(400).send({
+              ...plan.error,
+              message: `items[${i}]: ${plan.error.message} (a multisig Sender only proposes native and known-token transfers)`,
+            } satisfies DispatchError);
+          }
+        }
+      }
+
       // #11 (ADR-0038): the Chain Handler both signals Bulk Call support (by
       // having validateBulkCall at all) and checks the request against its
       // items — resolving the batch size and who funds each item.
