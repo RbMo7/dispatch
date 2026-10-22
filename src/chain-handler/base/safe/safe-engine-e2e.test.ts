@@ -118,6 +118,8 @@ describe.skipIf(!RUN)(
     let lastServiceCall = 0;
     let throttle: Promise<void> = Promise.resolve();
     let realFetch: typeof fetch;
+    /** Scenario 8: the next proposal POST to the service answers 503 (never reaches it). */
+    let failNextPropose = false;
 
     let executor: PrivateKeyAccount;
     let owners: PrivateKeyAccount[]; // o1, o2, o3
@@ -517,6 +519,14 @@ describe.skipIf(!RUN)(
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         if (!url.startsWith('https://api.safe.global/')) return realFetch(input, init);
+        if (
+          failNextPropose &&
+          init?.method === 'POST' &&
+          /\/safes\/[^/]+\/multisig-transactions\/$/.test(url)
+        ) {
+          failNextPropose = false;
+          return Promise.resolve(new Response('service unavailable', { status: 503 }));
+        }
         const turn = throttle.then(async () => {
           const wait = lastServiceCall + 650 - Date.now();
           if (wait > 0) await sleep(wait);
@@ -1057,6 +1067,39 @@ describe.skipIf(!RUN)(
         );
         expect(refusals).toHaveLength(3);
         expect(plain.body.reason).toMatch(/allowedSafe|safe|destination/i);
+      },
+      SCENARIO_TIMEOUT_MS + 120_000,
+    );
+
+    // 8 --------------------------------------------------------------------------------------------
+    it(
+      '8. a proposal whose first POST fails (503) is re-posted by the watch, appears in the real service as the delegate’s, is confirmed and executed to CONFIRMED',
+      async () => {
+        await truncateAll();
+        const coordinator = makeCoordinator();
+        const recipient = freshAddress();
+        const nonce = await safeNonce();
+        failNextPropose = true;
+        const id = await postDispatch([{ type: 'payment', recipient, asset: 'ETH', amount: '33' }]);
+        const awaiting = await drive(coordinator, 'the Call to await approval', async () => {
+          const body = await getDispatch(id);
+          return body.items[0]?.status === 'awaiting_approval' ? body : undefined;
+        });
+        expect(failNextPropose, 'the first POST was the one that failed').toBe(false);
+        const ref = awaiting.items[0]?.approval?.chainRef;
+        expect(ref?.nonce).toBe(nonce);
+        const proposed = await readServiceTx(ref?.safeTxHash as Hex);
+        expect(proposed.proposedByDelegate?.toLowerCase()).toBe(executor.address.toLowerCase());
+        expect(proposed.isExecuted).toBe(false);
+
+        await confirm(ref?.safeTxHash as Hex, [owners[1], owners[2]] as PrivateKeyAccount[]);
+        const done = await drive(coordinator, 'the Call to be CONFIRMED', async () => {
+          const body = await getDispatch(id);
+          return body.items[0]?.status === 'confirmed' ? body : undefined;
+        });
+        expect(done.status).toBe('confirmed');
+        await expectBalances(recipient, { eth: 33n });
+        await waitForSafeNonce(nonce + 1);
       },
       SCENARIO_TIMEOUT_MS + 120_000,
     );
