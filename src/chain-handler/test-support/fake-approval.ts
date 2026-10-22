@@ -81,12 +81,25 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
       ok({ signedBytes: `signed-${built.proposalRef}`, hash: `hash-${built.proposalRef}` }),
     );
 
+  /** Which Proposal each signed hash belongs to, so a successful submit can mark it landed. */
+  private readonly refOfHash = new Map<string, string>();
+
   submitImpl: (signed: SignedProposal) => Promise<Result<void, DispatchError>> = () =>
     Promise.resolve(ok(undefined));
 
-  readImpl: (ref: ChainProposalRef) => Promise<Result<ProposalSnapshot, DispatchError>> = () =>
+  /** Proposals a submit succeeded for: the default read reports these `active` and everything else `unknown` (not on-chain). */
+  readonly landed = new Set<string>();
+
+  readImpl: (ref: ChainProposalRef) => Promise<Result<ProposalSnapshot, DispatchError>> = (ref) =>
     Promise.resolve(
-      ok({ status: 'active', approvals: 0, threshold: this.threshold, executable: false }),
+      ok({
+        status: this.landed.has(ref.kind === 'squads' ? ref.proposal : ref.safeTxHash)
+          ? 'active'
+          : 'unknown',
+        approvals: 0,
+        threshold: this.threshold,
+        executable: false,
+      }),
     );
 
   prepareExecutionImpl: (
@@ -120,6 +133,7 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
 
   async signProposal(built: BuiltProposal): Promise<Result<SignedProposal, DispatchError>> {
     const result = await this.signImpl(built);
+    if (result.ok) this.refOfHash.set(result.value.hash, built.proposalRef);
     this.events.push(`${result.ok ? 'sign' : 'sign-failed'}:${built.proposalRef}`);
     if (result.ok) this.signed.push(built);
     return result;
@@ -128,7 +142,11 @@ export class FakeApproval<C extends Chain = Chain> implements ApprovalCapability
   async submitProposal(signed: SignedProposal): Promise<Result<void, DispatchError>> {
     const result = await this.submitImpl(signed);
     this.events.push(`${result.ok ? 'submit' : 'submit-failed'}:${signed.hash}`);
-    if (result.ok) this.submitted.push(signed);
+    if (result.ok) {
+      this.submitted.push(signed);
+      const ref = this.refOfHash.get(signed.hash);
+      if (ref) this.landed.add(ref);
+    }
     return result;
   }
 

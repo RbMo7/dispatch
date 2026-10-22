@@ -1196,3 +1196,263 @@ describe('closing finished proposals (#75)', () => {
     expect(closeImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Coordinator.watchProposals: a noted proposal never wedges the Sender', () => {
+  const expired: DispatchError = {
+    code: 'RPC_UNAVAILABLE',
+    message: 'blockhash expired',
+    chainDetail: { reason: 'BLOCKHASH_EXPIRED' },
+  };
+  const rejected: DispatchError = { code: 'CHAIN_REJECTED', message: 'the service said no' };
+
+  /** A Dispatch whose first send did not go through, so its proposal is `noted`. */
+  const notedProposal = async (s: ReturnType<typeof setup>) => {
+    s.approval.submitImpl = () => Promise.resolve(err(rpcDown));
+    const d = await s.dispatch([item(1)]);
+    await s.coordinator.processQueuedDispatches(10);
+    expect((await s.proposalOf(d.id)).phase).toBe('noted');
+    return d;
+  };
+
+  it('moves a proposal that already landed to open without sending again', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.readImpl = () => Promise.resolve(ok(active()));
+    s.approval.submitImpl = () => Promise.resolve(ok(undefined));
+    const sends = s.approval.submitted.length;
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect((await s.proposalOf(d.id)).phase).toBe('open');
+    expect(s.approval.submitted).toHaveLength(sends);
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+  });
+
+  it.each(['approved', 'rejected', 'cancelled', 'executed', 'stale'] as const)(
+    'treats a %s proposal as existing: open for watchOpen, never re-sent',
+    async (status) => {
+      const s = setup();
+      const d = await notedProposal(s);
+      s.approval.readImpl = () =>
+        Promise.resolve(ok({ status, approvals: 2, threshold: 2, executable: false }));
+      s.approval.submitImpl = () => Promise.resolve(err(rejected));
+      s.advance(10 * 60 * 1000);
+
+      await s.coordinator.watchProposals(1);
+
+      expect((await s.proposalOf(d.id)).phase).not.toBe('noted');
+      expect(s.approval.submitted).toHaveLength(0);
+      expect(s.approval.events.filter((e) => e.startsWith('submit'))).toHaveLength(1); // only the first, failed send
+    },
+  );
+
+  it('backs off when the existence check cannot be read, sending nothing', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.readImpl = () => Promise.resolve(err(rpcDown));
+    const events = s.approval.events.length;
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect(await s.proposalOf(d.id)).toMatchObject({ phase: 'noted', checkFailures: 1 });
+    expect(s.approval.events).toHaveLength(events);
+  });
+
+  it('re-signs an expired blockhash, writing the new bytes down before sending them', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.signImpl = () =>
+      Promise.resolve(ok({ signedBytes: 'resigned-1', hash: 'rehash-1' }));
+    const seenWhenSending: string[] = [];
+    s.approval.submitImpl = async (signed) => {
+      const stored = await s.proposalOf(d.id);
+      seenWhenSending.push(`${signed.signedBytes}|stored:${stored.proposeSignedBytes}`);
+      return signed.signedBytes === 'signed-prop-1' ? err(expired) : ok(undefined);
+    };
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect(await s.proposalOf(d.id)).toMatchObject({
+      phase: 'open',
+      proposeSignedBytes: 'resigned-1',
+      proposeHash: 'rehash-1',
+    });
+    // The re-signed bytes were already stored at the moment they were sent.
+    expect(seenWhenSending).toEqual([
+      'signed-prop-1|stored:signed-prop-1',
+      'resigned-1|stored:resigned-1',
+    ]);
+    // Rebuilt from the stored proposal.
+    expect(s.approval.signed.at(-1)).toMatchObject({
+      proposalRef: 'prop-1',
+      payload: 'payload-prop-1',
+      sequence: 1,
+    });
+    expect(s.approval.events.slice(-3)).toEqual([
+      'submit-failed:hash-prop-1',
+      'sign:prop-1',
+      'submit:rehash-1',
+    ]);
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+  });
+
+  it('bounds the re-signs: a proposal that keeps expiring backs off and is abandoned at the deadline', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.submitImpl = () => Promise.resolve(err(expired));
+    for (let i = 0; i < 12; i += 1) {
+      s.advance(10 * 60 * 1000);
+      await s.coordinator.watchProposals(10);
+    }
+    // 5 re-signs at most (plus the original signing), however many passes.
+    expect(s.approval.signed.length).toBeLessThanOrEqual(1 + 5);
+    expect((await s.proposalOf(d.id)).phase).toBe('noted');
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+    await s.coordinator.watchProposals(10);
+    expect(await s.statuses(d.id)).toEqual(['ABANDONED']);
+  });
+
+  it('backs off, keeping the old bytes, when re-signing finds the Signer unreachable', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.submitImpl = () => Promise.resolve(err(expired));
+    s.approval.signImpl = () => Promise.resolve(err(signerDown));
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect(await s.proposalOf(d.id)).toMatchObject({
+      phase: 'noted',
+      proposeSignedBytes: 'signed-prop-1',
+      checkFailures: 1,
+    });
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+  });
+
+  it('fails the Calls when the chain refuses the send and the proposal does not exist', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.submitImpl = () => Promise.resolve(err(rejected));
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['FAILED', 'CHAIN_REJECTED'],
+    ]);
+    expect((await s.proposalOf(d.id)).phase).toBe('resolved');
+  });
+
+  it('fails the Calls when re-signing is refused by the Signer', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.submitImpl = () => Promise.resolve(err(expired));
+    s.approval.signImpl = () => Promise.resolve(err(signerRefused));
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['FAILED', 'SIGNER_REFUSED'],
+    ]);
+    expect((await s.proposalOf(d.id)).phase).toBe('resolved');
+  });
+
+  it('does NOT fail the Calls when the chain would refuse a re-send but the proposal exists', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.readImpl = () => Promise.resolve(ok(active()));
+    s.approval.submitImpl = () => Promise.resolve(err(rejected));
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+    expect((await s.proposalOf(d.id)).phase).toBe('open');
+  });
+
+  it('does not treat a transient send error as a refusal', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.approval.submitImpl = () => Promise.resolve(err(signerDown));
+    s.advance(10 * 60 * 1000);
+
+    await s.coordinator.watchProposals(10);
+
+    expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
+    expect((await s.proposalOf(d.id)).phase).toBe('noted');
+  });
+
+  it('a refused noted proposal no longer blocks the next Dispatch', async () => {
+    const s = setup();
+    const a = await notedProposal(s);
+    const b = await s.dispatch([item(2)]);
+    await s.coordinator.processQueuedDispatches(10);
+    expect(await s.statuses(b.id)).toEqual(['UNPROPOSED']); // held behind the noted one
+
+    s.approval.submitImpl = (signed) =>
+      Promise.resolve(signed.hash === 'hash-prop-1' ? err(rejected) : ok(undefined));
+    s.advance(10 * 60 * 1000);
+    await s.coordinator.watchProposals(10);
+    expect(await s.statuses(a.id)).toEqual(['FAILED']);
+
+    await s.coordinator.processQueuedDispatches(10);
+    expect(await s.statuses(b.id)).toEqual(['AWAITING_APPROVAL']);
+  });
+
+  it('a noted proposal that landed no longer blocks the next Dispatch once it is open', async () => {
+    const s = setup();
+    const a = await notedProposal(s);
+    const b = await s.dispatch([item(2)]);
+    s.approval.readImpl = () => Promise.resolve(ok(active()));
+    s.approval.submitImpl = () => Promise.resolve(ok(undefined));
+    s.advance(10 * 60 * 1000);
+    await s.coordinator.watchProposals(10);
+    expect((await s.proposalOf(a.id)).phase).toBe('open');
+
+    await s.coordinator.processQueuedDispatches(10);
+    expect(await s.statuses(b.id)).toEqual(['AWAITING_APPROVAL']);
+  });
+
+  it('continues from the persisted bytes after a restart in the middle', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    // First pass: re-signed and persisted, but the send is ambiguous.
+    s.approval.submitImpl = (signed) =>
+      Promise.resolve(signed.signedBytes === 'signed-prop-1' ? err(expired) : err(rpcDown));
+    s.approval.signImpl = () =>
+      Promise.resolve(ok({ signedBytes: 'resigned-1', hash: 'rehash-1' }));
+    s.advance(10 * 60 * 1000);
+    await s.coordinator.watchProposals(10);
+    expect(await s.proposalOf(d.id)).toMatchObject({
+      phase: 'noted',
+      proposeSignedBytes: 'resigned-1',
+    });
+
+    // Restart: a fresh Coordinator sends exactly the stored bytes.
+    const restarted = s.makeCoordinator();
+    s.approval.submitImpl = () => Promise.resolve(ok(undefined));
+    s.approval.submitted.length = 0;
+    s.advance(10 * 60 * 1000);
+    await restarted.watchProposals(10);
+
+    expect(s.approval.submitted).toEqual([{ signedBytes: 'resigned-1', hash: 'rehash-1' }]);
+    expect((await s.proposalOf(d.id)).phase).toBe('open');
+  });
+
+  it('abandons with a message saying the proposal could not be sent', async () => {
+    const s = setup();
+    const d = await notedProposal(s);
+    s.advance(DEFAULT_APPROVAL_DEADLINE_MS);
+
+    await s.coordinator.watchProposals(10);
+
+    const [row] = await s.rows(d.id);
+    expect(row?.error?.code).toBe('APPROVAL_TIMEOUT');
+    expect(row?.error?.message).toContain('could not be sent');
+  });
+});
