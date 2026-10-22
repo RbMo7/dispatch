@@ -16,6 +16,13 @@ import type { Chain } from './chain.js';
  */
 export type ProposalPhase = 'noted' | 'open' | 'executing' | 'timed_out' | 'resolved';
 
+/**
+ * Whether a finished Proposal's accounts still need closing (Squads rent, #88): `pending` from the
+ * moment it is known finished until a close succeeds (`closed`) or is given up on (`abandoned`, the rent stays locked), so a restart does not forget it.
+ * `null` is a Proposal nothing was ever asked to close (still live, or a chain that cannot close).
+ */
+export type CloseState = 'pending' | 'closed' | 'abandoned';
+
 /** What the Approvers have done so far (docs/api.md's `approval.state`). `approved_after_deadline` is only ever seen on a `timed_out` Proposal (ADR-0053). */
 export type ApprovalState = 'awaiting' | 'approved' | 'approved_after_deadline';
 
@@ -61,6 +68,7 @@ export type Proposal = {
   executeAfter: Date | null;
   timedOutAt: Date | null;
   resolvedAt: Date | null;
+  closeState: CloseState | null;
   createdAt: Date;
   /** The watch loop picks Proposals whose `nextCheckAt` has passed. */
   nextCheckAt: Date;

@@ -190,6 +190,8 @@ export class Coordinator {
       logger: this.logger,
       approvalDeadlineMs: deps.approvalDeadlineMs,
       approvalDeadlineMsByChain: deps.approvalDeadlineMsByChain,
+      approvalRewatchWindowMs: this.approvalRewatchWindowMs,
+      approvalRewatchWindowMsByChain: this.approvalRewatchWindowMsByChain,
     });
   }
 

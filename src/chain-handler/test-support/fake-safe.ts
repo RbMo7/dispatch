@@ -1,7 +1,14 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { hashMessage, type Address, type Hex } from 'viem';
+import {
+  encodeAbiParameters,
+  hashMessage,
+  parseAbiParameters,
+  toEventSelector,
+  type Address,
+  type Hex,
+} from 'viem';
 import { privateKeyToAccount, sign } from 'viem/accounts';
 
 import type { SafeApprovalClient } from '../base/safe/safe-approval.js';
@@ -56,7 +63,36 @@ export type FakeNodeState = {
   estimate: bigint | Error;
   baseFeePerGas: bigint;
   l1Fee: bigint;
+  /** What `getTransactionReceipt` answers per (lowercased) transaction hash; an `Error` rejects, a missing hash rejects as not found (#88). */
+  receipts: Map<string, FakeReceipt | Error>;
 };
+
+export type FakeReceipt = {
+  status: 'success' | 'reverted';
+  logs: { address: Address; topics: Hex[]; data: Hex }[];
+};
+
+/** `ExecutionSuccess(bytes32 txHash, uint256 payment)`'s topic 0. */
+export const EXECUTION_SUCCESS_TOPIC = toEventSelector(
+  'event ExecutionSuccess(bytes32 txHash, uint256 payment)',
+);
+
+/** A successful receipt carrying the Safe's `ExecutionSuccess` for `safeTxHash` (#88). */
+export function executionSuccessReceipt(safeTxHash: Hex, safe: Address = SAFE): FakeReceipt {
+  return {
+    status: 'success',
+    logs: [
+      {
+        address: safe,
+        topics: [EXECUTION_SUCCESS_TOPIC],
+        data: encodeAbiParameters(parseAbiParameters('bytes32 txHash, uint256 payment'), [
+          safeTxHash,
+          0n,
+        ]),
+      },
+    ],
+  };
+}
 
 const TRUE: Hex = `0x${'0'.repeat(63)}1`;
 const FALSE: Hex = `0x${'0'.repeat(64)}`;
@@ -75,6 +111,7 @@ export function fakeNode(overrides: Partial<FakeNodeState> = {}) {
     estimate: 1_000_000n,
     baseFeePerGas: 1_000_000n,
     l1Fee: 1_000n,
+    receipts: new Map(),
     ...overrides,
   };
   const log = {
@@ -91,6 +128,11 @@ export function fakeNode(overrides: Partial<FakeNodeState> = {}) {
       log.blockNumberReads++;
       const next = state.blocks.length > 1 ? state.blocks.shift() : state.blocks[0];
       return Promise.resolve(next as bigint);
+    },
+    getTransactionReceipt: ({ hash }: { hash: Hex }) => {
+      const receipt = state.receipts.get(hash.toLowerCase());
+      if (receipt === undefined) return Promise.reject(new Error(`receipt ${hash} not found`));
+      return receipt instanceof Error ? Promise.reject(receipt) : Promise.resolve(receipt);
     },
     getCode: () => Promise.resolve('0x6080' as Hex),
     getStorageAt: () => Promise.resolve('0x0' as Hex),

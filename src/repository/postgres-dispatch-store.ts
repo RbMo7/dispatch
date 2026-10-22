@@ -18,7 +18,13 @@ import { attempts, dispatches, proposals, relayDispatches, transactions } from '
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
-import type { ApprovalState, AssetAmount, Proposal, ProposalPhase } from '../domain/proposal.js';
+import type {
+  ApprovalState,
+  AssetAmount,
+  CloseState,
+  Proposal,
+  ProposalPhase,
+} from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
@@ -93,6 +99,7 @@ function toProposal(row: ProposalRow): Proposal {
     executeAfter: row.executeAfter,
     timedOutAt: row.timedOutAt,
     resolvedAt: row.resolvedAt,
+    closeState: row.closeState as CloseState | null,
     createdAt: row.createdAt,
     nextCheckAt: row.nextCheckAt,
     checkFailures: row.checkFailures,
@@ -246,6 +253,8 @@ export class PostgresDispatchStore implements DispatchStore {
       where: and(
         eq(transactions.chain, chain),
         eq(transactions.status, 'CONFIRMED'),
+        // A Call a proposal's other executor confirmed (#88) has no signed bytes of ours to re-check.
+        isNotNull(transactions.signedBytes),
         gte(transactions.confirmedAt, notConfirmedBefore),
       ),
       orderBy: transactions.confirmedAt,
@@ -703,6 +712,15 @@ export class PostgresDispatchStore implements DispatchStore {
         lte(proposals.nextCheckAt, now),
       ),
       orderBy: [proposals.nextCheckAt, proposals.createdAt],
+      limit,
+    });
+    return rows.map(toProposal);
+  }
+
+  async listProposalsAwaitingClose(chains: ChainScope, limit: number): Promise<Proposal[]> {
+    const rows = await this.db.query.proposals.findMany({
+      where: and(eq(proposals.closeState, 'pending'), inArray(proposals.chain, chains)),
+      orderBy: [proposals.createdAt, proposals.id],
       limit,
     });
     return rows.map(toProposal);
