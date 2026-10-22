@@ -616,7 +616,10 @@ export class ApprovalFlow {
     const prepared = await approval.prepareExecution(proposal);
     if (!prepared.ok) {
       if (isTransient(prepared.error)) {
-        log.warn({ error: prepared.error }, 'execute resubmission prepare failed; retried next tick');
+        log.warn(
+          { error: prepared.error },
+          'execute resubmission prepare failed; retried next tick',
+        );
       } else {
         log.warn({ error: prepared.error }, 'execute resubmission prepare failed');
         await this.failExecution(first, prepared.error);
@@ -661,7 +664,10 @@ export class ApprovalFlow {
       broadcast.error.code === 'RPC_UNAVAILABLE' ||
       broadcast.error.code === 'ALREADY_KNOWN'
     ) {
-      log.warn({ error: broadcast.error }, 'execute resubmission broadcast ambiguous — left PENDING');
+      log.warn(
+        { error: broadcast.error },
+        'execute resubmission broadcast ambiguous — left PENDING',
+      );
     } else {
       log.warn({ error: broadcast.error }, 'execute resubmission refused');
       const replacement = replacements[0];

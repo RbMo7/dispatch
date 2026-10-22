@@ -175,13 +175,7 @@ logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
-await Promise.all([
-  mainLoop(),
-  rewatchLoop(),
-  reorgRecheckLoop(),
-  reclaimLoop(),
-  approvalLoop(),
-]);
+await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop(), approvalLoop()]);
 
 logger.info('worker stopped');
 process.exit(0);

@@ -65,26 +65,26 @@ class MultisigHandler implements ChainHandler<'solana'> {
     Promise.resolve(ok([])),
   );
   sign = vi.fn(
-    (_prepared: PreparedTransaction, _signer: string): Promise<Result<SignedTransaction, DispatchError>> =>
+    (
+      _prepared: PreparedTransaction,
+      _signer: string,
+    ): Promise<Result<SignedTransaction, DispatchError>> =>
       Promise.resolve(ok(`signed-${++this.signed}`)),
   );
-  transactionHash = vi.fn(
-    (signed: SignedTransaction): Result<string, DispatchError> => ok(`hash-of-${signed}`),
+  transactionHash = vi.fn((signed: SignedTransaction): Result<string, DispatchError> =>
+    ok(`hash-of-${signed}`),
   );
-  broadcast = vi.fn(
-    (signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> =>
-      Promise.resolve(ok({ hash: `hash-of-${signed}` })),
+  broadcast = vi.fn((signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>> =>
+    Promise.resolve(ok({ hash: `hash-of-${signed}` })),
   );
-  getStatus = vi.fn(
-    (hash: string): Promise<Result<ChainStatus, DispatchError>> =>
-      Promise.resolve(ok(this.statuses.get(hash) ?? this.defaultStatus)),
+  getStatus = vi.fn((hash: string): Promise<Result<ChainStatus, DispatchError>> =>
+    Promise.resolve(ok(this.statuses.get(hash) ?? this.defaultStatus)),
   );
   getBalance = vi.fn((_address: string, asset: string): Promise<Result<Balance, DispatchError>> =>
     Promise.resolve(ok({ asset, amount: '1000000' })),
   );
-  prepareReplacement = vi.fn(
-    (): Promise<Result<PreparedTransaction, DispatchError>> =>
-      Promise.resolve(ok({ callIndex: 0, unsignedTransaction: 'replacement' })),
+  prepareReplacement = vi.fn((): Promise<Result<PreparedTransaction, DispatchError>> =>
+    Promise.resolve(ok({ callIndex: 0, unsignedTransaction: 'replacement' })),
   );
   restoreInFlight = vi.fn((_signed: string[]): Promise<void> => Promise.resolve());
 }
@@ -155,7 +155,7 @@ function setup(options: { stuck?: boolean } = {}) {
 }
 
 describe('Coordinator.watchProposals: noted and open (ADR-0054)', () => {
-  it('re-sends a noted proposal\'s persisted bytes and moves it to open', async () => {
+  it("re-sends a noted proposal's persisted bytes and moves it to open", async () => {
     const { coordinator, approval, dispatch, proposalOf } = setup();
     const d = await dispatch([item(1)]);
     await coordinator.processQueuedDispatches(10);
@@ -203,7 +203,7 @@ describe('Coordinator.watchProposals: noted and open (ADR-0054)', () => {
     expect((await proposalOf(d.id)).checkFailures).toBe(2);
   });
 
-  it('records approvals, threshold and approval state from each snapshot, on the chain\'s own cadence', async () => {
+  it("records approvals, threshold and approval state from each snapshot, on the chain's own cadence", async () => {
     const { coordinator, approval, openProposal, proposalOf, advance } = setup();
     approval.watchIntervalMs = 60_000;
     const d = await openProposal();
@@ -268,7 +268,10 @@ describe('Coordinator.watchProposals: approve, execute, confirm', () => {
       { callIndex: 0, unsignedTransaction: 'execute-prop-1' },
       'proposer-key',
     );
-    expect(beforeSend).toEqual(['PENDING:hash-of-signed-1:signed-1', 'PENDING:hash-of-signed-1:signed-1']);
+    expect(beforeSend).toEqual([
+      'PENDING:hash-of-signed-1:signed-1',
+      'PENDING:hash-of-signed-1:signed-1',
+    ]);
     expect((await proposalOf(d.id)).phase).toBe('executing');
     expect(await statuses(d.id)).toEqual(['PENDING', 'PENDING']);
     expect(handler.broadcast).toHaveBeenCalledTimes(1);
@@ -277,7 +280,11 @@ describe('Coordinator.watchProposals: approve, execute, confirm', () => {
     handler.statuses.set('hash-of-signed-1', 'CONFIRMED');
     await coordinator.pollPendingTransactions(10);
     expect(await statuses(d.id)).toEqual(['CONFIRMED', 'CONFIRMED']);
-    expect((await store.listProposalCalls((await proposalOf(d.id)).id)).map((c) => c.confirmedAt !== null)).toEqual([true, true]);
+    expect(
+      (await store.listProposalCalls((await proposalOf(d.id)).id)).map(
+        (c) => c.confirmedAt !== null,
+      ),
+    ).toEqual([true, true]);
     advance(DEFAULT_WATCH_INTERVAL_MS);
     await coordinator.watchProposals(10);
     expect(await proposalOf(d.id)).toMatchObject({ phase: 'resolved' });
@@ -287,7 +294,8 @@ describe('Coordinator.watchProposals: approve, execute, confirm', () => {
     const { coordinator, handler, approval, openProposal, advance, statuses, proposalOf } = setup();
     const d = await openProposal([item(1)]);
     const releaseAt = new Date('2024-01-01T01:00:00.000Z');
-    approval.readImpl = () => Promise.resolve(ok(approved({ executeAfter: releaseAt, executable: false })));
+    approval.readImpl = () =>
+      Promise.resolve(ok(approved({ executeAfter: releaseAt, executable: false })));
 
     await coordinator.watchProposals(10);
     expect(handler.sign).not.toHaveBeenCalled();
@@ -315,7 +323,15 @@ describe('Coordinator.watchProposals: executed, rejected, stale, cancelled', () 
     const { coordinator, handler, approval, openProposal, rows, proposalOf } = setup();
     const d = await openProposal([item(1), item(2)]);
     approval.readImpl = () =>
-      Promise.resolve(ok({ status: 'executed', approvals: 2, threshold: 2, executedHash: 'human-exec', executable: false }));
+      Promise.resolve(
+        ok({
+          status: 'executed',
+          approvals: 2,
+          threshold: 2,
+          executedHash: 'human-exec',
+          executable: false,
+        }),
+      );
 
     await coordinator.watchProposals(10);
 
@@ -332,7 +348,15 @@ describe('Coordinator.watchProposals: executed, rejected, stale, cancelled', () 
     const d = await openProposal([item(1)]);
     advance(DEFAULT_APPROVAL_DEADLINE_MS);
     approval.readImpl = () =>
-      Promise.resolve(ok({ status: 'executed', approvals: 2, threshold: 2, executedHash: 'late', executable: false }));
+      Promise.resolve(
+        ok({
+          status: 'executed',
+          approvals: 2,
+          threshold: 2,
+          executedHash: 'late',
+          executable: false,
+        }),
+      );
     await coordinator.watchProposals(10);
     expect(await statuses(d.id)).toEqual(['CONFIRMED']);
   });
@@ -341,7 +365,8 @@ describe('Coordinator.watchProposals: executed, rejected, stale, cancelled', () 
     it(`fails the Calls with APPROVAL_REJECTED when the proposal is ${status}`, async () => {
       const { coordinator, handler, approval, openProposal, rows, proposalOf } = setup();
       const d = await openProposal([item(1), item(2)]);
-      approval.readImpl = () => Promise.resolve(ok({ status, approvals: 0, threshold: 2, executable: false }));
+      approval.readImpl = () =>
+        Promise.resolve(ok({ status, approvals: 0, threshold: 2, executable: false }));
 
       await coordinator.watchProposals(10);
 
@@ -361,7 +386,10 @@ describe('Coordinator.watchProposals: the deadline (ADR-0053)', () => {
     approval.readImpl = () => Promise.resolve(ok(active()));
 
     await coordinator.watchProposals(10);
-    expect((await rows(d.id)).map((t) => t.status)).toEqual(['AWAITING_APPROVAL', 'AWAITING_APPROVAL']);
+    expect((await rows(d.id)).map((t) => t.status)).toEqual([
+      'AWAITING_APPROVAL',
+      'AWAITING_APPROVAL',
+    ]);
 
     advance(DEFAULT_APPROVAL_DEADLINE_MS);
     await coordinator.watchProposals(10);
@@ -461,7 +489,9 @@ describe('Coordinator.watchProposals: the signer on execute', () => {
     handler.sign.mockResolvedValue(err(signerRefused));
 
     await coordinator.watchProposals(10);
-    expect((await rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([['FAILED', 'SIGNER_REFUSED']]);
+    expect((await rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['FAILED', 'SIGNER_REFUSED'],
+    ]);
     expect((await proposalOf(d.id)).phase).toBe('resolved');
 
     for (let i = 0; i < 3; i++) {
@@ -495,7 +525,9 @@ describe('Coordinator.watchProposals: the signer on execute', () => {
     const d = await openProposal([item(1)]);
     approval.readImpl = () => Promise.resolve(ok(approved()));
     approval.prepareExecutionImpl = () =>
-      Promise.resolve(err({ code: 'CHAIN_REJECTED', message: 'simulation failed: underfunded vault' }));
+      Promise.resolve(
+        err({ code: 'CHAIN_REJECTED', message: 'simulation failed: underfunded vault' }),
+      );
 
     await coordinator.watchProposals(10);
     expect(await statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
@@ -530,7 +562,10 @@ describe('a failed execute (reexecuteOnFailure)', () => {
     s.advance(HOUR);
     await s.coordinator.watchProposals(10);
     expect(await s.statuses(d.id)).toEqual(['PENDING', 'PENDING']);
-    expect((await s.rows(d.id)).map((t) => t.hash)).toEqual(['hash-of-signed-2', 'hash-of-signed-2']);
+    expect((await s.rows(d.id)).map((t) => t.hash)).toEqual([
+      'hash-of-signed-2',
+      'hash-of-signed-2',
+    ]);
 
     s.handler.statuses.set('hash-of-signed-2', 'CONFIRMED');
     await s.coordinator.pollPendingTransactions(10);
@@ -551,7 +586,8 @@ describe('a failed execute (reexecuteOnFailure)', () => {
   it('fails the Calls when the proposal is no longer approved', async () => {
     const s = setup();
     const d = await failFirstExecute(s);
-    s.approval.readImpl = () => Promise.resolve(ok({ status: 'cancelled', approvals: 0, threshold: 2, executable: false }));
+    s.approval.readImpl = () =>
+      Promise.resolve(ok({ status: 'cancelled', approvals: 0, threshold: 2, executable: false }));
 
     await s.coordinator.pollPendingTransactions(10);
     expect(await s.statuses(d.id)).toEqual(['FAILED', 'FAILED']);
@@ -582,7 +618,9 @@ describe('a failed execute (reexecuteOnFailure)', () => {
     const s = setup();
     const d = await s.openProposal([item(1)]);
     s.approval.readImpl = () => Promise.resolve(ok(approved()));
-    s.handler.broadcast.mockResolvedValueOnce(err({ code: 'CHAIN_REJECTED', message: 'simulation failed' }));
+    s.handler.broadcast.mockResolvedValueOnce(
+      err({ code: 'CHAIN_REJECTED', message: 'simulation failed' }),
+    );
 
     await s.coordinator.watchProposals(10);
     expect(await s.statuses(d.id)).toEqual(['AWAITING_APPROVAL']);
@@ -661,10 +699,12 @@ describe('the execute transaction in the existing machinery', () => {
     s.handler.sign.mockResolvedValueOnce(err(signerRefused));
 
     await s.coordinator.pollPendingTransactions(10);
-    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([['FAILED', 'SIGNER_REFUSED']]);
+    expect((await s.rows(d.id)).map((t) => [t.status, t.error?.code])).toEqual([
+      ['FAILED', 'SIGNER_REFUSED'],
+    ]);
   });
 
-  it('fee-bumps a stuck execute under the Dispatch\'s own Retry Policy, signed as the proposer', async () => {
+  it("fee-bumps a stuck execute under the Dispatch's own Retry Policy, signed as the proposer", async () => {
     const s = setup({ stuck: true });
     const d = await s.openProposal([item(1)], true);
     s.approval.readImpl = () => Promise.resolve(ok(approved()));
@@ -678,7 +718,10 @@ describe('the execute transaction in the existing machinery', () => {
       { callIndex: 0, unsignedTransaction: 'replacement' },
       'proposer-key',
     );
-    expect((await s.store.listTransactions(d.id)).map((t) => t.status).sort()).toEqual(['PENDING', 'REPLACED']);
+    expect((await s.store.listTransactions(d.id)).map((t) => t.status).sort()).toEqual([
+      'PENDING',
+      'REPLACED',
+    ]);
   });
 
   it('a stuck execute is only rebroadcast when the Dispatch has Retry Policy off', async () => {
@@ -703,7 +746,8 @@ describe('restoreReservations (ADR-0041)', () => {
     const settled = await s.dispatch([item(2)]);
     await s.coordinator.processQueuedDispatches(10);
     await s.coordinator.watchProposals(10);
-    s.approval.readImpl = () => Promise.resolve(ok({ status: 'rejected', approvals: 0, threshold: 2, executable: false }));
+    s.approval.readImpl = () =>
+      Promise.resolve(ok({ status: 'rejected', approvals: 0, threshold: 2, executable: false }));
     s.advance(DEFAULT_WATCH_INTERVAL_MS);
     // Reject only the second proposal.
     const second = await s.proposalOf(settled.id);
@@ -747,7 +791,39 @@ describe('approvalLoop (the worker)', () => {
     expect(watchProposals).toHaveBeenCalledTimes(3);
     expect(watchProposals).toHaveBeenCalledWith(20);
     expect(sleeps).toEqual([10_000, 10_000, 10_000]);
-    expect(error).toHaveBeenCalledWith({ err: expect.any(Error) }, 'worker approval tick failed');
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[1]).toBe('worker approval tick failed');
+  });
+});
+
+describe('per-chain approval deadline', () => {
+  it("uses the chain's own deadline when one is configured, else the default", async () => {
+    const start = new Date('2024-01-01T00:00:00.000Z');
+    const cases: [Map<'solana', number>, number][] = [
+      [new Map<'solana', number>([['solana', 2 * HOUR]]), 2 * HOUR],
+      [new Map<'solana', number>(), DEFAULT_APPROVAL_DEADLINE_MS],
+    ];
+    for (const [byChain, expected] of cases) {
+      const store = new InMemoryDispatchStore(() => start);
+      const coordinator = new Coordinator({
+        store,
+        chainHandlers: new Map([['solana', new MultisigHandler()]]),
+        senderAddresses: new Map([['solana', 'vault']]),
+        abandonmentTimeoutMs: new Map([['solana', 600_000]]),
+        approvalDeadlineMsByChain: byChain,
+        now: () => start,
+        logger: pino({ level: 'silent' }),
+      });
+      const d = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: 'k',
+        items: [item(1)],
+        retryPolicy: false,
+      });
+      await coordinator.processQueuedDispatches(10);
+      const [proposal] = await store.listProposalsForDispatch(d.id);
+      expect(proposal?.deadlineAt.getTime()).toBe(start.getTime() + expected);
+    }
   });
 });
 
