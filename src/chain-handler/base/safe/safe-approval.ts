@@ -73,7 +73,15 @@ export const SAFE_PROPOSAL_ORIGIN = 'Dispatch engine';
 
 const MULTI_SEND_ABI = parseAbi(['function multiSend(bytes transactions)']);
 /** Safe 1.3.0 and 1.4.1 emit this when `execTransaction` ran the inner transaction successfully (#88). */
-const EXECUTION_SUCCESS_ABI = parseAbi(['event ExecutionSuccess(bytes32 txHash, uint256 payment)']);
+/**
+ * `ExecutionSuccess(bytes32,uint256)` has one topic 0 in every Safe version, but where the hash is carried
+ * differs: Safe 1.4.1 declares `txHash` indexed (a topic, 32 bytes of data), Safe 1.3.0 does not (64 bytes of
+ * data). A non-strict decode with the wrong layout returns no args, so both are tried (found live, #87).
+ */
+const EXECUTION_SUCCESS_ABIS = [
+  parseAbi(['event ExecutionSuccess(bytes32 indexed txHash, uint256 payment)']),
+  parseAbi(['event ExecutionSuccess(bytes32 txHash, uint256 payment)']),
+] as const;
 const THRESHOLD_ABI = parseAbi(['function getThreshold() view returns (uint256)']);
 
 /** One payment inside a bundle, classified from its Call. */
@@ -437,18 +445,18 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     if (receipt.status !== 'success') {
       return unverified(`the transaction ${transactionHash} did not succeed on-chain`);
     }
-    const events = parseEventLogs({
-      abi: EXECUTION_SUCCESS_ABI,
-      eventName: 'ExecutionSuccess',
-      logs: receipt.logs,
-      strict: false,
-    });
-    const matched = events.some(
-      (event) =>
-        event.address.toLowerCase() === ref.safe.toLowerCase() &&
-        typeof event.args.txHash === 'string' &&
-        event.args.txHash.toLowerCase() === ref.safeTxHash.toLowerCase(),
+    const events = EXECUTION_SUCCESS_ABIS.flatMap((abi) =>
+      parseEventLogs({ abi, eventName: 'ExecutionSuccess', logs: receipt.logs, strict: false }),
     );
+    const matched = events.some((event) => {
+      // `args` is undefined when the log is in the other version's layout.
+      const txHash = (event.args as { txHash?: unknown } | undefined)?.txHash;
+      return (
+        event.address.toLowerCase() === ref.safe.toLowerCase() &&
+        typeof txHash === 'string' &&
+        txHash.toLowerCase() === ref.safeTxHash.toLowerCase()
+      );
+    });
     if (!matched) {
       return unverified(
         `the receipt of ${transactionHash} has no ExecutionSuccess event of ${ref.safe} for ${ref.safeTxHash}`,

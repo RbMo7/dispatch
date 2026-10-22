@@ -77,19 +77,33 @@ export const EXECUTION_SUCCESS_TOPIC = toEventSelector(
   'event ExecutionSuccess(bytes32 txHash, uint256 payment)',
 );
 
-/** A successful receipt carrying the Safe's `ExecutionSuccess` for `safeTxHash` (#88). */
-export function executionSuccessReceipt(safeTxHash: Hex, safe: Address = SAFE): FakeReceipt {
+/**
+ * A successful receipt carrying the Safe's `ExecutionSuccess` for `safeTxHash` (#88). Safe 1.4.1 (the
+ * default) declares `txHash` indexed, so it is topic 1 and the data is only `payment`; Safe 1.3.0
+ * (`layout: 'legacy'`) carries both in the data. A real 1.4.1 receipt was read live (#87).
+ */
+export function executionSuccessReceipt(
+  safeTxHash: Hex,
+  safe: Address = SAFE,
+  layout: 'indexed' | 'legacy' = 'indexed',
+): FakeReceipt {
   return {
     status: 'success',
     logs: [
-      {
-        address: safe,
-        topics: [EXECUTION_SUCCESS_TOPIC],
-        data: encodeAbiParameters(parseAbiParameters('bytes32 txHash, uint256 payment'), [
-          safeTxHash,
-          0n,
-        ]),
-      },
+      layout === 'indexed'
+        ? {
+            address: safe,
+            topics: [EXECUTION_SUCCESS_TOPIC, safeTxHash],
+            data: encodeAbiParameters(parseAbiParameters('uint256 payment'), [0n]),
+          }
+        : {
+            address: safe,
+            topics: [EXECUTION_SUCCESS_TOPIC],
+            data: encodeAbiParameters(parseAbiParameters('bytes32 txHash, uint256 payment'), [
+              safeTxHash,
+              0n,
+            ]),
+          },
     ],
   };
 }

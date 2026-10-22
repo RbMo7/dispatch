@@ -358,6 +358,39 @@ describe('readProposal', () => {
       });
     });
 
+    it('verifies an execution in the Safe 1.4.1 layout, where txHash is an indexed topic', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(
+        EXEC_HASH.toLowerCase(),
+        executionSuccessReceipt(t.hash, undefined, 'indexed'),
+      );
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({
+        ok: true,
+        value: { status: 'executed', executedHash: EXEC_HASH },
+      });
+    });
+
+    it('verifies an execution in the Safe 1.3.0 layout, where txHash is in the data', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(
+        EXEC_HASH.toLowerCase(),
+        executionSuccessReceipt(t.hash, undefined, 'legacy'),
+      );
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({
+        ok: true,
+        value: { status: 'executed', executedHash: EXEC_HASH },
+      });
+    });
+
+    it('settles nothing when an indexed ExecutionSuccess names another hash', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(
+        EXEC_HASH.toLowerCase(),
+        executionSuccessReceipt(HASH_X, undefined, 'indexed'),
+      );
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({ ok: false });
+    });
+
     it('settles nothing when the matching event came from another contract', async () => {
       const t = await executed();
       t.node.state.receipts.set(
