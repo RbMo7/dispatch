@@ -4,6 +4,7 @@ An open-source, self-hosted execution engine for blockchain transactions. You ha
 
 - [`docs/concept.md`](./docs/concept.md) — what this is and the scenarios it covers
 - [`docs/api.md`](./docs/api.md) — the HTTP API (`POST`/`GET /v1/dispatch`)
+- [`docs/multisig.md`](./docs/multisig.md) — a Treasury or a Multisig Sender (Squads on Solana, Safe on Base): runbooks for operators and Approvers
 - [`CONTEXT.md`](./CONTEXT.md) — vocabulary (Managed vs Relay Dispatch, Sender, Signer, Call, Retry Policy, …)
 - [`docs/adr/`](./docs/adr/) — every architectural decision and why it was made
 - [`AGENTS.md`](./AGENTS.md) — how this repo's specs, tickets and conventions fit together

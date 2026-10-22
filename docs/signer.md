@@ -221,6 +221,10 @@ A misspelled rule, a bad address, or a bad amount stops the Signer at startup. B
 - **What the Signer can't read, it refuses.** With a policy set, it refuses bytes it can't decode, such as an unknown transaction type or malformed calldata. It also refuses any call to a capped token that it can't count, such as `approve`. The refusal names what it couldn't read.
 - **An allowed contract is trusted with whatever it does next.** The Signer reads the transaction's own call and every call inside `aggregate3Value`. Whatever a listed contract does after that, the policy never sees. List only contracts you trust that far.
 
+### Keys for a Multisig Sender
+
+A Multisig Sender (Squads on Solana, Safe on Base) needs one more key behind the Signer: the engine's own, which proposes and executes but can never approve. It is an ordinary key on any backend, with a policy that pins it to one multisig with `allowedMultisig` or one Safe with `allowedSafe`, as above. Setting up the multisig, the key's permissions and the delegate registration is in [`docs/multisig.md`](./multisig.md). The Signer's own startup does not check that the multisig's members or the Safe's owners exclude the key. The engine checks that when it starts.
+
 ## 5. Create the bearer token
 
 The engine and the Signer share one token. Generate a long random one:
@@ -380,3 +384,20 @@ Clear every item before the first mainnet transaction.
 - [ ] The audit log goes somewhere durable, with alerts on `refused`, `failed`, and `rejected` 401 and 404 lines.
 - [ ] A small mainnet smoke test has landed first: one small Payment per enabled chain, confirmed on-chain, with a matching `signed` audit line, before any real volume.
 - [ ] Every mainnet chain in `ENABLED_CHAINS` stays enabled while it has transactions in flight. Removing a chain with a `PENDING` transaction stops confirmation tracking for every chain until #57 is fixed.
+- [ ] If you use a Multisig Sender, the engine's key can never approve. On Solana the member key holds exactly Initiate and Execute (permission mask 5) and never Vote. On Base the executor is not an owner of the Safe and is registered as a delegate. The engine refuses to start otherwise, but check it in the multisig's app yourself.
+- [ ] Every multisig key has `allowedMultisig` (Solana) or `allowedSafe` and `chainIds: [8453]` (Base) in its policy, pinned to the one multisig. The engine's startup does not check the Signer's policy.
+- [ ] A multisig's engine key on `local` is a weaker choice than on `aws-kms` or `privy`: a host compromise exposes it. It can only propose, execute and close, so the policy pin matters most for it.
+- [ ] Solana: the multisig's rent collector is the member key's address. Without it, proposal rent is never refunded and the member key drains.
+- [ ] Solana: the Squads `ProgramConfig` creation fee and the mainnet rent rate (`getMinimumBalanceForRentExemption`) are read on mainnet before sizing the member key's balance. The spike measured devnet only. The member key must hold the rent of every proposal open at once, plus fees.
+- [ ] Base: `BASE_SAFE_API_KEY` is set to a key on a production plan of the Safe Transaction Service, and its monthly quota, read from the Safe developer dashboard, covers about one request a minute for each open proposal. Unauthenticated use (2 requests a second, 5,000 a month) is not enough.
+- [ ] Base: the `MultiSendCallOnly` addresses have code on Base mainnet. The spikes ran on Base Sepolia only, and the mainnet check has never been done. A read-only check for each of `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` (Safe 1.4.1), `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` and `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D` (Safe 1.3.0): the result must not be `0x`. Repeat it for each address.
+
+  ```sh
+  curl -s https://mainnet.base.org -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x9641d764fc13c8B624c04430C7356C1C7C8102e2","latest"]}'
+  ```
+
+- [ ] The approval deadline (`SOLANA_APPROVAL_DEADLINE_MS`, `BASE_APPROVAL_DEADLINE_MS`, 72 hours by default) is longer than the multisig's time lock plus the time your Approvers take to vote. The engine abandons an approved proposal that is still waiting out its time lock when the deadline passes.
+- [ ] The Approvers know to compare each proposal with their own record of the payments, not with the engine's `expected` totals, and have the verifier (`verifier/`) installed and working against your RPC. `expected` is not a control.
+- [ ] Your callers treat `APPROVAL_TIMEOUT` as ambiguous and check the multisig before sending again. The engine does not watch a timed-out proposal (#88), so a late execution is not reported.
+- [ ] Treasury: the hot Sender's working balance is sized to what you accept losing with its key, and its policy caps match.
