@@ -7,7 +7,7 @@ This guide is for an operator who wants people to approve the money the engine m
 
 Read [`docs/signer.md`](./signer.md) first. Every key in this guide lives behind the Signer, and the mainnet checklist at the end of that file includes the multisig items. The decisions behind this feature are ADR-0049 to ADR-0054.
 
-**What is built, and what is not.** This guide describes what the code does. Two parts of the design (ADR-0053) are **not built yet**: the engine does not watch a proposal after it has timed out, so it never notices a late execution or a late rejection (issue #88), and batch proposals on Solana (issue #91). [Section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout) says exactly what that means. Nothing here has been run on mainnet. The propose, watch and execute code is exercised against Solana devnet and Base Sepolia in the repository's tests, but the full live end-to-end tests (`RUN_SQUADS=1`, `RUN_SAFE=1`, issues #78 and #87) are still open.
+**What is built, and what is not.** This guide describes what the code does. Batch proposals on Solana are **not built** (issue #91). Follow-ups not done: rejecting unsupported `call` items for a Multisig Sender at the API (#94), a startup check that the Signer pins the multisig or Safe (#95), and human checks before mainnet (#96: the Squads app's labels and rent collector screen, Safe plan quotas, delegate removal, self-hosting, mainnet read-only facts). [Section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout) covers what happens after a timeout. Nothing here has been run on mainnet. The propose, watch and execute code is exercised against Solana devnet and Base Sepolia in the repository's tests, but the full live end-to-end tests (`RUN_SQUADS=1`, `RUN_SAFE=1`, issues #78 and #87) are still open.
 
 Contents:
 
@@ -69,7 +69,7 @@ The caller can read the proposal's state from `GET /v1/dispatch/:id` ([`docs/api
 }
 ```
 
-- `state` is `awaiting` (not yet at the threshold), `approved` (at the threshold, waiting for any time lock, or being executed) or `approved_after_deadline`. The code never produces the last one yet: it needs the re-watch that is not built (issue #88).
+- `state` is `awaiting` (not yet at the threshold), `approved` (at the threshold, waiting for any time lock, or being executed) or `approved_after_deadline` (the proposal was approved after its deadline, so the engine will not execute it: execute or reject it in the app).
 - `approvals` and `threshold` are the votes so far and the votes needed.
 - `deadline` is when the engine stops waiting. Vote before it. After it the engine never executes the proposal, even if it is approved ([section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout)).
 - `chainRef` is what to open in the app. On Base it is `{ "kind": "safe", "safe", "safeTxHash", "nonce" }`.
@@ -149,7 +149,7 @@ Add the member key to `SIGNER_CONFIG`, pinned to the one multisig with `allowedM
 }
 ```
 
-The key may then sign only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the compute-budget instructions that go with them, as fee payer. It refuses votes, config transactions and every other program. If you also set `allowedDestinations`, list the Squads program in it (`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`). The engine's startup does **not** check that the Signer's policy pins the multisig, so check your config yourself.
+The key may then sign only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the compute-budget instructions that go with them, as fee payer. It refuses votes, config transactions and every other program. If you also set `allowedDestinations`, list the Squads program in it (`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`). The engine's startup does **not** check that the Signer's policy pins the multisig (issue #95), so check your config yourself.
 
 ### 4. Configure the engine
 
@@ -162,7 +162,7 @@ These go on the worker, next to your other Solana settings. [`.env.example`](../
 | `SOLANA_MULTISIG_MEMBER_ADDRESS` | none | The member key's address. Required in multisig mode. It must be on the ed25519 curve and differ from the multisig. |
 | `SOLANA_SENDER_ADDRESS` | the derived vault | Leave it unset. If you set it, it must equal the vault, or the engine refuses to start. |
 | `SOLANA_APPROVAL_DEADLINE_MS` | `259200000` (72 hours) | How long a proposal waits for approval, counted from its creation. A whole number of milliseconds above zero. |
-| `SOLANA_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | **Today** it only sets how long a timed-out proposal's amounts stay counted as committed by the Funding Check. See [section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout). |
+| `SOLANA_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | How long, counted from the timeout, the engine keeps reading a timed-out proposal for a late execution or rejection. See [section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout). |
 
 In single mode, setting `SOLANA_MULTISIG_ADDRESS` or `SOLANA_MULTISIG_MEMBER_ADDRESS` is an error, so a half-edited config never starts quietly.
 
@@ -215,7 +215,7 @@ A proposal holds at most **12 transfers** (fewer if the create transaction would
 
 The engine creates the proposals one after another, and they can all be open at the same time. They are independent and may be approved and executed in any order, and each has its own deadline from its own creation. Batches, which would let a few votes cover a whole run, are **not** in v1 (issue #91): the Squads app might not show a batch's contents, and a batch executes strictly in order.
 
-A Multisig Sender on Solana proposes **only** native SOL transfers and SPL or Token-2022 `transferChecked` from the vault. Any other `call` item (a program call, another System or Token instruction, a payment from another account) is refused with `CHAIN_REJECTED`. If one Call of a Dispatch is refused while the engine plans its proposals, **every Call of that Dispatch claimed with it fails** with that error, so send unusual calls through a plain Sender.
+A Multisig Sender on Solana proposes **only** native SOL transfers and SPL or Token-2022 `transferChecked` from the vault. Any other `call` item (a program call, another System or Token instruction, a payment from another account) is refused with `CHAIN_REJECTED`. If one Call of a Dispatch is refused while the engine plans its proposals, **every Call of that Dispatch claimed with it fails** with that error, so send unusual calls through a plain Sender (rejecting them at the API with a 400 is issue #94).
 
 ### Worked example
 
@@ -266,7 +266,7 @@ Map the executor and pin the Safe with `allowedSafe` (it needs `chainIds`). One 
 }
 ```
 
-Use `[84532]` on Base Sepolia. The key then signs only an `execTransaction` to that Safe and the matching Safe typed data, only as a delegatecall to MultiSendCallOnly, with zero gas and refund fields, so a proposal can never make the Safe pay the executor ([`docs/signer.md`](./signer.md#signing-a-safe-transaction)). If you also set `allowedDestinations`, list the Safe in it. The engine's startup does **not** check the Signer's policy, so check your config yourself.
+Use `[84532]` on Base Sepolia. The key then signs only an `execTransaction` to that Safe and the matching Safe typed data, only as a delegatecall to MultiSendCallOnly, with zero gas and refund fields, so a proposal can never make the Safe pay the executor ([`docs/signer.md`](./signer.md#signing-a-safe-transaction)). If you also set `allowedDestinations`, list the Safe in it. The engine's startup does **not** check the Signer's policy (issue #95), so check your config yourself.
 
 ### 4. Register the executor as a delegate
 
@@ -339,7 +339,7 @@ The hosted service is `https://api.safe.global/tx-service/base` for Base and `..
 | `BASE_SAFE_TX_SERVICE_URL` | the hosted service for chain 8453 or 84532 | The service's base URL (no `/api`). Required for any other chain ID. |
 | `BASE_SAFE_API_KEY` | none | The service API key. Optional in code, needed in production. |
 | `BASE_APPROVAL_DEADLINE_MS` | `259200000` (72 hours) | How long a proposal waits, counted from its creation. |
-| `BASE_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | Today it only sets how long a timed-out proposal's amounts stay committed ([section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout)). |
+| `BASE_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | How long, counted from the timeout, the engine keeps reading a timed-out proposal ([section 5](#5-what-the-engine-does-and-does-not-do-after-a-timeout)). |
 | `BASE_SAFE_BUNDLE_LIMIT` | `50` | The most payments in one proposal (one MultiSend). A whole number from 1 to 300. |
 
 The Safe settings are an error in single mode, as on Solana. `BASE_KNOWN_TOKENS` is read as usual, and an ERC-20 Payment needs its token configured.
@@ -404,14 +404,15 @@ On Base Sepolia, a 2-of-3 Safe, a `local` executor, a Dispatch of 60 USDC paymen
 Every proposal has a deadline, `SOLANA_APPROVAL_DEADLINE_MS` or `BASE_APPROVAL_DEADLINE_MS`, 72 hours by default and counted from the proposal's creation. It is global, with no per-request override. When it passes:
 
 - **Built.** The Calls become `ABANDONED` with the error code `APPROVAL_TIMEOUT`. They are not `FAILED`, because the proposal may still be approved and executed by someone else. The engine **never executes a proposal after its deadline itself**, even if it was approved a minute later. The check runs before the execute step, so an approved proposal whose time lock runs past the deadline is also abandoned.
-- **Not built (issue #88).** ADR-0053 says the engine should keep watching a timed-out proposal for 30 days and react. It does not. After the timeout nothing reads the proposal again. So:
-  - If someone executes it late, the money moves while the Calls read `ABANDONED` forever. The design says they should become `CONFIRMED` and the log should say `late_execution_detected`. Neither happens. Nothing logs that string.
-  - If it is rejected late, the Calls stay `ABANDONED`, not `FAILED` with `APPROVAL_REJECTED`.
-  - `approval.state` never becomes `approved_after_deadline`, and the 30-day window ends silently.
-  - On Safe, the superseded proposal's Calls (the one a later proposal replaced at the same nonce) stay `ABANDONED` too.
-- **Funds stay committed.** For `*_APPROVAL_REWATCH_WINDOW_MS` after the timeout, the Funding Check still counts the proposal's amounts as committed on the vault or Safe and on the proposer's key. A new Dispatch can be refused with `INSUFFICIENT_FUNDS` (its `chainDetail.committed` says how much is held) even though the proposal is dead, because the engine cannot see that it was rejected. To free them sooner, lower the window and restart the worker.
-- **What you do.** Treat an `APPROVAL_TIMEOUT` Call like any `ABANDONED` Call. **Do not blindly re-send**: the payment may still happen. Open the proposal in the Squads or Safe app (or run the verifier, which also shows its status) and decide. To make a timed-out proposal dead, an Approver must **reject** it in the app. The engine cannot cancel it. Check the chain, not the engine, for whether it landed. Until #88 is built, a caller cannot learn a late outcome from the engine at all, and there are no webhooks (ADR-0023).
-- **Rent.** A proposal that timed out is not closed by the engine, so its rent stays locked until someone closes it.
+- **Re-watch (ADR-0053, #88).** The engine keeps reading the timed-out proposal for `*_APPROVAL_REWATCH_WINDOW_MS` (30 days by default, counted from the timeout): at the normal watch cadence for the first day, then hourly. It still never executes it. What it does when it sees something:
+  - Executed by someone else: the Calls become `CONFIRMED`, with that transaction's hash, and the worker logs `late_execution_detected`. On Safe the service's `isExecuted` is cross-checked against the executing transaction's receipt (it must have succeeded and carry this Safe's `ExecutionSuccess` event for this `safeTxHash`). Without that proof nothing settles.
+  - Rejected, cancelled or stale before approval (Safe: the nonce taken by a different transaction, so a superseded proposal is also caught): the Calls become `FAILED` with `APPROVAL_REJECTED`.
+  - Approved but not executed: the Calls stay `ABANDONED`, `approval.state` reads `approved_after_deadline`, and the worker logs an error containing `approved_after_deadline` at most once an hour. Execute or reject it in the app.
+  - The window ends: the Calls stay `ABANDONED`, the worker logs `rewatch_window_ended` once, and a later execution goes **unseen**. A proposal that cannot be read keeps being retried with backoff until then.
+  - There is no push: the outcome reaches a caller only through `GET /v1/dispatch/:id` and the logs (no webhooks, ADR-0023).
+- **Funds stay committed** while the engine is watching: the Funding Check counts the proposal's amounts on the vault or Safe and on the proposer's key until the proposal settles or the window ends. A new Dispatch can be refused with `INSUFFICIENT_FUNDS` (`chainDetail.committed` says how much is held). Rejecting a dead proposal in the app releases it at the next read.
+- **What you do.** Treat an `APPROVAL_TIMEOUT` Call like any `ABANDONED` Call. **Do not blindly re-send**: the payment may still happen. Open the proposal in the Squads or Safe app (or run the verifier, which also shows its status) and decide. To make a timed-out proposal dead, an Approver must **reject** it in the app. The engine cannot cancel it. A timed-out Call carries no execute hash of its own.
+- **Rent (Solana).** Finished and dead proposals (executed, rejected, cancelled, stale) are closed by the engine to reclaim rent, including timed-out ones that later resolve. What still needs closing is stored in the database, so a restart does not forget it.
 
 A rejection that comes **before** the deadline works: the Calls become `FAILED` with `APPROVAL_REJECTED`, and are never retried. On Solana a proposal that becomes stale because the multisig's configuration changed counts as rejected unless it was already approved. An approved stale proposal can still execute, so the engine treats it like any approved one. On Base, a proposal is rejected when the Safe's nonce moves past it and the transaction executed at that nonce has a different hash. The engine's own execution also moves the nonce, so the nonce alone proves nothing.
 
@@ -441,7 +442,7 @@ On either chain an approved proposal whose execute fails stays approved and exec
 
 ### Restarts
 
-Every proposal is written down before it is sent, and the watch loop finds unfinished ones after a restart and re-sends the same bytes. The list of finished proposals still to be closed on Solana is in memory only, so a restart can forget one, which costs rent and nothing else. The engine tries to close a finished proposal five times and then gives up, and it logs it.
+Every proposal is written down before it is sent, and the watch loop finds unfinished ones after a restart and re-sends the same bytes. What still needs closing on Solana is stored in the database, so a restart does not forget it. The engine retries a failed close a few times and logs when it gives up. A proposal whose send was never confirmed (`noted`) times out at the deadline like any other (`ABANDONED`), and while one is `noted` the engine builds no other proposal for that sender.
 
 ### A quick reference of results
 

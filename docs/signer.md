@@ -399,5 +399,5 @@ Clear every item before the first mainnet transaction.
 
 - [ ] The approval deadline (`SOLANA_APPROVAL_DEADLINE_MS`, `BASE_APPROVAL_DEADLINE_MS`, 72 hours by default) is longer than the multisig's time lock plus the time your Approvers take to vote. The engine abandons an approved proposal that is still waiting out its time lock when the deadline passes.
 - [ ] The Approvers know to compare each proposal with their own record of the payments, not with the engine's `expected` totals, and have the verifier (`verifier/`) installed and working against your RPC. `expected` is not a control.
-- [ ] Your callers treat `APPROVAL_TIMEOUT` as ambiguous and check the multisig before sending again. The engine does not watch a timed-out proposal (#88), so a late execution is not reported.
+- [ ] Your callers treat `APPROVAL_TIMEOUT` as ambiguous and check the multisig before sending again. The engine re-watches a timed-out proposal for 30 days by default, so a late execution is reported only inside that window.
 - [ ] Treasury: the hot Sender's working balance is sized to what you accept losing with its key, and its policy caps match.
