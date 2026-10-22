@@ -286,7 +286,11 @@ describe('buildProposal', () => {
     ];
     // Four payments to three distinct recipients (A is paid twice).
     expect(built.expected).toEqual({ recipients: 3, totals });
-    expect(built.committed).toEqual({ sender: totals, proposer: [] });
+    // The payments leave the Safe; the execute's gas (a positive amount, priced in #85) leaves the executor.
+    expect(built.committed.sender).toEqual(totals);
+    expect(built.committed.proposer).toEqual([
+      { asset: 'ETH', amount: expect.stringMatching(/^[1-9]\d*$/) as string },
+    ]);
   });
 
   it('reads the nonce and threshold from the chain, every read at one pinned block', async () => {

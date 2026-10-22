@@ -24,7 +24,15 @@ import {
   type FakeService,
 } from '../../test-support/fake-safe.js';
 import { encodeUnsignedTransaction, decodeUnsignedTransaction } from '../transaction-codec.js';
-import { EXEC_TRANSACTION_ABI } from './execution-cost.js';
+import {
+  EXEC_TRANSACTION_ABI,
+  GAS_FIXED,
+  GAS_PER_ITEM,
+  GAS_PER_SIGNATURE,
+  GAS_PRICE_ORACLE,
+  L1_FEE_MULTIPLIER,
+  withGasMargin,
+} from './execution-cost.js';
 import { MULTI_SEND_CALL_ONLY, SafeApproval } from './safe-approval.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import { SafeTxServiceClient } from './tx-service-client.js';
@@ -700,6 +708,101 @@ describe('prepareExecution', () => {
         maxPriorityFeePerGas: BigInt(encoded.maxPriorityFeePerGas),
       }),
     ).not.toThrow();
+  });
+});
+
+describe('estimateApprovalCost and the committed executor gas', () => {
+  /** An independent computation of one bundle's cost with the fake node's fees. */
+  const cost = (items: number, signatures: number, baseFee = 1_000_000n, l1 = 1_000n) => {
+    const gas = withGasMargin(
+      GAS_FIXED + GAS_PER_SIGNATURE * BigInt(signatures) + GAS_PER_ITEM * BigInt(items),
+    );
+    return gas * (baseFee * 2n) + l1 * L1_FEE_MULTIPLIER;
+  };
+
+  it('prices the execute in the native asset with the L2 fee cap, the margin and the doubled L1 fee', async () => {
+    const t = await setup({ calls: [native(A, '1')] });
+    const calls = [native(A, '5'), usdc(B, 7n), native(B, '9')];
+    expect(expectOk(await t.subject.estimateApprovalCost(calls, SAFE))).toEqual({
+      asset: 'ETH',
+      amount: cost(3, 2).toString(),
+      rentLocked: '0',
+    });
+  });
+
+  it('sizes the L1 data fee from calldata carrying threshold-many dummy signatures', async () => {
+    const t = await setup({ node: { threshold: 3 }, calls: [native(A, '1')] });
+    t.node.log.l1FeeArgs.length = 0;
+    expectOk(await t.subject.estimateApprovalCost([native(A, '5')], SAFE));
+    expect(t.node.log.l1FeeArgs).toHaveLength(1);
+    // The oracle prices the serialized transaction, which carries the execTransaction calldata.
+    const serialized = t.node.log.l1FeeArgs[0]!;
+    expect(serialized.startsWith('0x02')).toBe(true);
+    const bigger = (await setup({ node: { threshold: 2 }, calls: [native(A, '1')] })).node;
+    bigger.log.l1FeeArgs.length = 0;
+    // A third signature adds 65 bytes, which the ABI pads to 64 more bytes of calldata.
+    const t2 = await setup({ node: { threshold: 2 }, calls: [native(A, '1')] });
+    t2.node.log.l1FeeArgs.length = 0;
+    expectOk(await t2.subject.estimateApprovalCost([native(A, '5')], SAFE));
+    expect(size(serialized) - size(t2.node.log.l1FeeArgs[0]!)).toBe(64);
+    expect(GAS_PRICE_ORACLE).toBe('0x420000000000000000000000000000000000000F');
+  });
+
+  it('adds one execute per bundle when a Dispatch is larger than the bundle limit', async () => {
+    const t = await setup({ bundleLimit: 3, calls: [native(A, '1')] });
+    const calls = [native(A, '1'), native(A, '2'), native(A, '3'), native(A, '4')];
+    expect(expectOk(await t.subject.estimateApprovalCost(calls, SAFE)).amount).toBe(
+      (cost(3, 2) + cost(1, 2)).toString(),
+    );
+  });
+
+  it('follows a changed base fee and a changed threshold', async () => {
+    const t = await setup({ calls: [native(A, '1')] });
+    t.node.state.baseFeePerGas = 5_000_000n;
+    t.node.state.threshold = 4;
+    expect(expectOk(await t.subject.estimateApprovalCost([native(A, '5')], SAFE)).amount).toBe(
+      cost(1, 4, 5_000_000n).toString(),
+    );
+  });
+
+  it('is zero for no Calls, and refuses another sender and a Call the bundle cannot hold', async () => {
+    const t = await setup();
+    expect(expectOk(await t.subject.estimateApprovalCost([], SAFE)).amount).toBe('0');
+    expect(
+      expectErr(
+        await t.subject.estimateApprovalCost(
+          [native(A, '1')],
+          '0x0000000000000000000000000000000000000009',
+        ),
+      ).code,
+    ).toBe('CHAIN_REJECTED');
+    expect(
+      expectErr(
+        await t.subject.estimateApprovalCost([{ to: A, value: '0', data: '0xdeadbeef' }], SAFE),
+      ).code,
+    ).toBe('CHAIN_REJECTED');
+  });
+
+  it('reports an unreachable node as RPC_UNAVAILABLE', async () => {
+    const t = await setup();
+    t.node.client.getBlock = () => Promise.reject(new Error('ECONNREFUSED'));
+    expect(expectErr(await t.subject.estimateApprovalCost([native(A, '1')], SAFE)).code).toBe(
+      'RPC_UNAVAILABLE',
+    );
+  });
+
+  it("commits the executor's gas for an open proposal, equal to the estimate for the same Calls", async () => {
+    const calls = [native(A, '5'), usdc(B, 7n)];
+    const t = await setup({ calls });
+    const estimate = expectOk(await t.subject.estimateApprovalCost(calls, SAFE));
+    expect(t.built.committed.proposer).toEqual([
+      { asset: estimate.asset, amount: estimate.amount },
+    ]);
+    // The payments leave the Safe: ETH natively and the USDC token, each under its own asset id.
+    expect(t.built.committed.sender).toEqual([
+      { asset: 'ETH', amount: '5' },
+      { asset: 'USDC', amount: '7' },
+    ]);
   });
 });
 

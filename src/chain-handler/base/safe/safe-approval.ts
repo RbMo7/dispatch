@@ -36,7 +36,13 @@ import { ERC20_ABI } from '../erc20.js';
 import { isRpcOutage, mapBaseFailure } from '../error-mapping.js';
 import { NATIVE_ASSET_SYMBOL, type BaseTokenRegistry } from '../known-tokens.js';
 import { decodeUnsignedTransaction, encodeUnsignedTransaction } from '../transaction-codec.js';
-import { encodeExecTransaction, EXEC_TRANSACTION_ABI, withGasMargin } from './execution-cost.js';
+import {
+  dummySignatures,
+  encodeExecTransaction,
+  EXEC_TRANSACTION_ABI,
+  estimateExecutionCost,
+  withGasMargin,
+} from './execution-cost.js';
 import { MAX_SAFE_BUNDLE_LIMIT, type BaseSafeConfig } from './safe-config.js';
 import {
   readSafeSigners,
@@ -65,6 +71,7 @@ export const MULTI_SEND_CALL_ONLY: Readonly<Record<string, Address>> = {
 export const SAFE_PROPOSAL_ORIGIN = 'Dispatch engine';
 
 const MULTI_SEND_ABI = parseAbi(['function multiSend(bytes transactions)']);
+const THRESHOLD_ABI = parseAbi(['function getThreshold() view returns (uint256)']);
 
 /** One payment inside a bundle, classified from its Call. */
 type BundleItem = {
@@ -243,6 +250,17 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     };
     const safeTxHash = safeTransactionHash(tx);
 
+    // What the executor will have to pay for this proposal's execute stays committed until it is closed (#85).
+    let gasCost: bigint;
+    try {
+      gasCost = await this.executionCost(tx, items.length, state.threshold);
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: `could not price the Safe execute: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    }
+
     const chainRef: ChainProposalRef = {
       kind: 'safe',
       safe: config.safeAddress,
@@ -262,8 +280,11 @@ export class SafeApproval implements ApprovalCapability<'base'> {
         recipients: new Set(items.map((item) => item.recipient.toLowerCase())).size,
         totals,
       },
-      // The payments leave the Safe. What the executor spends on gas is #85's.
-      committed: { sender: totals, proposer: [] },
+      // The payments leave the Safe; the execute's gas leaves the executor (#85).
+      committed: {
+        sender: totals,
+        proposer: [{ asset: NATIVE_ASSET_SYMBOL, amount: gasCost.toString() }],
+      },
     });
   }
 
@@ -476,17 +497,77 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     });
   }
 
-  estimateApprovalCost(
-    _calls: CallForChain<'base'>[],
-    _sender: string,
+  async estimateApprovalCost(
+    calls: CallForChain<'base'>[],
+    sender: string,
   ): Promise<Result<ApprovalCost, DispatchError>> {
-    return Promise.resolve(
-      err({
+    const { config, chainId } = this.deps;
+    if (sender.toLowerCase() !== config.safeAddress.toLowerCase()) {
+      return err({
         code: 'CHAIN_REJECTED',
-        message: 'estimating a Safe proposal cost is not implemented (ticket #85)',
-        chainDetail: { notImplemented: '#85' },
-      }),
-    );
+        message: `asked to price for ${sender}, but this engine's Safe is ${config.safeAddress}`,
+      });
+    }
+    const items: BundleItem[] = [];
+    for (const call of calls) {
+      const item = this.classify(call);
+      if (!item.ok) return item;
+      items.push(item.value);
+    }
+    if (items.length === 0) {
+      return ok({ asset: NATIVE_ASSET_SYMBOL, amount: '0', rentLocked: '0' });
+    }
+
+    try {
+      const threshold = Number(
+        await this.deps.client.readContract({
+          address: config.safeAddress,
+          abi: THRESHOLD_ABI,
+          functionName: 'getThreshold',
+        }),
+      );
+      // One proposal per bundleLimit items; the calldata (and so the L1 data fee) is sized with
+      // threshold-many dummy signatures. The version only changes which MultiSend address is used.
+      let total = 0n;
+      for (let start = 0; start < items.length; start += this.bundleLimit) {
+        const chunk = items.slice(start, start + this.bundleLimit);
+        const tx = {
+          to: MULTI_SEND_CALL_ONLY['1.4.1'] as Address,
+          value: '0',
+          data: encodeMultiSendCall(chunk),
+          operation: 1 as const,
+          safeTxGas: '0',
+          baseGas: '0',
+          gasPrice: '0',
+          gasToken: zeroAddress,
+          refundReceiver: zeroAddress,
+        };
+        total += await estimateExecutionCost(this.deps.client, {
+          safe: config.safeAddress,
+          chainId,
+          calldata: encodeExecTransaction(tx, dummySignatures(threshold)),
+          items: chunk.length,
+          signatures: threshold,
+        });
+      }
+      return ok({ asset: NATIVE_ASSET_SYMBOL, amount: total.toString(), rentLocked: '0' });
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: `could not price the Safe execute: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    }
+  }
+
+  /** The executor's cost of one proposal's `execTransaction` (#85), priced like `estimateApprovalCost`. */
+  private executionCost(tx: SafeTransaction, items: number, threshold: number): Promise<bigint> {
+    return estimateExecutionCost(this.deps.client, {
+      safe: this.deps.config.safeAddress,
+      chainId: this.deps.chainId,
+      calldata: encodeExecTransaction(tx, dummySignatures(threshold)),
+      items,
+      signatures: threshold,
+    });
   }
 
   /**
