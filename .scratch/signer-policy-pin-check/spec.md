@@ -1,4 +1,4 @@
-Status: proposed, waiting on ADR-0055 being accepted. Tickets not yet filed.
+Status: ADR-0055 accepted; tickets #99 (Signer route), #100 (engine checks), #101 (docs)
 
 # Startup check: the Signer pins the right multisig or Safe
 
