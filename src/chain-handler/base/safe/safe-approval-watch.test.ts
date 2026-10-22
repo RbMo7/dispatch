@@ -12,6 +12,7 @@ import {
   byHashPath,
   ecdsaSignature,
   ethSignSignature,
+  executionSuccessReceipt,
   executor,
   fakeNode,
   outsider,
@@ -299,6 +300,7 @@ describe('readProposal', () => {
   it('reports executed when the service says so, with the executing hash', async () => {
     const t = await setup();
     t.node.state.nonce = 13n;
+    t.node.state.receipts.set(EXEC_HASH.toLowerCase(), executionSuccessReceipt(t.hash));
     t.respond(
       serviceTransaction({
         safeTxHash: t.hash,
@@ -314,9 +316,94 @@ describe('readProposal', () => {
     });
   });
 
+  describe('the on-chain cross-check of an execution (#88)', () => {
+    const executed = async () => {
+      const t = await setup();
+      t.node.state.nonce = 13n;
+      t.respond(
+        serviceTransaction({
+          safeTxHash: t.hash,
+          nonce: 12,
+          isExecuted: true,
+          transactionHash: EXEC_HASH,
+        }),
+      );
+      return t;
+    };
+
+    it('settles nothing when the receipt cannot be read', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(EXEC_HASH.toLowerCase(), new Error('node down'));
+      const result = await t.subject.readProposal(t.ref);
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'RPC_UNAVAILABLE', chainDetail: { reason: 'EXECUTION_NOT_VERIFIED' } },
+      });
+    });
+
+    it('settles nothing when the receipt is not there yet', async () => {
+      const t = await executed();
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({
+        ok: false,
+        error: { code: 'RPC_UNAVAILABLE' },
+      });
+    });
+
+    it('settles nothing when the receipt has no ExecutionSuccess for this safeTxHash', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(EXEC_HASH.toLowerCase(), executionSuccessReceipt(HASH_X));
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({
+        ok: false,
+        error: { code: 'RPC_UNAVAILABLE' },
+      });
+    });
+
+    it('settles nothing when the matching event came from another contract', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(
+        EXEC_HASH.toLowerCase(),
+        executionSuccessReceipt(t.hash, '0x2222222222222222222222222222222222222222'),
+      );
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({ ok: false });
+    });
+
+    it('settles nothing when the transaction reverted', async () => {
+      const t = await executed();
+      t.node.state.receipts.set(EXEC_HASH.toLowerCase(), {
+        ...executionSuccessReceipt(t.hash),
+        status: 'reverted',
+      });
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({ ok: false });
+    });
+
+    it('settles nothing when the service gives no transaction hash', async () => {
+      const t = await setup();
+      t.node.state.nonce = 13n;
+      t.respond(serviceTransaction({ safeTxHash: t.hash, nonce: 12, isExecuted: true }));
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({ ok: false });
+    });
+
+    it('also checks the execution found by nonce when the by-hash record lags', async () => {
+      const t = await setup();
+      t.node.state.nonce = 13n;
+      t.respond(serviceTransaction({ safeTxHash: t.hash, nonce: 12 }));
+      t.service.routes.set(atNoncePath(12), {
+        status: 200,
+        body: { results: [{ safeTxHash: t.hash, isExecuted: true, transactionHash: EXEC_HASH }] },
+      });
+      expect(await t.subject.readProposal(t.ref)).toMatchObject({ ok: false });
+      t.node.state.receipts.set(EXEC_HASH.toLowerCase(), executionSuccessReceipt(t.hash));
+      expect(expectOk(await t.subject.readProposal(t.ref))).toMatchObject({
+        status: 'executed',
+        executedHash: EXEC_HASH,
+      });
+    });
+  });
+
   it("does not take the engine's own execution for a rejection: the nonce moved and this very hash won", async () => {
     const t = await setup();
     t.node.state.nonce = 13n;
+    t.node.state.receipts.set(EXEC_HASH.toLowerCase(), executionSuccessReceipt(t.hash));
     // The by-hash record lags; the transactions at nonce 12 show this proposal executed.
     t.respond(serviceTransaction({ safeTxHash: t.hash, nonce: 12 }));
     t.service.routes.set(atNoncePath(12), {

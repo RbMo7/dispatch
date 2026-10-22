@@ -16,6 +16,7 @@ import {
   SAFE,
   byHashPath,
   ecdsaSignature,
+  executionSuccessReceipt,
   executor,
   fakeNode,
   ownerKeys,
@@ -384,6 +385,7 @@ describe('watching a Safe proposal through ApprovalFlow (#84)', () => {
   it('confirms the Calls with the executing hash when someone else executed it', async () => {
     const t = await approved();
     t.node.state.nonce = 13n;
+    t.node.state.receipts.set(`0x${'cd'.repeat(32)}`, executionSuccessReceipt(t.hash));
     t.service.routes.set(byHashPath(t.hash), {
       status: 200,
       body: serviceTransaction({

@@ -68,7 +68,9 @@ export class SignerClient {
       err({ code: 'SIGNER_UNREACHABLE', message, chainDetail });
     // Anything but 27/28 is a signature the Transaction Service would reject.
     if (size(signature) !== 65 || ![27, 28].includes(hexToNumber(slice(signature, 64)))) {
-      return wrong('signer returned a Safe signature that is not 65 bytes r || s || v with v 27 or 28');
+      return wrong(
+        'signer returned a Safe signature that is not 65 bytes r || s || v with v 27 or 28',
+      );
     }
     let recovered: Address;
     try {

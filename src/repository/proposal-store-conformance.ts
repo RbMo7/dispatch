@@ -726,6 +726,141 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
       });
     });
 
+    describe('late settlement of a timed-out Proposal (#88)', () => {
+      async function timedOut(store: DispatchStore, overrides: Partial<NewProposalInput> = {}) {
+        const seeded = await seedUnproposed(store, 'solana', 2);
+        const proposal = await store.createProposal(
+          proposalInput(seeded.dispatch.id, seeded.calls, overrides),
+        );
+        await store.settleProposal(proposal.id, {
+          status: 'ABANDONED',
+          error: { code: 'APPROVAL_TIMEOUT', message: 'late' },
+        });
+        return { ...seeded, proposal };
+      }
+
+      it('ABANDONED to CONFIRMED links the executed hash and resolves the Proposal, with no signed bytes', async () => {
+        const store = makeStore();
+        const { dispatch, proposal } = await timedOut(store);
+
+        const settled = await store.settleProposal(proposal.id, {
+          status: 'CONFIRMED',
+          hash: 'human-exec',
+        });
+
+        expect(settled.map((c) => [c.status, c.hash, c.signedBytes, c.error])).toEqual([
+          ['CONFIRMED', 'human-exec', null, null],
+          ['CONFIRMED', 'human-exec', null, null],
+        ]);
+        expect(settled.every((c) => c.confirmedAt !== null)).toBe(true);
+        expect((await store.listTransactions(dispatch.id)).map((c) => c.status)).toEqual([
+          'CONFIRMED',
+          'CONFIRMED',
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('resolved');
+      });
+
+      it('ABANDONED to FAILED carries the rejection and resolves the Proposal', async () => {
+        const store = makeStore();
+        const { proposal } = await timedOut(store);
+        const error = { code: 'APPROVAL_REJECTED', message: 'rejected late' } as const;
+
+        const settled = await store.settleProposal(proposal.id, { status: 'FAILED', error });
+
+        expect(settled.map((c) => [c.status, c.error])).toEqual([
+          ['FAILED', error],
+          ['FAILED', error],
+        ]);
+        expect((await store.getProposal(proposal.id))?.phase).toBe('resolved');
+      });
+
+      it('a late-settled or window-ended Proposal stops counting as committed at once', async () => {
+        const store = makeStore();
+        const settled = await timedOut(store);
+        const ended = await timedOut(store);
+        const since = new Date(Date.now() - 60_000);
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([
+          { asset: 'USDC', amount: '60' },
+        ]);
+
+        await store.settleProposal(settled.proposal.id, { status: 'CONFIRMED', hash: 'h' });
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([
+          { asset: 'USDC', amount: '30' },
+        ]);
+
+        await store.updateProposal(ended.proposal.id, {
+          phase: 'resolved',
+          resolvedAt: new Date(),
+        });
+        expect(await store.listCommitted('solana', 'sender', since)).toEqual([]);
+        expect(await store.listCommitted('solana', 'proposer', since)).toEqual([]);
+      });
+
+      it('the reorg re-check queue skips a CONFIRMED Call with no signed bytes, and keeps one with', async () => {
+        const store = makeStore();
+        const { proposal } = await timedOut(store);
+        await store.settleProposal(proposal.id, { status: 'CONFIRMED', hash: 'human-exec' });
+        const dispatch = await store.createDispatch({
+          chain: 'solana',
+          idempotencyKey: `k-${counter++}-${Math.random()}`,
+          items: [solanaItem('5')],
+          retryPolicy: false,
+        });
+        const ours = await store.createTransaction({
+          dispatchId: dispatch.id,
+          callIndex: 0,
+          chain: 'solana',
+          signedBytes: 'c2lnbmVk',
+          hash: 'our-hash',
+        });
+        await store.markConfirmed(ours.id);
+
+        const queue = await store.listRecentlyConfirmedTransactions('solana', 100, PAST);
+
+        expect(queue.map((t) => t.hash)).toEqual(['our-hash']);
+      });
+    });
+
+    describe('closeState / listProposalsAwaitingClose (#88)', () => {
+      it('lists only pending closes on the asked chains, oldest first, and forgets finished ones', async () => {
+        const store = makeStore();
+        const a = await seedUnproposed(store, 'solana', 1);
+        const b = await seedUnproposed(store, 'solana', 1);
+        const c = await seedUnproposed(store, 'solana', 1);
+        const d = await seedUnproposed(store, 'base', 1);
+        const pa = await store.createProposal(proposalInput(a.dispatch.id, a.calls));
+        const pb = await store.createProposal(proposalInput(b.dispatch.id, b.calls));
+        const pc = await store.createProposal(proposalInput(c.dispatch.id, c.calls));
+        const pd = await store.createProposal(
+          proposalInput(d.dispatch.id, d.calls, { chain: 'base' }),
+        );
+        expect(pa.closeState).toBeNull();
+        expect(await store.listProposalsAwaitingClose(['solana', 'base'], 10)).toEqual([]);
+
+        for (const p of [pa, pb, pc, pd])
+          await store.updateProposal(p.id, { closeState: 'pending' });
+        expect((await store.listProposalsAwaitingClose(['solana'], 10)).map((p) => p.id)).toEqual([
+          pa.id,
+          pb.id,
+          pc.id,
+        ]);
+        expect((await store.listProposalsAwaitingClose(['solana'], 2)).map((p) => p.id)).toEqual([
+          pa.id,
+          pb.id,
+        ]);
+        expect((await store.listProposalsAwaitingClose(['base'], 10)).map((p) => p.id)).toEqual([
+          pd.id,
+        ]);
+
+        await store.updateProposal(pa.id, { closeState: 'closed' });
+        await store.updateProposal(pb.id, { closeState: 'abandoned' });
+        expect((await store.listProposalsAwaitingClose(['solana'], 10)).map((p) => p.id)).toEqual([
+          pc.id,
+        ]);
+        expect((await store.getProposal(pa.id))?.closeState).toBe('closed');
+      });
+    });
+
     describe('listProposalsForDispatch', () => {
       it('returns only that Dispatch`s Proposals, oldest first', async () => {
         const store = makeStore();

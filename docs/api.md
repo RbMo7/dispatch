@@ -94,6 +94,13 @@ An item whose Call belongs to a Proposal carries an `approval` block. It is pres
 
 An `abandoned` item with `APPROVAL_TIMEOUT` is not a failure: an Approver may still approve it and someone else execute it. Check before re-sending, or the payment may happen twice.
 
+The engine keeps reading a timed-out Proposal for a re-watch window (30 days after it timed out by default; `SOLANA_APPROVAL_REWATCH_WINDOW_MS` / `BASE_APPROVAL_REWATCH_WINDOW_MS`), and an `abandoned` item can then change once, and only once:
+
+- someone else executed the Proposal: the item becomes `confirmed`, with `hash` set to the transaction that executed it (it was never sent by the engine, so there is no engine-signed transaction behind it);
+- the Proposal was rejected or cancelled (Squads), made stale before approval, or lost its Safe nonce to a different transaction: the item becomes `failed` with `APPROVAL_REJECTED`;
+- approved but not executed: it stays `abandoned` and `approval.state` reads `approved_after_deadline`. The engine never executes it; an operator executes or rejects it in the multisig's app;
+- the window ends with no decision: it stays `abandoned` for good, and a later execution goes unseen.
+
 ## Bulk Call (`bulkCall`, Base)
 
 A Managed Dispatch on Base can opt into Bulk Call (ADR-0006, ADR-0038). Its items are then sent as `aggregate3Value` transactions through an aggregator contract **you** name. The engine never deploys or owns one.
