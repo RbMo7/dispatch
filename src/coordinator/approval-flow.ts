@@ -28,8 +28,15 @@ const EXECUTE_RETRY_DELAY_MS = 60_000;
 /** A best-effort close that failed is tried again this many times in all, each try a little later than the last. */
 const CLOSE_MAX_ATTEMPTS = 5;
 const CLOSE_RETRY_MS = 30_000;
-/** A timed-out Proposal waits for the re-watch window (#88); until that exists it is only parked, not read. */
-const TIMED_OUT_PARK_MS = 60 * 60 * 1000;
+/** How many `pending` closes one `watch` pass looks at. */
+const CLOSE_SWEEP_LIMIT = 50;
+/** ADR-0053: a timed-out Proposal is read at the chain's normal cadence for this long, then hourly until its re-watch window ends. */
+export const DEFAULT_REWATCH_FIRST_PERIOD_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_REWATCH_LATER_INTERVAL_MS = 60 * 60 * 1000;
+/** ADR-0053: how long a Proposal is watched after it times out when its chain does not say (`*_APPROVAL_REWATCH_WINDOW_MS`). */
+export const DEFAULT_APPROVAL_REWATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** An approved-after-deadline Proposal is shouted about at most this often (per process), not on every read. */
+export const DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS = 60 * 60 * 1000;
 
 /** A (Dispatch, callIndex) pointer to one Call, as the Coordinator groups claimed work. */
 export type ApprovalCallRef = { dispatch: Dispatch; callIndex: number };
@@ -45,6 +52,16 @@ export type ApprovalFlowDeps = {
   approvalDeadlineMs?: number | undefined;
   /** Per-chain deadlines, taking precedence over `approvalDeadlineMs`. */
   approvalDeadlineMsByChain?: Map<Chain, number> | undefined;
+  /** ADR-0053: how long after timing out a Proposal is still watched. Defaults to 30 days. */
+  approvalRewatchWindowMs?: number | undefined;
+  /** Per-chain re-watch windows, taking precedence over `approvalRewatchWindowMs`. */
+  approvalRewatchWindowMsByChain?: Map<Chain, number> | undefined;
+  /** How long a timed-out Proposal is read at the chain's normal cadence before going hourly (default 24 h). */
+  rewatchFirstPeriodMs?: number | undefined;
+  /** The gap between reads once past the first period (default 1 h). */
+  rewatchLaterIntervalMs?: number | undefined;
+  /** The least gap between two loud logs about the same approved-after-deadline Proposal (default 1 h). */
+  lateApprovalLogIntervalMs?: number | undefined;
 };
 
 /** The same two reasons a retry can help: the Signer or the node could not be reached. Everything else is a definite answer. */
@@ -67,15 +84,19 @@ export class ApprovalFlow {
   private readonly logger: Logger;
   private readonly approvalDeadlineMs: number;
   private readonly approvalDeadlineMsByChain: Map<Chain, number>;
+  private readonly approvalRewatchWindowMs: number;
+  private readonly approvalRewatchWindowMsByChain: Map<Chain, number>;
+  private readonly rewatchFirstPeriodMs: number;
+  private readonly rewatchLaterIntervalMs: number;
+  private readonly lateApprovalLogIntervalMs: number;
+  /** In memory only: when each approved-after-deadline Proposal was last logged about. A restart logs it once more, which is harmless. */
+  private readonly lateApprovalLoggedAt = new Map<string, number>();
   /** One creation at a time per Sender: the tail of each Sender's queue. */
   private readonly queues = new Map<string, Promise<void>>();
   /** Per chain, in memory only: when proposing may be tried again after a transient failure. */
   private readonly backoff = new Map<Chain, { until: number; failures: number }>();
-  /** Finished Proposals whose accounts still need closing (#75), in memory only: a restart forgets them, which costs only rent. */
-  private readonly pendingCloses = new Map<
-    string,
-    { proposal: Proposal; attempts: number; nextAt: number }
-  >();
+  /** Retry bookkeeping for Proposals whose close failed (#75). What still needs closing is durable (`closeState`, #88); only the attempt count and the wait are in memory. */
+  private readonly pendingCloses = new Map<string, { attempts: number; nextAt: number }>();
 
   constructor(deps: ApprovalFlowDeps) {
     this.store = deps.store;
@@ -85,6 +106,14 @@ export class ApprovalFlow {
     this.logger = deps.logger.child({ component: 'approval-flow' });
     this.approvalDeadlineMs = deps.approvalDeadlineMs ?? DEFAULT_APPROVAL_DEADLINE_MS;
     this.approvalDeadlineMsByChain = deps.approvalDeadlineMsByChain ?? new Map<Chain, number>();
+    this.approvalRewatchWindowMs =
+      deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
+    this.approvalRewatchWindowMsByChain =
+      deps.approvalRewatchWindowMsByChain ?? new Map<Chain, number>();
+    this.rewatchFirstPeriodMs = deps.rewatchFirstPeriodMs ?? DEFAULT_REWATCH_FIRST_PERIOD_MS;
+    this.rewatchLaterIntervalMs = deps.rewatchLaterIntervalMs ?? DEFAULT_REWATCH_LATER_INTERVAL_MS;
+    this.lateApprovalLogIntervalMs =
+      deps.lateApprovalLogIntervalMs ?? DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS;
   }
 
   /** The chains whose handler has an approval capability. */
@@ -362,9 +391,7 @@ export class ApprovalFlow {
       case 'executing':
         return this.watchExecuting(proposal, approval);
       case 'timed_out':
-        // #88 owns the re-watch window; until then a timed-out Proposal is only parked.
-        await this.reschedule(proposal, TIMED_OUT_PARK_MS);
-        return;
+        return this.watchTimedOut(proposal, approval);
       case 'resolved':
         return;
     }
@@ -474,7 +501,121 @@ export class ApprovalFlow {
         chainDetail: { deadlineAt: proposal.deadlineAt.toISOString() },
       },
     });
-    await this.store.updateProposal(proposal.id, { nextCheckAt: this.after(TIMED_OUT_PARK_MS) });
+    await this.store.updateProposal(proposal.id, {
+      checkFailures: 0,
+      nextCheckAt: this.after(this.cadence(this.requireApproval(proposal.chain))),
+    });
+  }
+
+  /**
+   * `timed_out` (ADR-0053): the Calls are ABANDONED and the engine never
+   * executes the Proposal, but it keeps reading the Proposal itself for the
+   * re-watch window, because someone else can still execute or reject it.
+   * ABANDONED becomes CONFIRMED only on a proven execution and FAILED only on
+   * a definitive rejection, each written straight from ABANDONED.
+   */
+  private async watchTimedOut(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
+    const log = this.logger.child({
+      proposalId: proposal.id,
+      dispatchId: proposal.dispatchId,
+      chain: proposal.chain,
+    });
+    const windowMs =
+      this.approvalRewatchWindowMsByChain.get(proposal.chain) ?? this.approvalRewatchWindowMs;
+    const since = (proposal.timedOutAt ?? proposal.deadlineAt).getTime();
+    if (this.now().getTime() >= since + windowMs) {
+      // The Calls stay ABANDONED: a late execution after this goes unseen (ADR-0053).
+      log.warn({ windowMs, timedOutAt: new Date(since) }, 'rewatch_window_ended');
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.store.updateProposal(proposal.id, { phase: 'resolved', resolvedAt: this.now() });
+      return;
+    }
+
+    const read = await approval.readProposal(proposal.chainRef);
+    if (!read.ok) {
+      log.warn({ error: read.error }, 'readProposal failed for a timed-out proposal; backing off');
+      await this.backOff(proposal, read.error.code);
+      return;
+    }
+    const snapshot = read.value;
+
+    if (snapshot.status === 'executed') {
+      log.warn(
+        { executedHash: snapshot.executedHash },
+        'late_execution_detected: a timed-out proposal was executed by someone else',
+      );
+      await this.store.settleProposal(proposal.id, {
+        status: 'CONFIRMED',
+        ...(snapshot.executedHash === undefined ? {} : { hash: snapshot.executedHash }),
+      });
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    if (
+      snapshot.status === 'rejected' ||
+      snapshot.status === 'cancelled' ||
+      snapshot.status === 'stale'
+    ) {
+      log.info({ status: snapshot.status }, 'timed-out proposal was rejected; calls failed');
+      await this.store.settleProposal(proposal.id, {
+        status: 'FAILED',
+        error: {
+          code: 'APPROVAL_REJECTED',
+          message:
+            snapshot.status === 'stale'
+              ? 'the proposal was invalidated by a multisig change before it was approved'
+              : `the proposal was ${snapshot.status} after its deadline`,
+          chainDetail: { status: snapshot.status, afterDeadline: true },
+        },
+      });
+      this.lateApprovalLoggedAt.delete(proposal.id);
+      await this.closeFinished(proposal, approval);
+      return;
+    }
+    if (snapshot.status === 'unknown') {
+      log.warn('timed-out proposal state is unknown; backing off');
+      await this.backOff(proposal, 'unknown proposal state');
+      return;
+    }
+
+    const lateApproved = snapshot.status === 'approved';
+    const current = await this.store.updateProposal(proposal.id, {
+      approvals: snapshot.approvals,
+      threshold: snapshot.threshold,
+      approvalState: lateApproved ? 'approved_after_deadline' : 'awaiting',
+      checkFailures: 0,
+    });
+    if (lateApproved) this.logLateApproval(current);
+    await this.store.updateProposal(proposal.id, {
+      nextCheckAt: this.after(this.rewatchDelay(current, approval)),
+    });
+  }
+
+  /** Never executed by the engine: the operator decides, in the multisig app. Logged loudly, but at most once per interval. */
+  private logLateApproval(proposal: Proposal): void {
+    const last = this.lateApprovalLoggedAt.get(proposal.id);
+    const now = this.now().getTime();
+    if (last !== undefined && now - last < this.lateApprovalLogIntervalMs) return;
+    this.lateApprovalLoggedAt.set(proposal.id, now);
+    this.logger.error(
+      {
+        proposalId: proposal.id,
+        dispatchId: proposal.dispatchId,
+        chain: proposal.chain,
+        proposalRef: proposal.proposalRef,
+        deadlineAt: proposal.deadlineAt,
+      },
+      'approved_after_deadline: a timed-out proposal is approved but the engine will NOT execute it; execute or reject it in the multisig app, and check before re-sending its payments',
+    );
+  }
+
+  /** The normal cadence for the first period after timing out, then hourly. */
+  private rewatchDelay(proposal: Proposal, approval: ApprovalCapability): number {
+    const since = (proposal.timedOutAt ?? proposal.deadlineAt).getTime();
+    return this.now().getTime() - since < this.rewatchFirstPeriodMs
+      ? this.cadence(approval)
+      : this.rewatchLaterIntervalMs;
   }
 
   /** Sign as the proposer, write down (ADR-0041), then broadcast; the Coordinator's poll loop takes over from `PENDING`. */
@@ -744,26 +885,31 @@ export class ApprovalFlow {
    * Best effort, after a Proposal is known to be finished (executed, rejected,
    * cancelled or stale): asks the chain to close it and take its rent back.
    * Whatever happens here never changes what the Calls reported. A failure is
-   * logged and tried again a few times, from `watch`; closing the Proposals of
-   * timed-out Calls is #88's.
+   * logged and tried again a few times, from `watch`. What still needs closing
+   * is written down first (`closeState`, #88), so a restart carries on.
    */
   private async closeFinished(proposal: Proposal, approval: ApprovalCapability): Promise<void> {
     if (!approval.closeProposal) return;
-    await this.tryClose({ proposal, attempts: 0, nextAt: 0 });
+    await this.store.updateProposal(proposal.id, { closeState: 'pending' });
+    await this.tryClose(proposal, 0);
   }
 
   private async retryCloses(): Promise<void> {
-    for (const entry of [...this.pendingCloses.values()]) {
-      if (entry.nextAt <= this.now().getTime()) await this.tryClose(entry);
+    const due = await this.store.listProposalsAwaitingClose(this.chains(), CLOSE_SWEEP_LIMIT);
+    for (const proposal of due) {
+      const entry = this.pendingCloses.get(proposal.id);
+      if (entry && entry.nextAt > this.now().getTime()) continue;
+      await this.tryClose(proposal, entry?.attempts ?? 0);
     }
   }
 
-  private async tryClose(entry: {
-    proposal: Proposal;
-    attempts: number;
-    nextAt: number;
-  }): Promise<void> {
-    const { proposal } = entry;
+  /** Ends the Proposal's close work for good: `closed`, or `abandoned` when it is given up on (the rent stays locked). */
+  private async finishClose(proposal: Proposal, state: 'closed' | 'abandoned'): Promise<void> {
+    this.pendingCloses.delete(proposal.id);
+    await this.store.updateProposal(proposal.id, { closeState: state });
+  }
+
+  private async tryClose(proposal: Proposal, previousAttempts: number): Promise<void> {
     const approval = this.chainHandlers.get(proposal.chain)?.approval;
     if (!approval?.closeProposal) return;
     const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
@@ -771,7 +917,7 @@ export class ApprovalFlow {
     try {
       const result = await approval.closeProposal(proposal);
       if (result.ok) {
-        this.pendingCloses.delete(proposal.id);
+        await this.finishClose(proposal, 'closed');
         return;
       }
       error = result.error;
@@ -781,21 +927,20 @@ export class ApprovalFlow {
     const reason = (error.chainDetail as { reason?: unknown } | undefined)?.reason;
     if (reason === 'RENT_RECLAMATION_DISABLED') {
       // Permanent: no number of tries changes it. The chain handler has already said so.
-      this.pendingCloses.delete(proposal.id);
+      await this.finishClose(proposal, 'abandoned');
       return;
     }
-    const attempts = entry.attempts + 1;
+    const attempts = previousAttempts + 1;
     if (attempts >= CLOSE_MAX_ATTEMPTS) {
       log.warn(
         { error, attempts },
         'closing the finished proposal failed; giving up (its rent stays locked)',
       );
-      this.pendingCloses.delete(proposal.id);
+      await this.finishClose(proposal, 'abandoned');
       return;
     }
     log.warn({ error, attempts }, 'closing the finished proposal failed; will try again');
     this.pendingCloses.set(proposal.id, {
-      proposal,
       attempts,
       nextAt: this.now().getTime() + CLOSE_RETRY_MS * attempts,
     });
@@ -828,6 +973,12 @@ export class ApprovalFlow {
       checkFailures: failures,
       nextCheckAt: this.after(delay),
     });
+  }
+
+  private requireApproval(chain: Chain): ApprovalCapability {
+    const approval = this.requireHandler(chain).approval;
+    if (!approval) throw new Error(`Chain ${chain} has no approval capability`);
+    return approval;
   }
 
   private requireHandler(chain: Chain): ChainHandler {

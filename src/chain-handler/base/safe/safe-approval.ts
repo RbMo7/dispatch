@@ -8,6 +8,7 @@ import {
   hashMessage,
   isAddress,
   pad,
+  parseEventLogs,
   parseAbi,
   recoverAddress,
   size,
@@ -71,6 +72,8 @@ export const MULTI_SEND_CALL_ONLY: Readonly<Record<string, Address>> = {
 export const SAFE_PROPOSAL_ORIGIN = 'Dispatch engine';
 
 const MULTI_SEND_ABI = parseAbi(['function multiSend(bytes transactions)']);
+/** Safe 1.3.0 and 1.4.1 emit this when `execTransaction` ran the inner transaction successfully (#88). */
+const EXECUTION_SUCCESS_ABI = parseAbi(['event ExecutionSuccess(bytes32 txHash, uint256 payment)']);
 const THRESHOLD_ABI = parseAbi(['function getThreshold() view returns (uint256)']);
 
 /** One payment inside a bundle, classified from its Call. */
@@ -88,7 +91,7 @@ type SafeProposalPayload = SafeTransaction & { safeTxHash: Hex };
 
 /** What the Safe half needs of the node: `SafeReadClient`, plus `eth_call`, gas estimation and the fee reads. */
 export type SafeApprovalClient = SafeReadClient &
-  Pick<PublicClient, 'call' | 'estimateGas' | 'getBlock'>;
+  Pick<PublicClient, 'call' | 'estimateGas' | 'getBlock' | 'getTransactionReceipt'>;
 
 export type SafeApprovalDeps = {
   config: BaseSafeConfig;
@@ -357,12 +360,14 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     const base = { approvals: signers.size, threshold: state.threshold };
     const proposalNonce = BigInt(ref.nonce);
 
-    // (1) Executed: the service says so. Its transaction is the proof of payment.
+    // (1) Executed: the service says so, and the chain agrees (#88): its transaction is the proof of payment.
     if (service?.isExecuted) {
+      const proven = await this.verifyExecution(ref, service.transactionHash);
+      if (!proven.ok) return proven;
       return ok({
         ...base,
         status: 'executed',
-        ...(service.transactionHash ? { executedHash: service.transactionHash } : {}),
+        executedHash: proven.value,
         executable: false,
       });
     }
@@ -382,12 +387,9 @@ export class SafeApproval implements ApprovalCapability<'base'> {
       const winner = entries.find((entry) => entry.isExecuted);
       if (winner) {
         if (winner.safeTxHash.toLowerCase() === ref.safeTxHash.toLowerCase()) {
-          return ok({
-            ...base,
-            status: 'executed',
-            ...(winner.transactionHash ? { executedHash: winner.transactionHash } : {}),
-            executable: false,
-          });
+          const proven = await this.verifyExecution(ref, winner.transactionHash);
+          if (!proven.ok) return proven;
+          return ok({ ...base, status: 'executed', executedHash: proven.value, executable: false });
         }
         // A different transaction took this nonce: a rejection or a replacement (spike #79, section 6).
         return ok({ ...base, status: 'rejected', executable: false });
@@ -400,6 +402,59 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     // (3) Still at its nonce: approved once enough current owners confirmed.
     const approved = signers.size >= state.threshold && state.nonce === proposalNonce;
     return ok({ ...base, status: approved ? 'approved' : 'active', executable: approved });
+  }
+
+  /**
+   * #88: the service is a convenience, not proof of payment. Before a proposal
+   * is called executed (and its Calls CONFIRMED, possibly by someone else), the
+   * executing transaction's own receipt must have succeeded and carry this
+   * Safe's `ExecutionSuccess` event for this `safeTxHash`. Anything else,
+   * including a receipt that cannot be read yet, leaves the proposal unsettled.
+   */
+  private async verifyExecution(
+    ref: Extract<ChainProposalRef, { kind: 'safe' }>,
+    transactionHash: string | null | undefined,
+  ): Promise<Result<string, DispatchError>> {
+    const unverified = (message: string): Result<string, DispatchError> =>
+      err({
+        code: 'RPC_UNAVAILABLE',
+        message,
+        chainDetail: { reason: 'EXECUTION_NOT_VERIFIED', safeTxHash: ref.safeTxHash },
+      });
+    if (!transactionHash) {
+      return unverified(
+        'the Safe Transaction Service reports an execution without its transaction hash',
+      );
+    }
+    let receipt;
+    try {
+      receipt = await this.deps.client.getTransactionReceipt({ hash: transactionHash as Hex });
+    } catch (cause) {
+      return unverified(
+        `could not read the receipt of ${transactionHash}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+    if (receipt.status !== 'success') {
+      return unverified(`the transaction ${transactionHash} did not succeed on-chain`);
+    }
+    const events = parseEventLogs({
+      abi: EXECUTION_SUCCESS_ABI,
+      eventName: 'ExecutionSuccess',
+      logs: receipt.logs,
+      strict: false,
+    });
+    const matched = events.some(
+      (event) =>
+        event.address.toLowerCase() === ref.safe.toLowerCase() &&
+        typeof event.args.txHash === 'string' &&
+        event.args.txHash.toLowerCase() === ref.safeTxHash.toLowerCase(),
+    );
+    if (!matched) {
+      return unverified(
+        `the receipt of ${transactionHash} has no ExecutionSuccess event of ${ref.safe} for ${ref.safeTxHash}`,
+      );
+    }
+    return ok(transactionHash);
   }
 
   async prepareExecution(proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>> {
