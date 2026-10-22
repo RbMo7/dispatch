@@ -145,6 +145,8 @@ export interface ApprovalCapability<C extends Chain = Chain> {
   readonly openProposalLimit: number;
   /** A failed execute of a still-approved Proposal is tried again until its deadline (Squads true, Safe false). */
   readonly reexecuteOnFailure: boolean;
+  /** How often the watch loop reads one of this chain's open Proposals, in ms (default 15 s; Safe 60 s, for the Safe service's quota). */
+  readonly watchIntervalMs?: number;
 
   /**
    * Pure and size-aware: how one Dispatch's Calls split into Proposals.

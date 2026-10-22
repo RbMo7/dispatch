@@ -1,3 +1,4 @@
+import { approvalLoop as runApprovalLoop } from './approval-loop.js';
 import {
   loadChainRegistry,
   coordinatorConfigFor,
@@ -36,8 +37,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 const chainRegistry = await loadChainRegistry();
-const { senderAddresses, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling } =
-  coordinatorConfigFor(chainRegistry);
+const {
+  senderAddresses,
+  abandonmentTimeoutMs,
+  reorgRecheckWindowMs,
+  stuckHandling,
+  approvalDeadlineMsByChain,
+  approvalRewatchWindowMsByChain,
+} = coordinatorConfigFor(chainRegistry);
 
 const coordinator = new Coordinator({
   store: new PostgresDispatchStore(db),
@@ -46,6 +53,8 @@ const coordinator = new Coordinator({
   abandonmentTimeoutMs,
   reorgRecheckWindowMs,
   stuckHandling,
+  approvalDeadlineMsByChain,
+  approvalRewatchWindowMsByChain,
 });
 
 // #20 review (ADR-0041): before anything is signed, reserve every nonce the
@@ -148,13 +157,27 @@ async function reorgRecheckLoop(): Promise<void> {
   }
 }
 
+/**
+ * ADR-0054: watches multisig Proposals (every 10 seconds, each Proposal on its
+ * own `next_check_at`). Does nothing for a deployment with no Multisig Sender.
+ */
+function approvalLoop(): Promise<void> {
+  return runApprovalLoop({
+    coordinator,
+    isRunning: () => running,
+    limit: BATCH_LIMIT,
+    logger,
+    sleep,
+  });
+}
+
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// All four are self-scheduling loops, not setInterval: each only
+// All five are self-scheduling loops, not setInterval: each only
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
-await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop()]);
+await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop(), approvalLoop()]);
 
 logger.info('worker stopped');
 process.exit(0);
