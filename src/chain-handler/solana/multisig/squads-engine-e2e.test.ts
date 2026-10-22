@@ -121,8 +121,9 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     coordinatorConfigFor = loaders.coordinatorConfigFor;
     // Runs the real multisig startup checks against the real RPC and the real Signer.
     registry = await loaders.loadChainRegistry();
-    ({ db } = (await import('../../../db/client.js')) as unknown as { db: typeof db });
-    const { PostgresDispatchStore } = await import('../../../repository/postgres-dispatch-store.js');
+    ({ db } = await import('../../../db/client.js'));
+    const { PostgresDispatchStore } =
+      await import('../../../repository/postgres-dispatch-store.js');
     store = new PostgresDispatchStore(db as never);
     ({ Coordinator: CoordinatorClass } = await import('../../../coordinator/coordinator.js'));
     const { buildApp } = await import('../../../app.js');
@@ -131,7 +132,7 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       chainRegistry: registry,
       authToken: API_TOKEN,
       defaultRetryPolicy: false,
-    }) as never;
+    });
   }, 180_000);
 
   afterAll(async () => {
@@ -211,8 +212,10 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     amount: amount.toString(),
   });
   const accountsClosed = async (index: number | bigint): Promise<boolean> =>
-    (await connection.getAccountInfo(deriveProposalPda(fixture.multisig, BigInt(index)), 'confirmed')) ===
-      null &&
+    (await connection.getAccountInfo(
+      deriveProposalPda(fixture.multisig, BigInt(index)),
+      'confirmed',
+    )) === null &&
     (await connection.getAccountInfo(
       deriveTransactionPda(fixture.multisig, BigInt(index)),
       'confirmed',
@@ -243,7 +246,7 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     if (!tx) return [];
     const message = tx.transaction.message;
     const keys = message.getAccountKeys({
-      accountKeysFromLookups: tx.meta?.loadedAddresses,
+      accountKeysFromLookups: tx.meta?.loadedAddresses ?? null,
     });
     const names: Record<string, string> = {
       '30fa4ea8d0e2dad3': 'vaultTransactionCreate',
@@ -298,11 +301,8 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     ]);
 
     const t0 = Date.now();
-    const waiting = await drive(
-      coordinator,
-      id,
-      'awaiting approval',
-      (d) => d.items.every((item) => item.status === 'awaiting_approval'),
+    const waiting = await drive(coordinator, id, 'awaiting approval', (d) =>
+      d.items.every((item) => item.status === 'awaiting_approval'),
     );
     log(`approve: awaiting_approval after ${Date.now() - t0} ms`);
     expect(waiting.status).toBe('broadcasting');
@@ -315,7 +315,9 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       multisig: fixture.multisig.toBase58(),
     });
     const index = approval.chainRef.transactionIndex;
-    expect(approval.chainRef.proposal).toBe(deriveProposalPda(fixture.multisig, BigInt(index)).toBase58());
+    expect(approval.chainRef.proposal).toBe(
+      deriveProposalPda(fixture.multisig, BigInt(index)).toBase58(),
+    );
     const remaining = new Date(approval.deadline).getTime() - Date.now();
     expect(remaining).toBeGreaterThan(DEADLINE_MS - 120_000);
     expect(remaining).toBeLessThanOrEqual(DEADLINE_MS);
@@ -332,11 +334,18 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     expect(await connection.getBalance(solRecipients[0]!, 'confirmed')).toBe(0);
 
     await castVote(connection, fixture, fixture.voters[0]!, index, 'approve');
-    const half = await drive(coordinator, id, 'one approval seen', (d) => d.items[0]!.approval?.approvals === 1);
+    const half = await drive(
+      coordinator,
+      id,
+      'one approval seen',
+      (d) => d.items[0]!.approval?.approvals === 1,
+    );
     expect(half.items[0]!.status).toBe('awaiting_approval');
     await castVote(connection, fixture, fixture.voters[1]!, index, 'approve');
     const voted = Date.now();
-    const confirmed = await drive(coordinator, id, 'confirmed', (d) => d.items.every((i) => i.status === 'confirmed'));
+    const confirmed = await drive(coordinator, id, 'confirmed', (d) =>
+      d.items.every((i) => i.status === 'confirmed'),
+    );
     log(`approve: second vote -> CONFIRMED in ${Date.now() - voted} ms`);
 
     expect(confirmed.status).toBe('confirmed');
@@ -362,7 +371,8 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
 
     // The engine closes what it finished with; the rent returns to the collector (the member key).
     expect(await driveUntilClosed(coordinator, index)).toBe(true);
-    const memberLoss = memberBefore - (await connection.getBalance(fixture.member.publicKey, 'confirmed'));
+    const memberLoss =
+      memberBefore - (await connection.getBalance(fixture.member.publicKey, 'confirmed'));
     log(`approve: member key net cost of the whole cycle ${memberLoss} lamports (rent reclaimed)`);
     expect(memberLoss).toBeGreaterThan(0);
     expect(memberLoss).toBeLessThan(100_000); // three signatures; the ~4.7M of rent came back
@@ -383,7 +393,9 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     await castVote(connection, fixture, fixture.voters[0]!, index, 'reject');
     await castVote(connection, fixture, fixture.voters[1]!, index, 'reject');
     const rejectedAt = Date.now();
-    const failed = await drive(coordinator, id, 'failed', (d) => d.items.every((i) => i.status === 'failed'));
+    const failed = await drive(coordinator, id, 'failed', (d) =>
+      d.items.every((i) => i.status === 'failed'),
+    );
     log(`reject: second reject -> FAILED in ${Date.now() - rejectedAt} ms`);
 
     expect(failed.status).toBe('failed');
@@ -412,7 +424,9 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     const abandoned = await drive(coordinator, id, 'abandoned', (d) =>
       d.items.every((i) => i.status === 'abandoned'),
     );
-    log(`timeout: ABANDONED ${Date.now() - timedOutAfter} ms after awaiting_approval (deadline ${SHORT_DEADLINE_MS} ms)`);
+    log(
+      `timeout: ABANDONED ${Date.now() - timedOutAfter} ms after awaiting_approval (deadline ${SHORT_DEADLINE_MS} ms)`,
+    );
     for (const item of abandoned.items) {
       expect(item.error?.code).toBe('APPROVAL_TIMEOUT');
       expect(item.transactionHash).toBeNull();
@@ -428,7 +442,9 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       'late approval seen',
       (d) => d.items[0]!.approval?.approvals === 2,
     );
-    log(`timeout: after the late votes the API says approval.state=${late.items[0]!.approval!.state}, items ${late.items.map((i) => i.status).join(',')}`);
+    log(
+      `timeout: after the late votes the API says approval.state=${late.items[0]!.approval!.state}, items ${late.items.map((i) => i.status).join(',')}`,
+    );
     // Give the engine two more watch ticks with an approved proposal it must leave alone.
     const quiet = Date.now() + 40_000;
     while (Date.now() < quiet) {
@@ -453,7 +469,8 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       expect(item.transactionHash).toBe(humanSignature);
       expect(item.error).toBeNull();
     }
-    for (const to of recipients) expect(await connection.getBalance(to, 'confirmed')).toBe(1_100_000);
+    for (const to of recipients)
+      expect(await connection.getBalance(to, 'confirmed')).toBe(1_100_000);
     // The engine itself never executed anything for this Dispatch.
     expect(await signedInstructions(auditStart)).not.toContain('vaultTransactionExecute');
     expect(await driveUntilClosed(coordinator, index)).toBe(true);
@@ -496,13 +513,17 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       address: fixture.vault.toBase58(),
       committed: each.toString(),
     });
-    log(`funding: second proposal refused with chainDetail ${JSON.stringify(blocked.items[0]!.error?.chainDetail)}`);
+    log(
+      `funding: second proposal refused with chainDetail ${JSON.stringify(blocked.items[0]!.error?.chainDetail)}`,
+    );
 
     // Clean up on chain: reject the open proposal so its rent comes back.
     const index = open.items[0]!.approval!.chainRef.transactionIndex;
     await castVote(connection, fixture, fixture.voters[0]!, index, 'reject');
     await castVote(connection, fixture, fixture.voters[1]!, index, 'reject');
-    await drive(coordinator, first, 'first rejected', (d) => d.items.every((i) => i.status === 'failed'));
+    await drive(coordinator, first, 'first rejected', (d) =>
+      d.items.every((i) => i.status === 'failed'),
+    );
     expect(await driveUntilClosed(coordinator, index)).toBe(true);
   }, 600_000);
 
@@ -510,18 +531,23 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
 
   it('signer policy: the engine create, execute and close were all accepted; a vote for the member key is refused with 403', async () => {
     const signedKinds = await signedInstructions();
-    log(`signer audit: ${signer.audit.length} lines; signed Squads instructions ${JSON.stringify(signedKinds)}`);
+    log(
+      `signer audit: ${signer.audit.length} lines; signed Squads instructions ${JSON.stringify(signedKinds)}`,
+    );
     expect(signedKinds).toContain('vaultTransactionCreate');
     expect(signedKinds).toContain('proposalCreate');
     expect(signedKinds).toContain('vaultTransactionExecute');
     expect(signedKinds).toContain('vaultTransactionAccountsClose');
     expect(signedKinds).not.toContain('proposalApprove');
     expect(signedKinds).not.toContain('proposalReject');
-    // The engine's own requests were never refused.
-    expect(signer.audit.filter((line) => line.decision === 'refused')).toEqual([]);
-    expect(
-      signer.audit.every((line) => line.address === fixture.member.publicKey.toBase58()),
-    ).toBe(true);
+    // The engine's own requests were never refused. The one refusal is the startup probe, which sends
+    // a deliberately undecodable byte and treats a 403 as "the key exists" (probeSignerForSolanaAddress).
+    const refusals = signer.audit.filter((line) => line.decision === 'refused');
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]?.reason).toMatch(/undecodable transaction/);
+    expect(signer.audit.every((line) => line.address === fixture.member.publicKey.toBase58())).toBe(
+      true,
+    );
 
     // Directly against the Signer: a vote instruction for the member key.
     const member = fixture.member.publicKey;
@@ -551,7 +577,8 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     expect(refusal[0]).toMatchObject({ decision: 'refused', status: 403 });
 
     const funder = await getFundedSenderKeypair();
-    const spent = senderStart.lamports - (await connection.getBalance(funder.publicKey, 'confirmed'));
+    const spent =
+      senderStart.lamports - (await connection.getBalance(funder.publicKey, 'confirmed'));
     log(`devnet sender spent ${spent} lamports in this run`);
     expect(spent).toBeLessThan(150_000_000);
   }, 120_000);

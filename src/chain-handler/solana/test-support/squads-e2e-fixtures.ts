@@ -94,7 +94,8 @@ export function loadSquadsE2eFixture(dir: string): SquadsE2eFixture {
   return fixture;
 }
 
-export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Sends a legacy transaction and polls (the devnet RPC has no websocket) until it is confirmed; throws on an on-chain error. */
 export async function sendAndConfirm(
@@ -301,7 +302,9 @@ export async function startMemberSigner(fixture: SquadsE2eFixture): Promise<Memb
     keyfile,
     JSON.stringify({
       secp256k1: {},
-      ed25519: { 'squads-member': Buffer.from(fixture.member.secretKey.slice(0, 32)).toString('hex') },
+      ed25519: {
+        'squads-member': Buffer.from(fixture.member.secretKey.slice(0, 32)).toString('hex'),
+      },
     }),
     { mode: 0o600 },
   );
