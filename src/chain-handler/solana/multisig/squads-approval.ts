@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   ComputeBudgetProgram,
   type Connection,
@@ -38,10 +40,13 @@ import {
   decodeInstruction,
   type EncodedInstruction,
   encodeInstruction,
+  encodeUnsignedTransaction,
   EXPIRY_MARGIN_BLOCKS,
 } from '../solana-chain-handler.js';
 import { tokenAccountRent } from '../token-account-rent.js';
 import {
+  decodeMultisigAccount,
+  MULTISIG_READ_COMMITMENT,
   PERMISSION_INITIATE,
   readMultisigState,
   type MultisigAccount,
@@ -51,14 +56,18 @@ import {
   SQUADS_PROGRAM_ID,
   type SolanaMultisigConfig,
 } from './multisig-config.js';
+import { decodeProposalAccount, type ProposalAccount } from './proposal-account.js';
 import { summarizeTransfer, type TransferSummary } from './transfer-calls.js';
 import {
   compileVaultMessage,
+  decodeVaultTransactionAccount,
   deriveProposalPda,
   deriveTransactionPda,
   proposalAccountSize,
   proposalCreateInstruction,
+  vaultTransactionAccountsCloseInstruction,
   vaultTransactionCreateInstruction,
+  vaultTransactionExecuteInstruction,
 } from './vault-transaction.js';
 
 /**
@@ -78,6 +87,17 @@ const CREATE_COMPUTE_UNIT_LIMIT = 400_000;
 const MAX_ACCOUNTS_PER_LOOKUP = 100;
 /** An index only used to measure sizes: a transaction index is a u64 whatever its value. */
 const PROBE_INDEX = 1n;
+/** An execute asks for the largest heap frame: the default 32 KB fails a bundle of SPL transfers from 18 up (spike #70). */
+const EXECUTE_HEAP_BYTES = 256 * 1024;
+/** The most compute units a transaction may ask for. */
+const MAX_COMPUTE_UNITS = 1_400_000;
+/** The simulated compute units of an execute, with this much room on top, are its limit. */
+const EXECUTE_UNITS_MARGIN = 1.5;
+const MIN_EXECUTE_UNITS = 100_000;
+/** Squads' `TimeLockNotReleased` error code (spike #70). */
+const TIME_LOCK_NOT_RELEASED = 6021;
+/** How many of a proposal's latest signatures are searched for its execution. A proposal's history is its creation, the votes, the execute and the close. */
+const HISTORY_LIMIT = 100;
 
 /** Everything `SquadsApproval` needs of web3.js, so tests can hand it a fake RPC. */
 export type SquadsConnection = Pick<
@@ -88,8 +108,12 @@ export type SquadsConnection = Pick<
   | 'getLatestBlockhash'
   | 'getMinimumBalanceForRentExemption'
   | 'getMultipleAccountsInfo'
+  | 'getMultipleAccountsInfoAndContext'
   | 'getSignatureStatuses'
+  | 'getSignaturesForAddress'
+  | 'getTransaction'
   | 'sendRawTransaction'
+  | 'simulateTransaction'
 >;
 
 export type SquadsApprovalDeps = {
@@ -106,6 +130,8 @@ export type SquadsApprovalDeps = {
   /** How often `submitProposal` sends the same bytes again while the transaction is not seen. */
   resendIntervalMs?: number;
   logger?: Logger;
+  /** The clock, for the time lock. Tests inject one. */
+  now?: () => Date;
 };
 
 /** What `payload` holds: enough to sign the same Proposal again with a fresh blockhash. */
@@ -156,9 +182,9 @@ type Landed = { type: 'confirmed' } | { type: 'failed'; chainDetail: unknown } |
  * by the member key. The vault only ever pays out of an execution, so every
  * inner instruction names the vault as payer.
  *
- * Reading, executing and closing a Proposal belong to #75 and answer with a
- * structured error until then, so a Multisig Sender fails loudly rather than
- * silently doing nothing.
+ * #75 adds the other half: `readProposal`, `prepareExecution` (the
+ * `vaultTransactionExecute`, signed and sent like any transaction by the
+ * Solana handler) and `closeProposal` (reclaiming rent).
  */
 export class SquadsApproval implements ApprovalCapability<'solana'> {
   readonly proposerAddress: string;
@@ -179,6 +205,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
   private readonly pollIntervalMs: number;
   private readonly resendIntervalMs: number;
   private readonly logger: Logger;
+  private readonly now: () => Date;
   /** hash -> the last block height its blockhash is valid for, so a submit can prove expiry. */
   private readonly lastValidByHash = new Map<string, number>();
 
@@ -199,6 +226,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     this.pollIntervalMs = deps.pollIntervalMs ?? 1_000;
     this.resendIntervalMs = deps.resendIntervalMs ?? 2_000;
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'squads-approval' });
+    this.now = deps.now ?? (() => new Date());
   }
 
   // ---- planning ----------------------------------------------------------------------------
@@ -590,7 +618,17 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     }
     const sizeError = this.checkSize(instructions);
     if (sizeError) return err(sizeError);
+    return this.signAsMember(instructions);
+  }
 
+  /**
+   * Signs `instructions` as the member (the fee payer, the only signer) over
+   * a fresh blockhash, recording its validity so a later send can prove
+   * expiry. Shared by the propose and the close.
+   */
+  private async signAsMember(
+    instructions: TransactionInstruction[],
+  ): Promise<Result<SignedProposal, DispatchError>> {
     let blockhash: string;
     let lastValidBlockHeight: number;
     try {
@@ -775,25 +813,401 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     });
   }
 
-  // ---- #75 ---------------------------------------------------------------------------------
+  // ---- #75: reading, executing and closing -------------------------------------------------
 
-  readProposal(): Promise<Result<ProposalSnapshot, DispatchError>> {
-    return Promise.resolve(err(notImplemented('reading a Proposal')));
+  /**
+   * What the chain says about a Proposal, read from the Proposal and the
+   * multisig account at one slot and one commitment. Closed Proposals vanish
+   * (spike #70): a missing account is `executed` when the history holds an
+   * execute of it, and otherwise `unknown`, never a guess. A stale Proposal
+   * that was not Approved is dead (`stale`); a stale Approved one still
+   * executes, so it stays `approved`. The time lock counts from the moment of
+   * approval.
+   */
+  async readProposal(ref: ChainProposalRef): Promise<Result<ProposalSnapshot, DispatchError>> {
+    const target = this.squadsRef(ref);
+    if (!target.ok) return target;
+    const state = await this.readState(target.value);
+    if (!state.ok) return state;
+    const { proposal, multisig } = state.value;
+
+    if (proposal === undefined) {
+      const found = await this.findExecution(target.value);
+      if (!found.ok) return found;
+      if (found.value === undefined) {
+        // Never invent an outcome: it may be a node that has not seen the account yet.
+        return ok({
+          status: 'unknown',
+          approvals: 0,
+          threshold: multisig.threshold,
+          executable: false,
+        });
+      }
+      this.logger.info(
+        {
+          proposal: target.value.toBase58(),
+          executedHash: found.value.hash,
+          executor: found.value.executor,
+        },
+        'proposal account is closed and its execution is in the history',
+      );
+      // It was approved by `threshold` members to execute at all.
+      return ok({
+        status: 'executed',
+        approvals: multisig.threshold,
+        threshold: multisig.threshold,
+        executedHash: found.value.hash,
+        executable: false,
+      });
+    }
+
+    const snapshot = this.snapshotOf(proposal, multisig);
+    if (snapshot.status === 'executed') {
+      const found = await this.findExecution(target.value);
+      if (!found.ok) return found;
+      if (found.value) {
+        this.logger.info(
+          {
+            proposal: target.value.toBase58(),
+            executedHash: found.value.hash,
+            executor: found.value.executor,
+          },
+          'proposal executed',
+        );
+        snapshot.executedHash = found.value.hash;
+      }
+    }
+    return ok(snapshot);
   }
 
-  prepareExecution(_proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>> {
-    return Promise.resolve(err(notImplemented('executing a Proposal')));
+  private snapshotOf(proposal: ProposalAccount, multisig: MultisigAccount): ProposalSnapshot {
+    const base = {
+      approvals: proposal.approved.length,
+      threshold: multisig.threshold,
+      executable: false,
+    };
+    switch (proposal.status) {
+      case 'executed':
+        return { ...base, status: 'executed' };
+      case 'rejected':
+        return { ...base, status: 'rejected' };
+      case 'cancelled':
+        return { ...base, status: 'cancelled' };
+      case 'executing':
+        // Deprecated and never at rest: not something to act on.
+        return { ...base, status: 'unknown' };
+      case 'approved': {
+        // Stale and Approved still executes (spike #70).
+        const timeLock = multisig.timeLockSeconds;
+        if (timeLock === 0 || proposal.statusTimestamp === undefined) {
+          return { ...base, status: 'approved', executable: true };
+        }
+        const executeAfter = new Date((proposal.statusTimestamp + timeLock) * 1000);
+        return {
+          ...base,
+          status: 'approved',
+          executeAfter,
+          executable: this.now().getTime() >= executeAfter.getTime(),
+        };
+      }
+      case 'draft':
+      case 'active':
+        // Stale and not Approved can never be decided: it is dead and only closable.
+        return proposal.transactionIndex <= multisig.staleTransactionIndex
+          ? { ...base, status: 'stale' }
+          : { ...base, status: 'active' };
+    }
   }
 
-  closeProposal(_proposal: Proposal): Promise<Result<void, DispatchError>> {
-    return Promise.resolve(err(notImplemented('closing a Proposal')));
+  /** The Proposal address of a Squads ref for this engine's multisig. */
+  private squadsRef(ref: ChainProposalRef): Result<PublicKey, DispatchError> {
+    if (ref.kind !== 'squads' || ref.multisig !== this.multisig.toBase58()) {
+      return err(rejected('this Proposal belongs to a different multisig', { ref }));
+    }
+    try {
+      return ok(new PublicKey(ref.proposal));
+    } catch {
+      return err(rejected(`the Proposal address ${ref.proposal} is not a valid address`));
+    }
+  }
+
+  /** The Proposal (undefined when it does not exist) and the multisig, read together. */
+  private async readState(
+    proposalAddress: PublicKey,
+  ): Promise<
+    Result<{ proposal: ProposalAccount | undefined; multisig: MultisigAccount }, DispatchError>
+  > {
+    let infos;
+    try {
+      ({ value: infos } = await this.connection.getMultipleAccountsInfoAndContext(
+        [proposalAddress, this.multisig],
+        MULTISIG_READ_COMMITMENT,
+      ));
+    } catch (cause) {
+      return err(rpcError('failed to read the Proposal and multisig accounts', cause));
+    }
+    const [proposalInfo, multisigInfo] = infos;
+    if (!multisigInfo || !multisigInfo.owner.equals(SQUADS_PROGRAM_ID)) {
+      return err(rejected(`the multisig ${this.multisig.toBase58()} is not a Squads v4 account`));
+    }
+    let multisig: MultisigAccount;
+    try {
+      multisig = decodeMultisigAccount(multisigInfo.data);
+    } catch (cause) {
+      return err(rejected('the multisig account could not be decoded', extractMessage(cause)));
+    }
+    if (!proposalInfo) return ok({ proposal: undefined, multisig });
+    if (!proposalInfo.owner.equals(SQUADS_PROGRAM_ID)) {
+      return err(rejected(`${proposalAddress.toBase58()} is not owned by Squads v4`));
+    }
+    let proposal: ProposalAccount;
+    try {
+      proposal = decodeProposalAccount(proposalInfo.data);
+    } catch (cause) {
+      return err(rejected('the Proposal account could not be decoded', extractMessage(cause)));
+    }
+    if (proposal.multisig !== this.multisig.toBase58()) {
+      return err(rejected('the Proposal belongs to a different multisig'));
+    }
+    return ok({ proposal, multisig });
+  }
+
+  /**
+   * The successful transaction that executed a Proposal, from the Proposal
+   * address's own history (it lists the create, every vote, the execute and
+   * the close, and outlives the accounts): the one whose logs name
+   * `VaultTransactionExecute`. Its fee payer is whoever executed it. A history
+   * the RPC cannot answer is an error, never "not executed".
+   */
+  private async findExecution(
+    proposalAddress: PublicKey,
+  ): Promise<Result<{ hash: string; executor: string } | undefined, DispatchError>> {
+    try {
+      const signatures = await this.connection.getSignaturesForAddress(
+        proposalAddress,
+        { limit: HISTORY_LIMIT },
+        'confirmed',
+      );
+      for (const entry of signatures) {
+        if (entry.err) continue;
+        const tx = await this.connection.getTransaction(entry.signature, {
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0,
+        });
+        if (!tx || tx.meta?.err) continue;
+        const logs = tx.meta?.logMessages ?? [];
+        if (!logs.some((line) => line.includes('Instruction: VaultTransactionExecute'))) continue;
+        const executor = tx.transaction.message.staticAccountKeys[0]?.toBase58() ?? 'unknown';
+        return ok({ hash: entry.signature, executor });
+      }
+    } catch (cause) {
+      return err(rpcError("failed to read the Proposal's transaction history", cause));
+    }
+    return ok(undefined);
+  }
+
+  /**
+   * The `vaultTransactionExecute` for an approved Proposal: the stored vault
+   * transaction is read from the chain, its inner accounts resolved as the
+   * SDK's execute helper does, with the largest heap frame and a compute-unit
+   * limit from a simulation, the member key paying. The result is the same
+   * opaque shape the Solana handler's `sign` takes, so signing, the write-down
+   * before the send and the expiry machinery work unchanged. A simulation
+   * that fails with `TimeLockNotReleased` is not an error of the Proposal:
+   * it is `RPC_UNAVAILABLE`, which the watch loop retries; any other
+   * simulation failure is returned as the program's error.
+   */
+  async prepareExecution(proposal: Proposal): Promise<Result<PreparedTransaction, DispatchError>> {
+    const ref = proposal.chainRef;
+    if (ref.kind !== 'squads' || ref.multisig !== this.multisig.toBase58()) {
+      return err(rejected('this Proposal belongs to a different multisig', { ref }));
+    }
+    const index = BigInt(ref.transactionIndex);
+    const transactionAddress = deriveTransactionPda(this.multisig, index);
+
+    let info;
+    try {
+      info = await this.connection.getAccountInfo(transactionAddress, MULTISIG_READ_COMMITMENT);
+    } catch (cause) {
+      return err(rpcError('failed to read the vault transaction', cause));
+    }
+    if (!info || !info.owner.equals(SQUADS_PROGRAM_ID)) {
+      return err(
+        rejected(
+          `the vault transaction ${transactionAddress.toBase58()} does not exist (closed?)`,
+          { reason: 'VAULT_TRANSACTION_MISSING' },
+        ),
+      );
+    }
+
+    let execute: TransactionInstruction;
+    try {
+      const vaultTransaction = decodeVaultTransactionAccount(info.data);
+      if (
+        vaultTransaction.multisig !== this.multisig.toBase58() ||
+        vaultTransaction.index !== index ||
+        vaultTransaction.vaultIndex !== SENDER_VAULT_INDEX
+      ) {
+        return err(
+          rejected("the vault transaction is not this Proposal's, or is not for the Sender vault"),
+        );
+      }
+      execute = vaultTransactionExecuteInstruction({
+        multisig: this.multisig,
+        transactionIndex: index,
+        member: this.member,
+        vaultTransaction,
+      });
+    } catch (cause) {
+      return err(rejected('the vault transaction cannot be executed', extractMessage(cause)));
+    }
+
+    const build = (unitLimit: number): TransactionInstruction[] => [
+      ComputeBudgetProgram.requestHeapFrame({ bytes: EXECUTE_HEAP_BYTES }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: unitLimit }),
+      execute,
+    ];
+
+    let simulation;
+    try {
+      const message = new Transaction({
+        feePayer: this.member,
+        blockhash: PublicKey.default.toBase58(), // replaced by the simulation
+        lastValidBlockHeight: 0,
+      })
+        .add(...build(MAX_COMPUTE_UNITS))
+        .compileMessage();
+      simulation = await this.connection.simulateTransaction(new VersionedTransaction(message), {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: 'confirmed',
+      });
+    } catch (cause) {
+      return err(rpcError('failed to simulate the execute transaction', cause));
+    }
+
+    const { err: simulationError, logs, unitsConsumed } = simulation.value;
+    if (simulationError) {
+      if (customErrorCode(simulationError) === TIME_LOCK_NOT_RELEASED) {
+        return err({
+          code: 'RPC_UNAVAILABLE',
+          message:
+            "the Proposal's time lock has not been released yet; the execute is tried again later",
+          chainDetail: { reason: 'TIME_LOCK_NOT_RELEASED', error: simulationError },
+        });
+      }
+      this.logger.warn(
+        { proposalId: proposal.id, error: simulationError, logs },
+        'the execute simulation failed',
+      );
+      return err(
+        rejected('the execute transaction failed its simulation', { error: simulationError, logs }),
+      );
+    }
+    const units =
+      unitsConsumed === undefined
+        ? MAX_COMPUTE_UNITS
+        : Math.min(
+            MAX_COMPUTE_UNITS,
+            Math.max(MIN_EXECUTE_UNITS, Math.ceil(unitsConsumed * EXECUTE_UNITS_MARGIN)),
+          );
+    this.logger.debug(
+      { proposalId: proposal.id, unitsConsumed, unitLimit: units },
+      'execute simulated',
+    );
+
+    return ok({
+      callIndex: 0,
+      unsignedTransaction: encodeUnsignedTransaction({
+        // Fresh every time: the handler signs one transaction per chunkNonce, and a resubmitted execute is a new one.
+        chunkNonce: randomUUID(),
+        feePayer: this.proposerAddress,
+        instructions: build(units).map(encodeInstruction),
+      }),
+    });
+  }
+
+  /**
+   * Sends the permissionless `vaultTransactionAccountsClose`, signed by the
+   * member key, to return both accounts' rent to the multisig's rent
+   * collector. Only an Executed, Rejected or Cancelled Proposal, or one that
+   * is stale and not Approved, can be closed (anything else fails on chain),
+   * and only a multisig with a rent collector can reclaim (otherwise the
+   * result says so and nothing is sent). Idempotent: an account that is
+   * already gone is success. Never changes what the Calls reported.
+   */
+  async closeProposal(proposal: Proposal): Promise<Result<void, DispatchError>> {
+    const target = this.squadsRef(proposal.chainRef);
+    if (!target.ok) return target;
+    if (proposal.chainRef.kind !== 'squads') return err(rejected('not a Squads Proposal'));
+    const index = BigInt(proposal.chainRef.transactionIndex);
+    const log = this.logger.child({ proposalId: proposal.id, proposal: target.value.toBase58() });
+
+    const state = await this.readState(target.value);
+    if (!state.ok) return state;
+    if (state.value.proposal === undefined) {
+      log.info('proposal already closed');
+      return ok(undefined);
+    }
+    const snapshot = this.snapshotOf(state.value.proposal, state.value.multisig);
+    const closable =
+      snapshot.status === 'executed' ||
+      snapshot.status === 'rejected' ||
+      snapshot.status === 'cancelled' ||
+      snapshot.status === 'stale';
+    if (!closable) {
+      return err(
+        rejected(`a Proposal that is ${snapshot.status} cannot be closed yet`, {
+          reason: 'NOT_CLOSABLE',
+          status: snapshot.status,
+        }),
+      );
+    }
+    const collector = state.value.multisig.rentCollector;
+    if (collector === undefined) {
+      log.warn(
+        'the multisig has no rent collector: the rent of this finished proposal cannot be reclaimed',
+      );
+      return err(
+        rejected('the multisig has no rent collector, so the proposal accounts cannot be closed', {
+          reason: 'RENT_RECLAMATION_DISABLED',
+        }),
+      );
+    }
+
+    const signed = await this.signAsMember([
+      vaultTransactionAccountsCloseInstruction({
+        multisig: this.multisig,
+        transactionIndex: index,
+        rentCollector: new PublicKey(collector),
+        proposal: target.value,
+      }),
+    ]);
+    if (!signed.ok) return signed;
+    const sent = await this.submitProposal(signed.value);
+    if (sent.ok) {
+      log.info({ hash: signed.value.hash, rentCollector: collector }, 'proposal closed');
+      return sent;
+    }
+    // Someone else may have closed it first: gone is success.
+    const again = await this.readState(target.value);
+    if (again.ok && again.value.proposal === undefined) {
+      log.info('proposal was closed by someone else');
+      return ok(undefined);
+    }
+    return sent;
   }
 }
 
-function notImplemented(what: string): DispatchError {
-  return rejected(
-    `${what} is not implemented in #74 (it is part of #75): a Multisig Sender cannot do it yet`,
-  );
+/** The program's error number of a failed transaction: `{ InstructionError: [index, { Custom: n }] }`. */
+function customErrorCode(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const instructionError = (error as { InstructionError?: unknown }).InstructionError;
+  if (!Array.isArray(instructionError)) return undefined;
+  const detail = instructionError[1] as { Custom?: unknown } | undefined;
+  return typeof detail === 'object' && detail !== null && typeof detail.Custom === 'number'
+    ? detail.Custom
+    : undefined;
 }
 
 function toAmounts(totals: Map<string, bigint>): AssetAmount[] {

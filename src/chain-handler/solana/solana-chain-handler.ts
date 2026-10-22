@@ -152,7 +152,7 @@ export type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[];
  * byte-identical Calls prepared separately never accidentally collide in
  * `signedByChunk` below.
  */
-type EncodedTransaction = {
+export type EncodedTransaction = {
   chunkNonce: string;
   feePayer: string;
   instructions: EncodedInstruction[];
@@ -261,7 +261,7 @@ export function decodeInstruction(encoded: EncodedInstruction): TransactionInstr
   });
 }
 
-function encodeUnsignedTransaction(tx: EncodedTransaction): UnsignedTransaction {
+export function encodeUnsignedTransaction(tx: EncodedTransaction): UnsignedTransaction {
   return Buffer.from(JSON.stringify(tx)).toString('base64');
 }
 
