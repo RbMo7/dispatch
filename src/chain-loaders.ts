@@ -16,7 +16,11 @@ import {
 } from './chain-handler/base/safe/startup-checks.js';
 import { SafeTxServiceClient } from './chain-handler/base/safe/tx-service-client.js';
 import { readMultisigState } from './chain-handler/solana/multisig/multisig-account.js';
-import { resolveSolanaMultisigConfig } from './chain-handler/solana/multisig/multisig-config.js';
+import {
+  resolveSolanaMultisigConfig,
+  type SolanaMultisigConfig,
+} from './chain-handler/solana/multisig/multisig-config.js';
+import { SquadsApproval } from './chain-handler/solana/multisig/squads-approval.js';
 import {
   probeSignerForSolanaAddress,
   runMultisigStartupChecks,
@@ -59,12 +63,33 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
     });
     // #73 (ADR-0049): `single` is a no-op; `multisig` refuses to start before anything is sent.
-    await verifyMultisigSender(connection);
+    const multisig = await verifyMultisigSender(connection);
+    const signerClient = new SignerClient(
+      config.signerUrl,
+      config.signerAuthToken,
+      config.rpcTimeoutMs,
+    );
+    const knownTokens = parseSolanaKnownTokens(config.solana.knownTokens);
     const handler = new SolanaChainHandler({
       connection,
-      signerClient: new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
+      signerClient,
       senderAddress: config.solana.senderAddress,
-      knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
+      knownTokens,
+      // #74 (ADR-0054): a Multisig Sender proposes through Squads; `single` has no approval capability at all.
+      ...(multisig
+        ? {
+            approval: new SquadsApproval({
+              connection,
+              signerClient,
+              multisig,
+              knownTokens,
+              // An 'auto' price is not applied to a Proposal: it is not time-critical, and Approvers take hours.
+              ...(typeof config.solana.computeUnitPriceMicroLamports === 'number'
+                ? { computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports }
+                : {}),
+            }),
+          }
+        : {}),
       computeUnitPriceMicroLamports: config.solana.computeUnitPriceMicroLamports,
       maxComputeUnitPriceMicroLamports: config.solana.maxComputeUnitPriceMicroLamports,
       maxConcurrentSends: config.solana.sendConcurrency,
@@ -96,9 +121,11 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
 };
 
 /** #73: Solana's Multisig Sender startup checks (solana/multisig/startup-checks.ts), wired to the real RPC and Signer. */
-async function verifyMultisigSender(connection: Connection): Promise<void> {
+async function verifyMultisigSender(
+  connection: Connection,
+): Promise<SolanaMultisigConfig | undefined> {
   const multisig = resolveSolanaMultisigConfig(config.solana.multisig);
-  if (multisig === undefined) return;
+  if (multisig === undefined) return undefined;
   const { warnings } = await runMultisigStartupChecks({
     config: multisig,
     senderAddress: config.solana.senderAddress,
@@ -118,6 +145,7 @@ async function verifyMultisigSender(connection: Connection): Promise<void> {
     },
     'Solana multisig sender checks passed',
   );
+  return multisig;
 }
 
 /** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */

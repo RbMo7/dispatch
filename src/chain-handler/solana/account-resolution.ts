@@ -31,10 +31,11 @@ export function deriveAssociatedTokenAddress(
   mint: PublicKey,
   tokenProgram: PublicKey = TOKEN_PROGRAM_ID,
 ): PublicKey {
+  // Off-curve owners are allowed: a multisig vault (a PDA) is both the Sender and a legitimate recipient.
   return getAssociatedTokenAddressSync(
     mint,
     owner,
-    false,
+    true,
     tokenProgram,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );

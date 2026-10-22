@@ -1,17 +1,12 @@
 import { createPublicKey, randomUUID, verify as verifySignature } from 'node:crypto';
 
 import {
-  ACCOUNT_SIZE,
   AccountState,
-  ExtensionType,
   getDefaultAccountState,
   getNonTransferable,
   getTransferFeeConfig,
   getTransferHook,
   getAccount,
-  getAccountLen,
-  getAccountTypeOfMintType,
-  getExtensionTypes,
   getMint,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -38,6 +33,7 @@ import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
 import { SignerClient } from '../../signer/client.js';
 import type {
+  ApprovalCapability,
   Balance,
   BroadcastResult,
   ChainHandler,
@@ -48,6 +44,7 @@ import type {
 } from '../chain-handler.js';
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
+import { tokenAccountRent } from './token-account-rent.js';
 import { validateGenericCall } from './contract-call.js';
 import {
   createdTokenAccount,
@@ -86,7 +83,7 @@ function sleep(ms: number): Promise<void> {
 export const SOLANA_ABANDONMENT_TIMEOUT_MS = 15 * 60_000;
 
 /** A blockhash is valid for this many blocks past the one it names (`lastValidBlockHeight`). */
-const BLOCKHASH_VALIDITY_BLOCKS = 150;
+export const BLOCKHASH_VALIDITY_BLOCKS = 150;
 /**
  * Mainnet review: expiry is proven by block height, never `isBlockhashValid`
  * (a lagging node answers "invalid" for a blockhash it hasn't seen yet),
@@ -94,7 +91,7 @@ const BLOCKHASH_VALIDITY_BLOCKS = 150;
  * to that far behind has seen any block the transaction could have landed
  * in before its status is re-checked.
  */
-const EXPIRY_MARGIN_BLOCKS = 150;
+export const EXPIRY_MARGIN_BLOCKS = 150;
 
 /**
  * issue 10: bundles multiple Calls into one transaction via Solana's native
@@ -147,7 +144,7 @@ function isComputeBudget(
 const RESEND_INTERVAL_MS = 2_000;
 
 /** The opaque `UnsignedTransaction` encoding this Chain Handler chooses (ADR-0027) — its shape is this file's own business, never assumed elsewhere. */
-type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: string };
+export type EncodedInstruction = { programId: string; keys: SolanaAccountMeta[]; data: string };
 /**
  * `chunkNonce` ties every item bundled into the same transaction together
  * (issue 10) — generated once per chunk in `prepare`, including for a
@@ -240,7 +237,7 @@ function tokenProgramOf(token: KnownToken): PublicKey {
   return token.tokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
 
-function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
+export function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
   return {
     programId: instruction.programId.toBase58(),
     keys: instruction.keys.map((k) => ({
@@ -252,7 +249,7 @@ function encodeInstruction(instruction: TransactionInstruction): EncodedInstruct
   };
 }
 
-function decodeInstruction(encoded: EncodedInstruction): TransactionInstruction {
+export function decodeInstruction(encoded: EncodedInstruction): TransactionInstruction {
   return new TransactionInstruction({
     programId: new PublicKey(encoded.programId),
     keys: encoded.keys.map((k) => ({
@@ -298,6 +295,8 @@ export type SolanaChainHandlerDeps = {
   maxComputeUnitPriceMicroLamports?: number;
   /** #42 (ADR-0044): how many transactions the Coordinator may have in flight at once. Solana has no nonces to keep in order. Defaults to 4. */
   maxConcurrentSends?: number;
+  /** ADR-0054: present only for a Multisig Sender (ADR-0049); the Coordinator then proposes through it instead of signing and sending. */
+  approval?: ApprovalCapability<'solana'>;
   /** Defaults to the shared app logger (src/logger.ts) under a `component: 'solana-chain-handler'` binding. Injectable so tests/tools can point it elsewhere. */
   logger?: Logger;
 };
@@ -310,6 +309,7 @@ export type SolanaChainHandlerDeps = {
 export class SolanaChainHandler implements ChainHandler<'solana'> {
   readonly chain = 'solana';
   readonly maxConcurrentSends: number;
+  readonly approval?: ApprovalCapability<'solana'>;
 
   private readonly connection: Connection;
   private readonly signerClient: SignerClient | undefined;
@@ -341,6 +341,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
 
   constructor(deps: SolanaChainHandlerDeps) {
     this.connection = deps.connection;
+    if (deps.approval) this.approval = deps.approval;
     this.signerClient = deps.signerClient;
     this.senderAddress = deps.senderAddress;
     this.knownTokens = deps.knownTokens ?? {};
@@ -1055,7 +1056,11 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
           let rent = rentByMint.get(mint);
           if (rent === undefined) {
             rent = BigInt(
-              await this.tokenAccountRent(new PublicKey(mint), new PublicKey(tokenProgram)),
+              await tokenAccountRent(
+                this.connection,
+                new PublicKey(mint),
+                new PublicKey(tokenProgram),
+              ),
             );
             rentByMint.set(mint, rent);
           }
@@ -1070,24 +1075,6 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
     return ok({ asset: NATIVE_ASSET_SYMBOL, amount: lamports.toString() });
-  }
-
-  /**
-   * Rent for one recipient token account of `mint`: fixed for classic
-   * Token; for Token-2022 (#41) sized by the account extensions the mint's
-   * own extensions imply, plus ImmutableOwner, which the Associated Token
-   * program always adds to a Token-2022 account.
-   */
-  private async tokenAccountRent(mint: PublicKey, tokenProgram: PublicKey): Promise<number> {
-    let size = ACCOUNT_SIZE;
-    if (tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) {
-      const { tlvData } = await getMint(this.connection, mint, 'confirmed', tokenProgram);
-      const extensions = new Set(getExtensionTypes(tlvData).map(getAccountTypeOfMintType));
-      extensions.delete(ExtensionType.Uninitialized); // mint-only extensions
-      extensions.add(ExtensionType.ImmutableOwner);
-      size = getAccountLen([...extensions]);
-    }
-    return this.connection.getMinimumBalanceForRentExemption(size);
   }
 
   /**
