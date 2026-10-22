@@ -17,9 +17,10 @@ export type Keyring = ReadonlyMap<string, KeyringEntry>;
 
 /**
  * `refused` is a policy refusal (403); `rejected` a request the Signer
- * would never sign (400, 401, 404); `failed` the Signer's own failure.
+ * would never sign (400, 401, 404); `failed` the Signer's own failure;
+ * `read` a policy read (ADR-0055) that was answered, with no signature made.
  */
-export type AuditDecision = 'signed' | 'refused' | 'rejected' | 'failed';
+export type AuditDecision = 'signed' | 'read' | 'refused' | 'rejected' | 'failed';
 
 export type AuditRecord = {
   time: string;
@@ -28,7 +29,7 @@ export type AuditRecord = {
   /** The id the chain will know the signed transaction by: its EVM hash, or its Solana signature. */
   transactionId?: string | undefined;
   /** Present only on a Safe transaction request (ADR-0052), with the Safe and the nonce the request named. */
-  kind?: 'safeTransaction' | undefined;
+  kind?: 'safeTransaction' | 'policy-read' | undefined;
   safe?: string | undefined;
   safeNonce?: string | undefined;
   decision: AuditDecision;
@@ -36,8 +37,8 @@ export type AuditRecord = {
   reason?: string | undefined;
 };
 
-function decisionFor(status: number): AuditDecision {
-  if (status === 200) return 'signed';
+function decisionFor(status: number, kind: AuditRecord['kind']): AuditDecision {
+  if (status === 200) return kind === 'policy-read' ? 'read' : 'signed';
   if (status === 403) return 'refused';
   return status < 500 ? 'rejected' : 'failed';
 }
@@ -49,7 +50,7 @@ type Outcome = {
   address?: string;
   chain?: string;
   transactionId?: string;
-  kind?: 'safeTransaction';
+  kind?: 'safeTransaction' | 'policy-read';
   safe?: string;
   safeNonce?: string;
 };
@@ -154,6 +155,47 @@ async function handleSign(req: IncomingMessage, keyring: Keyring): Promise<Outco
   };
 }
 
+const POLICY_ROUTE = /^\/keys\/([^/]+)\/policy$/;
+
+/**
+ * ADR-0055: what a key is pinned to, and nothing else. The engine reads it
+ * at startup to check its Multisig Sender's key is pinned to the right
+ * multisig or Safe; no other part of the policy, and nothing about the key,
+ * ever leaves the Signer through here.
+ */
+function handlePolicyRead(rawAddress: string, keyring: Keyring): Outcome {
+  let address: string;
+  try {
+    address = decodeURIComponent(rawAddress);
+  } catch {
+    return { status: 400, body: { error: 'the address is not valid URL encoding' }, kind: 'policy-read' };
+  }
+  const known = { kind: 'policy-read' as const, address };
+  // An EVM and a Solana address can't be the same string, so the address alone names the key.
+  const key = CURVES.map((curve) => keyring.get(lookupKey(curve, address))).find(
+    (found) => found !== undefined,
+  );
+  if (!key) {
+    return {
+      status: 404,
+      body: { error: `no key for address ${address} on curve ${CURVES.join(' or ')}` },
+      ...known,
+    };
+  }
+  const { policy } = key.entry;
+  return {
+    status: 200,
+    body: {
+      address: key.entry.address,
+      curve: key.entry.curve,
+      ...(policy?.chainIds ? { chainIds: [...policy.chainIds].sort((a, b) => a - b) } : {}),
+      ...(policy?.allowedSafe ? { allowedSafe: policy.allowedSafe } : {}),
+      ...(policy?.allowedMultisig ? { allowedMultisig: policy.allowedMultisig } : {}),
+    },
+    ...known,
+  };
+}
+
 /**
  * ADR-0052: a Safe transaction, signed as the EIP-712 digest the Safe
  * contract checks. The Signer hashes the fields itself rather than being
@@ -244,13 +286,15 @@ export function createSignerServer({
   const expected = Buffer.from(`Bearer ${authToken}`);
 
   async function answer(req: IncomingMessage): Promise<Outcome> {
-    if (req.method !== 'POST' || req.url !== '/sign') {
+    const policyRoute = req.method === 'GET' ? POLICY_ROUTE.exec(req.url ?? '') : null;
+    if (!policyRoute && (req.method !== 'POST' || req.url !== '/sign')) {
       return { status: 404, body: { error: 'not found' } };
     }
     if (!carriesToken(req.headers.authorization, expected)) {
       return { status: 401, body: { error: 'missing or wrong bearer token' } };
     }
     try {
+      if (policyRoute) return handlePolicyRead(policyRoute[1] ?? '', keyring);
       return await handleSign(req, keyring);
     } catch (cause) {
       return { status: 500, body: { error: `signing failed: ${errorMessage(cause)}` } };
@@ -270,7 +314,7 @@ export function createSignerServer({
         kind,
         safe,
         safeNonce,
-        decision: decisionFor(status),
+        decision: decisionFor(status, kind),
         status,
         reason: typeof reason === 'string' ? reason : undefined,
       };
