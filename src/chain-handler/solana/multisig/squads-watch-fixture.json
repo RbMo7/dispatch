@@ -1,0 +1,12 @@
+{
+  "multisig": "2AjrYh1q71ykYy3u5DvEv9YdMbcbKjJpiTqNhRgqHXPZ",
+  "vault": "29Hkwf3EA1zPp8zkpRmQgtZwgycp28R538RHuAewDavq",
+  "member": "3k7ZipeT55A6TCbMnmiBGcqYyHhpwhnAQgug1tYfCNvw",
+  "voters": [
+    "Ggo7KU1zkY9a2Qotk7EGU3Z7fi9PZcZ53Hx4ktx8pogt",
+    "HoBQLqK2VVnGEvieCY7mkjWwJGrTH5WWRit53bZHYF4j",
+    "G1wcbhHqrKXdSgrLS8B5AgQUvrRgtePUa4Xy9akRg6G5"
+  ],
+  "mint": "9ksSbtBfAorzNUDpBMVcmxVJUWCreqJxVLfg6xxqtQwM",
+  "owner": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"
+}
