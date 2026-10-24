@@ -983,14 +983,9 @@ describe.skipIf(!RUN)(
             line.status === 200,
         );
         expect(execute, 'the accepted execTransaction in the audit log').toBeDefined();
-        // The engine never tripped a policy. The one refusal is the startup check's own probe: an empty
-        // transaction, refused as undecodable on purpose, which proves the Signer holds the executor's key.
-        expect(
-          audit.filter(
-            (line) =>
-              line.decision === 'refused' && !/undecodable transaction/.test(line.reason ?? ''),
-          ),
-        ).toEqual([]);
+        // The engine never tripped a policy: startup reads the key's pin (ADR-0055) instead of probing
+        // the Signer with a sign request.
+        expect(audit.filter((line) => line.decision === 'refused')).toEqual([]);
 
         const sign = async (body: unknown) => {
           const response = await fetch(`${signerUrl}/sign`, {
@@ -1058,13 +1053,8 @@ describe.skipIf(!RUN)(
           ).toString('base64'),
         });
         expect(plain.status).toBe(403);
-        // Three refusals in the audit log, on top of the startup probe's own.
-        const refusals = audit.filter(
-          (line) =>
-            line.decision === 'refused' &&
-            line.status === 403 &&
-            !/undecodable transaction/.test(line.reason ?? ''),
-        );
+        // Three refusals in the audit log, all from the three requests just made.
+        const refusals = audit.filter((line) => line.decision === 'refused' && line.status === 403);
         expect(refusals).toHaveLength(3);
         expect(plain.body.reason).toMatch(/allowedSafe|safe|destination/i);
       },
