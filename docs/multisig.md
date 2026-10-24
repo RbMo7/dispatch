@@ -149,7 +149,7 @@ Add the member key to `SIGNER_CONFIG`, pinned to the one multisig with `allowedM
 }
 ```
 
-The key may then sign only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the compute-budget instructions that go with them, as fee payer. It refuses votes, config transactions and every other program. If you also set `allowedDestinations`, list the Squads program in it (`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`). The engine's startup does **not** check that the Signer's policy pins the multisig (issue #95), so check your config yourself.
+The key may then sign only that multisig's `vaultTransactionCreate`, `proposalCreate`, `vaultTransactionExecute` and `vaultTransactionAccountsClose`, plus the compute-budget instructions that go with them, as fee payer. It refuses votes, config transactions and every other program. If you also set `allowedDestinations`, list the Squads program in it (`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`). The engine's startup checks that the Signer's policy pins this key to the multisig, and refuses to start otherwise (ADR-0055).
 
 ### 4. Configure the engine
 
@@ -267,7 +267,7 @@ Map the executor and pin the Safe with `allowedSafe` (it needs `chainIds`). One 
 }
 ```
 
-Use `[84532]` on Base Sepolia. The key then signs only an `execTransaction` to that Safe and the matching Safe typed data, only as a delegatecall to MultiSendCallOnly, with zero gas and refund fields, so a proposal can never make the Safe pay the executor ([`docs/signer.md`](./signer.md#signing-a-safe-transaction)). If you also set `allowedDestinations`, list the Safe in it. The engine's startup does **not** check the Signer's policy (issue #95), so check your config yourself.
+Use `[84532]` on Base Sepolia. The key then signs only an `execTransaction` to that Safe and the matching Safe typed data, only as a delegatecall to MultiSendCallOnly, with zero gas and refund fields, so a proposal can never make the Safe pay the executor ([`docs/signer.md`](./signer.md#signing-a-safe-transaction)). If you also set `allowedDestinations`, list the Safe in it. The engine's startup checks that the Signer's policy pins this key to the Safe and allows the chain, and refuses to start otherwise (ADR-0055).
 
 ### 4. Register the executor as a delegate
 
