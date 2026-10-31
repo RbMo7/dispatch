@@ -1,0 +1,11 @@
+.window {
+  position: relative;
+  overflow: hidden;
+}
+
+.view {
+  position: absolute;
+  top: 0;
+  transform-origin: top left;
+  user-select: none;
+}

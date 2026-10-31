@@ -1,0 +1,252 @@
+.page {
+  --gutter: 40px;
+  --wide: 1240px;
+  --section: 128px;
+
+  min-height: 100dvh;
+  background: var(--surface);
+  overflow-x: clip;
+}
+
+.nav {
+  display: flex;
+  width: min(100% - 2 * var(--gutter), var(--wide));
+  height: 64px;
+  align-items: center;
+  gap: var(--space-8);
+  margin: 0 auto;
+}
+
+.wordmark {
+  font-size: var(--text-16);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.navLinks {
+  display: flex;
+  gap: var(--space-6);
+  margin-right: auto;
+}
+
+.navLinks a,
+.footerLinks a {
+  color: var(--muted);
+  font-size: var(--text-14);
+  text-decoration: none;
+  transition: color 150ms;
+}
+
+.navLinks a:hover,
+.footerLinks a:hover {
+  color: var(--ink);
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 72px var(--gutter) 0;
+  text-align: center;
+}
+
+.heroTitle {
+  margin: 0;
+  font-size: clamp(44px, 6.4vw, 88px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+}
+
+.heroLine {
+  display: block;
+  white-space: nowrap;
+}
+
+.slot {
+  position: relative;
+  display: inline-block;
+  width: 0.74em;
+  height: 0.74em;
+  margin: 0 0.04em;
+  overflow: hidden;
+  border-radius: 22%;
+  vertical-align: -0.06em;
+}
+
+.slotMark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.heroSub {
+  max-width: 46ch;
+  margin: var(--space-6) auto 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: var(--space-8);
+}
+
+.productWrap {
+  width: min(100% - 2 * var(--gutter), var(--wide));
+  margin: 64px auto 0;
+}
+
+.product {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: 20px;
+  background: var(--sunken);
+}
+
+.productInner {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+}
+
+.works {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  padding: 72px var(--gutter) 0;
+}
+
+.worksLabel {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-13);
+  font-weight: 400;
+}
+
+.worksList {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-4) var(--space-12);
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: var(--text-18);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  list-style: none;
+}
+
+.worksItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.worksGlyph {
+  width: 22px;
+  height: 22px;
+}
+
+.statement {
+  width: min(100% - 2 * var(--gutter), var(--wide));
+  margin: 0 auto;
+  padding-top: var(--section);
+}
+
+.statementText {
+  max-width: 24ch;
+  margin: 0;
+  font-size: clamp(30px, 4vw, 48px);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.statementQuiet {
+  color: var(--muted);
+}
+
+.closing {
+  padding: var(--section) var(--gutter);
+  text-align: center;
+}
+
+.closingTitle {
+  margin: 0;
+  font-size: clamp(36px, 5vw, 64px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+}
+
+.footer {
+  display: flex;
+  width: min(100% - 2 * var(--gutter), var(--wide));
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin: 0 auto;
+  padding: var(--space-8) 0 var(--space-10);
+  border-top: 1px solid var(--border);
+}
+
+.footerLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .page {
+    --gutter: 16px;
+    --section: 72px;
+  }
+
+  .navLinks {
+    display: none;
+  }
+
+  .nav {
+    justify-content: space-between;
+  }
+
+  .hero {
+    padding-top: 48px;
+  }
+
+  .heroLine {
+    white-space: normal;
+  }
+
+  .heroSub {
+    font-size: var(--text-16);
+  }
+
+  .productWrap {
+    margin-top: 48px;
+  }
+
+  .product {
+    padding: var(--space-2);
+    border-radius: 16px;
+  }
+
+  .worksList {
+    gap: var(--space-3) var(--space-6);
+    font-size: var(--text-16);
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
