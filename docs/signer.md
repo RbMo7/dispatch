@@ -247,7 +247,7 @@ While the two disagree, every signing request gets `401`, and each Call the work
 
 The Signer listens on every interface of its host, on `PORT` (8421 by default), and speaks plain HTTP. It has no TLS. The bearer token crosses the network in clear text, so the link between the worker and the Signer must be a network you trust.
 
-- Make the Signer reachable only from the worker. Put both on a private network, and allow port 8421 only from the worker, for example with a security group that admits only the worker's security group.
+- Make the Signer reachable only from the worker. Put both on a private network, and allow port 8421 only from the worker, for example with a security group that admits only the worker's security group. The API process never calls the Signer (ADR-0059): it needs no `SIGNER_URL` or `SIGNER_AUTH_TOKEN`, and should have neither, so a compromised API cannot ask for a signature. The console's view of a key's pins comes from the worker, which records what it read.
 - Never publish the Signer's port to the internet, and never put it behind a public load balancer.
 - Run one Signer per environment. A testnet engine and a mainnet engine each get their own Signer, config, token, and keys.
 
@@ -307,7 +307,7 @@ A line starting `WARNING: the keyfile backend holds raw private keys` means some
 
 ## 8. Point the engine at the Signer
 
-Set these on the worker:
+Set these on the worker, and the two Signer settings on the worker only. The API never calls the Signer (ADR-0059):
 
 - `SIGNER_URL`. The Signer's address on the private network, for example `http://dispatch-signer:8421`.
 - `SIGNER_AUTH_TOKEN`. The same token as the Signer's.
@@ -318,7 +318,7 @@ Set these on the worker:
 
 ### Reading a key's pins
 
-`GET /keys/{address}/policy`, with the same `Authorization: Bearer <SIGNER_AUTH_TOKEN>`, tells the engine what a key is pinned to (ADR-0055). The engine reads it at startup for a Multisig Sender, so a key with no pin, or pinned to the wrong multisig or Safe, stops the worker before the first Proposal.
+`GET /keys/{address}/policy`, with the same `Authorization: Bearer <SIGNER_AUTH_TOKEN>`, tells the engine what a key is pinned to (ADR-0055). The worker reads it at startup for a Multisig Sender, so a key with no pin, or pinned to the wrong multisig or Safe, stops the worker before the first Proposal. The worker also reads it for every Sender key at startup and every five minutes, and records the answer for `GET /v1/senders` (ADR-0059).
 
 ```json
 {"address":"0xYourExecutor…","curve":"secp256k1","chainIds":[8453],"allowedSafe":"0xyoursafe…"}
@@ -392,7 +392,7 @@ Clear every item before the first mainnet transaction.
 - [ ] Every Privy wallet has an owner (`owner_id` set), `PRIVY_AUTHORIZATION_KEY` is set on the Signer, and the authorization key is a fresh one made for mainnet that has never been pasted into chat, a ticket, or a commit.
 - [ ] The KMS path is proven against real KMS. Today it is proven only against mocks (#61). Before mainnet, create a testnet key the same way (same key spec, same IAM policy), and run `RUN_AWS_KMS=1 pnpm test src/signer/aws-kms-e2e.test.ts` against Base Sepolia, and Solana devnet with `AWS_KMS_ED25519_KEY_ID`. The variables are listed in [`.env.example`](../.env.example). Fix anything it finds before relying on the mainnet key.
 - [ ] Each KMS credential can call only `kms:GetPublicKey` and `kms:Sign`, on its own keys.
-- [ ] The Signer is reachable only from the worker. Its port is not published to the internet.
+- [ ] The Signer is reachable only from the worker. Its port is not published to the internet. The API's environment has no `SIGNER_URL` or `SIGNER_AUTH_TOKEN` (ADR-0059).
 - [ ] The audit log goes somewhere durable, with alerts on `refused`, `failed`, and `rejected` 401 and 404 lines.
 - [ ] A small mainnet smoke test has landed first: one small Payment per enabled chain, confirmed on-chain, with a matching `signed` audit line, before any real volume.
 - [ ] Every mainnet chain in `ENABLED_CHAINS` stays enabled while it has transactions in flight. Removing a chain with a `PENDING` transaction stops confirmation tracking for every chain until #57 is fixed.

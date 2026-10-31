@@ -157,7 +157,7 @@ Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056).
 
 ## `GET /v1/senders`
 
-One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain and the Signer itself, so a browser never talks to either, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC and Signer reads per 15 seconds.
+One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain itself, so a browser never talks to it, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC reads per 15 seconds. The API never calls the Signer (ADR-0059): `signerKey` is what the worker last read, so it can be up to five minutes behind a change to the Signer's policy.
 
 ```json
 {
@@ -182,7 +182,12 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
           "assets": [{ "asset": "SOL", "decimals": 9, "balance": "3000000", "committed": "2039280" }]
         }
       ],
-      "signerKey": { "address": "<member key>", "curve": "ed25519", "allowedMultisig": "<multisig>" }
+      "signerKey": {
+        "address": "<member key>",
+        "curve": "ed25519",
+        "allowedMultisig": "<multisig>",
+        "readAt": "2026-11-01T10:00:00.000Z"
+      }
     }
   ]
 }
@@ -190,8 +195,8 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 
 - `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
-- `signerKey` is what the Signer answers on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`).
-- A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error says whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
+- `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
+- A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error is `{ "error": "<reason>", "readAt": "…" }`, saying whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

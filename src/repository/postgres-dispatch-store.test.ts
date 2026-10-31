@@ -4,7 +4,14 @@ import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { db } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  proposals,
+  relayDispatches,
+  signerKeys,
+  transactions,
+} from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import { runCancelConformanceSuite } from './cancel-conformance.js';
@@ -12,6 +19,7 @@ import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
+import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 
 /**
@@ -29,7 +37,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${signerKeys} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -46,6 +54,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
   runListConformanceSuite(() => new PostgresDispatchStore(db));
   runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
+  runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

@@ -15,7 +15,14 @@ import {
 } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  proposals,
+  relayDispatches,
+  signerKeys,
+  transactions,
+} from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
@@ -45,6 +52,7 @@ import type {
   NewUnproposedInput,
   ProposalOutcome,
   ProposalPatch,
+  SignerKeyRecord,
 } from './dispatch-store.js';
 
 type DispatchRow = typeof dispatches.$inferSelect;
@@ -930,6 +938,32 @@ export class PostgresDispatchStore implements DispatchStore {
       orderBy: [proposals.createdAt, proposals.id],
     });
     return rows.map(toProposal);
+  }
+
+  async recordSignerKey(record: SignerKeyRecord): Promise<void> {
+    const row = {
+      pins: 'pins' in record.read ? record.read.pins : null,
+      error: 'error' in record.read ? record.read.error : null,
+      readAt: record.readAt,
+    };
+    await this.db
+      .insert(signerKeys)
+      .values({ chain: record.chain, address: record.address, ...row })
+      .onConflictDoUpdate({ target: [signerKeys.chain, signerKeys.address], set: row });
+  }
+
+  async getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(signerKeys)
+      .where(and(eq(signerKeys.chain, chain), eq(signerKeys.address, address)));
+    if (!row) return null;
+    return {
+      chain,
+      address,
+      read: row.pins ? { pins: row.pins } : { error: row.error ?? 'no read recorded' },
+      readAt: row.readAt,
+    };
   }
 
   /** A Proposal's Calls in position order, one per Call (never a REPLACED or DROPPED version). `lock` takes row locks, inside a transaction. */

@@ -80,6 +80,13 @@ describe('runMultisigStartupChecks', () => {
     expect(await runMultisigStartupChecks(deps())).toEqual({ warnings: [] });
   });
 
+  it('leaves the pin check to the worker in the API, which has no Signer (ADR-0059)', async () => {
+    const withoutSigner = deps({ signer: NO_KEY });
+    delete withoutSigner.readSignerPins;
+
+    expect(await runMultisigStartupChecks(withoutSigner)).toEqual({ warnings: [] });
+  });
+
   it('refuses a multisig that does not exist', async () => {
     const error = await failureOf({ state: { slot: 1, account: undefined } });
     expect(error.failures).toEqual([expect.objectContaining({ check: 'multisig exists' })]);
