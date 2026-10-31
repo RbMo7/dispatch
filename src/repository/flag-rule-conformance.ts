@@ -143,6 +143,7 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
         dispatchId: held.id,
         matched: [{ rule: rule.current, items: [1] }],
         heldAt: expect.any(Date) as Date,
+        release: null,
       });
       expect(await store.getHold(queued.id)).toBeNull();
       expect((await store.claimQueued(CHAINS, 10)).map((d) => d.id)).toEqual([queued.id]);
@@ -223,6 +224,66 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
       expect(await store.acceptedVolume('base', ['USDC'], new Date(Date.now() + 60_000))).toEqual(
         new Map(),
       );
+    });
+  });
+
+  describe('release and cancel of a held Dispatch (ADR-0056, ADR-0058)', () => {
+    async function heldDispatch(store: DispatchStore) {
+      const rule = await store.createFlagRule(bigUsdc, operator);
+      return store.createDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID(),
+        items: [{ call: { to: '0xt', data: '0x', value: '0' }, payment: null }],
+        retryPolicy: false,
+        hold: [{ rule: rule.current, items: [0] }],
+      });
+    }
+
+    it('release queues it for the worker and records the release on its hold', async () => {
+      const store = makeStore();
+      const held = await heldDispatch(store);
+
+      expect(await store.releaseDispatch(held.id, 'checked with finance')).toBe('released');
+
+      expect((await store.getHold(held.id))?.release).toEqual({
+        at: expect.any(Date) as Date,
+        reason: 'checked with finance',
+      });
+      expect((await store.claimQueued(CHAINS, 10)).map((d) => d.id)).toEqual([held.id]);
+      expect(await actionsOn(store, held.id)).toEqual(['release']);
+    });
+
+    it('a second release, or a release of anything not held, is not_held', async () => {
+      const store = makeStore();
+      const held = await heldDispatch(store);
+      await store.releaseDispatch(held.id, 'ok');
+      const cancelled = await heldDispatch(store);
+      await store.cancelDispatch(cancelled.id, operator);
+      const relay = await store.createRelayDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID(),
+        signedTransaction: 's',
+      });
+
+      expect(await store.releaseDispatch(held.id, 'again')).toBe('not_held');
+      expect(await store.releaseDispatch(cancelled.id, 'revive')).toBe('not_held');
+      expect(await store.releaseDispatch(relay.id, 'relay')).toBe('not_held');
+      expect(await store.releaseDispatch(randomUUID(), 'nobody')).toBe('not_found');
+      expect((await store.getDispatch(cancelled.id))?.status).toBe('cancelled');
+      expect(await actionsOn(store, held.id)).toEqual(['release']);
+    });
+
+    it('cancel withdraws a held Dispatch, which then never runs', async () => {
+      const store = makeStore();
+      const held = await heldDispatch(store);
+
+      expect(await store.cancelDispatch(held.id, { tokenKind: 'auth', reason: null })).toBe(
+        'cancelled',
+      );
+
+      expect((await store.getDispatch(held.id))?.status).toBe('cancelled');
+      expect((await store.getHold(held.id))?.release).toBeNull();
+      expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
     });
   });
 }

@@ -1,5 +1,5 @@
 {
-  "id": "9930a465-0b5c-4f00-b0ad-7c794aaf0988",
+  "id": "e68eb02f-947b-4570-8072-e60e33e5de2e",
   "prevId": "f031075a-0f5b-4726-992a-bf2411ad84cd",
   "version": "7",
   "dialect": "postgresql",
@@ -95,6 +95,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "released_at": {
+          "name": "released_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "release_reason": {
+          "name": "release_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -445,7 +457,7 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
-          "default": "now()"
+          "default": "clock_timestamp()"
         },
         "action": {
           "name": "action",

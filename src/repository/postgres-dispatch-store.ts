@@ -329,14 +329,14 @@ export class PostgresDispatchStore implements DispatchStore {
   }
 
   async cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
-    // The `status = 'queued'` guard is the whole race: claimQueued locks the rows it takes, so
-    // this update either commits first (the claim then skips the row) or re-reads it claimed.
+    // The status guard is the whole race: claimQueued and releaseDispatch lock the row they change,
+    // so this update either commits first or re-reads the row as they left it.
     const cancelled = await this.db.transaction(async (tx) => {
       const cancelledAt = new Date();
       const [managed] = await tx
         .update(dispatches)
         .set({ status: 'cancelled', cancelledAt })
-        .where(and(eq(dispatches.id, id), eq(dispatches.status, 'queued')))
+        .where(and(eq(dispatches.id, id), inArray(dispatches.status, ['queued', 'held'])))
         .returning({ id: dispatches.id });
       const [relay] = managed
         ? []
@@ -363,6 +363,40 @@ export class PostgresDispatchStore implements DispatchStore {
       );
     if (!existing) return 'not_found';
     return existing.status === 'cancelled' ? 'already_cancelled' : 'already_claimed';
+  }
+
+  async releaseDispatch(
+    id: string,
+    reason: string,
+  ): Promise<'released' | 'not_held' | 'not_found'> {
+    const released = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(dispatches)
+        .set({ status: 'queued' })
+        .where(and(eq(dispatches.id, id), eq(dispatches.status, 'held')))
+        .returning({ id: dispatches.id });
+      if (!row) return false;
+      await tx
+        .update(dispatchHolds)
+        .set({ releasedAt: new Date(), releaseReason: reason })
+        .where(eq(dispatchHolds.dispatchId, id));
+      await tx
+        .insert(operatorActions)
+        .values({ tokenKind: 'operator', reason, action: 'release', targetId: id });
+      return true;
+    });
+    if (released) return 'released';
+    const [existing] = await this.db
+      .select({ id: dispatches.id })
+      .from(dispatches)
+      .where(eq(dispatches.id, id))
+      .union(
+        this.db
+          .select({ id: relayDispatches.id })
+          .from(relayDispatches)
+          .where(eq(relayDispatches.id, id)),
+      );
+    return existing ? 'not_held' : 'not_found';
   }
 
   async listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
@@ -532,6 +566,10 @@ export class PostgresDispatchStore implements DispatchStore {
     return {
       dispatchId,
       heldAt: hold.heldAt,
+      release:
+        hold.releasedAt && hold.releaseReason !== null
+          ? { at: hold.releasedAt, reason: hold.releaseReason }
+          : null,
       matched: hold.matched.map(({ ruleId, ruleVersion, items }) => {
         const row = versions.find((v) => v.ruleId === ruleId && v.version === ruleVersion);
         if (!row) throw new Error(`hold on ${dispatchId} names a missing rule version`);

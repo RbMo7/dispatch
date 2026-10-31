@@ -105,7 +105,7 @@ function toWireApproval(proposal: Proposal) {
   };
 }
 
-/** ADR-0058: which rule versions matched which items. Kept after a release or cancel. */
+/** ADR-0058: which rule versions matched which items, and the release. Kept after a release or cancel. */
 function toWireHold(hold: Hold) {
   return {
     matched: hold.matched.map(({ rule, items }) => ({
@@ -115,6 +115,9 @@ function toWireHold(hold: Hold) {
       items,
     })),
     heldAt: hold.heldAt.toISOString(),
+    ...(hold.release
+      ? { releasedAt: hold.release.at.toISOString(), reason: hold.release.reason }
+      : {}),
   };
 }
 

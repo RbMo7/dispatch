@@ -2,7 +2,7 @@
 export type TokenKind = 'auth' | 'operator';
 
 export type OperatorActionKind =
-  'cancel' | 'flag_rule_create' | 'flag_rule_update' | 'flag_rule_delete';
+  'cancel' | 'release' | 'flag_rule_create' | 'flag_rule_update' | 'flag_rule_delete';
 
 /** Who did an operator action, as far as a shared-secret engine can say: the token, and the reason they gave. */
 export type OperatorActor = { tokenKind: TokenKind; reason: string | null };

@@ -269,6 +269,105 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       expect([...claimed].sort()).toEqual([...queued].sort());
       for (const id of held) expect((await store.getDispatch(id))?.status).toBe('held');
     });
+
+    const heldDispatches = async (count: number) => {
+      const rule = await store.createFlagRule(
+        {
+          name: 'Everything',
+          chain: 'solana',
+          enabled: true,
+          definition: { kind: 'call_target_not_allowlisted', addresses: [] },
+        },
+        { tokenKind: 'operator', reason: null },
+      );
+      return Promise.all(
+        Array.from({ length: count }, () =>
+          store.createDispatch({
+            chain: 'solana',
+            idempotencyKey: randomUUID(),
+            items: [solanaItem],
+            retryPolicy: false,
+            hold: [{ rule: rule.current, items: [0] }],
+          }),
+        ),
+      );
+    };
+
+    const actionsByTarget = async () => {
+      const actions = await store.listOperatorActions({ after: null, limit: 1000 });
+      const byTarget = new Map<string, string[]>();
+      for (const { action } of [...actions].reverse()) {
+        byTarget.set(action.targetId, [...(byTarget.get(action.targetId) ?? []), action.action]);
+      }
+      return byTarget;
+    };
+
+    it('lets exactly one of a concurrent release and cancel take it out of held', async () => {
+      for (let round = 0; round < 5; round++) {
+        await truncateAll();
+        const held = await heldDispatches(20);
+
+        const outcomes = await Promise.all(
+          held.map((d) =>
+            Promise.all([
+              store.releaseDispatch(d.id, 'looked fine'),
+              store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null }),
+            ]),
+          ),
+        );
+
+        const actions = await actionsByTarget();
+        for (const [i, dispatch] of held.entries()) {
+          const [release, cancel] = outcomes[i] ?? [];
+          const hold = await store.getHold(dispatch.id);
+          // Both land only in order: the release first, then a cancel of the queued Dispatch (ADR-0056).
+          expect(cancel).toBe('cancelled');
+          expect((await store.getDispatch(dispatch.id))?.status).toBe('cancelled');
+          if (release === 'released') {
+            expect(hold?.release?.reason).toBe('looked fine');
+            expect(actions.get(dispatch.id)).toEqual(['release', 'cancel']);
+          } else {
+            expect(release).toBe('not_held');
+            expect(hold?.release).toBeNull();
+            expect(actions.get(dispatch.id)).toEqual(['cancel']);
+          }
+        }
+      }
+    });
+
+    it('lets exactly one of two concurrent releases win, and records one release', async () => {
+      const held = await heldDispatches(20);
+
+      const outcomes = await Promise.all(
+        held.map((d) =>
+          Promise.all([store.releaseDispatch(d.id, 'a'), store.releaseDispatch(d.id, 'b')]),
+        ),
+      );
+
+      const actions = await actionsByTarget();
+      for (const [i, dispatch] of held.entries()) {
+        expect([...(outcomes[i] ?? [])].sort()).toEqual(['not_held', 'released']);
+        expect(actions.get(dispatch.id)).toEqual(['release']);
+        expect((await store.getDispatch(dispatch.id))?.status).toBe('queued');
+      }
+    });
+
+    it('never lets a cancel land on a released Dispatch the worker already claimed', async () => {
+      const held = await heldDispatches(20);
+
+      const [, ...outcomes] = await Promise.all([
+        (async () => {
+          await Promise.all(held.map((d) => store.releaseDispatch(d.id, 'go')));
+          return store.claimQueued(CHAINS, 100);
+        })(),
+        ...held.map((d) => store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null })),
+      ]);
+
+      for (const [i, dispatch] of held.entries()) {
+        const status = (await store.getDispatch(dispatch.id))?.status;
+        expect(status).toBe(outcomes[i] === 'cancelled' ? 'cancelled' : 'broadcasting');
+      }
+    });
   });
 
   describe('recordBroadcast', () => {

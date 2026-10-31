@@ -37,13 +37,14 @@ async function submit(app: App, key: string, headers = CLIENT): Promise<string> 
   return response.json<{ dispatchId: string }>().dispatchId;
 }
 
-/** Every operator-only route; later issues add theirs here. */
+/** Every operator-only route. */
 const SOME_ID = '00000000-0000-4000-8000-000000000000';
 const OPERATOR_ONLY = [
   { method: 'GET', url: '/v1/activity' },
   { method: 'POST', url: '/v1/flag-rules' },
   { method: 'PUT', url: `/v1/flag-rules/${SOME_ID}` },
   { method: 'DELETE', url: `/v1/flag-rules/${SOME_ID}` },
+  { method: 'POST', url: `/v1/dispatch/${SOME_ID}/release` },
 ] as const;
 
 describe('OPERATOR_TOKEN (ADR-0057)', () => {

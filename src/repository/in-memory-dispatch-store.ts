@@ -87,6 +87,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         dispatchId: dispatch.id,
         matched: input.hold,
         heldAt: dispatch.createdAt,
+        release: null,
       });
     }
 
@@ -134,7 +135,7 @@ export class InMemoryDispatchStore implements DispatchStore {
     const status = dispatch?.status ?? relayDispatch?.status;
     if (status === undefined) return Promise.resolve('not_found');
     if (status === 'cancelled') return Promise.resolve('already_cancelled');
-    if (status !== 'queued') return Promise.resolve('already_claimed');
+    if (status !== 'queued' && status !== 'held') return Promise.resolve('already_claimed');
     const cancelledAt = this.now();
     if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled', cancelledAt });
     if (relayDispatch) {
@@ -256,6 +257,17 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   getHold(dispatchId: string): Promise<Hold | null> {
     return Promise.resolve(this.holds.get(dispatchId) ?? null);
+  }
+
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'> {
+    const dispatch = this.dispatches.get(id);
+    const hold = this.holds.get(id);
+    if (!dispatch && !this.relayDispatches.has(id)) return Promise.resolve('not_found');
+    if (dispatch?.status !== 'held' || !hold) return Promise.resolve('not_held');
+    this.dispatches.set(id, { ...dispatch, status: 'queued' });
+    this.holds.set(id, { ...hold, release: { at: this.now(), reason } });
+    this.recordAction('release', id, { tokenKind: 'operator', reason });
+    return Promise.resolve('released');
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {

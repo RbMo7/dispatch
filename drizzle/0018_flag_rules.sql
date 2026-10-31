@@ -1,7 +1,9 @@
 CREATE TABLE "dispatch_holds" (
 	"dispatch_id" uuid PRIMARY KEY NOT NULL,
 	"matched" jsonb NOT NULL,
-	"held_at" timestamp with time zone DEFAULT now() NOT NULL
+	"held_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"released_at" timestamp with time zone,
+	"release_reason" text
 );
 --> statement-breakpoint
 CREATE TABLE "flag_rule_versions" (
@@ -24,7 +26,7 @@ CREATE TABLE "flag_rules" (
 --> statement-breakpoint
 CREATE TABLE "operator_actions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"at" timestamp with time zone DEFAULT now() NOT NULL,
+	"at" timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
 	"action" text NOT NULL,
 	"target_id" uuid NOT NULL,
 	"token_kind" text NOT NULL,

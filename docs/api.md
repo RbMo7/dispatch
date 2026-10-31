@@ -1,13 +1,13 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `GET /v1/senders`, `GET /v1/activity` and `/v1/flag-rules`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `POST /v1/dispatch/:id/release`, `GET /v1/senders`, `GET /v1/activity` and `/v1/flag-rules`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## Tokens
 
 Every `/v1` route takes `Authorization: Bearer <token>`, with one of two operator-configured tokens:
 
 - `AUTH_TOKEN` (ADR-0022): the API client's token. Submit, read and cancel.
-- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `GET /v1/activity` and the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`).
+- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `POST /v1/dispatch/:id/release`, `GET /v1/activity` and the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`).
 
 An operator-only route answers `403` to `AUTH_TOKEN`, and `403` to everyone when `OPERATOR_TOKEN` is unset, with an `error` saying it is not configured. Any other token is `401`. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
 
@@ -158,7 +158,7 @@ Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `crea
 
 ## `POST /v1/dispatch/:id/cancel`
 
-Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Either token. The body is optional: `{ "reason": "<non-empty string>" }`, kept in the activity record (below); any other `reason` is a `400`. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins. A cancel that lands writes one operator action, in the same write; a repeat cancel or a refused one writes none.
+Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056), `held` ones included (ADR-0058). Either token. The body is optional: `{ "reason": "<non-empty string>" }`, kept in the activity record (below); any other `reason` is a `400`. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins. A cancel that lands writes one operator action, in the same write; a repeat cancel or a refused one writes none.
 
 - `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
 - `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the structured shape of a refusal that has an error code, such as a `400` with `CHAIN_NOT_ENABLED` or `CHAIN_REJECTED`. A refusal with no error code, such as a `401` or a `404`, is `{ "error": "..." }`.
@@ -206,7 +206,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 
 ## `GET /v1/activity`
 
-The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token, and for every Flag Rule create, edit and delete (`action`: `cancel`, `flag_rule_create`, `flag_rule_update`, `flag_rule_delete`). Each action is also written to the engine's log as an `operator action` line.
+The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token, every release, and every Flag Rule create, edit and delete (`action`: `cancel`, `release`, `flag_rule_create`, `flag_rule_update`, `flag_rule_delete`). Each action is also written to the engine's log as an `operator action` line.
 
 Query parameters, both optional: `limit` (1 to 100, default 25) and `cursor` (the previous page's `nextCursor`, opaque). Pages are cut on `(at, id)` as `GET /v1/dispatches` cuts on `(createdAt, id)`, and `nextCursor` is `null` only on the last page.
 
@@ -288,11 +288,11 @@ The top level is the current version; `versions` lists every version, oldest fir
 
 ## Held (`held` and the `hold` block)
 
-`POST /v1/dispatch` checks every Managed Dispatch against the current version of each enabled rule on its chain, after the request has passed every other check (ADR-0058). It reads only the engine's own database, never a chain. If any rule matches, the whole Dispatch is stored `held`, top-level and every item, and the `202` says `"status": "held"`. A held Dispatch is never claimed: nothing is signed, proposed or sent, and it has no deadline. It stays `held` until an operator cancels it (above).
+`POST /v1/dispatch` checks every Managed Dispatch against the current version of each enabled rule on its chain, after the request has passed every other check (ADR-0058). It reads only the engine's own database, never a chain. If any rule matches, the whole Dispatch is stored `held`, top-level and every item, and the `202` says `"status": "held"`. A held Dispatch is never claimed: nothing is signed, proposed or sent, and it has no deadline. It stays `held` until an operator releases it (below) or anyone cancels it (above).
 
 A Relay Dispatch is never checked. Neither is a resubmitted `Idempotency-Key`: it answers with the stored Dispatch, held or not, whatever the rules say now. Editing or deleting a rule never re-checks or releases a Dispatch already held.
 
-A Dispatch that was ever held carries a `hold` block on `GET /v1/dispatch/:id`, and keeps it after it is cancelled:
+A Dispatch that was ever held carries a `hold` block on `GET /v1/dispatch/:id`, and keeps it after it is released or cancelled:
 
 ```json
 "hold": {
@@ -310,11 +310,23 @@ A Dispatch that was ever held carries a `hold` block on `GET /v1/dispatch/:id`, 
       "items": [2, 3]
     }
   ],
-  "heldAt": "2026-10-31T10:00:00.000Z"
+  "heldAt": "2026-10-31T10:00:00.000Z",
+  "releasedAt": "2026-10-31T11:30:00.000Z",
+  "reason": "checked with finance"
 }
 ```
 
-`matched` lists every rule that matched, not only the first, each with every item it matched (positions in `items`), and `rule` as that version said when it matched. Amounts are compared as integers in the asset's smallest unit. `daily_volume_over` counts Dispatches that are themselves held. `GET /v1/dispatches?status=held` lists the Dispatches still held.
+`matched` lists every rule that matched, not only the first, each with every item it matched (positions in `items`), and `rule` as that version said when it matched. Amounts are compared as integers in the asset's smallest unit. `daily_volume_over` counts Dispatches that are themselves held. `GET /v1/dispatches?status=held` lists the Dispatches still held. `releasedAt` and `reason` appear once the Dispatch is released.
+
+### `POST /v1/dispatch/:id/release`
+
+Lets a held Dispatch go ahead (ADR-0058). `OPERATOR_TOKEN` only: `AUTH_TOKEN` is `403` (ADR-0057), so a client cannot release its own Dispatch. The body `{ "reason": "<non-empty string>" }` is required; without one it is a `400`.
+
+- `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `queued`. From there it runs as if it had never been held, and its `hold` block gains `releasedAt` and `reason`. The release writes one operator action.
+- `409`: `{ "code": "NOT_HELD", "message": "..." }` when it is not `held`: already released, cancelled, never held, or a Relay Dispatch.
+- `404`: no Dispatch has this id.
+
+A release and a cancel of the same held Dispatch are each one write conditional on its status, so exactly one of them takes it out of `held`, and a release never revives a cancelled Dispatch. A cancel that comes after a release still lands if the worker has not yet claimed the Dispatch, as for any `queued` one (ADR-0056). Of two releases, one answers `200` and the other `409`.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

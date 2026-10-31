@@ -262,3 +262,118 @@ describe('POST /v1/dispatch against Flag Rules (ADR-0058)', () => {
     ).toEqual([expect.objectContaining({ dispatchId: held.dispatchId, status: 'held' })]);
   });
 });
+
+describe('POST /v1/dispatch/:id/release (ADR-0058)', () => {
+  const release = (app: App, id: string, payload?: object, headers = OPERATOR) =>
+    app.inject({
+      method: 'POST',
+      url: `/v1/dispatch/${id}/release`,
+      headers,
+      ...(payload ? { payload } : {}),
+    });
+
+  async function heldApp() {
+    const built = await buildTestApp();
+    await addRule(built.app, bigUsdc);
+    const held = await submit(built.app, 'k1', { chain: 'base', items: [payment('9000000000')] });
+    return { ...built, id: held.dispatchId };
+  }
+
+  it('queues the Dispatch, which then runs like any other and keeps its hold block', async () => {
+    const { app, store, id } = await heldApp();
+
+    const response = await release(app, id, { reason: 'checked with finance' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'queued',
+      items: [{ status: 'queued' }],
+      hold: { releasedAt: expect.any(String) as string, reason: 'checked with finance' },
+    });
+    const [claimed] = await store.claimQueued(CHAINS, 10);
+    const [sent] = await store.createTransactions([
+      { dispatchId: id, callIndex: 0, chain: 'base', signedBytes: 's', hash: '0xh' },
+    ]);
+    await store.markConfirmed(sent?.id ?? '');
+    expect(claimed?.id).toBe(id);
+    expect(await read(app, id)).toMatchObject({
+      status: 'confirmed',
+      hold: { matched: [{ items: [0] }], reason: 'checked with finance' },
+    });
+  });
+
+  it('is 403 with AUTH_TOKEN and 400 without a reason, leaving it held', async () => {
+    const { app, id } = await heldApp();
+
+    const responses = await Promise.all([
+      release(app, id, { reason: 'mine' }, CLIENT),
+      release(app, id),
+      release(app, id, { reason: '' }),
+    ]);
+
+    expect(responses.map((r) => r.statusCode)).toEqual([403, 400, 400]);
+    expect((await read(app, id)).status).toBe('held');
+  });
+
+  it('is 409 for a Dispatch that is not held, and 404 for an unknown one', async () => {
+    const { app, id } = await heldApp();
+    await release(app, id, { reason: 'ok' });
+    const queued = await submit(app, 'k2', { chain: 'base', items: [payment('1')] });
+
+    const again = await release(app, id, { reason: 'again' });
+    const never = await release(app, queued.dispatchId, { reason: 'why' });
+    const unknown = await release(app, '00000000-0000-4000-8000-000000000000', { reason: 'x' });
+
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ code: 'NOT_HELD' });
+    expect(never.statusCode).toBe(409);
+    expect(unknown.statusCode).toBe(404);
+  });
+
+  it('lets either token cancel a held Dispatch, which keeps its hold block', async () => {
+    const { app, store, id } = await heldApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/dispatch/${id}/cancel`,
+      headers: CLIENT,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'cancelled',
+      items: [{ status: 'cancelled' }],
+      hold: { matched: [{ items: [0] }] },
+    });
+    expect((await release(app, id, { reason: 'too late' })).statusCode).toBe(409);
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+
+  it('a rule deleted while a Dispatch is held neither releases nor re-checks it', async () => {
+    const { app, store, id } = await heldApp();
+    const [rule] = (await store.listFlagRules()).map((r) => r.id);
+
+    await app.inject({ method: 'DELETE', url: `/v1/flag-rules/${rule}`, headers: OPERATOR });
+
+    expect(await read(app, id)).toMatchObject({ status: 'held', hold: { matched: [{}] } });
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+
+  it('records the release, with its reason, in the activity record', async () => {
+    const { app, id } = await heldApp();
+    await release(app, id, { reason: 'checked with finance' });
+
+    const activity = await app.inject({ method: 'GET', url: '/v1/activity', headers: OPERATOR });
+
+    expect(
+      activity.json<{ actions: { action: string; targetId: string }[] }>().actions,
+    ).toContainEqual(
+      expect.objectContaining({
+        action: 'release',
+        targetId: id,
+        tokenKind: 'operator',
+        reason: 'checked with finance',
+      }),
+    );
+  });
+});

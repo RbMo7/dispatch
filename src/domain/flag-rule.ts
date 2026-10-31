@@ -60,11 +60,12 @@ export type FlagRule = {
 /** A rule version that matched, and the positions of the items it matched. */
 export type RuleMatch = { rule: FlagRuleVersion; items: number[] };
 
-/** ADR-0058: why a Dispatch is held. */
+/** ADR-0058: why a Dispatch is held, and the release that let it go ahead, if any. */
 export type Hold = {
   dispatchId: string;
   matched: RuleMatch[];
   heldAt: Date;
+  release: { at: Date; reason: string } | null;
 };
 
 /** What matching needs from the database, read before the Dispatch is stored. */

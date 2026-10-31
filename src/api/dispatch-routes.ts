@@ -25,6 +25,7 @@ import {
   authedTokenKind,
   logOperatorAction,
   readReason,
+  requireOperator,
   requireToken,
 } from './operator-auth.js';
 import { isUuid } from './uuid.js';
@@ -302,6 +303,32 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
           message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
+      return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/dispatch/:id/release',
+    { onRequest: requireOperator(tokens) },
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
+      const reason = readReason(request.body);
+      if (!reason.ok) return reply.code(400).send({ error: reason.error });
+      if (reason.value === null) {
+        return reply.code(400).send({ error: 'reason: required, a non-empty string' });
+      }
+      const outcome = await store.releaseDispatch(request.params.id, reason.value);
+      if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'not_held') {
+        return reply.code(409).send({
+          code: 'NOT_HELD',
+          message: 'this Dispatch is not held, so there is nothing to release',
+        });
+      }
+      logOperatorAction(request, 'release', request.params.id, {
+        tokenKind: 'operator',
+        reason: reason.value,
+      });
       return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
     },
   );

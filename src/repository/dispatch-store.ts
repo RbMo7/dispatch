@@ -174,7 +174,7 @@ export interface DispatchStore {
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
   /**
    * ADR-0056: cancels the Managed or Relay Dispatch `id` if it is still
-   * unclaimed, in one conditional write against the claim, so a cancel and
+   * unclaimed (`queued` or `held`), in one conditional write against the claim, so a cancel and
    * a claim can never both win. A cancel that lands records its operator
    * action in the same write (ADR-0057); a repeat records nothing.
    */
@@ -208,6 +208,13 @@ export interface DispatchStore {
   acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>>;
   /** ADR-0058: why the Dispatch was held, or null if it never was. */
   getHold(dispatchId: string): Promise<Hold | null>;
+  /**
+   * ADR-0058: moves a held Dispatch to `queued`, recording the release on its
+   * hold and as an operator action, in one write conditional on `held`. A
+   * cancel is conditional on the same row, so of a release and a cancel
+   * racing on a held Dispatch exactly one takes it out of `held`.
+   */
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */

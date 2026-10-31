@@ -213,7 +213,10 @@ export const operatorActions = pgTable(
   'operator_actions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+    // Not now(): that is when the transaction began, possibly before it waited on the row it changed.
+    at: timestamp('at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
     action: text('action').notNull(),
     targetId: uuid('target_id').notNull(),
     tokenKind: text('token_kind').notNull(),
@@ -256,4 +259,6 @@ export const dispatchHolds = pgTable('dispatch_holds', {
     .notNull()
     .$type<{ ruleId: string; ruleVersion: number; items: number[] }[]>(),
   heldAt: timestamp('held_at', { withTimezone: true }).notNull().defaultNow(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
 });
