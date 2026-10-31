@@ -18,25 +18,28 @@ A web console served by the engine's own API process, reading only this instance
 2. As an operator, I want to list and filter Dispatches by chain, mode, status and date, and see rows change as statuses change.
 3. As an operator, I want a Dispatch's full timeline, down to every Transaction version and Attempt, with times, so I can see a resubmit or a fee bump happen.
 4. As an operator of a Multisig Sender, I want each Proposal's votes, threshold and deadline, and a link to open it in Squads or Safe.
-5. As an operator, I want to see each Sender: address, mode, multisig, the engine's own key, balances and committed amounts, and the Signer key's backend, policy and pins, with no secrets.
+5. As an operator, I want to see each Sender: address, mode, multisig, the engine's own key, balances and committed amounts, and the Signer key's curve, pins and chain ids, with no secrets.
 6. As an operator, I want to cancel a Dispatch that hasn't been claimed yet, and be told plainly when it's too late.
 7. As someone new to the engine, I want docs that get me from nothing to a confirmed Dispatch, with examples I can paste and that work.
 8. As an operator, I want the console to look and move like a finished product, in light and dark.
 9. As someone hearing about the engine for the first time, I want a landing page that shows what it does and gets me to the docs or GitHub.
+10. As an operator, I want a Dispatch of a thousand payments to stay fast and readable: counts per stage, a searchable and filterable item table, and every transaction hash.
+11. As an operator, I want to hide balances with one click when sharing my screen.
+12. As an operator, I want to filter Dispatches by date range and export what I see, or one Dispatch's items, as CSV or Excel.
 
 ## Engine API (all `/v1`, bearer `AUTH_TOKEN`, documented in `docs/api.md`)
 
 - **`GET /v1/dispatches`**: newest first, cursor-paginated (`?cursor`, `?limit` ≤ 100), filters `chain`, `mode`, `status`, `from`, `to`. Each row is the `GET /v1/dispatch/:id` summary plus `createdAt`, item count and per-asset totals.
 - **`GET /v1/dispatch/:id?include=timeline`**: adds a `timeline` built from stored timestamps: Dispatch created and claimed; per Transaction version: written, broadcast, each Attempt, replaced/dropped, confirmed/failed/abandoned; per Proposal: created, approvals as last read, timed out, resolved. Needs one new column, `transactions.failed_at`. No event table (ADR-0014).
-- **`GET /v1/senders`**: one entry per enabled chain: Sender address and mode (`single`, `squads`, `safe`), multisig or Safe address and threshold, the engine's key (member key or executor), native and known-token balances, `committed` per asset (the Funding Check's numbers), and the Signer key's `curve`, pins and backend as the Signer reports them. Fetched server-side; the browser never talks to the Signer. Balance reads hit RPC, so results are cached for 15 s.
-- **`POST /v1/dispatch/:id/cancel`** (ADR-0056): `200` with the Dispatch now `cancelled`; `409 { error: { code: "ALREADY_CLAIMED" } }` once claimed; idempotent on an already-cancelled one. Atomic against the worker's claim.
+- **`GET /v1/senders`**: one entry per enabled chain: Sender address and mode (`single`, `squads`, `safe`), multisig or Safe address and threshold, the engine's key (member key or executor), native and known-token balances, `committed` per asset (the Funding Check's numbers), and the Signer key's `curve`, pins and chain ids as the Signer reports them (not its backend: ADR-0055 keeps that private). Fetched server-side; the browser never talks to the Signer. Balance reads hit RPC, so results are cached for 15 s.
+- **`POST /v1/dispatch/:id/cancel`** (ADR-0056): `200` with the Dispatch now `cancelled`; `409 { code: "ALREADY_CLAIMED", message }` once claimed, the same shape as the other refusals; idempotent on an already-cancelled one. Atomic against the worker's claim.
 
 ## Console
 
 - **Package:** `web/`, a sibling of `signer/` and `verifier/`: Vite, React, TypeScript. Two builds (`design.md`, Surfaces and routes): the **engine build**, served by the API process at `/console/*` and `/docs` with `/` redirecting to `/console`, same origin; and the **public build**, the landing page at `/` plus `/docs`, for static hosting. If `web/` is not built, the API runs as today.
 - **Sign-in:** paste `AUTH_TOKEN`; kept in `sessionStorage`. `/docs` needs no token.
 - **Live updates:** polling about every 2 s while anything shown is in flight, backing off when all is terminal; Senders every 15 s. No push infrastructure (ADR-0023).
-- **Pages:** Overview; Dispatches; Dispatch detail (items, timeline, approval blocks with `chainRef` links, Cancel when unclaimed, "reject it in Squads/Safe" for an open Proposal); Senders & Keys; Docs. Activity arrives with `flag-rules`.
+- **Pages:** Overview; Dispatches (date range filter, export to CSV and Excel); Dispatch detail (items, timeline, approval blocks with `chainRef` links, Cancel when unclaimed, "reject it in Squads/Safe" for an open Proposal); Senders & Keys; Docs. Activity arrives with `flag-rules`.
 - **Design:** `design.md`, built with the `design-taste-frontend` skill. The console follows Copilot's web app; the landing page combines Mobbin's hero with Webflow's sticky-nav feature blocks. Near-monochrome, ink primary buttons, one accent (international orange `#FF4F00`) for "look here", tinted status pills. Spring layout motion in the console, scroll reveals on the landing page; honours `prefers-reduced-motion`; works at phone width.
 
 ## Docs
@@ -75,4 +78,6 @@ Filed after `design.md`: #121 `web/` scaffold, #122 shell and sign-in, #123 Over
 - "Account details" means the Sender: its addresses, balances and Signer key, never key material.
 - Timeline rebuilt from stored timestamps, not an event log.
 - Polling, not push.
+- Exports are built in the browser from the existing list and detail endpoints; no export endpoint on the engine.
+- Hidden balances are a per-viewer display setting, never applied to exports.
 - One `web/` codebase, two builds; a self-hosted engine never serves the landing page.
