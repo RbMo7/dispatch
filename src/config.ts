@@ -22,7 +22,7 @@ export const config = {
   /** issue 15: per-call deadline for outbound RPC/Signer network calls (rpc-timeout.ts) — never how long broadcast()'s own confirmation polling loop may run in total. */
   rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS ?? DEFAULT_RPC_TIMEOUT_MS),
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://dispatch:dispatch@localhost:5432/dispatch',
-  /** Base URL of the operator-configured Signer (ADR-0002) — swap this to point at a production Signer. */
+  /** Base URL of the operator-configured Signer (ADR-0002). Read by the worker only: the API never calls the Signer (ADR-0059). */
   signerUrl: process.env.SIGNER_URL ?? 'http://localhost:8421',
   /** ADR-0046: the bearer token every /sign request carries. Unset, the engine still starts (a Relay-only deployment never signs), but the Signer refuses to sign with 401. */
   signerAuthToken: process.env.SIGNER_AUTH_TOKEN || undefined,
