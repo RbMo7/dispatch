@@ -1,68 +1,118 @@
-import { AnimatePresence, motion, type TargetAndTransition, type Transition } from 'motion/react';
+import { X } from '@phosphor-icons/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { type ReactNode, useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
-import { modalScale, paneSlide } from './transitions';
+import { Button } from '../components/Button';
+import { modalScale, sheetSlide } from './transitions';
 import styles from './Overlay.module.css';
 
-interface Kind {
-  className: string | undefined;
-  hidden: TargetAndTransition;
-  transition: Transition;
+interface FrameProps {
+  title: string;
+  onClose: () => void;
+  footer?: ReactNode;
+  children: ReactNode;
+  titleId?: string;
 }
 
-// Opacity rides along with each transform so that, with the transform removed
-// under reduced motion, both still arrive as a plain fade.
-const KINDS = {
-  pane: { className: styles.pane, hidden: { x: '100%', opacity: 0 }, transition: paneSlide },
-  sheet: { className: styles.sheet, hidden: { x: '-100%', opacity: 0 }, transition: paneSlide },
-  modal: { className: styles.modal, hidden: { scale: 0.96, opacity: 0 }, transition: modalScale },
-} satisfies Record<string, Kind>;
+/** The modal's box: small uppercase title, close, body and footer. Also shown inline in the gallery. */
+export function ModalFrame({ title, onClose, footer, children, titleId }: FrameProps) {
+  return (
+    <div className={styles.frame}>
+      <div className={styles.head}>
+        <h2 id={titleId} className={styles.title}>
+          {title}
+        </h2>
+        <Button variant="quiet" icon aria-label="Close" className={styles.close} onClick={onClose}>
+          <X size={14} weight="bold" aria-hidden="true" />
+        </Button>
+      </div>
+      <div className={styles.body}>{children}</div>
+      {footer && <div className={styles.footer}>{footer}</div>}
+    </div>
+  );
+}
 
-interface OverlayProps {
+interface ModalProps extends Omit<FrameProps, 'titleId'> {
+  open: boolean;
+}
+
+// One decision at a time: scales from 0.98 over 160 ms as the scrim fades in.
+// Under reduced motion only the fades remain.
+export function Modal({ open, ...frame }: ModalProps) {
+  const titleId = useId();
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <div className={styles.layer}>
+          <motion.div
+            className={styles.scrim}
+            onClick={frame.onClose}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={modalScale}
+          />
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            className={styles.modal}
+            initial={{ scale: 0.98, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.98, opacity: 0 }}
+            transition={modalScale}
+          >
+            <FocusAndEscape onClose={frame.onClose}>
+              <ModalFrame {...frame} titleId={titleId} />
+            </FocusAndEscape>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>,
+    document.body,
+  );
+}
+
+interface SheetProps {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
 }
 
-function Overlay({
-  kind,
-  open,
-  onClose,
-  title,
-  children,
-}: OverlayProps & { kind: keyof typeof KINDS }) {
-  const { className, hidden, transition } = KINDS[kind];
+/** A left sheet for narrow screens (the docs navigation). */
+export function Sheet({ open, onClose, title, children }: SheetProps) {
   const titleId = useId();
-
   return createPortal(
     <AnimatePresence>
       {open && (
         <div className={styles.layer}>
           <motion.div
-            className={styles.backdrop}
+            className={styles.scrim}
             onClick={onClose}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={transition}
+            transition={sheetSlide}
           />
           <motion.div
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            className={className}
-            initial={hidden}
-            animate={{ x: 0, scale: 1, opacity: 1 }}
-            exit={hidden}
-            transition={transition}
+            className={styles.sheet}
+            initial={{ x: '-100%', opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: '-100%', opacity: 0 }}
+            transition={sheetSlide}
           >
             <FocusAndEscape onClose={onClose}>
-              <h2 id={titleId} className={styles.title}>
-                {title}
-              </h2>
-              {children}
+              <div className={styles.sheetBody}>
+                <h2 id={titleId} className={styles.sheetTitle}>
+                  {title}
+                </h2>
+                {children}
+              </div>
             </FocusAndEscape>
           </motion.div>
         </div>
@@ -100,20 +150,8 @@ function FocusAndEscape({ onClose, children }: { onClose: () => void; children: 
   }, []);
 
   return (
-    <div ref={ref} tabIndex={-1} className={styles.body}>
+    <div ref={ref} tabIndex={-1} className={styles.focus}>
       {children}
     </div>
   );
-}
-
-export function Pane(props: OverlayProps) {
-  return <Overlay kind="pane" {...props} />;
-}
-
-export function Sheet(props: OverlayProps) {
-  return <Overlay kind="sheet" {...props} />;
-}
-
-export function Modal(props: OverlayProps) {
-  return <Overlay kind="modal" {...props} />;
 }

@@ -1,22 +1,17 @@
-import { PaperPlaneTilt } from '@phosphor-icons/react';
-
-import { Button } from '../components/Button';
 import { mount } from '../mount';
 import { Placeholder } from '../Placeholder';
+import { PillButton } from './PillButton';
 
 mount(
   <Placeholder
-    icon={<PaperPlaneTilt size={18} />}
-    title="Dispatch"
+    caption="A self-hosted engine that signs, sends, retries and confirms your Solana and Base transactions."
     action={
       <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-        <Button href="/docs">Read the docs</Button>
-        <Button variant="soft" arrow href="https://github.com/RbMo7/dispatch">
+        <PillButton href="/docs">Get started</PillButton>
+        <PillButton variant="soft" arrow href="https://github.com/RbMo7/dispatch">
           View on GitHub
-        </Button>
+        </PillButton>
       </div>
     }
-  >
-    A self-hosted engine that signs, sends, retries and confirms your Solana and Base transactions.
-  </Placeholder>,
+  />,
 );

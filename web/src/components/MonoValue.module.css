@@ -1,29 +1,28 @@
 .value {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 2px var(--space-1);
-  margin: -2px calc(-1 * var(--space-1));
+  display: inline;
+  padding: 1px 3px;
+  margin: -1px -3px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: inherit;
   font-family: var(--font-mono);
-  font-size: var(--text-13);
+  font-size: var(--text-12-5);
+  letter-spacing: 0;
+  text-align: left;
   cursor: copy;
+  transition: background-color 120ms;
 }
 
 .value:hover {
-  background: var(--surface-sunken);
+  background: var(--sunken);
 }
 
-.icon {
-  color: var(--ink-faint);
-  opacity: 0;
-  transition: opacity 120ms;
+.value[data-copied] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
-.value:hover .icon,
-.value:focus-visible .icon {
-  opacity: 1;
+.full {
+  word-break: break-all;
 }

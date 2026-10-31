@@ -8,7 +8,7 @@ import { REVEAL_STAGGER_S, reveal } from './transitions';
 export function Reveal({ children, index = 0 }: { children: ReactNode; index?: number }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
+      initial={{ opacity: 0, y: 12 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, amount: 0.2 }}
       transition={{ ...reveal, delay: index * REVEAL_STAGGER_S }}

@@ -16,14 +16,25 @@ const pillFills = [...tokens.keys()].flatMap((name): [string, string][] => {
   return tone ? [[name, `--pill-${tone}-bg`]] : [];
 });
 
+const SURFACES = ['--canvas', '--surface', '--sunken', '--hover', '--accent-soft'];
+
 const PAIRS: [text: string, fill: string][] = [
   ...pillFills,
-  ['--ink', '--canvas'],
-  ['--ink', '--surface'],
-  ['--ink-muted', '--canvas'],
-  ['--ink-muted', '--surface'],
+  ...SURFACES.flatMap((fill): [string, string][] => [
+    ['--ink', fill],
+    ['--muted', fill],
+  ]),
+  ['--accent-text', '--surface'],
+  ['--accent-text', '--accent-soft'],
+  ['--on-accent', '--accent'],
+  ['--on-accent', '--accent-hover'],
+  ['--danger', '--surface'],
+  ['--danger', '--danger-soft'],
+  ['--on-danger', '--danger'],
+  ['--ok-text', '--surface'],
+  ['--warn-text', '--surface'],
+  ['--warn-text', '--canvas'],
   ['--surface', '--ink'],
-  ['--ink', '--surface-sunken'],
 ];
 
 function resolve(name: string, theme: Theme): string {

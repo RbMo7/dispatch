@@ -1,4 +1,4 @@
-import '@fontsource-variable/geist';
+import '@fontsource-variable/hanken-grotesk';
 import '@fontsource-variable/geist-mono';
 import './styles/tokens.css';
 import './styles/base.css';

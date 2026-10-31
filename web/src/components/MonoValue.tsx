@@ -1,11 +1,10 @@
-import { Check, Copy } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 
 import styles from './MonoValue.module.css';
 
 const ELLIPSIS = '…';
 
-export function truncateMiddle(value: string, head = 4, tail = 4): string {
+export function truncateMiddle(value: string, head = 6, tail = 4): string {
   if (value.length <= head + tail + 1) return value;
   return `${value.slice(0, head)}${ELLIPSIS}${value.slice(-tail)}`;
 }
@@ -14,9 +13,12 @@ interface MonoValueProps {
   value: string;
   head?: number;
   tail?: number;
+  /** Show the whole value, wrapped, instead of truncating it. */
+  full?: boolean;
 }
 
-export function MonoValue({ value, head, tail }: MonoValueProps) {
+// A hash, address or id: middle-truncated, the full value on hover, copied on click.
+export function MonoValue({ value, head, tail, full = false }: MonoValueProps) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -31,24 +33,20 @@ export function MonoValue({ value, head, tail }: MonoValueProps) {
       setCopied(true);
     } catch {
       // No clipboard (insecure origin, denied permission): the full value is
-      // still in the tooltip and selectable there.
+      // still in the tooltip.
     }
   }
 
   return (
     <button
       type="button"
-      className={styles.value}
-      title={value}
+      className={full ? `${styles.value} ${styles.full}` : styles.value}
+      title={copied ? 'Copied' : value}
       aria-label={copied ? `Copied ${value}` : `Copy ${value}`}
+      data-copied={copied || undefined}
       onClick={() => void copy()}
     >
-      <span>{truncateMiddle(value, head, tail)}</span>
-      {copied ? (
-        <Check size={12} weight="bold" aria-hidden="true" className={styles.icon} />
-      ) : (
-        <Copy size={12} aria-hidden="true" className={styles.icon} />
-      )}
+      {full ? value : truncateMiddle(value, head, tail)}
     </button>
   );
 }

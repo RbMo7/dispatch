@@ -9,25 +9,22 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .title {
   margin: 0;
-  font-size: var(--text-14);
+  font-size: var(--text-13);
   font-weight: 600;
 }
 
-.viewAll {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--ink-muted);
-  font-size: var(--text-13);
+.link {
+  color: var(--muted);
+  font-size: var(--text-12-5);
   text-decoration: none;
 }
 
-.viewAll:hover {
+.link:hover {
   color: var(--ink);
 }

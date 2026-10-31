@@ -1,41 +1,40 @@
-import { ArrowRight } from '@phosphor-icons/react';
-import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
+import { type AnchorHTMLAttributes, type ButtonHTMLAttributes, forwardRef, type ReactNode } from 'react';
 
 import styles from './Button.module.css';
 
-type Variant = 'ink' | 'soft';
+export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'danger' | 'danger-filled';
 
 interface CommonProps {
-  variant?: Variant;
-  arrow?: boolean;
+  variant?: ButtonVariant;
+  /** A square 28 px icon button; `aria-label` names it. */
+  icon?: boolean;
   children: ReactNode;
 }
 
-type ButtonProps = CommonProps &
+export type ButtonProps = CommonProps &
   (
     | ({ href: string } & AnchorHTMLAttributes<HTMLAnchorElement>)
     | ({ href?: undefined } & ButtonHTMLAttributes<HTMLButtonElement>)
   );
 
-export function Button({ variant = 'ink', arrow = false, children, ...rest }: ButtonProps) {
-  const content = (
-    <>
-      {children}
-      {arrow && <ArrowRight size={14} weight="bold" aria-hidden="true" />}
-    </>
-  );
-  const className = `${styles.button} ${styles[variant]}`;
+export const Button = forwardRef<HTMLButtonElement & HTMLAnchorElement, ButtonProps>(function Button(
+  { variant = 'secondary', icon = false, children, className, ...rest },
+  ref,
+) {
+  const classes = [styles.button, styles[variant], icon && styles.icon, className]
+    .filter(Boolean)
+    .join(' ');
 
   if (rest.href !== undefined) {
     return (
-      <a className={className} {...rest}>
-        {content}
+      <a ref={ref} className={classes} {...rest}>
+        {children}
       </a>
     );
   }
   return (
-    <button type="button" className={className} {...rest}>
-      {content}
+    <button ref={ref} type="button" className={classes} {...rest}>
+      {children}
     </button>
   );
-}
+});

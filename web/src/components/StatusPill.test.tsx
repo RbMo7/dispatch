@@ -1,7 +1,7 @@
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { Status } from './status';
+import type { Status } from '../domain/status';
 import { StatusPill } from './StatusPill';
 
 afterEach(cleanup);
@@ -22,11 +22,11 @@ const EXPECTED: Record<Status, string> = {
 
 describe('StatusPill', () => {
   it.each(Object.entries(EXPECTED) as [Status, string][])(
-    '%s says "%s" in words, not only in colour',
+    '%s says "%s" in words, with nothing else in the pill',
     (status, label) => {
       const { container } = render(<StatusPill status={status} />);
       expect(container.textContent).toBe(label);
-      expect(container.querySelector('[aria-hidden="true"]')).not.toBeNull();
+      expect(container.querySelector('svg, [aria-hidden="true"]')).toBeNull();
     },
   );
 
