@@ -7,11 +7,15 @@ import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
+import { compareNewestFirst } from './dispatch-store.js';
 import type {
   CancelOutcome,
   ChainScope,
   CommittedHolder,
+  DispatchCursor,
+  DispatchListQuery,
   DispatchStore,
+  ListedDispatch,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -473,6 +477,41 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   getRelayDispatch(id: string): Promise<RelayDispatch | null> {
     return Promise.resolve(this.relayDispatches.get(id) ?? null);
+  }
+
+  listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]> {
+    const { after } = query;
+    const matches = (d: Dispatch | RelayDispatch, cursor: DispatchCursor) =>
+      (!query.chain || d.chain === query.chain) &&
+      (!query.storedStatuses || query.storedStatuses.some((s) => s === d.status)) &&
+      (!query.from || d.createdAt >= query.from) &&
+      (!query.to || d.createdAt < query.to) &&
+      (!after || compareNewestFirst(after, cursor) < 0);
+    const cursorOf = (d: Dispatch | RelayDispatch) => ({
+      createdAt: d.createdAt.toISOString(),
+      id: d.id,
+    });
+    const listed = [
+      ...(query.mode === 'relay' ? [] : [...this.dispatches.values()]).map((dispatch) => ({
+        mode: 'managed' as const,
+        dispatch,
+        cursor: cursorOf(dispatch),
+      })),
+      ...(query.mode === 'managed' ? [] : [...this.relayDispatches.values()]).map((dispatch) => ({
+        mode: 'relay' as const,
+        dispatch,
+        cursor: cursorOf(dispatch),
+      })),
+    ]
+      .filter((l) => matches(l.dispatch, l.cursor))
+      .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+      .slice(0, query.limit);
+    return Promise.all(
+      listed.map(async (l) => ({
+        ...l,
+        transactions: await this.listTransactions(l.dispatch.id),
+      })),
+    );
   }
 
   claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {

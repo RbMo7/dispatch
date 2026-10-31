@@ -1,5 +1,6 @@
 import {
   and,
+  desc,
   eq,
   gte,
   inArray,
@@ -28,11 +29,14 @@ import type {
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
+import { compareNewestFirst } from './dispatch-store.js';
 import type {
   CancelOutcome,
   ChainScope,
   CommittedHolder,
+  DispatchListQuery,
   DispatchStore,
+  ListedDispatch,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -981,6 +985,73 @@ export class PostgresDispatchStore implements DispatchStore {
       where: eq(relayDispatches.id, id),
     });
     return row ? toRelayDispatch(row) : null;
+  }
+
+  async listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]> {
+    const { after } = query;
+    const where = (table: typeof dispatches | typeof relayDispatches) =>
+      and(
+        query.chain ? eq(table.chain, query.chain) : undefined,
+        query.storedStatuses ? inArray(table.status, [...query.storedStatuses]) : undefined,
+        query.from ? gte(table.createdAt, query.from) : undefined,
+        query.to ? lt(table.createdAt, query.to) : undefined,
+        after
+          ? sql`(${table.createdAt}, ${table.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      );
+    // Microseconds, which a Date would drop: a cursor rounded to the millisecond could repeat its own row.
+    const exactCreatedAt = (table: typeof dispatches | typeof relayDispatches) =>
+      sql<string>`to_char(${table.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
+    const [managed, relay] = await Promise.all([
+      query.mode === 'relay'
+        ? []
+        : this.db
+            .select({ row: dispatches, exactCreatedAt: exactCreatedAt(dispatches) })
+            .from(dispatches)
+            .where(where(dispatches))
+            .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
+            .limit(query.limit),
+      query.mode === 'managed'
+        ? []
+        : this.db
+            .select({ row: relayDispatches, exactCreatedAt: exactCreatedAt(relayDispatches) })
+            .from(relayDispatches)
+            .where(where(relayDispatches))
+            .orderBy(desc(relayDispatches.createdAt), desc(relayDispatches.id))
+            .limit(query.limit),
+    ]);
+    const listed = [
+      ...managed.map(({ row, exactCreatedAt }) => ({
+        mode: 'managed' as const,
+        dispatch: toDispatch(row),
+        cursor: { createdAt: exactCreatedAt, id: row.id },
+      })),
+      ...relay.map(({ row, exactCreatedAt }) => ({
+        mode: 'relay' as const,
+        dispatch: toRelayDispatch(row),
+        cursor: { createdAt: exactCreatedAt, id: row.id },
+      })),
+    ]
+      .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+      .slice(0, query.limit);
+    if (listed.length === 0) return [];
+
+    const rows = await this.db.query.transactions.findMany({
+      where: inArray(
+        transactions.dispatchId,
+        listed.map((l) => l.dispatch.id),
+      ),
+      orderBy: transactions.callIndex,
+    });
+    const byDispatch = new Map<string, Transaction[]>();
+    for (const row of rows) {
+      byDispatch.set(row.dispatchId, [
+        ...(byDispatch.get(row.dispatchId) ?? []),
+        toTransaction(row),
+      ]);
+    }
+    return listed.map((l) => ({ ...l, transactions: byDispatch.get(l.dispatch.id) ?? [] }));
   }
 
   async claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {

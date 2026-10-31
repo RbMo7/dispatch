@@ -1338,3 +1338,163 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
     expect(response.statusCode).toBe(400);
   });
 });
+
+describe('GET /v1/dispatches (#110)', () => {
+  type ListBody = {
+    dispatches: Record<string, unknown>[];
+    nextCursor: string | null;
+  };
+
+  it('rejects a request without a valid bearer token', async () => {
+    const { app } = await buildTestApp();
+
+    const missing = await app.inject({ method: 'GET', url: '/v1/dispatches' });
+    const wrong = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches',
+      headers: { authorization: 'Bearer nope' },
+    });
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(401);
+  });
+
+  it.each([
+    'limit=0',
+    'limit=101',
+    'limit=ten',
+    'chain=ethereum',
+    'mode=batch',
+    'status=awaiting_approval',
+    'from=yesterday',
+    'to=2026-13-45',
+    'cursor=not-a-cursor',
+  ])('rejects %s with 400', async (query) => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatches?${query}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('lists Managed and Relay rows newest first, each a summary with its count and totals', async () => {
+    const { app, store } = await buildTestApp();
+    const managed = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'managed',
+      items: [
+        {
+          call: { to: '0xa', data: '0x', value: '0' },
+          payment: { recipient: '0xa', asset: 'USDC', amount: '10' },
+        },
+        {
+          call: { to: '0xb', data: '0x', value: '0' },
+          payment: { recipient: '0xb', asset: 'USDC', amount: '15' },
+        },
+        {
+          call: { to: '0xc', data: '0x', value: '1' },
+          payment: { recipient: '0xc', asset: 'ETH', amount: '1' },
+        },
+        { call: { to: '0xd', data: '0x', value: '0' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const relay = await store.createRelayDispatch({
+      chain: 'base',
+      idempotencyKey: 'relay',
+      signedTransaction: 'signed',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches',
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<ListBody>()).toEqual({
+      dispatches: [
+        {
+          dispatchId: relay.id,
+          mode: 'relay',
+          chain: 'base',
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+          createdAt: relay.createdAt.toISOString(),
+          itemCount: 1,
+          totals: [],
+        },
+        {
+          dispatchId: managed.id,
+          mode: 'managed',
+          chain: 'base',
+          status: 'queued',
+          createdAt: managed.createdAt.toISOString(),
+          itemCount: 4,
+          totals: [
+            { asset: 'USDC', amount: '25' },
+            { asset: 'ETH', amount: '1' },
+          ],
+        },
+      ],
+      nextCursor: null,
+    });
+  });
+
+  it('pages 25 rows by default and hands back a cursor for the rest', async () => {
+    const { app, store } = await buildTestApp();
+    for (let i = 0; i < 26; i++) {
+      await store.createRelayDispatch({
+        chain: 'base',
+        idempotencyKey: `relay-${i}`,
+        signedTransaction: 'signed',
+      });
+    }
+
+    const first = (
+      await app.inject({ method: 'GET', url: '/v1/dispatches', headers: AUTH_HEADERS })
+    ).json<ListBody>();
+    const second = (
+      await app.inject({
+        method: 'GET',
+        url: `/v1/dispatches?cursor=${first.nextCursor ?? ''}`,
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+
+    expect(first.dispatches).toHaveLength(25);
+    expect(second.dispatches).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('filters on the cancelled status', async () => {
+    const { app, store } = await buildTestApp();
+    const cancelled = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'cancelled',
+      items: [{ call: { to: '0xa', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+    await store.cancelDispatch(cancelled.id);
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'queued',
+      items: [{ call: { to: '0xa', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches?status=cancelled',
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<ListBody>().dispatches.map((d) => d.dispatchId)).toEqual([cancelled.id]);
+  });
+});

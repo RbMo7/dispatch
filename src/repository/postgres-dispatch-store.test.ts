@@ -11,6 +11,7 @@ import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
+import { runListConformanceSuite } from './list-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 
 /**
@@ -43,6 +44,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
   runCancelConformanceSuite(() => new PostgresDispatchStore(db));
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
+  runListConformanceSuite(() => new PostgresDispatchStore(db));
   runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {

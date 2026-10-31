@@ -8,13 +8,16 @@ import type {
 } from '../chain-handler/chain-handler.js';
 import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
-import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
-import type { Proposal } from '../domain/proposal.js';
-import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
-import { buildTimeline } from './timeline.js';
+import {
+  listDispatchPage,
+  listQuerySchema,
+  parseListQuery,
+  type RawListQuery,
+} from './dispatch-list.js';
+import { readDispatchView } from './dispatch-view.js';
 
 export type DispatchRouteDeps = {
   store: DispatchStore;
@@ -124,161 +127,6 @@ async function translateItem(
       `items[${index}]: unknown item type "${String(type)}" — must be "payment" or "call"`,
     ),
   );
-}
-
-/** The wire's lowercase per-item status vocabulary (docs/api.md) — distinct from Transaction's own uppercase one. */
-function toWireItemStatus(status: TransactionStatus): ItemStatus {
-  switch (status) {
-    case 'PENDING':
-      return 'broadcasting';
-    case 'CONFIRMED':
-      return 'confirmed';
-    case 'FAILED':
-      return 'failed';
-    case 'ABANDONED':
-      return 'abandoned';
-    // ADR-0054: claimed but in no Proposal yet reads as `queued`; inside one, `awaiting_approval`.
-    case 'UNPROPOSED':
-      return 'queued';
-    case 'AWAITING_APPROVAL':
-      return 'awaiting_approval';
-    case 'REPLACED':
-    case 'DROPPED':
-      throw new Error(`a ${status} Transaction is never a Call's reported version (ADR-0037)`);
-  }
-}
-
-/** #9 (ADR-0037): a fee-bumped Call has several Transactions at one nonce — only the current one (latest while pending, or the one that settled it) is its reported version. */
-function isCurrentVersion(transaction: Transaction): boolean {
-  return transaction.status !== 'REPLACED' && transaction.status !== 'DROPPED';
-}
-
-/**
- * Dispatch.status only ever persists 'queued'/'broadcasting' (claimQueued's
- * own transition, ADR-0009's outbox) — the terminal wire statuses
- * (confirmed/failed/partial) are derived here from the aggregate of the
- * Dispatch's Transactions, never stored redundantly. ABANDONED counts
- * alongside FAILED for this aggregate: the Coordinator has stopped
- * actively watching it, even though it might still confirm later — that
- * nuance stays visible at the per-item level (docs/api.md), not lost, just
- * not double-counted as "in progress" here.
- */
-function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {
-  if (dispatch.status === 'queued' || dispatch.status === 'cancelled') return dispatch.status;
-
-  // ADR-0054: a Call waiting to be proposed or approved is still in progress, and the Dispatch gains no status of its own for it.
-  const stillPending =
-    transactions.length < dispatch.items.length ||
-    transactions.some(
-      (t) =>
-        t.status === 'PENDING' || t.status === 'UNPROPOSED' || t.status === 'AWAITING_APPROVAL',
-    );
-  if (stillPending) return 'broadcasting';
-
-  const confirmedCount = transactions.filter((t) => t.status === 'CONFIRMED').length;
-  if (confirmedCount === transactions.length) return 'confirmed';
-  if (confirmedCount === 0) return 'failed';
-  return 'partial';
-}
-
-/** docs/api.md's per-item `approval` block: what the Approvers have done about the Proposal this Call is in. */
-function toWireApproval(proposal: Proposal) {
-  return {
-    state: proposal.approvalState,
-    approvals: proposal.approvals,
-    threshold: proposal.threshold,
-    deadline: proposal.deadlineAt.toISOString(),
-    expected: proposal.expected,
-    chainRef: proposal.chainRef,
-  };
-}
-
-/** `GET /v1/dispatch/:id`'s body for a Managed or Relay Dispatch, or null when neither exists. */
-async function readDispatchView(
-  store: DispatchStore,
-  id: string,
-  options: { timeline: boolean } = { timeline: false },
-) {
-  const dispatch = await store.getDispatch(id);
-  if (dispatch) {
-    const allVersions = await store.listTransactions(dispatch.id);
-    const transactions = allVersions.filter(isCurrentVersion);
-    const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
-    // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
-    const proposals = transactions.some((t) => t.proposalId !== null)
-      ? await store.listProposalsForDispatch(dispatch.id)
-      : [];
-    const proposalById = new Map(proposals.map((p) => [p.id, p]));
-
-    const items = dispatch.items.map((_, index) => {
-      if (dispatch.status === 'cancelled') {
-        return { status: 'cancelled', transactionHash: null, error: null };
-      }
-      const transaction = transactionByCallIndex.get(index);
-      if (!transaction) {
-        return { status: 'queued', transactionHash: null, error: null };
-      }
-      const proposal = transaction.proposalId
-        ? proposalById.get(transaction.proposalId)
-        : undefined;
-      return {
-        status: toWireItemStatus(transaction.status),
-        transactionHash: transaction.hash,
-        error: transaction.error,
-        ...(proposal ? { approval: toWireApproval(proposal) } : {}),
-      };
-    });
-
-    return {
-      dispatchId: dispatch.id,
-      mode: 'managed',
-      status: deriveDispatchStatus(dispatch, transactions),
-      items,
-      ...(options.timeline
-        ? {
-            timeline: buildTimeline({
-              dispatch,
-              transactions: allVersions,
-              attempts: await store.listAttempts(dispatch.id),
-              proposals,
-            }),
-          }
-        : {}),
-    };
-  }
-
-  // ADR-0031: a Relay Dispatch is always exactly one already-signed
-  // transaction, never a batch — its response shape (dispatchId, mode,
-  // status, transactionHash, error) is honestly distinct from Managed
-  // Dispatch's items-array shape, not a fake single-item version of it.
-  const relayDispatch = await store.getRelayDispatch(id);
-  if (relayDispatch) {
-    const relayTransactions = await store.listTransactions(relayDispatch.id);
-    const [transaction] = relayTransactions;
-    return {
-      dispatchId: relayDispatch.id,
-      mode: 'relay',
-      status: transaction
-        ? toWireItemStatus(transaction.status)
-        : relayDispatch.status === 'cancelled'
-          ? 'cancelled'
-          : 'queued',
-      transactionHash: transaction?.hash ?? null,
-      error: transaction?.error ?? null,
-      ...(options.timeline
-        ? {
-            timeline: buildTimeline({
-              dispatch: relayDispatch,
-              transactions: relayTransactions,
-              attempts: await store.listAttempts(relayDispatch.id),
-              proposals: [],
-            }),
-          }
-        : {}),
-    };
-  }
-
-  return null;
 }
 
 function checkAuth(authToken: string) {
@@ -409,6 +257,16 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });
+    },
+  );
+
+  app.get<{ Querystring: RawListQuery }>(
+    '/v1/dispatches',
+    { preHandler: auth, schema: { querystring: listQuerySchema } },
+    async (request, reply) => {
+      const filter = parseListQuery(request.query);
+      if (!filter.ok) return reply.code(400).send({ error: filter.error });
+      return reply.send(await listDispatchPage(store, filter.value));
     },
   );
 

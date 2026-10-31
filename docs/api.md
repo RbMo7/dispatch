@@ -1,6 +1,6 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id` and `POST /v1/dispatch/:id/cancel`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches` and `POST /v1/dispatch/:id/cancel`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## `POST /v1/dispatch`
 
@@ -97,6 +97,51 @@ Every entry has `at` (ISO 8601) and `kind`. `items` are the positions of the Cal
 | `proposal_approval` | The Approvers' decision, as the engine last read it: `at` is when the engine acted on it (wrote the execute, or the Proposal timed out or was resolved), and `null` while the Proposal is still open. `null` entries come last | `proposalId`, `state`, `approvals`, `threshold` |
 | `proposal_timed_out` | Nobody decided by the deadline (ADR-0053) | `proposalId` |
 | `proposal_resolved` | The Proposal ended | `proposalId`, `outcome`: `executed`, `rejected` or `failed` |
+
+## `GET /v1/dispatches`
+
+Managed and Relay Dispatches together, newest first. Same `Authorization` header as above.
+
+Query parameters, all optional:
+
+- `limit`: rows per page, 1 to 100, default 25.
+- `cursor`: the `nextCursor` of the previous page. Opaque: pass it back as it came.
+- `chain`: `base` or `solana`.
+- `mode`: `managed` or `relay`.
+- `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch).
+- `from`, `to`: ISO 8601 timestamps on `createdAt`, `from` inclusive and `to` exclusive.
+
+A value outside these is a `400`; parameters not listed here are ignored.
+
+```json
+{
+  "dispatches": [
+    {
+      "dispatchId": "<id>",
+      "mode": "managed",
+      "chain": "base",
+      "status": "partial",
+      "createdAt": "2026-10-31T10:00:00.000Z",
+      "itemCount": 3,
+      "totals": [{ "asset": "USDC", "amount": "25" }]
+    },
+    {
+      "dispatchId": "<id>",
+      "mode": "relay",
+      "chain": "solana",
+      "status": "confirmed",
+      "transactionHash": "<hash>",
+      "error": null,
+      "createdAt": "2026-10-31T09:59:00.000Z",
+      "itemCount": 1,
+      "totals": []
+    }
+  ],
+  "nextCursor": "<opaque string> | null"
+}
+```
+
+Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. A page is full unless it is the last; `nextCursor` is `null` on the last page.
 
 ## `POST /v1/dispatch/:id/cancel`
 

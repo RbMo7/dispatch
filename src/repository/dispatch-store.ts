@@ -110,6 +110,39 @@ export type NewRelayDispatchInput<C extends Chain = Chain> = {
 };
 
 /**
+ * #110: where a listing page ends, newest first. `createdAt` is the row's
+ * exact stored time (ISO 8601, UTC), finer than a Date holds, so the next
+ * page starts exactly after it.
+ */
+export type DispatchCursor = { createdAt: string; id: string };
+
+/** #110: the listing order. Both stores print `createdAt` at one fixed width, so the strings compare as the times do. */
+export function compareNewestFirst(a: DispatchCursor, b: DispatchCursor): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/** #110: one page of Managed and Relay Dispatches, newest first, by `(createdAt, id)`. */
+export type DispatchListQuery = {
+  /** Only rows strictly after this one, in listing order. */
+  after: DispatchCursor | null;
+  limit: number;
+  chain?: Chain;
+  mode?: 'managed' | 'relay';
+  /** Only rows whose stored status is one of these. */
+  storedStatuses?: readonly ('queued' | 'broadcasting' | 'cancelled')[];
+  /** `createdAt` at or after. */
+  from?: Date;
+  /** `createdAt` before. */
+  to?: Date;
+};
+
+/** #110: a listed row with every one of its Transactions (all versions), and where it sits in the listing. */
+export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (
+  { mode: 'managed'; dispatch: Dispatch } | { mode: 'relay'; dispatch: RelayDispatch }
+);
+
+/**
  * #57: every work queue below takes the `chains` the caller can act on and
  * never returns a row for any other chain. A chain removed from
  * ENABLED_CHAINS keeps its rows exactly as they are until it is enabled again.
@@ -286,6 +319,8 @@ export interface DispatchStore {
   /** Idempotent create (ADR-0021), mirroring createDispatch — a Relay Dispatch's own table (ADR-0031), never squeezed into `dispatches`. */
   createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;
   getRelayDispatch(id: string): Promise<RelayDispatch | null>;
+  /** #110: Managed and Relay Dispatches together, for the console's list. */
+  listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]>;
   /** Atomically claims up to `limit` queued RelayDispatches for the worker to process, mirroring claimQueued. */
   claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]>;
   /** Records which Transaction a RelayDispatch's single broadcast attempt produced — success or failure alike (recordCallFailure and createTransaction both already produce a Transaction id). */
