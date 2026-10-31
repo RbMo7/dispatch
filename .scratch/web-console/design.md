@@ -6,7 +6,7 @@ Companion to `spec.md`. One visual system across three surfaces: the operator co
 
 | Reference | What we take |
 |---|---|
-| [Copilot web: Dashboard and Transactions](https://mobbin.com/apps/copilot-web-3ff8a008-6c14-4f52-9479-1cae4d001464) | The console shell: a light left sidebar (navigation on top, then grouped "accounts" with a coloured dot and a right-aligned balance, help and settings pinned to the bottom); a page title bar with icon actions and search; white cards on a faint cool-grey canvas, each card with a title and a quiet "View all ›" link; a list grouped under day headings with a checkbox, name, muted secondary text, a tinted category pill and a right-aligned amount; a right-hand detail pane for the selected row; a centred modal for a focused decision; a calm empty state ("You've reviewed 30 transactions"). |
+| [Copilot web: Dashboard and Transactions](https://mobbin.com/apps/copilot-web-3ff8a008-6c14-4f52-9479-1cae4d001464) | The console shell: a light left sidebar (navigation on top, then grouped "accounts" with a coloured dot and a right-aligned balance, help and settings pinned to the bottom); a page title bar with icon actions and search; white cards on a faint cool-grey canvas, each card with a title and a quiet "View all ›" link; a list grouped under day headings (set in `--ink-muted`) with a checkbox, name, muted secondary text, a tinted category pill and a right-aligned amount; a right-hand detail pane for the selected row; a centred modal for a focused decision; a calm empty state ("You've reviewed 30 transactions"). |
 | [Mobbin landing page, hero section](https://mobbin.com/sites/sections/2c52def4-6537-44aa-af28-f41a995a3812) | The landing page: a huge centred headline over three lines with small rounded icons set inline between the words, and the icons cycle; one short grey subline; two pill buttons (solid ink and soft grey with an arrow); the real product shown in a large rounded light-grey frame; a quiet logo strip; generous whitespace; big statement type further down; a closing CTA that mirrors the hero. |
 | [Webflow feature section](https://mobbin.com/sites/sections/a9e7bd2e-d2ba-4db4-ba7a-bf1ccc40f958) | The landing page's middle: a sticky left in-page nav (Design / Sell / Grow, a rule, then Compare) that tracks the scroll; two-column feature blocks, each a soft monochrome illustration, then a large two-line heading, then either a short grey paragraph or a three-item icon list. Lots of air between blocks. |
 
@@ -25,7 +25,7 @@ The two builds share tokens, components and the docs renderer.
 
 ### Colour
 
-Near-monochrome, so colour always means something. The accent is international orange, used only for "look here": the live indicator, the active nav marker, focus rings, and anything waiting on a person (Held, an approval waiting on Approvers). Primary buttons are ink, as on Mobbin, not accent.
+Near-monochrome, so colour always means something. Every text pair meets 4.5:1, and `web/scripts/check-contrast` enforces it in the test run. The accent is international orange, used only for "look here": the live indicator, the active nav marker, focus rings, and anything waiting on a person (Held, an approval waiting on Approvers). Primary buttons are ink, as on Mobbin, not accent.
 
 | Token | Light | Dark |
 |---|---|---|
@@ -35,9 +35,10 @@ Near-monochrome, so colour always means something. The accent is international o
 | `--border` | `#E6E8EC` | `#26282D` |
 | `--ink` (primary text, primary button) | `#0E1013` | `#F3F4F6` |
 | `--ink-muted` (secondary text, "View all") | `#6B7280` | `#9097A1` |
-| `--ink-faint` (placeholders, day headings) | `#9AA1AC` | `#5F6670` |
+| `--ink-faint` (placeholders, disabled controls and dividers only, never readable text: it is under 4.5:1) | `#9AA1AC` | `#5F6670` |
 | `--accent` | `#FF4F00` | `#FF6A26` |
 | `--accent-soft` (accent pill fill) | `#FFEDE5` | `#3A1D10` |
+| `--accent-ink` (accent text on `--accent-soft`) | `#C23B00` | `#FF6A26` |
 
 ### Status pills
 
@@ -47,13 +48,13 @@ Copilot's tinted pills: a pale fill, saturated text, an optional leading glyph, 
 |---|---|---|
 | `queued` | `#4B5563` / `#F1F2F4` | hollow dot |
 | `broadcasting` | `#1D4ED8` / `#E8EEFF` | pulsing dot |
-| `awaiting_approval` | accent / `--accent-soft` | person |
-| `held` | accent / `--accent-soft` | pause |
+| `awaiting_approval` | `--accent-ink` / `--accent-soft` | person |
+| `held` | `--accent-ink` / `--accent-soft` | pause |
 | `confirmed` | `#15803D` / `#E7F7EC` | check |
 | `partial` | `#B45309` / `#FEF3E2` | half circle |
 | `failed` | `#B91C1C` / `#FDECEC` | cross |
 | `abandoned` | `#6B4E16` / `#F6F0E4` | clock |
-| `cancelled` | `#6B7280` / `#F1F2F4`, struck-through label | slash |
+| `cancelled` | `#5E6573` / `#F1F2F4`, struck-through label | slash |
 
 Dark mode uses the same hues at about 18 % fill opacity on `--surface`, with text one step lighter. Every pill also says its status in words, so colour is never the only signal.
 
