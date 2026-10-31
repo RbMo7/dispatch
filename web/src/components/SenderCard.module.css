@@ -41,6 +41,12 @@
   margin-top: var(--space-2);
 }
 
+.unread {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--text-13);
+}
+
 .low {
   color: var(--warn-text);
   font-weight: 500;
