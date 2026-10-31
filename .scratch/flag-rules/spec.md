@@ -1,4 +1,4 @@
-Status: designed 2026-10-31; ADR-0057 and ADR-0058 accepted; tickets #115–#120 filed (console pages wait on the design pattern); builds on `web-console`
+Status: designed 2026-10-31; ADR-0057 and ADR-0058 accepted; tickets #115–#120 and #128 (console pages) filed; builds on `web-console`
 
 # Flag Rules: hold a Dispatch for an operator
 

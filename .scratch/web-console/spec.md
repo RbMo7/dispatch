@@ -1,4 +1,4 @@
-Status: designed 2026-10-31; ADR-0056 accepted; engine and docs tickets #109–#114 filed; console UI and landing tickets wait on the design pattern
+Status: designed 2026-10-31; ADR-0056 accepted; design pattern in `design.md`; tickets #109–#114 and #121–#127 filed
 
 # Web console and docs site
 
@@ -10,7 +10,7 @@ The engine is only visible through `GET /v1/dispatch/:id` and the logs. An opera
 
 ## Solution
 
-A web console served by the engine's own API process, reading only this instance, plus a `/docs` site rendered from `docs/`. The console is read-only except for cancel (ADR-0056). The engine gains the read endpoints the console needs, as documented public `/v1` routes, so any API client can use them too.
+A web console served by the engine's own API process, reading only this instance, plus a `/docs` site rendered from `docs/`, plus a public landing page. The look and motion of all three are set in `design.md`. The console is read-only except for cancel (ADR-0056). The engine gains the read endpoints the console needs, as documented public `/v1` routes, so any API client can use them too.
 
 ## User stories
 
@@ -22,6 +22,7 @@ A web console served by the engine's own API process, reading only this instance
 6. As an operator, I want to cancel a Dispatch that hasn't been claimed yet, and be told plainly when it's too late.
 7. As someone new to the engine, I want docs that get me from nothing to a confirmed Dispatch, with examples I can paste and that work.
 8. As an operator, I want the console to look and move like a finished product, in light and dark.
+9. As someone hearing about the engine for the first time, I want a landing page that shows what it does and gets me to the docs or GitHub.
 
 ## Engine API (all `/v1`, bearer `AUTH_TOKEN`, documented in `docs/api.md`)
 
@@ -32,11 +33,11 @@ A web console served by the engine's own API process, reading only this instance
 
 ## Console
 
-- **Package:** `web/`, a sibling of `signer/` and `verifier/`: Vite, React, TypeScript. Built to static files that the API process serves at `/` and `/docs`, same origin. If `web/` is not built, the API runs as today.
+- **Package:** `web/`, a sibling of `signer/` and `verifier/`: Vite, React, TypeScript. Two builds (`design.md`, Surfaces and routes): the **engine build**, served by the API process at `/console/*` and `/docs` with `/` redirecting to `/console`, same origin; and the **public build**, the landing page at `/` plus `/docs`, for static hosting. If `web/` is not built, the API runs as today.
 - **Sign-in:** paste `AUTH_TOKEN`; kept in `sessionStorage`. `/docs` needs no token.
 - **Live updates:** polling about every 2 s while anything shown is in flight, backing off when all is terminal; Senders every 15 s. No push infrastructure (ADR-0023).
 - **Pages:** Overview; Dispatches; Dispatch detail (items, timeline, approval blocks with `chainRef` links, Cancel when unclaimed, "reject it in Squads/Safe" for an open Proposal); Senders & Keys; Docs. Activity arrives with `flag-rules`.
-- **Design:** the `design-taste-frontend` skill. Near-monochrome base (warm off-white light, deep ink dark), one accent, international orange `#FF4F00`, used only for "look here"; quiet semantic status colours. Spring-based layout motion: status pills morph, timeline nodes draw in, list rows reflow on poll. Honours `prefers-reduced-motion`. Works at phone width.
+- **Design:** `design.md`, built with the `design-taste-frontend` skill. The console follows Copilot's web app; the landing page combines Mobbin's hero with Webflow's sticky-nav feature blocks. Near-monochrome, ink primary buttons, one accent (international orange `#FF4F00`) for "look here", tinted status pills. Spring layout motion in the console, scroll reveals on the landing page; honours `prefers-reduced-motion`; works at phone width.
 
 ## Docs
 
@@ -61,19 +62,11 @@ Flag Rules, release, the operator token and the Activity page (`flag-rules`). Su
 - `web/`: component tests for status rendering and the timeline; a build check in CI so a broken console fails the PR.
 - Docs: a script that extracts each `curl` block, so they can be run against a local engine before release.
 
-## Proposed issues
+## Issues
 
-1. `transactions.failed_at` and the timeline builder; `?include=timeline`.
-2. `GET /v1/dispatches` with filters and cursor pagination.
-3. `GET /v1/senders`, Signer key info fetched server-side, 15 s cache.
-4. Cancel: `cancelled` status, atomic against claim, `POST /v1/dispatch/:id/cancel` (ADR-0056).
-5. `web/` scaffold, serving from the API process, sign-in, design tokens and motion primitives.
-6. Overview and Dispatches pages.
-7. Dispatch detail: items, timeline, approval blocks, cancel.
-8. Senders & Keys page.
-9. Docs site: renderer, navigation, search.
-10. Docs rewrite: Get started, Concepts, API reference.
-11. Docs rewrite: Guides and Operations, examples verified.
+Filed: #109 timeline, #110 list, #111 senders, #112 cancel, #113 docs rewrite (Get started, Concepts, API), #114 docs rewrite (Guides, Operations).
+
+Filed after `design.md`: #121 `web/` scaffold, #122 shell and sign-in, #123 Overview, #124 Dispatches and detail pane, #125 Senders & Keys, #126 docs site, #127 landing page.
 
 ## Settled
 
@@ -82,3 +75,4 @@ Flag Rules, release, the operator token and the Activity page (`flag-rules`). Su
 - "Account details" means the Sender: its addresses, balances and Signer key, never key material.
 - Timeline rebuilt from stored timestamps, not an event log.
 - Polling, not push.
+- One `web/` codebase, two builds; a self-hosted engine never serves the landing page.
