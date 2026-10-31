@@ -95,7 +95,7 @@ describe('the docs site', () => {
   it('shows a not-found page that searches for the missing slug', async () => {
     const user = open('/docs/fee-bumps');
 
-    expect(screen.getByText('No page at /docs/fee-bumps')).toBeTruthy();
+    expect(screen.getByText(/No page at \/docs\/fee-bumps/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Search the docs' }));
 
     const input = await screen.findByRole('combobox');

@@ -1,13 +1,13 @@
 .nav {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
 }
 
 .heading {
-  margin: 0 0 var(--space-2);
-  color: var(--ink);
-  font-size: var(--text-13);
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: var(--text-12);
   font-weight: 600;
 }
 
@@ -23,19 +23,24 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  padding: 5px 0;
-  color: var(--ink-muted);
+  padding: 5px 10px;
+  margin: 0 0 1px -10px;
+  border-radius: var(--radius-control);
+  font-size: var(--text-13-5);
+  color: var(--muted);
   line-height: 1.4;
   text-decoration: none;
   transition: color 150ms;
 }
 
-.item:hover,
-.item[aria-current='page'] {
+.item:hover {
+  background: var(--hover);
   color: var(--ink);
 }
 
 .item[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
   font-weight: 500;
 }
 

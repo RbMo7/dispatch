@@ -10,8 +10,8 @@
   gap: var(--space-2);
   height: 40px;
   padding: 0 var(--space-3);
-  border-radius: var(--radius-input);
-  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+  background: var(--sunken);
 }
 
 .field:focus-within {
@@ -21,7 +21,7 @@
 
 .icon {
   flex: none;
-  color: var(--ink-muted);
+  color: var(--muted);
 }
 
 .input {
@@ -36,7 +36,7 @@
 }
 
 .input::placeholder {
-  color: var(--ink-faint);
+  color: var(--muted);
 }
 
 .hidden {
@@ -68,12 +68,12 @@
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-input);
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
 .hit[aria-selected='true'] {
-  background: var(--surface-sunken);
+  background: var(--sunken);
 }
 
 .hitHeading {
@@ -81,14 +81,14 @@
 }
 
 .hitPage {
-  color: var(--ink-muted);
+  color: var(--muted);
   font-size: var(--text-12);
 }
 
 .hitExcerpt {
   display: -webkit-box;
   overflow: hidden;
-  color: var(--ink-muted);
+  color: var(--muted);
   font-size: var(--text-13);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -97,7 +97,7 @@
 .note,
 .keys {
   margin: 0;
-  color: var(--ink-muted);
+  color: var(--muted);
   font-size: var(--text-13);
 }
 
@@ -108,6 +108,6 @@
 .keys kbd {
   padding: 1px 6px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-input);
+  border-radius: var(--radius-control);
   font-size: var(--text-12);
 }

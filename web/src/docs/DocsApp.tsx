@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
-import { ThemeToggle } from '../components/ThemeToggle';
+import { ThemeSetting } from '../components/ThemeSetting';
 import { Sheet } from '../motion/Overlay';
 import { Article } from './Article';
 import styles from './DocsApp.module.css';
@@ -84,32 +84,32 @@ export function DocsApp() {
           >
             <GithubLogo size={18} aria-hidden="true" />
           </a>
-          <ThemeToggle />
         </div>
       </header>
 
       <div className={styles.layout}>
         <aside className={styles.sidebar}>
           <SideNav current={page} onNavigate={navigate} />
+          <div className={styles.appearance}>
+            <span>Appearance</span>
+            <ThemeSetting />
+          </div>
         </aside>
         <main className={styles.content}>
           {page ? (
             <Article key={page.slug} page={page} onNavigate={navigate} />
           ) : (
             <EmptyState
-              icon={<MagnifyingGlass size={18} />}
-              title={`No page at ${location.pathname}`}
+              caption={`No page at ${location.pathname}. The link may be out of date.`}
               action={
                 <Button
-                  variant="soft"
+                  variant="secondary"
                   onClick={() => setSearch({ query: queryFromPath(location.pathname) })}
                 >
                   Search the docs
                 </Button>
               }
-            >
-              The link may be out of date. Search for what you were after.
-            </EmptyState>
+            />
           )}
         </main>
         <aside className={styles.rail}>{page && <Rail page={page} />}</aside>
