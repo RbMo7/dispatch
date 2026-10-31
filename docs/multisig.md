@@ -32,7 +32,7 @@ Contents:
 
 Choose a **Treasury** when you can accept a hot wallet with a bounded balance, and you want speed. Choose a **Multisig Sender** when no single key or host may move a payment run on its own. They are independent: you may use either, both or neither.
 
-If your callers send many small Dispatches, a Multisig Sender produces many small proposals and so many approvals (see [section 6](#many-small-dispatches-many-small-proposals)). Use a Treasury with a hot Sender for that traffic.
+If your callers send many small Dispatches, a Multisig Sender produces many small proposals and so many approvals (see [section 6](#many-small-dispatches-mean-many-small-proposals)). Use a Treasury with a hot Sender for that traffic.
 
 ### Treasury
 
