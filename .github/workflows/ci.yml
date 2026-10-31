@@ -41,6 +41,9 @@ jobs:
       # The verifier is a third, independent package (ADR-0049): it shares no
       # code with the engine or the Signer, and the root lint type-checks it too.
       - run: pnpm --dir verifier install --frozen-lockfile
+      # The console, docs site and landing page: a fourth standalone package,
+      # linted by the root lint like the other two, so installed before it.
+      - run: pnpm --dir web install --frozen-lockfile
       - run: pnpm db:migrate
       - run: pnpm typecheck
       - run: pnpm lint
@@ -49,3 +52,6 @@ jobs:
       - run: pnpm --dir signer test
       - run: pnpm --dir verifier typecheck
       - run: pnpm --dir verifier test
+      - run: pnpm --dir web typecheck
+      - run: pnpm --dir web test
+      - run: pnpm --dir web build
