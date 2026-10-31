@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
@@ -569,6 +571,15 @@ describe('GET /v1/dispatch/:id', () => {
   });
 
   it('returns 404 for an unknown Dispatch', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${randomUUID()}`,
+      headers: AUTH_HEADERS,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('returns 404 for an id that is not a UUID', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/v1/dispatch/missing',
@@ -1204,11 +1215,7 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
   it('answers 404 for an id that is not a UUID', async () => {
     const { app } = await buildTestApp();
 
-    const response = await app.inject({
-      method: 'GET',
-      url: '/v1/dispatch/not-a-uuid',
-      headers: AUTH_HEADERS,
-    });
+    const response = await cancel(app, 'not-a-uuid');
 
     expect(response.statusCode).toBe(404);
   });
@@ -1216,7 +1223,7 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
   it('answers 404 for an unknown id', async () => {
     const { app } = await buildTestApp();
 
-    const response = await cancel(app, 'no-such-dispatch');
+    const response = await cancel(app, randomUUID());
 
     expect(response.statusCode).toBe(404);
   });
