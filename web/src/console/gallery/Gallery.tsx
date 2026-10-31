@@ -8,10 +8,10 @@ import { type ItemFilter, itemTarget } from '../../domain/dispatch';
 import { dispatchColumns, ITEM_COLUMNS } from '../../export/columns';
 import { dispatchesFileName, download, exportFile, itemsFileName } from '../../export/download';
 import { Modal } from '../../motion/Overlay';
-import { CHAINS } from '../../domain/chains';
+import { CHAINS, txLink } from '../../domain/chains';
 import { MonoValue } from '../../components/MonoValue';
 import { DispatchPane, type PaneTab } from '../dispatches/DispatchPane';
-import { DISPATCHES, FIXTURE_TODAY, type GalleryDispatch } from '../fixtures';
+import { BOARD_NETWORK, DISPATCHES, FIXTURE_TODAY, type GalleryDispatch } from '../fixtures';
 import { type ChainFilter, DispatchList } from './DispatchList';
 import styles from './Gallery.module.css';
 import { CancelSummary, Primitives } from './Primitives';
@@ -228,7 +228,7 @@ function Screen() {
             }}
             explorerHref={(() => {
               const hash = dispatch.items.find((item) => item.transactionHash)?.transactionHash;
-              return hash ? CHAINS[dispatch.chain].txUrl(hash) : null;
+              return (hash && txLink(BOARD_NETWORK[dispatch.chain], hash)?.href) ?? null;
             })()}
             action={
               <Button

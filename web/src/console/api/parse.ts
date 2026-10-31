@@ -1,5 +1,5 @@
 import type { Money } from '../../domain/assets';
-import { CHAINS, type Chain } from '../../domain/chains';
+import { CHAINS, type Chain, type Network } from '../../domain/chains';
 import type {
   Approval,
   ChainRef,
@@ -263,11 +263,15 @@ function entry(value: unknown, path: string): TimelineEntry {
 export function parseDetail(value: unknown): DispatchDetail {
   const json = object(value, 'body');
   const id = string(json.dispatchId, 'dispatchId');
+  const chain = oneOf(json.chain, CHAIN_NAMES, 'chain');
+  const createdAt = date(json.createdAt, 'createdAt');
   const timeline = list(json.timeline ?? [], 'timeline', entry);
   if (json.mode === 'relay') {
     return {
       mode: 'relay',
       id,
+      chain,
+      createdAt,
       status: oneOf(json.status, ITEM_STATUSES, 'status'),
       transactionHash: nullableString(json.transactionHash, 'transactionHash'),
       error: dispatchError(json.error, 'error'),
@@ -278,6 +282,8 @@ export function parseDetail(value: unknown): DispatchDetail {
   return {
     mode: 'managed',
     id,
+    chain,
+    createdAt,
     status: oneOf(json.status, STATUS_NAMES, 'status'),
     items: array(json.items, 'items').map((value, index) => item(value, `items[${index}]`, index)),
     timeline,
@@ -332,6 +338,22 @@ function read<T>(
 }
 
 const HOLDERS = ['sender', 'vault', 'safe', 'memberKey', 'executor'] as const;
+const NETWORK_NAMES = [
+  'base',
+  'base-sepolia',
+  'mainnet-beta',
+  'devnet',
+  'testnet',
+  'unknown',
+] as const;
+
+/** A network this console does not know reads as `unknown`, which links nowhere. */
+function network(value: unknown, path: string): Network {
+  if (typeof value === 'object' && value !== null) {
+    return { chainId: integer((value as Json).chainId, `${path}.chainId`) };
+  }
+  return (NETWORK_NAMES as readonly unknown[]).includes(value) ? (value as Network) : 'unknown';
+}
 
 function holding(value: unknown, path: string): Holding {
   const json = object(value, path);
@@ -369,6 +391,7 @@ function sender(value: unknown, path: string): Sender {
   const multisig = json.multisig === null ? null : object(json.multisig, `${path}.multisig`);
   return {
     chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    network: network(json.network, `${path}.network`),
     mode: oneOf(json.mode, ['single', 'squads', 'safe'] as const, `${path}.mode`),
     address: string(json.address, `${path}.address`),
     multisig: multisig && {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseDetail, parsePage } from '../console/api/parse';
+import type { Chain, Network } from './chains';
 import type { LoadedDispatch } from './dispatch';
-import { dispatchFlow } from './dispatchFlow';
+import { dispatchFlow as flowOn, type FlowClock } from './dispatchFlow';
 import type { Flow, Stage } from './flow';
 
 const clock = (now: string) => ({
@@ -16,10 +17,23 @@ const H_AA = '0xaa1f5e0c3b2d7a9e4f6c8b1d0e2a3f5c7b9d1e3f5a7c9e1b3d5f7a9c1e3b5d7f
 const H_BB = '0xbb4c2d9e7f1a3b5c8d0e2f4a6b8c1d3e5f7a9b2c4d6e8f0a1b3c5d7e9f2a4b6c';
 
 /** A `GET /v1/dispatches` row and a `GET /v1/dispatch/:id?include=timeline` body, through the real parser. */
-function load(row: object, body: object): LoadedDispatch {
+function load(
+  row: { chain: Chain; createdAt: string; [field: string]: unknown },
+  body: object,
+): LoadedDispatch {
   const page = parsePage({ dispatches: [{ dispatchId: ID, ...row }], nextCursor: null });
-  return { summary: page.dispatches[0]!, detail: parseDetail({ dispatchId: ID, ...body }) };
+  const { chain, createdAt } = row;
+  return {
+    summary: page.dispatches[0]!,
+    detail: parseDetail({ dispatchId: ID, chain, createdAt, ...body }),
+  };
 }
+
+const MAINNET: Record<Chain, Network> = { solana: 'mainnet-beta', base: 'base' };
+
+/** The flow as an engine on each chain's mainnet would show it. */
+const dispatchFlow = (loaded: LoadedDispatch, at: FlowClock, network?: Network) =>
+  flowOn(loaded, at, network ?? MAINNET[loaded.summary.chain]);
 
 const usdc = (amount: string, extra: object = {}) => ({
   type: 'payment',
@@ -38,37 +52,35 @@ const titled = (flow: Flow, title: string): Stage => flow.stages.find((s) => s.t
 
 describe('the flow of one Dispatch', () => {
   it('runs a plain payment from submitted to its confirmed hash', () => {
-    const flow = dispatchFlow(
-      load(
-        {
-          mode: 'managed',
-          chain: 'base',
-          status: 'confirmed',
-          createdAt: '2026-10-31T10:00:00.000Z',
-          itemCount: 1,
-          totals: [{ asset: 'USDC', decimals: 6, amount: '25000000' }],
-        },
-        {
-          mode: 'managed',
-          status: 'confirmed',
-          items: [usdc('25000000', { status: 'confirmed', transactionHash: H_AA, error: null })],
-          timeline: [
-            { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
-            { at: '2026-10-31T10:00:01.200Z', kind: 'claimed' },
-            {
-              at: '2026-10-31T10:00:01.900Z',
-              kind: 'written',
-              hash: H_AA,
-              items: [0],
-              replaces: null,
-            },
-            { at: '2026-10-31T10:00:02.300Z', kind: 'sent', hash: H_AA, items: [0] },
-            { at: '2026-10-31T10:00:20.000Z', kind: 'confirmed', hash: H_AA, items: [0] },
-          ],
-        },
-      ),
-      clock('2026-10-31T11:00:00Z'),
+    const loaded = load(
+      {
+        mode: 'managed',
+        chain: 'base',
+        status: 'confirmed',
+        createdAt: '2026-10-31T10:00:00.000Z',
+        itemCount: 1,
+        totals: [{ asset: 'USDC', decimals: 6, amount: '25000000' }],
+      },
+      {
+        mode: 'managed',
+        status: 'confirmed',
+        items: [usdc('25000000', { status: 'confirmed', transactionHash: H_AA, error: null })],
+        timeline: [
+          { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
+          { at: '2026-10-31T10:00:01.200Z', kind: 'claimed' },
+          {
+            at: '2026-10-31T10:00:01.900Z',
+            kind: 'written',
+            hash: H_AA,
+            items: [0],
+            replaces: null,
+          },
+          { at: '2026-10-31T10:00:02.300Z', kind: 'sent', hash: H_AA, items: [0] },
+          { at: '2026-10-31T10:00:20.000Z', kind: 'confirmed', hash: H_AA, items: [0] },
+        ],
+      },
     );
+    const flow = dispatchFlow(loaded, clock('2026-10-31T11:00:00Z'));
     expect(main(flow)).toEqual([
       'done Submitted',
       'done Claimed',
@@ -83,6 +95,10 @@ describe('the flow of one Dispatch', () => {
     expect(end(flow).links).toEqual([
       { label: 'View on Basescan', href: `https://basescan.org/tx/${H_AA}` },
     ]);
+    expect(end(dispatchFlow(loaded, clock('2026-10-31T11:00:00Z'), 'base-sepolia')).links).toEqual([
+      { label: 'View on Basescan', href: `https://sepolia.basescan.org/tx/${H_AA}` },
+    ]);
+    expect(end(dispatchFlow(loaded, clock('2026-10-31T11:00:00Z'), 'unknown')).links).toEqual([]);
     expect(flow.stages[0]!.detail).toEqual([
       '1 payment',
       ', ',

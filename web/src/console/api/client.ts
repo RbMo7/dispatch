@@ -1,5 +1,5 @@
 import type { Chain } from '../../domain/chains';
-import type { DispatchDetail, DispatchSummary, EntryOf, Mode } from '../../domain/dispatch';
+import type { DispatchDetail, Mode } from '../../domain/dispatch';
 import type { Sender } from '../../domain/sender';
 import type { Status } from '../../domain/status';
 import {
@@ -132,38 +132,6 @@ export function createApiClient(
       });
     },
   };
-}
-
-/**
- * The list row for one Dispatch. `GET /v1/dispatch/:id` carries no chain or
- * creation time, so the row is found in the one-millisecond window its
- * timeline's `created` entry names (`from` inclusive, `to` exclusive).
- */
-export async function findSummary(
-  api: ApiClient,
-  detail: DispatchDetail,
-  signal?: AbortSignal,
-): Promise<DispatchSummary> {
-  const created = detail.timeline.find(
-    (entry): entry is EntryOf<'created'> => entry.kind === 'created',
-  );
-  if (!created) {
-    throw new ApiError({ kind: 'malformed', message: 'the timeline has no created entry' });
-  }
-  const from = created.at;
-  const to = new Date(from.getTime() + 1);
-  let cursor: string | null = null;
-  do {
-    const page: DispatchPage = await api.listDispatches(
-      { from, to },
-      { cursor, limit: PAGE_LIMIT },
-      signal,
-    );
-    const row = page.dispatches.find((d) => d.id === detail.id);
-    if (row) return row;
-    cursor = page.nextCursor;
-  } while (cursor);
-  throw new ApiError({ kind: 'not-found' });
 }
 
 export function isUuid(value: string): boolean {

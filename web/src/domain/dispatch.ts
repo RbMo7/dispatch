@@ -138,6 +138,8 @@ export type EntryOf<K extends TimelineEntry['kind']> = TimelineEntry & { kind: K
 export interface ManagedDetail {
   mode: 'managed';
   id: string;
+  chain: Chain;
+  createdAt: Date;
   status: Status;
   items: Item[];
   timeline: TimelineEntry[];
@@ -146,6 +148,8 @@ export interface ManagedDetail {
 export interface RelayDetail {
   mode: 'relay';
   id: string;
+  chain: Chain;
+  createdAt: Date;
   status: ItemStatus;
   transactionHash: string | null;
   error: DispatchError | null;
@@ -154,10 +158,36 @@ export interface RelayDetail {
 
 export type DispatchDetail = ManagedDetail | RelayDetail;
 
-/** A Dispatch as the pane shows it: the list row (chain, created, totals) plus its items and timeline. */
+/** A Dispatch as the pane shows it: its list row, as the detail alone gives it, plus its items and timeline. */
 export interface LoadedDispatch {
   summary: DispatchSummary;
   detail: DispatchDetail;
+}
+
+/** The list row for a Dispatch, from its detail: `totals` sums the `payment` items the engine reports decimals for. */
+export function summaryOf(detail: DispatchDetail): DispatchSummary {
+  const { id, mode, chain, status, createdAt } = detail;
+  if (detail.mode === 'relay')
+    return { id, mode, chain, status, createdAt, itemCount: 1, totals: [] };
+  const totals = new Map<string, Money>();
+  for (const item of detail.items) {
+    const amount = itemAmount(item);
+    if (!amount) continue;
+    const sum = totals.get(amount.asset);
+    totals.set(
+      amount.asset,
+      sum ? { ...sum, raw: (BigInt(sum.raw) + BigInt(amount.raw)).toString() } : amount,
+    );
+  }
+  return {
+    id,
+    mode,
+    chain,
+    status,
+    createdAt,
+    itemCount: detail.items.length,
+    totals: [...totals.values()],
+  };
 }
 
 const count = new Intl.NumberFormat('en-US');

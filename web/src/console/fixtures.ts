@@ -1,5 +1,5 @@
 import { formatAmount, type Money } from '../domain/assets';
-import { CHAINS, type Chain } from '../domain/chains';
+import { type Chain, type Network, txLink } from '../domain/chains';
 import type { DispatchSummary, Item, ItemStatus } from '../domain/dispatch';
 import type { Flow, Stage } from '../domain/flow';
 
@@ -111,10 +111,10 @@ export interface GalleryDispatch extends DispatchSummary {
   flow: Flow;
 }
 
-const explorer = (chain: Chain, hash: string) => ({
-  label: `View on ${CHAINS[chain].explorer}`,
-  href: CHAINS[chain].txUrl(hash),
-});
+/** The board shows each chain's mainnet. */
+export const BOARD_NETWORK: Record<Chain, Network> = { solana: 'mainnet-beta', base: 'base' };
+
+const explorer = (chain: Chain, hash: string) => txLink(BOARD_NETWORK[chain], hash)!;
 
 function stage(
   kind: Stage['kind'],

@@ -1,5 +1,5 @@
 import type { Money } from './assets';
-import { CHAINS, type Chain, proposalApp, proposalUrl } from './chains';
+import { type Chain, type Network, proposalApp, proposalUrl, txLink } from './chains';
 import {
   type ApprovalState,
   type ChainRef,
@@ -39,8 +39,9 @@ function stage(kind: StageKind, title: string, rest: Omit<Stage, 'kind' | 'title
   return { kind, title, ...rest };
 }
 
-function explorer(chain: Chain, hash: string): StageLink {
-  return { label: `View on ${CHAINS[chain].explorer}`, href: CHAINS[chain].txUrl(hash) };
+function explorer(network: Network, hash: string): StageLink[] {
+  const link = txLink(network, hash);
+  return link ? [link] : [];
 }
 
 function first<K extends TimelineEntry['kind']>(
@@ -147,8 +148,9 @@ function proposalName(ref: ChainRef): string {
   return ref.kind === 'squads' ? `#${ref.transactionIndex}` : `nonce ${ref.nonce}`;
 }
 
-function openProposal(ref: ChainRef): StageLink {
-  return { label: `Open ${proposalName(ref)} in ${proposalApp(ref)}`, href: proposalUrl(ref) };
+function openProposal(network: Network, ref: ChainRef): StageLink[] {
+  const href = proposalUrl(network, ref);
+  return href ? [{ label: `Open ${proposalName(ref)} in ${proposalApp(ref)}`, href }] : [];
 }
 
 interface ProposalState {
@@ -195,6 +197,7 @@ function approvalStages(
   detail: ManagedDetail,
   open: boolean,
   clock: FlowClock,
+  network: Network,
 ): { stages: Stage[]; waiting: boolean } {
   const all = proposals(detail.timeline);
   const total = detail.items.length;
@@ -238,7 +241,7 @@ function approvalStages(
         stage('failed', 'Rejected', {
           at: clock.time(p.resolved!.at),
           detail: `The Approvers rejected or cancelled it in ${app}. Nothing was paid.`,
-          links: [openProposal(p.chainRef)],
+          links: openProposal(network, p.chainRef),
         }),
       );
     } else if (late.length > 0) {
@@ -246,7 +249,7 @@ function approvalStages(
         stage('failed', 'Approved after the deadline', {
           ...(p.timedOutAt && { at: clock.time(p.timedOutAt) }),
           detail: `The engine will not execute it. Execute or reject it in ${app} yourself.`,
-          links: [openProposal(p.chainRef)],
+          links: openProposal(network, p.chainRef),
         }),
       );
     } else if (timedOut.length > 0) {
@@ -254,7 +257,7 @@ function approvalStages(
         stage('failed', 'Timed out', {
           at: clock.time(p.timedOutAt!),
           detail: `Nobody decided by the deadline, so the engine will not execute it. It may still be approved and executed in ${app}: check there before sending it again.`,
-          links: [openProposal(p.chainRef)],
+          links: openProposal(network, p.chainRef),
         }),
       );
     } else if (awaiting.length > 0) {
@@ -265,14 +268,14 @@ function approvalStages(
           detail: deadline
             ? `Deadline ${clock.time(deadline)}, in ${duration(deadline.getTime() - clock.now.getTime())}. The engine never approves.`
             : 'The engine never approves.',
-          links: [openProposal(p.chainRef)],
+          links: openProposal(network, p.chainRef),
         }),
       );
     } else {
       stages.push(
         stage('done', `Approved, ${p.approvals} of ${p.threshold}`, {
           ...(p.decidedAt && { at: clock.time(p.decidedAt) }),
-          links: [openProposal(p.chainRef)],
+          links: openProposal(network, p.chainRef),
         }),
       );
     }
@@ -292,20 +295,25 @@ function approvalStages(
           ended > 0
             ? `${n(ended)} ended without approval: ${n(timedOut.length)} timed out, ${n(rejected.length)} rejected, ${n(late.length)} approved too late.`
             : 'The engine never approves.',
-        ...(next && { links: [openProposal(next.chainRef)] }),
+        ...(next && { links: openProposal(network, next.chainRef) }),
       },
     ),
   );
   return { stages, waiting: awaiting.length > 0 };
 }
 
-function hashLinks(chain: Chain, hash: string, landed: number): StageLink[] {
+function hashLinks(network: Network, hash: string, landed: number): StageLink[] {
   return landed > 1
-    ? [explorer(chain, hash), { label: 'Show all in Items', items: 'confirmed' }]
-    : [explorer(chain, hash)];
+    ? [...explorer(network, hash), { label: 'Show all in Items', items: 'confirmed' }]
+    : explorer(network, hash);
 }
 
-function managedFlow(summary: DispatchSummary, detail: ManagedDetail, clock: FlowClock): Flow {
+function managedFlow(
+  summary: DispatchSummary,
+  detail: ManagedDetail,
+  clock: FlowClock,
+  network: Network,
+): Flow {
   const { timeline, items } = detail;
   const chain = summary.chain;
   const total = items.length;
@@ -367,7 +375,7 @@ function managedFlow(summary: DispatchSummary, detail: ManagedDetail, clock: Flo
   const multisig = items.some((i) => i.approval !== null) || first(timeline, 'proposal_created');
   let waitingOnApprovers = false;
   if (multisig) {
-    const approval = approvalStages(detail, open, clock);
+    const approval = approvalStages(detail, open, clock, network);
     stages.push(...approval.stages);
     waitingOnApprovers = approval.waiting;
   }
@@ -527,7 +535,7 @@ function managedFlow(summary: DispatchSummary, detail: ManagedDetail, clock: Flo
         ? stage('end-todo', 'Transaction hashes', {
             detail: `${n(landed.length)} landed so far. The first one:`,
             hash: firstHash,
-            links: hashLinks(chain, firstHash, landed.length),
+            links: hashLinks(network, firstHash, landed.length),
           })
         : stage('end-todo', 'Transaction hash', {
             detail: multisig ? 'Appears after execution' : 'Appears once it lands',
@@ -541,7 +549,7 @@ function managedFlow(summary: DispatchSummary, detail: ManagedDetail, clock: Flo
         {
           ...(landed.length > 1 && { detail: 'The first one, the rest are under Items' }),
           hash: firstHash,
-          links: hashLinks(chain, firstHash, landed.length),
+          links: hashLinks(network, firstHash, landed.length),
         },
       ),
     );
@@ -619,8 +627,13 @@ function shortHash(hash: string): string {
   return hash.length > 12 ? `${hash.slice(0, 6)}…${hash.slice(-4)}` : hash;
 }
 
-function relayFlow(summary: DispatchSummary, detail: RelayDetail, clock: FlowClock): Flow {
-  const { timeline, status, chain } = { ...detail, chain: summary.chain };
+function relayFlow(
+  summary: DispatchSummary,
+  detail: RelayDetail,
+  clock: FlowClock,
+  network: Network,
+): Flow {
+  const { timeline, status } = detail;
   const created = first(timeline, 'created')?.at ?? summary.createdAt;
   const base = [
     stage('done', 'Received', {
@@ -678,7 +691,7 @@ function relayFlow(summary: DispatchSummary, detail: RelayDetail, clock: FlowClo
   } else if (status === 'confirmed') {
     stages.push(stage('done', 'Confirmed', outcome ? { at: clock.time(outcome.at) } : {}));
     if (hash)
-      stages.push(stage('end-done', 'Transaction hash', { hash, links: [explorer(chain, hash)] }));
+      stages.push(stage('end-done', 'Transaction hash', { hash, links: explorer(network, hash) }));
   } else if (expired(detail.error)) {
     stages.push(
       stage('failed', 'Expired', {
@@ -703,7 +716,7 @@ function relayFlow(summary: DispatchSummary, detail: RelayDetail, clock: FlowClo
     );
     stages.push(
       hash
-        ? stage('end-failed', 'Transaction hash', { hash, links: [explorer(chain, hash)] })
+        ? stage('end-failed', 'Transaction hash', { hash, links: explorer(network, hash) })
         : stage('end-failed', 'No transaction landed'),
     );
   }
@@ -726,8 +739,12 @@ function relayFlow(summary: DispatchSummary, detail: RelayDetail, clock: FlowClo
 }
 
 /** The Flow tab's stages for one Dispatch, from its items, statuses and timeline alone. */
-export function dispatchFlow({ summary, detail }: LoadedDispatch, clock: FlowClock): Flow {
+export function dispatchFlow(
+  { summary, detail }: LoadedDispatch,
+  clock: FlowClock,
+  network: Network,
+): Flow {
   return detail.mode === 'relay'
-    ? relayFlow(summary, detail, clock)
-    : managedFlow(summary, detail, clock);
+    ? relayFlow(summary, detail, clock, network)
+    : managedFlow(summary, detail, clock, network);
 }

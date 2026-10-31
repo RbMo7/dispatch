@@ -29,6 +29,8 @@ const loaded = {
   detail: parseDetail({
     dispatchId: ID,
     mode: 'managed',
+    chain: 'base',
+    createdAt: '2026-10-31T10:00:00.000Z',
     status: 'confirmed',
     items: [
       {
@@ -54,10 +56,11 @@ const loaded = {
   }),
 };
 
-const flow = dispatchFlow(loaded, {
-  now: new Date('2026-10-31T11:00:00Z'),
-  time: (at) => at.toISOString().slice(11, 19),
-});
+const flow = dispatchFlow(
+  loaded,
+  { now: new Date('2026-10-31T11:00:00Z'), time: (at) => at.toISOString().slice(11, 19) },
+  'base',
+);
 
 afterEach(() => {
   cleanup();

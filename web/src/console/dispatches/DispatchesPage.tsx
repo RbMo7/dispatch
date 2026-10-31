@@ -9,7 +9,7 @@ import { MonoValue } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
-import { CHAINS, type Chain, proposalApp, proposalUrl } from '../../domain/chains';
+import { CHAINS, type Chain, proposalApp, proposalUrl, txLink } from '../../domain/chains';
 import { dispatchName, type EntryOf, type Item, type LoadedDispatch } from '../../domain/dispatch';
 import { dispatchFlow } from '../../domain/dispatchFlow';
 import { payer } from '../../domain/sender';
@@ -94,8 +94,7 @@ export function DispatchesPage() {
     () => (list.snap?.rows ?? []).filter((row) => matchesSearch(row, query.search)),
     [list.snap, query.search],
   );
-  const known = list.snap?.rows.find((row) => row.id === query.selected);
-  const selected = useDispatch(query.selected, known);
+  const selected = useDispatch(query.selected);
   const roomy = useWidth() >= ROOMY;
   const compact = query.selected !== null && !roomy;
 
@@ -387,9 +386,11 @@ function Pane({
   useEffect(() => setNow(new Date()), [loaded]);
   useEffect(() => setItemSearch(''), [id]);
 
+  const sender = loaded && senders.data?.find((s) => s.chain === loaded.summary.chain);
+  const network = sender?.network ?? 'unknown';
   const flow = useMemo(
-    () => (loaded ? dispatchFlow(loaded, { now, time: (at) => clock.format(at) }) : null),
-    [loaded, now],
+    () => (loaded ? dispatchFlow(loaded, { now, time: (at) => clock.format(at) }, network) : null),
+    [loaded, now, network],
   );
 
   const head: PaneHead = loaded
@@ -419,7 +420,7 @@ function Pane({
     ? items.map((i) => i.transactionHash)
     : [detail?.mode === 'relay' ? detail.transactionHash : null];
   const firstHash = hashes.find((h) => h !== null) ?? null;
-  const sender = loaded && senders.data?.find((s) => s.chain === loaded.summary.chain);
+  const proposalHref = openProposal && proposalUrl(network, openProposal.chainRef);
 
   const details = loaded
     ? [
@@ -469,19 +470,14 @@ function Pane({
         itemSearch={itemSearch}
         onItemSearch={setItemSearch}
         onExportItems={(format, shown) => void exportItems(format, shown)}
-        explorerHref={firstHash && loaded ? CHAINS[loaded.summary.chain].txUrl(firstHash) : null}
+        explorerHref={(firstHash && txLink(network, firstHash)?.href) ?? null}
         action={
           cancellable ? (
             <Button variant="danger" onClick={() => setConfirming(true)}>
               Cancel Dispatch
             </Button>
-          ) : openProposal ? (
-            <Button
-              variant="quiet"
-              href={proposalUrl(openProposal.chainRef)}
-              target="_blank"
-              rel="noreferrer"
-            >
+          ) : openProposal && proposalHref ? (
+            <Button variant="quiet" href={proposalHref} target="_blank" rel="noreferrer">
               Reject it in {proposalApp(openProposal.chainRef)} ›
             </Button>
           ) : undefined

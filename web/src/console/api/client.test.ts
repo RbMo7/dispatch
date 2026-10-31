@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError, createApiClient, findSummary } from './client';
+import { ApiError, createApiClient } from './client';
 
 const ID = 'c59cd54c-295c-4948-9120-c20387ad5f09';
 
@@ -86,7 +86,14 @@ describe('the API client', () => {
     const { fetcher } = engine({
       [`/v1/dispatch/${ID}`]: {
         status: 200,
-        body: { dispatchId: ID, mode: 'managed', status: 'queued', items: [{ type: 'payment' }] },
+        body: {
+          dispatchId: ID,
+          mode: 'managed',
+          chain: 'base',
+          createdAt: '2026-10-31T19:06:29.598Z',
+          status: 'queued',
+          items: [{ type: 'payment' }],
+        },
       },
     });
     const api = createApiClient('t', () => {}, fetcher);
@@ -142,32 +149,55 @@ describe('the API client', () => {
     expect(sender!.signerKey).toEqual({ ok: false, error: 'the Signer could not be reached' });
   });
 
-  it('finds a Dispatch row in the millisecond its timeline says it was created', async () => {
-    const row = {
-      dispatchId: ID,
-      mode: 'managed',
-      chain: 'solana',
-      status: 'queued',
-      createdAt: '2026-10-31T19:06:29.598Z',
-      itemCount: 1,
-      totals: [],
-    };
+  it("reads a Dispatch's chain and creation time from its own detail, in one request", async () => {
     const { fetcher, calls } = engine({
-      '/v1/dispatches': { status: 200, body: { dispatches: [row], nextCursor: null } },
+      [`/v1/dispatch/${ID}`]: {
+        status: 200,
+        body: {
+          dispatchId: ID,
+          mode: 'relay',
+          chain: 'solana',
+          createdAt: '2026-10-31T19:06:29.598Z',
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+          timeline: [],
+        },
+      },
     });
-    const api = createApiClient('t', () => {}, fetcher);
-    const summary = await findSummary(api, {
-      mode: 'managed',
-      id: ID,
-      status: 'queued',
-      items: [],
-      timeline: [{ kind: 'created', at: new Date('2026-10-31T19:06:29.598Z') }],
-    });
-    expect(summary.chain).toBe('solana');
-    const query = new URLSearchParams(calls[0]!.url.split('?')[1]);
-    expect([query.get('from'), query.get('to')]).toEqual([
+    const detail = await createApiClient('t', () => {}, fetcher).getDispatch(ID);
+    expect([detail.chain, detail.createdAt.toISOString()]).toEqual([
+      'solana',
       '2026-10-31T19:06:29.598Z',
-      '2026-10-31T19:06:29.599Z',
     ]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['devnet', 'devnet'],
+    [{ chainId: 31337 }, { chainId: 31337 }],
+    ['some-future-network', 'unknown'],
+    [undefined, 'unknown'],
+  ])("reads a Sender's network %j as %j", async (network, parsed) => {
+    const { fetcher } = engine({
+      '/v1/senders': {
+        status: 200,
+        body: {
+          senders: [
+            {
+              chain: 'solana',
+              network,
+              mode: 'single',
+              address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv',
+              multisig: null,
+              balances: [],
+              signerKey: { error: 'the Signer could not be reached' },
+            },
+          ],
+        },
+      },
+    });
+    const [sender] = await createApiClient('t', () => {}, fetcher).listSenders();
+    expect(sender!.network).toEqual(parsed);
   });
 });

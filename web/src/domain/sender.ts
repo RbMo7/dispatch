@@ -1,5 +1,5 @@
 import { lessThan, type Money, subtract } from './assets';
-import type { Chain } from './chains';
+import type { Chain, Network } from './chains';
 
 /** A field the engine could not read: only its own value degrades, never the page. */
 export type Read<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -33,6 +33,7 @@ export interface SignerKey {
 
 export interface Sender {
   chain: Chain;
+  network: Network;
   mode: SenderMode;
   address: string;
   multisig: { address: string; threshold: Read<number>; engineKey: string } | null;

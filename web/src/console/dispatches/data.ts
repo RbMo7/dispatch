@@ -1,7 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 
-import { type DispatchSummary, inFlight, type LoadedDispatch } from '../../domain/dispatch';
-import { type ApiClient, ApiError, findSummary, type ListFilters, PAGE_LIMIT } from '../api/client';
+import {
+  type DispatchSummary,
+  inFlight,
+  type LoadedDispatch,
+  summaryOf,
+} from '../../domain/dispatch';
+import { type ApiClient, ApiError, type ListFilters, PAGE_LIMIT } from '../api/client';
 import { nextDelay, type Polled, usePoll } from '../live';
 import { useApi } from '../session';
 
@@ -132,27 +137,14 @@ export function useDispatchList(key: string, filters: ListFilters) {
   return { snap, error: polled.error, loadingMore, loadMore };
 }
 
-/**
- * One Dispatch with its timeline, polled while it is in flight. Its list
- * row is looked up once, since the detail body carries no chain.
- */
-export function useDispatch(
-  id: string | null,
-  known: DispatchSummary | undefined,
-): Polled<LoadedDispatch> {
+/** One Dispatch with its timeline, polled while it is in flight. */
+export function useDispatch(id: string | null): Polled<LoadedDispatch> {
   const api = useApi();
-  const summaries = useRef(new Map<string, DispatchSummary>());
-  if (known) summaries.current.set(known.id, known);
 
   const load = useCallback(
     async (signal: AbortSignal): Promise<LoadedDispatch> => {
       const detail = await api.getDispatch(id!, signal);
-      let summary = summaries.current.get(detail.id);
-      if (!summary) {
-        summary = await findSummary(api, detail, signal);
-        summaries.current.set(detail.id, summary);
-      }
-      return { summary: { ...summary, status: detail.status }, detail };
+      return { summary: summaryOf(detail), detail };
     },
     [api, id],
   );
