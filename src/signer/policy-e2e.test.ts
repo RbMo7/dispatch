@@ -94,6 +94,7 @@ describe('a Signer policy refusing a Managed Dispatch (real Base Sepolia)', () =
       chainRegistry,
       authToken: API_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
     });
 

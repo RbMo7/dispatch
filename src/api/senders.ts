@@ -1,5 +1,6 @@
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
+import type { AssetDecimals } from './asset-decimals.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount } from '../domain/proposal.js';
 import type { Result } from '../domain/result.js';
@@ -16,6 +17,7 @@ export type SenderConfig = {
   /** What pays the payments: the plain key, the Squads vault, or the Safe. */
   address: string;
   assets: readonly string[];
+  assetDecimals: AssetDecimals;
   approval?: {
     mode: 'squads' | 'safe';
     /** The Squads multisig account, or the Safe (then the same as `address`). */
@@ -46,7 +48,13 @@ export type HolderBalances = {
   holder: 'sender' | 'vault' | 'safe' | 'memberKey' | 'executor';
   address: string;
   /** `committed` is what the Funding Check subtracts from `balance` before paying (ADR-0053, ADR-0054). */
-  assets: { asset: string; balance: string | FieldError; committed: string }[];
+  assets: {
+    asset: string;
+    /** Absent when the asset is not configured. */
+    decimals?: number;
+    balance: string | FieldError;
+    committed: string;
+  }[];
 };
 
 export type SenderView = {
@@ -85,8 +93,10 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
       assets: await Promise.all(
         assets.map(async (asset) => {
           const balance = await reads.getBalance(chain, address, asset);
+          const decimals = config.assetDecimals(chain, asset);
           return {
             asset,
+            ...(decimals === undefined ? {} : { decimals }),
             balance: balance.ok ? balance.value.amount : { error: balance.error.code },
             committed: committed.find((c) => c.asset === asset)?.amount ?? '0',
           };

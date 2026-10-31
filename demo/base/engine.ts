@@ -123,6 +123,7 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
     chainRegistry,
     authToken: AUTH_TOKEN,
     defaultRetryPolicy: false,
+    assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
   });
   await app.listen({ port: 0, host: '127.0.0.1' });

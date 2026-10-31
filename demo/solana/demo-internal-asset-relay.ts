@@ -138,6 +138,7 @@ async function main() {
     chainRegistry,
     authToken: AUTH_TOKEN,
     defaultRetryPolicy: false,
+    assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
   });
 

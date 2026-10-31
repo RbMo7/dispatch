@@ -5,6 +5,7 @@ import type {
   DispatchListQuery,
   DispatchStore,
 } from '../repository/dispatch-store.js';
+import type { AssetDecimals } from './asset-decimals.js';
 import { summarizeDispatch } from './dispatch-view.js';
 import { isUuid } from './uuid.js';
 
@@ -122,7 +123,11 @@ export const MAX_SCANNED_ROWS = 500;
  * the last row read when the scan stopped short, so a page never skips or
  * repeats a row, though it may be short or even empty.
  */
-export async function listDispatchPage(store: DispatchStore, filter: DispatchListFilter) {
+export async function listDispatchPage(
+  store: DispatchStore,
+  filter: DispatchListFilter,
+  decimalsOf: AssetDecimals,
+) {
   const { cursor, status, ...query } = filter;
   const dispatches: ReturnType<typeof summarizeDispatch>[] = [];
   let lastReturned: DispatchCursor | null = null;
@@ -137,7 +142,7 @@ export async function listDispatchPage(store: DispatchStore, filter: DispatchLis
       ...(status ? { storedStatuses: storedStatusesFor(status) } : {}),
     });
     for (const listed of batch) {
-      const summary = summarizeDispatch(listed);
+      const summary = summarizeDispatch(listed, decimalsOf);
       if (status && summary.status !== status) continue;
       if (dispatches.length === filter.limit) {
         return { dispatches, nextCursor: lastReturned && encodeCursor(lastReturned) };

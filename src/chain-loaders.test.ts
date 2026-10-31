@@ -17,7 +17,7 @@ async function senderConfigsWith(env: Record<string, string>) {
   const registry = await ChainRegistry.load(['base'], {
     base: () => Promise.resolve(new StubChainHandler()),
   });
-  return () => senderConfigsFor(registry);
+  return () => senderConfigsFor(registry, () => undefined);
 }
 
 describe('senderConfigsFor', () => {

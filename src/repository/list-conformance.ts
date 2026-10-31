@@ -174,7 +174,7 @@ export function runListConformanceSuite(makeStore: () => DispatchStore): void {
           ...(cursor ? { cursor } : {}),
         });
         if (!filter.ok) throw new Error(filter.error);
-        const page = await listDispatchPage(store, filter.value);
+        const page = await listDispatchPage(store, filter.value, () => undefined);
         pages.push(page.dispatches.map((d) => d.dispatchId));
         expect(page.dispatches.every((d) => d.status === 'confirmed')).toBe(true);
         if (page.nextCursor === null) break;

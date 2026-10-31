@@ -178,6 +178,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
     });
 
@@ -212,6 +213,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
     });
     const post = await app.inject({

@@ -45,6 +45,7 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
+    assetDecimals: (chain, asset) => ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
     listSenders: () => Promise.resolve([]),
   });
   return { app, store };
@@ -647,6 +648,7 @@ describe('GET /v1/dispatch/:id', () => {
         type: 'payment',
         recipient: '0xbob',
         asset: 'USDC',
+        decimals: 6,
         amount: '2500000',
         status: 'queued',
         transactionHash: null,
@@ -659,6 +661,7 @@ describe('GET /v1/dispatch/:id', () => {
         type: 'payment',
         recipient: 'Bob1111',
         asset: 'SOL',
+        decimals: 9,
         amount: '1000',
         status: 'queued',
         transactionHash: null,
@@ -666,6 +669,28 @@ describe('GET /v1/dispatch/:id', () => {
       },
       { type: 'call', programId: 'Memo1111', status: 'queued', transactionHash: null, error: null },
     ]);
+  });
+
+  it('leaves decimals out of an item whose asset is no longer configured', async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'retired',
+      items: [
+        {
+          call: { to: '0xold', data: '0xa9059cbb', value: '0' },
+          payment: { recipient: '0xbob', asset: 'OLD', amount: '5' },
+        },
+      ],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<GetResponseBody>().items[0]).not.toHaveProperty('decimals');
   });
 
   it('reports confirmed once every item is confirmed', async () => {
@@ -1559,8 +1584,8 @@ describe('GET /v1/dispatches (#110)', () => {
           createdAt: managed.createdAt.toISOString(),
           itemCount: 4,
           totals: [
-            { asset: 'USDC', amount: '25' },
-            { asset: 'ETH', amount: '1' },
+            { asset: 'USDC', decimals: 6, amount: '25' },
+            { asset: 'ETH', decimals: 18, amount: '1' },
           ],
         },
       ],

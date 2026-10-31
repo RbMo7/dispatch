@@ -10,11 +10,20 @@ import { cachedSenders, type SenderConfig, type SenderReads } from './senders.js
 
 const SECRET = 'rpc-key-0123456789';
 
-const plain: SenderConfig = { chain: 'base', address: '0xSender', assets: ['ETH', 'USDC'] };
+const assetDecimals: SenderConfig['assetDecimals'] = (_chain, asset) =>
+  ({ ETH: 18, USDC: 6 })[asset as 'ETH' | 'USDC'];
+
+const plain: SenderConfig = {
+  chain: 'base',
+  address: '0xSender',
+  assets: ['ETH', 'USDC'],
+  assetDecimals,
+};
 const squads: SenderConfig = {
   chain: 'solana',
   address: 'Vault111',
   assets: ['SOL', 'USDC'],
+  assetDecimals,
   approval: {
     mode: 'squads',
     multisigAddress: 'Multisig111',
@@ -27,6 +36,7 @@ const safe: SenderConfig = {
   chain: 'base',
   address: '0xSafe',
   assets: ['ETH'],
+  assetDecimals,
   approval: {
     mode: 'safe',
     multisigAddress: '0xSafe',
@@ -83,6 +93,7 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
+    assetDecimals: () => undefined,
     listSenders: cachedSenders(configs, reads),
   });
   return app.inject({
@@ -127,8 +138,8 @@ describe('GET /v1/senders (#111)', () => {
               holder: 'sender',
               address: '0xSender',
               assets: [
-                { asset: 'ETH', balance: '100', committed: '0' },
-                { asset: 'USDC', balance: '50', committed: '0' },
+                { asset: 'ETH', decimals: 18, balance: '100', committed: '0' },
+                { asset: 'USDC', decimals: 6, balance: '50', committed: '0' },
               ],
             },
           ],
@@ -169,7 +180,7 @@ describe('GET /v1/senders (#111)', () => {
               address: 'Vault111',
               assets: [
                 { asset: 'SOL', balance: '9', committed: '0' },
-                { asset: 'USDC', balance: '500', committed: '120' },
+                { asset: 'USDC', decimals: 6, balance: '500', committed: '120' },
               ],
             },
             {

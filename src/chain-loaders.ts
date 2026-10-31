@@ -43,6 +43,7 @@ import { db } from './db/client.js';
 import { logger } from './logger.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
+import type { AssetDecimals } from './api/asset-decimals.js';
 import type { SenderConfig, SenderReads } from './api/senders.js';
 import type { DispatchError } from './domain/errors.js';
 import { err, ok, type Result } from './domain/result.js';
@@ -349,8 +350,26 @@ const assetsByChain: Record<Chain, () => string[]> = {
   base: () => [BASE_NATIVE_ASSET, ...Object.keys(parseBaseKnownTokens(config.base.knownTokens))],
 };
 
+/** The configured native assets and known tokens, read once at startup; the handlers keep the same registries. */
+export function assetDecimalsFromConfig(): AssetDecimals {
+  const decimals: Record<Chain, Record<string, number>> = {
+    solana: { [SOLANA_NATIVE_ASSET]: 9 },
+    base: { [BASE_NATIVE_ASSET]: 18 },
+  };
+  for (const [symbol, token] of Object.entries(parseSolanaKnownTokens(config.solana.knownTokens))) {
+    decimals.solana[symbol] = token.decimals;
+  }
+  for (const [symbol, token] of Object.entries(parseBaseKnownTokens(config.base.knownTokens))) {
+    decimals.base[symbol] = token.decimals;
+  }
+  return (chain, asset) => decimals[chain][asset];
+}
+
 /** #111: what `GET /v1/senders` reports for each chain `registry` has a Chain Handler for. */
-export function senderConfigsFor(registry: ChainRegistry): SenderConfig[] {
+export function senderConfigsFor(
+  registry: ChainRegistry,
+  assetDecimals: AssetDecimals,
+): SenderConfig[] {
   const { senderAddresses, approvalRewatchWindowMsByChain } = coordinatorConfigFor(registry);
   const multisigAddresses: Partial<Record<Chain, string | undefined>> = {
     solana: resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress,
@@ -368,6 +387,7 @@ export function senderConfigsFor(registry: ChainRegistry): SenderConfig[] {
       chain,
       address,
       assets: assetsByChain[chain](),
+      assetDecimals,
       ...(approval
         ? {
             approval: {

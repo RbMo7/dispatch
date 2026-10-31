@@ -1,10 +1,12 @@
 import type { DispatchItem } from '../domain/call.js';
+import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { sumAssetAmounts } from '../repository/committed.js';
 import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store.js';
+import type { AssetDecimals } from './asset-decimals.js';
 import { buildTimeline } from './timeline.js';
 
 /** A Relay Dispatch's top-level status: its one Transaction's, read as an item (ADR-0031). */
@@ -70,10 +72,17 @@ function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): 
 }
 
 /** What the caller asked for on an item, as docs/api.md names it, so a reader never has to decode the Call. */
-function toWireRequest({ call, payment }: DispatchItem) {
+function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf: AssetDecimals) {
   if (payment) {
     const { recipient, asset, amount } = payment;
-    return { type: 'payment' as const, recipient, asset, amount };
+    const decimals = decimalsOf(chain, asset);
+    return {
+      type: 'payment' as const,
+      recipient,
+      asset,
+      ...(decimals === undefined ? {} : { decimals }),
+      amount,
+    };
   }
   return 'to' in call
     ? { type: 'call' as const, to: call.to }
@@ -96,6 +105,7 @@ function toWireApproval(proposal: Proposal) {
 export async function readDispatchView(
   store: DispatchStore,
   id: string,
+  decimalsOf: AssetDecimals,
   options: { timeline: boolean } = { timeline: false },
 ) {
   const dispatch = await store.getDispatch(id);
@@ -110,7 +120,7 @@ export async function readDispatchView(
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
     const items = dispatch.items.map((item, index) => {
-      const request = toWireRequest(item);
+      const request = toWireRequest(dispatch.chain, item, decimalsOf);
       if (dispatch.status === 'cancelled') {
         return { ...request, status: 'cancelled', transactionHash: null, error: null };
       }
@@ -179,7 +189,7 @@ export async function readDispatchView(
 }
 
 /** #110: one row of `GET /v1/dispatches`: the `GET /v1/dispatch/:id` summary without items, plus what a list needs. */
-export function summarizeDispatch(listed: ListedDispatch) {
+export function summarizeDispatch(listed: ListedDispatch, decimalsOf: AssetDecimals) {
   if (listed.mode === 'relay') {
     const [transaction] = listed.transactions;
     return {
@@ -191,7 +201,7 @@ export function summarizeDispatch(listed: ListedDispatch) {
       error: transaction?.error ?? null,
       createdAt: listed.dispatch.createdAt,
       itemCount: 1,
-      totals: [] as AssetAmount[],
+      totals: [] as (AssetAmount & { decimals?: number })[],
     };
   }
   const { dispatch } = listed;
@@ -206,6 +216,9 @@ export function summarizeDispatch(listed: ListedDispatch) {
       dispatch.items.flatMap(({ payment }) =>
         payment ? [{ asset: payment.asset, amount: payment.amount }] : [],
       ),
-    ]),
+    ]).map((total) => {
+      const decimals = decimalsOf(dispatch.chain, total.asset);
+      return decimals === undefined ? total : { ...total, decimals };
+    }),
   };
 }

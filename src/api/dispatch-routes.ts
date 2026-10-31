@@ -18,6 +18,7 @@ import {
   type RawListQuery,
 } from './dispatch-list.js';
 import { readDispatchView } from './dispatch-view.js';
+import type { AssetDecimals } from './asset-decimals.js';
 import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
@@ -27,6 +28,8 @@ export type DispatchRouteDeps = {
   authToken: string;
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
+  /** Lets a console format the smallest-unit amounts the API returns. */
+  assetDecimals: AssetDecimals;
 };
 
 type RouteError = { status: number; body: Record<string, unknown> };
@@ -140,7 +143,7 @@ export function checkAuth(authToken: string) {
 
 /** `POST /v1/dispatch`, `GET /v1/dispatch/:id` and its cancel, against the wire format pinned in docs/api.md (issue 08). */
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
-  const { store, chainRegistry, authToken, defaultRetryPolicy } = deps;
+  const { store, chainRegistry, authToken, defaultRetryPolicy, assetDecimals } = deps;
   const auth = checkAuth(authToken);
 
   app.post<{ Body: PostDispatchBody }>(
@@ -267,7 +270,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       const filter = parseListQuery(request.query);
       if (!filter.ok) return reply.code(400).send({ error: filter.error });
-      return reply.send(await listDispatchPage(store, filter.value));
+      return reply.send(await listDispatchPage(store, filter.value, assetDecimals));
     },
   );
 
@@ -276,7 +279,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     { onRequest: auth },
     async (request, reply) => {
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
-      const view = await readDispatchView(store, request.params.id, {
+      const view = await readDispatchView(store, request.params.id, assetDecimals, {
         timeline: request.query.include === 'timeline',
       });
       if (!view) return reply.code(404).send({ error: 'not found' });
@@ -297,7 +300,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
           message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
-      return reply.send(await readDispatchView(store, request.params.id));
+      return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
     },
   );
 

@@ -129,6 +129,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
         chainRegistry,
         authToken: AUTH_TOKEN,
         defaultRetryPolicy: false,
+        assetDecimals: () => undefined,
         listSenders: () => Promise.resolve([]),
       });
 
@@ -186,6 +187,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
     });
 

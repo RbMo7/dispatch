@@ -112,6 +112,7 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
     });
     coordinator = new Coordinator({

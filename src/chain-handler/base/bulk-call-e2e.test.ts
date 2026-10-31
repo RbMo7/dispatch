@@ -56,6 +56,7 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
           chainRegistry,
           authToken: AUTH_TOKEN,
           defaultRetryPolicy: false,
+          assetDecimals: () => undefined,
           listSenders: () => Promise.resolve([]),
         }),
       }),

@@ -44,13 +44,13 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
   "mode": "managed",
   "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
-    { "type": "payment", "recipient": "<address>", "asset": "USDC", "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
+    { "type": "payment", "recipient": "<address>", "asset": "USDC", "decimals": 6, "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
     { "type": "call", "programId": "<program id>", "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
   ]
 }
 ```
 
-Each item starts with what the caller asked for, in the order the request listed them: a `payment` item repeats its `type`, `recipient`, `asset` and `amount` (the integer string the caller sent, in the asset's smallest unit); a `call` item gives its `type` and its target, `to` on `base` or `programId` on `solana`, and leaves out the rest of the Call (`data`, `value`, `accounts`). A Bulk Call or Multisig Sender item reads the same way: these are the items as submitted, not the transactions that carried them.
+Each item starts with what the caller asked for, in the order the request listed them: a `payment` item repeats its `type`, `recipient`, `asset`, `decimals` and `amount` (the integer string the caller sent, in the asset's smallest unit; `decimals` is how many places that unit sits below one whole asset, from the engine's config: 9 for `SOL`, 18 for `ETH`, and what `SOLANA_KNOWN_TOKENS` or `BASE_KNOWN_TOKENS` says for a token, left out when the stored asset is no longer configured); a `call` item gives its `type` and its target, `to` on `base` or `programId` on `solana`, and leaves out the rest of the Call (`data`, `value`, `accounts`). A Bulk Call or Multisig Sender item reads the same way: these are the items as submitted, not the transactions that carried them.
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
@@ -125,7 +125,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
       "status": "partial",
       "createdAt": "2026-10-31T10:00:00.000Z",
       "itemCount": 3,
-      "totals": [{ "asset": "USDC", "amount": "25" }]
+      "totals": [{ "asset": "USDC", "decimals": 6, "amount": "25" }]
     },
     {
       "dispatchId": "<id>",
@@ -143,7 +143,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
 }
 ```
 
-Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
+Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit, each with the asset's `decimals` as on a `payment` item (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
 
 ## `POST /v1/dispatch/:id/cancel`
 
@@ -172,14 +172,14 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
           "holder": "vault",
           "address": "<vault>",
           "assets": [
-            { "asset": "SOL", "balance": "9000000", "committed": "0" },
-            { "asset": "USDC", "balance": { "error": "RPC_UNAVAILABLE" }, "committed": "120" }
+            { "asset": "SOL", "decimals": 9, "balance": "9000000", "committed": "0" },
+            { "asset": "USDC", "decimals": 6, "balance": { "error": "RPC_UNAVAILABLE" }, "committed": "120" }
           ]
         },
         {
           "holder": "memberKey",
           "address": "<member key>",
-          "assets": [{ "asset": "SOL", "balance": "3000000", "committed": "2039280" }]
+          "assets": [{ "asset": "SOL", "decimals": 9, "balance": "3000000", "committed": "2039280" }]
         }
       ],
       "signerKey": { "address": "<member key>", "curve": "ed25519", "allowedMultisig": "<multisig>" }
@@ -189,7 +189,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 ```
 
 - `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
-- `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
+- `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answers on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`).
 - A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error says whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
 
