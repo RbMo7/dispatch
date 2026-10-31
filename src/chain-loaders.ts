@@ -1,5 +1,5 @@
 import { Connection } from '@solana/web3.js';
-import { createPublicClient, getAddress, http, isAddress } from 'viem';
+import { createPublicClient, getAddress, http, isAddress, type Address } from 'viem';
 
 import {
   BASE_ABANDONMENT_TIMEOUT_MS,
@@ -49,6 +49,20 @@ import type { DispatchError } from './domain/errors.js';
 import { err, ok, type Result } from './domain/result.js';
 import type { DispatchStore } from './repository/dispatch-store.js';
 
+const NO_SIGNER: DispatchError = {
+  code: 'SIGNER_UNREACHABLE',
+  message: 'the API process has no Signer; only the worker signs (ADR-0059)',
+};
+
+/**
+ * ADR-0059: what the API's handlers hold in place of a Signer. The API plans
+ * Proposals but never signs, and holds no Signer URL or token.
+ */
+const noSigner: Pick<SignerClient, 'requestSignature' | 'signSafeTransaction'> = {
+  requestSignature: () => Promise.resolve(err(NO_SIGNER)),
+  signSafeTransaction: () => Promise.resolve(err(NO_SIGNER)),
+};
+
 /**
  * The one place this build's real Chain Handler loaders — and the
  * per-chain config a Coordinator needs to actually drive them (ADR-0016's
@@ -59,7 +73,9 @@ import type { DispatchStore } from './repository/dispatch-store.js';
  * ENABLED_CHAINS fails loudly at startup (ChainRegistry.load), not
  * silently, for either process.
  */
-const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
+const loadersFor = (
+  signer: SignerClient | undefined,
+): Partial<Record<Chain, ChainHandlerLoader>> => ({
   solana: async () => {
     const connection = new Connection(config.solana.rpcUrl, {
       commitment: 'confirmed',
@@ -68,16 +84,11 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
     });
     // #73 (ADR-0049): `single` is a no-op; `multisig` refuses to start before anything is sent.
-    const multisig = await verifyMultisigSender(connection);
-    const signerClient = new SignerClient(
-      config.signerUrl,
-      config.signerAuthToken,
-      config.rpcTimeoutMs,
-    );
+    const multisig = await verifyMultisigSender(connection, signer);
     const knownTokens = parseSolanaKnownTokens(config.solana.knownTokens);
     const handler = new SolanaChainHandler({
       connection,
-      signerClient,
+      ...(signer ? { signerClient: signer } : {}),
       senderAddress: config.solana.senderAddress,
       knownTokens,
       // #74 (ADR-0054): a Multisig Sender proposes through Squads; `single` has no approval capability at all.
@@ -85,7 +96,7 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
         ? {
             approval: new SquadsApproval({
               connection,
-              signerClient,
+              signerClient: signer ?? noSigner,
               multisig,
               knownTokens,
               // An 'auto' price is not applied to a Proposal: it is not time-critical, and Approvers take hours.
@@ -105,12 +116,12 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
   },
   base: async () => {
     // #82 (ADR-0051): `single` is a no-op; `safe` refuses to start before anything is sent.
-    const safe = await verifySafeSender();
+    const safe = await verifySafeSender(signer);
     const handler = await BaseChainHandler.create({
       rpcUrl: config.base.rpcUrl,
       chainId: config.base.chainId,
       senderAddress: config.base.senderAddress,
-      signerClient: new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs),
+      ...(signer ? { signerClient: signer } : {}),
       knownTokens: parseBaseKnownTokens(config.base.knownTokens),
       nonceHistoryStore: new PostgresNonceHistoryStore(db),
       feeBumpPercent: config.base.feeBumpPercent,
@@ -126,11 +137,12 @@ const loaders: Partial<Record<Chain, ChainHandlerLoader>> = {
     safe?.bindHandler(handler);
     return handler;
   },
-};
+});
 
-/** #73: Solana's Multisig Sender startup checks (solana/multisig/startup-checks.ts), wired to the real RPC and Signer. */
+/** #73: Solana's Multisig Sender startup checks (solana/multisig/startup-checks.ts), wired to the real RPC and, in the worker, the Signer. */
 async function verifyMultisigSender(
   connection: Connection,
+  signer: SignerClient | undefined,
 ): Promise<SolanaMultisigConfig | undefined> {
   const multisig = resolveSolanaMultisigConfig(config.solana.multisig);
   if (multisig === undefined) return undefined;
@@ -138,10 +150,7 @@ async function verifyMultisigSender(
     config: multisig,
     senderAddress: config.solana.senderAddress,
     readMultisig: (address) => readMultisigState(connection, address),
-    readSignerPins: (member) =>
-      new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs).readPins(
-        member,
-      ),
+    ...(signer ? { readSignerPins: (member: string) => signer.readPins(member) } : {}),
   });
   for (const warning of warnings) logger.warn(`Solana multisig sender: ${warning}`);
   logger.info(
@@ -155,8 +164,10 @@ async function verifyMultisigSender(
   return multisig;
 }
 
-/** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and Signer. */
-async function verifySafeSender(): Promise<
+/** #82: Base's Safe Sender startup checks (safe/startup-checks.ts), wired to the real RPC, Safe Transaction Service and, in the worker, the Signer. */
+async function verifySafeSender(
+  signer: SignerClient | undefined,
+): Promise<
   { approval: SafeApproval; bindHandler: (handler: BaseChainHandler) => void } | undefined
 > {
   const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
@@ -166,11 +177,6 @@ async function verifySafeSender(): Promise<
     apiKey: safe.apiKey,
     timeoutMs: config.rpcTimeoutMs,
   });
-  const signerClient = new SignerClient(
-    config.signerUrl,
-    config.signerAuthToken,
-    config.rpcTimeoutMs,
-  );
   const readClient = createPublicClient({
     transport: http(config.base.rpcUrl, {
       fetchFn: fetchWithTimeout(fetch, config.rpcTimeoutMs),
@@ -181,7 +187,7 @@ async function verifySafeSender(): Promise<
     chainId: config.base.chainId,
     service,
     readSafe: (address) => readSafeState(readClient, address),
-    readSignerPins: (executor) => signerClient.readPins(executor),
+    ...(signer ? { readSignerPins: (executor: Address) => signer.readPins(executor) } : {}),
   });
   for (const warning of warnings) logger.warn(`Safe sender: ${warning}`);
   logger.info(
@@ -195,7 +201,7 @@ async function verifySafeSender(): Promise<
       config: safe,
       chainId: config.base.chainId,
       client: readClient,
-      signer: signerClient,
+      signer: signer ?? noSigner,
       service,
       knownTokens: parseBaseKnownTokens(config.base.knownTokens),
       prepare: (items, sender) => {
@@ -267,13 +273,28 @@ const stuckHandlingByChain: Partial<Record<Chain, StuckHandlingConfig>> = {
   base: { stuckAfterMs: config.base.stuckAfterMs, maxFeeBumps: config.base.maxFeeBumps },
 };
 
-export async function loadChainRegistry(): Promise<ChainRegistry> {
+/** `signer` is the worker's; the API passes none (ADR-0059), so its Multisig startup checks skip the Signer. */
+export async function loadChainRegistry(signer?: SignerClient): Promise<ChainRegistry> {
+  return ChainRegistry.load(parseEnabledChains(config.enabledChains), loadersFor(signer));
+}
+
+/** ADR-0059: only the worker reaches the Signer. */
+export function workerSignerClient(): SignerClient {
   if (config.signerAuthToken === undefined) {
     logger.warn(
       'SIGNER_AUTH_TOKEN is unset: the Signer will refuse every signing request with 401 (a Relay-only deployment can ignore this)',
     );
   }
-  return ChainRegistry.load(parseEnabledChains(config.enabledChains), loaders);
+  return new SignerClient(config.signerUrl, config.signerAuthToken, config.rpcTimeoutMs);
+}
+
+/** ADR-0059: the key each enabled chain signs with, whose pins the worker records: the Sender, or a Multisig Sender's engine key. */
+export function signerKeysFor(registry: ChainRegistry): { chain: Chain; address: string }[] {
+  const { senderAddresses } = coordinatorConfigFor(registry);
+  return [...registry.handlers].flatMap(([chain, handler]) => {
+    const address = handler.approval?.proposerAddress ?? senderAddresses.get(chain);
+    return address ? [{ chain, address }] : [];
+  });
 }
 
 /**
@@ -401,11 +422,6 @@ export function senderConfigsFor(
 }
 
 export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): SenderReads {
-  const signerClient = new SignerClient(
-    config.signerUrl,
-    config.signerAuthToken,
-    config.rpcTimeoutMs,
-  );
   const fetchFn = fetchWithTimeout(fetch, config.rpcTimeoutMs);
   const unavailable = (chain: Chain, cause: unknown): Result<number, DispatchError> => {
     logger.warn({ chain, err: cause }, 'senders: multisig threshold read failed');
@@ -440,12 +456,7 @@ export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): S
         logger.warn({ chain, asset, error: balance.error }, 'senders: balance read failed');
       return balance;
     },
-    readPins: async (address) => {
-      const read = await signerClient.readPins(address);
-      if (read.kind !== 'pins')
-        logger.warn({ address, read }, 'senders: Signer policy read failed');
-      return read;
-    },
+    getSignerKey: (chain, address) => store.getSignerKey(chain, address),
     readThreshold: async (chain) => {
       const reader = thresholdReaders[chain];
       if (!reader) return unavailable(chain, new Error('no threshold reader'));

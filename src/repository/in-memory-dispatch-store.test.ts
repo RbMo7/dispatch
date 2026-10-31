@@ -7,6 +7,7 @@ import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
+import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
@@ -24,6 +25,7 @@ describe('InMemoryDispatchStore', () => {
   runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
   runListConformanceSuite(() => new InMemoryDispatchStore());
   runTimelineConformanceSuite(() => new InMemoryDispatchStore());
+  runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

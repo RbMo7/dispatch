@@ -30,8 +30,9 @@ services:
     environment:
       PORT: 8420
       DATABASE_URL: *database-url
-      SIGNER_URL: *signer-url
-      SIGNER_AUTH_TOKEN: *signer-auth-token
+      # ADR-0059: the API never calls the Signer, so it gets no Signer settings, even from .env.
+      SIGNER_URL: ''
+      SIGNER_AUTH_TOKEN: ''
     ports:
       - '8420:8420'
     depends_on:
