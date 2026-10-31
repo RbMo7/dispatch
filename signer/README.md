@@ -2,7 +2,7 @@
 
 The Signer holds each Sender's key and answers the engine's `POST /sign` (ADR-0002, ADR-0046), and one read-only route, `GET /keys/{address}/policy` (ADR-0055). It is its own package: the engine never imports it, and vendor SDKs live only here.
 
-This is the reference. To set up and run a production Signer, follow [`docs/signer.md`](../docs/signer.md), the runbook and mainnet checklist.
+This is the reference. To set up and run a production Signer, follow [`docs/signer.md`](../docs/signer.md), the runbook, then clear [`docs/operations/mainnet-checklist.md`](../docs/operations/mainnet-checklist.md).
 
 ## Configuration
 
@@ -131,7 +131,7 @@ Keys held by Privy server wallets. The private key never leaves Privy; the Signe
 - `PRIVY_APP_ID`, `PRIVY_APP_SECRET`: the app's API credentials.
 - `PRIVY_AUTHORIZATION_KEY` (optional, recommended): the private key of a Privy authorization key, as Privy shows it (`wallet-auth:...`). When set, every signing request is signed with it.
 
-Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. [`docs/signer.md`](../docs/signer.md#privy) shows how to create owned wallets, and its mainnet checklist requires them.
+Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. [`docs/signer.md`](../docs/signer.md#privy) shows how to create owned wallets, and the [mainnet checklist](../docs/operations/mainnet-checklist.md) requires them.
 
 On `secp256k1` the Signer asks Privy to sign the transaction's keccak256 hash (the `secp256k1_sign` RPC; Privy refuses `raw_sign` for Ethereum wallets), lowers a high `s` and finds the recovery bit against the wallet's address. On `ed25519` it sends the Solana message to Privy as an unsigned transaction (`signTransaction`), so Privy's own transaction policies still apply. Either way, a signature that doesn't verify for the wallet's address is never returned.
 
