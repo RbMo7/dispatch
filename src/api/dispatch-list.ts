@@ -6,6 +6,7 @@ import type {
   DispatchStore,
 } from '../repository/dispatch-store.js';
 import { summarizeDispatch } from './dispatch-view.js';
+import { isUuid } from './uuid.js';
 
 /** Every top-level status a listed row can have, Managed (`partial`) or Relay (`abandoned`). */
 const LIST_STATUSES = [
@@ -52,7 +53,6 @@ export type DispatchListFilter = Omit<DispatchListQuery, 'after' | 'storedStatus
 };
 
 const EXACT_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function encodeCursor(cursor: DispatchCursor): string {
   return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString('base64url');
@@ -64,7 +64,7 @@ function decodeCursor(raw: string): DispatchCursor | null {
     if (!Array.isArray(parsed) || parsed.length !== 2) return null;
     const [createdAt, id] = parsed as unknown[];
     if (typeof createdAt !== 'string' || !EXACT_UTC.test(createdAt)) return null;
-    if (typeof id !== 'string' || !UUID.test(id)) return null;
+    if (typeof id !== 'string' || !isUuid(id)) return null;
     return { createdAt, id };
   } catch {
     return null;

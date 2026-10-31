@@ -18,6 +18,7 @@ import {
   type RawListQuery,
 } from './dispatch-list.js';
 import { readDispatchView } from './dispatch-view.js';
+import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
   store: DispatchStore;
@@ -127,12 +128,6 @@ async function translateItem(
       `items[${index}]: unknown item type "${String(type)}" — must be "payment" or "call"`,
     ),
   );
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(id: string): boolean {
-  return UUID.test(id);
 }
 
 export function checkAuth(authToken: string) {
