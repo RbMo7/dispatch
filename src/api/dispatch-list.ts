@@ -11,6 +11,7 @@ import { isUuid } from './uuid.js';
 
 const LIST_STATUSES = [
   'queued',
+  'held',
   'broadcasting',
   'confirmed',
   'failed',
@@ -98,6 +99,8 @@ function storedStatusesFor(status: ListStatus): NonNullable<DispatchListQuery['s
   switch (status) {
     case 'cancelled':
       return ['cancelled'];
+    case 'held':
+      return ['held'];
     // A claimed Relay Dispatch reads `queued` until its Transaction is written.
     case 'queued':
       return ['queued', 'broadcasting'];

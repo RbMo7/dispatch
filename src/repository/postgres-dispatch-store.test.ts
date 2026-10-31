@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../db/client.js';
 import {
   attempts,
+  dispatchHolds,
   dispatches,
   flagRules,
   flagRuleVersions,
@@ -39,7 +40,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${flagRuleVersions}, ${flagRules} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -225,6 +226,48 @@ describe('PostgresDispatchStore (real Postgres)', () => {
           );
         }
       }
+    });
+  });
+
+  describe('a held Dispatch (ADR-0058)', () => {
+    it('is never claimed by a claim loop running while Dispatches arrive', async () => {
+      const rule = await store.createFlagRule(
+        {
+          name: 'Everything',
+          chain: 'solana',
+          enabled: true,
+          definition: { kind: 'call_target_not_allowlisted', addresses: [] },
+        },
+        { tokenKind: 'operator', reason: null },
+      );
+      const claimed = new Set<string>();
+      let arriving = true;
+      const claimLoop = (async () => {
+        while (arriving) {
+          for (const d of await store.claimQueued(CHAINS, 5)) claimed.add(d.id);
+        }
+        for (const d of await store.claimQueued(CHAINS, 100)) claimed.add(d.id);
+      })();
+
+      const created = await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          store.createDispatch({
+            chain: 'solana',
+            idempotencyKey: randomUUID(),
+            items: [solanaItem],
+            retryPolicy: false,
+            ...(i % 2 === 0 ? { hold: [{ rule: rule.current, items: [0] }] } : {}),
+          }),
+        ),
+      );
+      arriving = false;
+      await claimLoop;
+
+      const held = created.filter((d) => d.status === 'held').map((d) => d.id);
+      const queued = created.filter((d) => d.status === 'queued').map((d) => d.id);
+      expect(held).toHaveLength(20);
+      expect([...claimed].sort()).toEqual([...queued].sort());
+      for (const id of held) expect((await store.getDispatch(id))?.status).toBe('held');
     });
   });
 

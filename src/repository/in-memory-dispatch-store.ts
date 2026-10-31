@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
-import type { FlagRule, FlagRuleSpec, FlagRuleVersion } from '../domain/flag-rule.js';
+import {
+  addressKey,
+  type FlagRule,
+  type FlagRuleSpec,
+  type FlagRuleVersion,
+  type Hold,
+} from '../domain/flag-rule.js';
 import type {
   OperatorAction,
   OperatorActionKind,
@@ -50,6 +56,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly proposals = new Map<string, Proposal>();
   private readonly operatorActions: OperatorAction[] = [];
   private readonly flagRules = new Map<string, FlagRule>();
+  private readonly holds = new Map<string, Hold>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -67,7 +74,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       chain: input.chain,
       idempotencyKey: input.idempotencyKey,
       items: input.items,
-      status: 'queued',
+      status: input.hold?.length ? 'held' : 'queued',
       retryPolicy: input.retryPolicy,
       bulkCall: input.bulkCall ?? null,
       createdAt: this.now(),
@@ -75,6 +82,13 @@ export class InMemoryDispatchStore implements DispatchStore {
       cancelledAt: null,
     };
     this.dispatches.set(dispatch.id, dispatch);
+    if (input.hold?.length) {
+      this.holds.set(dispatch.id, {
+        dispatchId: dispatch.id,
+        matched: input.hold,
+        heldAt: dispatch.createdAt,
+      });
+    }
 
     return Promise.resolve(dispatch);
   }
@@ -202,6 +216,46 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   listFlagRules(): Promise<FlagRule[]> {
     return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
+  }
+
+  listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    return Promise.resolve(
+      [...this.flagRules.values()]
+        .filter((r) => !r.deletedAt && r.current.enabled && r.current.chain === chain)
+        .map((r) => r.current),
+    );
+  }
+
+  firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    const wanted = new Set(recipients);
+    const first = new Map<string, Date>();
+    for (const t of this.transactions.values()) {
+      const dispatch = this.dispatches.get(t.dispatchId);
+      const payment = dispatch?.items[t.callIndex]?.payment;
+      if (t.status !== 'CONFIRMED' || t.chain !== chain || !dispatch || !payment) continue;
+      const key = addressKey(chain, payment.recipient);
+      const at = t.confirmedAt ?? t.broadcastAt ?? dispatch.createdAt;
+      const seen = first.get(key);
+      if (wanted.has(key) && (!seen || at < seen)) first.set(key, at);
+    }
+    return Promise.resolve(first);
+  }
+
+  acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+    const totals = new Map<string, bigint>();
+    for (const dispatch of this.dispatches.values()) {
+      if (dispatch.chain !== chain || dispatch.createdAt < since) continue;
+      if (dispatch.status === 'cancelled') continue;
+      for (const { payment } of dispatch.items) {
+        if (!payment || !assets.includes(payment.asset)) continue;
+        totals.set(payment.asset, (totals.get(payment.asset) ?? 0n) + BigInt(payment.amount));
+      }
+    }
+    return Promise.resolve(totals);
+  }
+
+  getHold(dispatchId: string): Promise<Hold | null> {
+    return Promise.resolve(this.holds.get(dispatchId) ?? null);
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {

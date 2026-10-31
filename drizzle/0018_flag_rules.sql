@@ -1,3 +1,9 @@
+CREATE TABLE "dispatch_holds" (
+	"dispatch_id" uuid PRIMARY KEY NOT NULL,
+	"matched" jsonb NOT NULL,
+	"held_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "flag_rule_versions" (
 	"rule_id" uuid NOT NULL,
 	"version" integer NOT NULL,
@@ -25,5 +31,6 @@ CREATE TABLE "operator_actions" (
 	"reason" text
 );
 --> statement-breakpoint
+ALTER TABLE "dispatch_holds" ADD CONSTRAINT "dispatch_holds_dispatch_id_dispatches_id_fk" FOREIGN KEY ("dispatch_id") REFERENCES "public"."dispatches"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "flag_rule_versions" ADD CONSTRAINT "flag_rule_versions_rule_id_flag_rules_id_fk" FOREIGN KEY ("rule_id") REFERENCES "public"."flag_rules"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "operator_actions_at_id_idx" ON "operator_actions" USING btree ("at","id");

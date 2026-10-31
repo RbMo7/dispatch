@@ -1,5 +1,5 @@
 {
-  "id": "9cca0e95-26c0-4478-a8f7-4ab1ba3ecfd3",
+  "id": "9930a465-0b5c-4f00-b0ad-7c794aaf0988",
   "prevId": "f031075a-0f5b-4726-992a-bf2411ad84cd",
   "version": "7",
   "dialect": "postgresql",
@@ -59,6 +59,52 @@
           "tableTo": "transactions",
           "columnsFrom": [
             "transaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.dispatch_holds": {
+      "name": "dispatch_holds",
+      "schema": "",
+      "columns": {
+        "dispatch_id": {
+          "name": "dispatch_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "matched": {
+          "name": "matched",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "held_at": {
+          "name": "held_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "dispatch_holds_dispatch_id_dispatches_id_fk": {
+          "name": "dispatch_holds_dispatch_id_dispatches_id_fk",
+          "tableFrom": "dispatch_holds",
+          "tableTo": "dispatches",
+          "columnsFrom": [
+            "dispatch_id"
           ],
           "columnsTo": [
             "id"

@@ -1,13 +1,14 @@
 import type { DispatchItem } from './call.js';
 import type { Chain } from './chain.js';
 
-/** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. `cancelled` (ADR-0056) is stored, like `queued` and `broadcasting`; the rest are derived. */
+/** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. `cancelled` (ADR-0056) and `held` (ADR-0058) are stored, like `queued` and `broadcasting`; the rest are derived. */
 export type DispatchStatus =
-  'queued' | 'broadcasting' | 'confirmed' | 'failed' | 'partial' | 'cancelled';
+  'queued' | 'held' | 'broadcasting' | 'confirmed' | 'failed' | 'partial' | 'cancelled';
 
-/** docs/api.md's per-item status, also a Relay Dispatch's top-level one: adds `abandoned` and `awaiting_approval`, never `partial`. */
+/** docs/api.md's per-item status, also a Relay Dispatch's top-level one: adds `abandoned` and `awaiting_approval`, never `partial`. A Relay Dispatch is never `held`. */
 export type ItemStatus =
   | 'queued'
+  | 'held'
   | 'awaiting_approval'
   | 'broadcasting'
   | 'confirmed'

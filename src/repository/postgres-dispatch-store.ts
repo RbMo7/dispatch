@@ -17,6 +17,7 @@ import {
 import type { Database } from '../db/client.js';
 import {
   attempts,
+  dispatchHolds,
   dispatches,
   flagRules,
   flagRuleVersions,
@@ -34,6 +35,7 @@ import {
   type FlagRule,
   type FlagRuleSpec,
   type FlagRuleVersion,
+  type Hold,
 } from '../domain/flag-rule.js';
 import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
 import type {
@@ -228,17 +230,33 @@ export class PostgresDispatchStore implements DispatchStore {
   constructor(private readonly db: Database) {}
 
   async createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>> {
-    const inserted = await this.db
-      .insert(dispatches)
-      .values({
-        chain: input.chain,
-        idempotencyKey: input.idempotencyKey,
-        items: input.items,
-        retryPolicy: input.retryPolicy,
-        bulkCall: input.bulkCall ?? null,
-      })
-      .onConflictDoNothing({ target: dispatches.idempotencyKey })
-      .returning();
+    const hold = input.hold ?? [];
+    const inserted = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(dispatches)
+        .values({
+          chain: input.chain,
+          idempotencyKey: input.idempotencyKey,
+          items: input.items,
+          retryPolicy: input.retryPolicy,
+          bulkCall: input.bulkCall ?? null,
+          status: hold.length > 0 ? 'held' : 'queued',
+        })
+        .onConflictDoNothing({ target: dispatches.idempotencyKey })
+        .returning();
+      const [row] = rows;
+      if (row && hold.length > 0) {
+        await tx.insert(dispatchHolds).values({
+          dispatchId: row.id,
+          matched: hold.map(({ rule, items }) => ({
+            ruleId: rule.ruleId,
+            ruleVersion: rule.version,
+            items,
+          })),
+        });
+      }
+      return rows;
+    });
 
     const row =
       inserted[0] ??
@@ -429,6 +447,97 @@ export class PostgresDispatchStore implements DispatchStore {
     const rows = await this.db.select().from(flagRules).where(eq(flagRules.id, id));
     const [rule] = await withVersions(this.db, rows);
     return rule ?? null;
+  }
+
+  async listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    const rows = await this.db
+      .select({ version: flagRuleVersions })
+      .from(flagRules)
+      .innerJoin(
+        flagRuleVersions,
+        and(
+          eq(flagRuleVersions.ruleId, flagRules.id),
+          eq(flagRuleVersions.version, flagRules.currentVersion),
+        ),
+      )
+      .where(
+        and(
+          isNull(flagRules.deletedAt),
+          eq(flagRuleVersions.enabled, true),
+          eq(flagRuleVersions.chain, chain),
+        ),
+      )
+      .orderBy(flagRules.createdAt, flagRules.id);
+    return rows.map(({ version }) => toFlagRuleVersion(version));
+  }
+
+  async firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    if (recipients.length === 0) return new Map();
+    const raw = sql`(${dispatches.items} -> ${transactions.callIndex} -> 'payment' ->> 'recipient')`;
+    const recipient = chain === 'base' ? sql<string>`lower(${raw})` : sql<string>`${raw}`;
+    const rows = await this.db
+      .select({
+        recipient,
+        first:
+          sql<Date>`min(coalesce(${transactions.confirmedAt}, ${transactions.broadcastAt}, ${dispatches.createdAt}))`.mapWith(
+            transactions.confirmedAt,
+          ),
+      })
+      .from(transactions)
+      .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+      .where(
+        and(
+          eq(transactions.status, 'CONFIRMED'),
+          eq(transactions.chain, chain),
+          inArray(recipient, recipients),
+        ),
+      )
+      .groupBy(recipient);
+    return new Map(rows.map((r) => [r.recipient, r.first]));
+  }
+
+  async acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+    if (assets.length === 0) return new Map();
+    const rows = await this.db.execute<{ asset: string; total: string }>(sql`
+      select item -> 'payment' ->> 'asset' as asset,
+             sum((item -> 'payment' ->> 'amount')::numeric)::text as total
+      from ${dispatches}, jsonb_array_elements(${dispatches.items}) as item
+      where ${dispatches.chain} = ${chain}
+        and ${dispatches.createdAt} >= ${since.toISOString()}::timestamptz
+        and ${dispatches.status} <> 'cancelled'
+        and item -> 'payment' ->> 'asset' in (${sql.join(
+          assets.map((a) => sql`${a}`),
+          sql`, `,
+        )})
+      group by 1`);
+    return new Map(rows.map((r) => [r.asset, BigInt(r.total)]));
+  }
+
+  async getHold(dispatchId: string): Promise<Hold | null> {
+    const [hold] = await this.db
+      .select()
+      .from(dispatchHolds)
+      .where(eq(dispatchHolds.dispatchId, dispatchId));
+    if (!hold) return null;
+    const versions = await this.db
+      .select()
+      .from(flagRuleVersions)
+      .where(
+        or(
+          ...hold.matched.map((m) =>
+            and(eq(flagRuleVersions.ruleId, m.ruleId), eq(flagRuleVersions.version, m.ruleVersion)),
+          ),
+        ),
+      );
+    return {
+      dispatchId,
+      heldAt: hold.heldAt,
+      matched: hold.matched.map(({ ruleId, ruleVersion, items }) => {
+        const row = versions.find((v) => v.ruleId === ruleId && v.version === ruleVersion);
+        if (!row) throw new Error(`hold on ${dispatchId} names a missing rule version`);
+        return { rule: toFlagRuleVersion(row), items };
+      }),
+    };
   }
 
   async listFlagRules(): Promise<FlagRule[]> {

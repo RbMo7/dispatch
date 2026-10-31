@@ -1,12 +1,14 @@
 import type { DispatchItem } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
+import type { Hold } from '../domain/flag-rule.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { sumAssetAmounts } from '../repository/committed.js';
 import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store.js';
 import type { AssetDecimals } from './asset-decimals.js';
+import { toWireDefinition } from './flag-rule-wire.js';
 import { buildTimeline } from './timeline.js';
 
 function deriveRelayStatus(relayDispatch: RelayDispatch, transactions: Transaction[]): ItemStatus {
@@ -52,7 +54,13 @@ function isCurrentVersion(transaction: Transaction): boolean {
  * not double-counted as "in progress" here.
  */
 function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {
-  if (dispatch.status === 'queued' || dispatch.status === 'cancelled') return dispatch.status;
+  if (
+    dispatch.status === 'queued' ||
+    dispatch.status === 'held' ||
+    dispatch.status === 'cancelled'
+  ) {
+    return dispatch.status;
+  }
 
   // ADR-0054: a Call waiting to be proposed or approved is still in progress, and the Dispatch gains no status of its own for it.
   const stillPending =
@@ -97,6 +105,19 @@ function toWireApproval(proposal: Proposal) {
   };
 }
 
+/** ADR-0058: which rule versions matched which items. Kept after a release or cancel. */
+function toWireHold(hold: Hold) {
+  return {
+    matched: hold.matched.map(({ rule, items }) => ({
+      rule: { name: rule.name, ...toWireDefinition(rule.definition) },
+      ruleId: rule.ruleId,
+      ruleVersion: rule.version,
+      items,
+    })),
+    heldAt: hold.heldAt.toISOString(),
+  };
+}
+
 export async function readDispatchView(
   store: DispatchStore,
   id: string,
@@ -113,11 +134,12 @@ export async function readDispatchView(
       ? await store.listProposalsForDispatch(dispatch.id)
       : [];
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
+    const hold = await store.getHold(dispatch.id);
 
     const items = dispatch.items.map((item, index) => {
       const request = toWireRequest(dispatch.chain, item, decimalsOf);
-      if (dispatch.status === 'cancelled') {
-        return { ...request, status: 'cancelled', transactionHash: null, error: null };
+      if (dispatch.status === 'cancelled' || dispatch.status === 'held') {
+        return { ...request, status: dispatch.status, transactionHash: null, error: null };
       }
       const transaction = transactionByCallIndex.get(index);
       if (!transaction) {
@@ -140,6 +162,7 @@ export async function readDispatchView(
       mode: 'managed',
       status: deriveDispatchStatus(dispatch, transactions),
       items,
+      ...(hold ? { hold: toWireHold(hold) } : {}),
       ...(options.timeline
         ? {
             timeline: buildTimeline({

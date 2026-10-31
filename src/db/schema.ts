@@ -246,3 +246,14 @@ export const flagRuleVersions = pgTable(
   },
   (table) => [primaryKey({ columns: [table.ruleId, table.version] })],
 );
+
+/** ADR-0058: why a Dispatch was held. Each match names an immutable rule version. */
+export const dispatchHolds = pgTable('dispatch_holds', {
+  dispatchId: uuid('dispatch_id')
+    .primaryKey()
+    .references(() => dispatches.id),
+  matched: jsonb('matched')
+    .notNull()
+    .$type<{ ruleId: string; ruleVersion: number; items: number[] }[]>(),
+  heldAt: timestamp('held_at', { withTimezone: true }).notNull().defaultNow(),
+});

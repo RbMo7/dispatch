@@ -18,6 +18,7 @@ import {
   type RawListQuery,
 } from './dispatch-list.js';
 import { readDispatchView } from './dispatch-view.js';
+import { findHoldMatches } from './hold-check.js';
 import type { AssetDecimals } from './asset-decimals.js';
 import {
   type ApiTokens,
@@ -254,6 +255,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         items: translated,
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
         bulkCall: bulkCallPlan?.bulkCall ?? null,
+        hold: await findHoldMatches(store, chain, translated, new Date()),
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });

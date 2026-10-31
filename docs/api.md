@@ -45,13 +45,15 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 { "dispatchId": "<id>", "status": "queued" }
 ```
 
+`status` is `held` instead when the Dispatch matched a Flag Rule (below): it is stored whole, and nothing is signed, proposed or sent until an operator releases it.
+
 ## `GET /v1/dispatch/:id`
 
 ```json
 {
   "dispatchId": "<id>",
   "mode": "managed",
-  "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
+  "status": "queued | held | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "decimals": 6, "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
     { "type": "call", "programId": "<program id>", "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
@@ -63,7 +65,7 @@ Each item starts with what the caller asked for, in the order the request listed
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
-Per-item `status` is `queued | awaiting_approval | broadcasting | confirmed | failed | abandoned | cancelled` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses — only `queued`/`broadcasting` (ADR-0009's outbox transition) and `cancelled` (below) are ever persisted directly, so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
+Per-item `status` is `queued | held | awaiting_approval | broadcasting | confirmed | failed | abandoned | cancelled` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses — only `queued`/`broadcasting` (ADR-0009's outbox transition), `held` and `cancelled` (below) are ever persisted directly, so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
 
 On Solana, an item whose transaction expired without landing is resubmitted with a fresh blockhash, up to 3 times, whatever `retryPolicy` says: the expired one was never charged, so this costs nothing extra (ADR-0042). Its `transactionHash` then changes to the resubmission's. After the third it is `failed`, as is an expired Relay Dispatch, which the engine has no key to re-sign.
 
@@ -119,7 +121,7 @@ Query parameters, all optional:
 - `cursor`: the `nextCursor` of the previous page. Opaque: pass it back as it came.
 - `chain`: `base` or `solana`.
 - `mode`: `managed` or `relay`.
-- `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch).
+- `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | held | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch, `held` only for a Managed one).
 - `from`, `to`: ISO 8601 timestamps on `createdAt`, `from` inclusive and `to` exclusive.
 
 A value outside these is a `400`; parameters not listed here are ignored.
@@ -283,6 +285,36 @@ A rule, as every route returns it:
 ```
 
 The top level is the current version; `versions` lists every version, oldest first. `updatedAt` is when the current version was written.
+
+## Held (`held` and the `hold` block)
+
+`POST /v1/dispatch` checks every Managed Dispatch against the current version of each enabled rule on its chain, after the request has passed every other check (ADR-0058). It reads only the engine's own database, never a chain. If any rule matches, the whole Dispatch is stored `held`, top-level and every item, and the `202` says `"status": "held"`. A held Dispatch is never claimed: nothing is signed, proposed or sent, and it has no deadline. It stays `held` until an operator cancels it (above).
+
+A Relay Dispatch is never checked. Neither is a resubmitted `Idempotency-Key`: it answers with the stored Dispatch, held or not, whatever the rules say now. Editing or deleting a rule never re-checks or releases a Dispatch already held.
+
+A Dispatch that was ever held carries a `hold` block on `GET /v1/dispatch/:id`, and keeps it after it is cancelled:
+
+```json
+"hold": {
+  "matched": [
+    {
+      "rule": { "name": "Large USDC payment", "kind": "item_over", "asset": "USDC", "limit": "5000" },
+      "ruleId": "<id>",
+      "ruleVersion": 1,
+      "items": [1, 3]
+    },
+    {
+      "rule": { "name": "Known payees", "kind": "recipient_not_allowlisted", "addresses": ["0x5290…9EE7"] },
+      "ruleId": "<id>",
+      "ruleVersion": 3,
+      "items": [2, 3]
+    }
+  ],
+  "heldAt": "2026-10-31T10:00:00.000Z"
+}
+```
+
+`matched` lists every rule that matched, not only the first, each with every item it matched (positions in `items`), and `rule` as that version said when it matched. Amounts are compared as integers in the asset's smallest unit. `daily_volume_over` counts Dispatches that are themselves held. `GET /v1/dispatches?status=held` lists the Dispatches still held.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 
