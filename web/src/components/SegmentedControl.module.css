@@ -1,0 +1,35 @@
+.group {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-control);
+  background: var(--sunken);
+}
+
+.segment {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-segment);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-12);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    color 120ms;
+}
+
+.segment:hover {
+  color: var(--ink);
+}
+
+.segment[aria-checked='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px var(--shadow);
+}

@@ -1,0 +1,249 @@
+.summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.summaryText {
+  font-size: var(--text-12-5);
+  font-weight: 500;
+}
+
+.elapsed {
+  color: var(--muted);
+  font-size: var(--text-12-5);
+  white-space: nowrap;
+}
+
+.segments {
+  display: flex;
+  gap: 3px;
+}
+
+.segment {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--sunken);
+  transition: background-color 160ms;
+}
+
+.segment[data-segment='done'] {
+  background: var(--accent);
+}
+
+.segment[data-segment='current'] {
+  background: var(--accent-mid);
+}
+
+.segment[data-segment='failed'] {
+  background: var(--danger);
+}
+
+.segment[data-segment='cancelled'] {
+  background: var(--border-strong);
+}
+
+.graph {
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The 2 px line runs from under each dot to the next node: solid into a
+   stage that has been reached, dashed into one that has not. */
+.node {
+  position: relative;
+  display: flex;
+  gap: var(--space-3);
+  padding-bottom: 10px;
+}
+
+.node[data-line]::before {
+  content: '';
+  position: absolute;
+  top: 22px;
+  bottom: -2px;
+  left: 9px;
+  border-left: 2px solid var(--accent);
+}
+
+.node[data-line='dashed']::before {
+  border-left: 2px dashed var(--border-strong);
+}
+
+/* A branch sits 30 px right of the trunk; a curved elbow joins it, and the
+   trunk carries on behind it to the next stage. */
+.node[data-branch] {
+  margin-left: 30px;
+}
+
+.node[data-branch]::after {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: -21px;
+  width: 30px;
+  height: 29px;
+  border-bottom: 2px solid var(--accent);
+  border-left: 2px solid var(--accent);
+  border-bottom-left-radius: 12px;
+}
+
+.node[data-branch='failed']::after {
+  border-color: var(--danger);
+}
+
+.node[data-branch][data-line]::before {
+  top: 0;
+  left: -21px;
+}
+
+.dot {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 9px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--on-accent);
+}
+
+.node[data-dot='check'] .dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.node[data-dot='ring'] .dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.node[data-dot='cross'] .dot {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger);
+}
+
+.node[data-dot='muted'] .dot {
+  border-color: var(--muted);
+  background: var(--muted);
+}
+
+.ring {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.box {
+  min-width: 0;
+  flex: 1;
+  padding: 9px var(--space-3) 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-stage);
+  background: var(--surface);
+}
+
+.node[data-box='current'] .box {
+  border-color: var(--accent);
+}
+
+.node[data-box='todo'] .box,
+.node[data-box='end-todo'] .box {
+  border-style: dashed;
+  background: transparent;
+}
+
+.node[data-box='end-todo'] .box {
+  border-color: var(--border-strong);
+}
+
+.node[data-box='failed'] .box {
+  border-color: var(--danger-line);
+}
+
+.node[data-box='end'] .box {
+  border-color: var(--sunken);
+  background: var(--sunken);
+}
+
+.title {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.node[data-box='todo'] .title > span:first-child,
+.node[data-box='end-todo'] .title > span:first-child {
+  color: var(--muted);
+}
+
+.time {
+  color: var(--muted);
+  font-size: var(--text-12);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.count {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.countText {
+  color: var(--muted);
+  font-size: var(--text-12-5);
+}
+
+.countFigure {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.hash {
+  margin-top: 4px;
+  font-size: var(--text-13);
+}
+
+.detail {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: var(--text-12-5);
+  line-height: 1.45;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: 6px;
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-12-5);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.link:hover {
+  text-decoration: underline;
+}

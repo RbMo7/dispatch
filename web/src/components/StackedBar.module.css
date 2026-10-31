@@ -1,0 +1,17 @@
+.track {
+  display: flex;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--sunken);
+}
+
+.fill {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.fill[data-low] {
+  background: var(--warn);
+}

@@ -1,0 +1,42 @@
+.amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fraction {
+  color: var(--muted);
+}
+
+.mask {
+  letter-spacing: 0.08em;
+}
+
+.unit {
+  color: var(--muted);
+  font-size: var(--text-11);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.row .unit {
+  display: inline-block;
+  width: 38px;
+  margin-left: 5px;
+  text-align: left;
+}
+
+.raised {
+  letter-spacing: -0.01em;
+}
+
+.raised .unit {
+  margin-left: 4px;
+  font-size: var(--text-10-5);
+  vertical-align: 0.6em;
+}
+
+.plain {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
