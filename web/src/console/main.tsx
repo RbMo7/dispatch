@@ -1,9 +1,7 @@
-import { Tray } from '@phosphor-icons/react';
-
 import { Button } from '../components/Button';
 import { mount } from '../mount';
 import { Placeholder } from '../Placeholder';
-import { Gallery } from './Gallery';
+import { Gallery } from './gallery/Gallery';
 
 const path = window.location.pathname.replace(/\/+$/, '');
 
@@ -12,15 +10,12 @@ mount(
     <Gallery />
   ) : (
     <Placeholder
-      icon={<Tray size={18} />}
-      title="The console is on its way"
+      caption="The console pages are being built. The primitives they use are ready to review."
       action={
-        <Button variant="soft" arrow href="/console/_primitives">
+        <Button variant="secondary" href="/console/_primitives">
           View primitives
         </Button>
       }
-    >
-      Its pages are being built. The primitives they use are ready to review.
-    </Placeholder>
+    />
   ),
 );
