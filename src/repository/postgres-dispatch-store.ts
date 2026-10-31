@@ -547,6 +547,16 @@ export class PostgresDispatchStore implements DispatchStore {
     return new Map(rows.map((r) => [r.asset, BigInt(r.total)]));
   }
 
+  async listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    const rows = await this.db
+      .select()
+      .from(dispatches)
+      .where(and(eq(dispatches.chain, chain), gte(dispatches.createdAt, since)))
+      .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
+      .limit(limit);
+    return rows.map(toDispatch);
+  }
+
   async getHold(dispatchId: string): Promise<Hold | null> {
     const [hold] = await this.db
       .select()

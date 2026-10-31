@@ -7,7 +7,7 @@ The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v
 Every `/v1` route takes `Authorization: Bearer <token>`, with one of two operator-configured tokens:
 
 - `AUTH_TOKEN` (ADR-0022): the API client's token. Submit, read and cancel.
-- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `POST /v1/dispatch/:id/release`, `GET /v1/activity` and the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`).
+- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `POST /v1/dispatch/:id/release`, `GET /v1/activity`, the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`) and `POST /v1/flag-rules/preview`.
 
 An operator-only route answers `403` to `AUTH_TOKEN`, and `403` to everyone when `OPERATOR_TOKEN` is unset, with an `error` saying it is not configured. Any other token is `401`. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
 
@@ -237,6 +237,7 @@ Operator-set conditions a Managed Dispatch is checked against at submission (ADR
 - `POST /v1/flag-rules`: creates version 1. `201` with the rule.
 - `PUT /v1/flag-rules/:id`: the whole new content, in the same body as `POST`; writes the next version. `200` with the rule. `409` (`RULE_DELETED`) for a deleted rule.
 - `DELETE /v1/flag-rules/:id`: the rule stops matching and leaves the list, but keeps its id and history. `200` with the rule; deleting it again changes nothing.
+- `POST /v1/flag-rules/preview`: what a rule would have held, without saving it (below).
 
 Rules are versioned and forward-only: an edit never changes an earlier version, so a held Dispatch always names the version it matched. Every `POST`, `PUT` and `DELETE` that changes something writes one operator action, and takes an optional `reason`, like cancel.
 
@@ -285,6 +286,27 @@ A rule, as every route returns it:
 ```
 
 The top level is the current version; `versions` lists every version, oldest first. `updatedAt` is when the current version was written.
+
+### `POST /v1/flag-rules/preview`
+
+How many of the last 30 days' Managed Dispatches on the rule's chain a rule would have held, before you switch it on. `OPERATOR_TOKEN` only. The body is a rule as for `POST /v1/flag-rules`; `name`, `enabled` and `reason` are optional and ignored. Nothing is saved and no operator action is written. An invalid rule is a `400` naming the field.
+
+Each Dispatch is run through the same matcher as the check in `POST /v1/dispatch`, with the facts as they were when it was submitted: confirmed payments before it, and the Dispatches of the 24 hours before it that had not yet been cancelled. Every Managed Dispatch in the window counts, whatever its status now, held and cancelled ones included.
+
+```json
+{
+  "from": "2026-10-02T10:00:00.000Z",
+  "to": "2026-11-01T10:00:00.000Z",
+  "scanned": 412,
+  "capped": false,
+  "wouldHold": 3,
+  "examples": [
+    { "dispatchId": "<id>", "createdAt": "2026-10-30T08:12:00.000Z", "items": [0, 4] }
+  ]
+}
+```
+
+`scanned` is how many Dispatches in the window were checked, and `wouldHold` how many of them the rule matches. `examples` are up to 10 of those, newest first, each with the items it matched. One preview reads at most 2,000 Dispatches, the 24 hours before the window included, newest first; when there were more, `capped` is `true` and the oldest are left out, so `wouldHold` is a lower bound.
 
 ## Held (`held` and the `hold` block)
 

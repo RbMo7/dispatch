@@ -2,7 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import type { DispatchStore } from '../repository/dispatch-store.js';
 import type { AssetDecimals } from './asset-decimals.js';
-import { parseFlagRuleSpec, toWireRule } from './flag-rule-wire.js';
+import { parseFlagRuleCheck, parseFlagRuleSpec, toWireRule } from './flag-rule-wire.js';
+import { previewFlagRule } from './hold-check.js';
 import {
   type ApiTokens,
   logOperatorAction,
@@ -48,6 +49,12 @@ export const registerFlagRuleRoutes: FastifyPluginAsync<FlagRuleRouteDeps> = (ap
     const rule = await store.createFlagRule(spec.value, actor);
     logOperatorAction(request, 'flag_rule_create', rule.id, actor);
     return reply.code(201).send(toWireRule(rule));
+  });
+
+  app.post('/v1/flag-rules/preview', { onRequest: write }, async (request, reply) => {
+    const check = parseFlagRuleCheck(request.body, assetDecimals);
+    if (!check.ok) return reply.code(400).send({ error: check.error });
+    return previewFlagRule(store, check.value.chain, check.value.definition, new Date());
   });
 
   app.put<{ Params: { id: string } }>(

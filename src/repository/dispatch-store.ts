@@ -206,6 +206,8 @@ export interface DispatchStore {
   firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
   /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches created since `since` and not cancelled. */
   acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>>;
+  /** #119: up to `limit` of `chain`'s Managed Dispatches created at or after `since`, newest first, whatever their status. */
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]>;
   /** ADR-0058: why the Dispatch was held, or null if it never was. */
   getHold(dispatchId: string): Promise<Hold | null>;
   /**

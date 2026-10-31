@@ -91,6 +91,27 @@ function parseDefinition(
   }
 }
 
+/** What a rule checks, without its name or switch: all a preview needs. */
+export function parseFlagRuleCheck(
+  raw: unknown,
+  decimalsOf: AssetDecimals,
+): Result<{ chain: Chain; definition: FlagRuleDefinition }, string> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return err('the body must be a JSON object');
+  }
+  const body = raw as Record<string, unknown>;
+  const { chain, kind } = body;
+  if (!CHAINS.includes(chain as Chain)) return err(`chain: must be one of ${CHAINS.join(', ')}`);
+  if (!KINDS.includes(kind as FlagRuleKind)) return err(`kind: must be one of ${KINDS.join(', ')}`);
+  const ruleKind = kind as FlagRuleKind;
+  const extra = Object.keys(body).find(
+    (key) => !COMMON.includes(key) && !PARAMETERS[ruleKind].includes(key),
+  );
+  if (extra !== undefined) return err(`${extra}: not a parameter of ${ruleKind}`);
+  const definition = parseDefinition(ruleKind, chain as Chain, body, decimalsOf);
+  return definition.ok ? ok({ chain: chain as Chain, definition: definition.value }) : definition;
+}
+
 /**
  * A request body to a Flag Rule, or a message naming the field at fault.
  * Limits become integers in the asset's smallest unit here, with the
@@ -100,25 +121,14 @@ export function parseFlagRuleSpec(
   raw: unknown,
   decimalsOf: AssetDecimals,
 ): Result<FlagRuleSpec, string> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return err('the body must be a JSON object');
-  }
-  const body = raw as Record<string, unknown>;
-  const { name, chain, enabled = true, kind } = body;
+  const check = parseFlagRuleCheck(raw, decimalsOf);
+  if (!check.ok) return check;
+  const { name, enabled = true } = raw as Record<string, unknown>;
   if (typeof name !== 'string' || name.trim().length === 0) {
     return err('name: required, a non-empty string');
   }
-  if (!CHAINS.includes(chain as Chain)) return err(`chain: must be one of ${CHAINS.join(', ')}`);
   if (typeof enabled !== 'boolean') return err('enabled: must be true or false');
-  if (!KINDS.includes(kind as FlagRuleKind)) return err(`kind: must be one of ${KINDS.join(', ')}`);
-  const ruleKind = kind as FlagRuleKind;
-  const extra = Object.keys(body).find(
-    (key) => !COMMON.includes(key) && !PARAMETERS[ruleKind].includes(key),
-  );
-  if (extra !== undefined) return err(`${extra}: not a parameter of ${ruleKind}`);
-  const definition = parseDefinition(ruleKind, chain as Chain, body, decimalsOf);
-  if (!definition.ok) return definition;
-  return ok({ name: name.trim(), chain: chain as Chain, enabled, definition: definition.value });
+  return ok({ name: name.trim(), enabled, ...check.value });
 }
 
 /** A definition as the wire shows it: whole units only. */

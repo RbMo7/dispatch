@@ -210,6 +210,29 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
       expect(await store.firstConfirmedPayments('solana', ['0xaaaa'])).toEqual(new Map());
     });
 
+    it("lists a chain's Managed Dispatches since a time, newest first, up to a limit", async () => {
+      const store = makeStore();
+      const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+      const first = await submit(store, [payTo('0xa', '1')]);
+      await later();
+      const second = await submit(store, [payTo('0xa', '1')]);
+      await later();
+      const third = await submit(store, [payTo('0xa', '1')]);
+      await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [{ call: { programId: 'p', accounts: [], data: '' }, payment: null }],
+        retryPolicy: false,
+      });
+
+      const listed = await store.listManagedDispatchesSince('base', new Date(0), 2);
+      const since = await store.listManagedDispatchesSince('base', second.createdAt, 10);
+
+      expect(listed.map((d) => d.id)).toEqual([third.id, second.id]);
+      expect(since.map((d) => d.id)).toEqual([third.id, second.id]);
+      expect(first.id).not.toBe(second.id);
+    });
+
     it('sums accepted payments of each asset since a time, held included, cancelled not', async () => {
       const store = makeStore();
       const rule = await store.createFlagRule(bigUsdc, operator);

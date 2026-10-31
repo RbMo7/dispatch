@@ -42,6 +42,7 @@ const SOME_ID = '00000000-0000-4000-8000-000000000000';
 const OPERATOR_ONLY = [
   { method: 'GET', url: '/v1/activity' },
   { method: 'POST', url: '/v1/flag-rules' },
+  { method: 'POST', url: '/v1/flag-rules/preview' },
   { method: 'PUT', url: `/v1/flag-rules/${SOME_ID}` },
   { method: 'DELETE', url: `/v1/flag-rules/${SOME_ID}` },
   { method: 'POST', url: `/v1/dispatch/${SOME_ID}/release` },

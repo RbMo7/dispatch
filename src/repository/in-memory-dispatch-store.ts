@@ -255,6 +255,15 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(totals);
   }
 
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    return Promise.resolve(
+      [...this.dispatches.values()]
+        .filter((d) => d.chain === chain && d.createdAt >= since)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit),
+    );
+  }
+
   getHold(dispatchId: string): Promise<Hold | null> {
     return Promise.resolve(this.holds.get(dispatchId) ?? null);
   }
