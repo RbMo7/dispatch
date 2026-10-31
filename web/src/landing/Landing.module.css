@@ -164,7 +164,9 @@
 
 .statementText {
   max-width: 24ch;
-  margin: 0;
+  margin: 0 auto;
+  text-align: center;
+  text-wrap: balance;
   font-size: clamp(30px, 4vw, 48px);
   font-weight: 500;
   letter-spacing: -0.025em;
