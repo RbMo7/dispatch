@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 
 import { registerActivityRoutes } from './api/activity-routes.js';
 import { type DispatchRouteDeps, registerDispatchRoutes } from './api/dispatch-routes.js';
+import { registerFlagRuleRoutes } from './api/flag-rule-routes.js';
 import { parseApiTokens } from './api/operator-auth.js';
 import { registerSenderRoutes, type SenderRouteDeps } from './api/sender-routes.js';
 import { logger } from './logger.js';
@@ -23,6 +24,11 @@ export function buildApp({ authToken, operatorToken, ...deps }: AppDeps) {
   app.register(registerDispatchRoutes, { ...deps, tokens });
   app.register(registerSenderRoutes, { tokens, listSenders: deps.listSenders });
   app.register(registerActivityRoutes, { tokens, store: deps.store });
+  app.register(registerFlagRuleRoutes, {
+    tokens,
+    store: deps.store,
+    assetDecimals: deps.assetDecimals,
+  });
 
   return app;
 }

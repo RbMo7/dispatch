@@ -1,13 +1,13 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `GET /v1/senders` and `GET /v1/activity`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `GET /v1/senders`, `GET /v1/activity` and `/v1/flag-rules`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## Tokens
 
 Every `/v1` route takes `Authorization: Bearer <token>`, with one of two operator-configured tokens:
 
 - `AUTH_TOKEN` (ADR-0022): the API client's token. Submit, read and cancel.
-- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `GET /v1/activity`, and the release and Flag Rule routes once they exist.
+- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `GET /v1/activity` and the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`).
 
 An operator-only route answers `403` to `AUTH_TOKEN`, and `403` to everyone when `OPERATOR_TOKEN` is unset, with an `error` saying it is not configured. Any other token is `401`. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
 
@@ -204,7 +204,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 
 ## `GET /v1/activity`
 
-The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token; later entries for releases and Flag Rule changes join it as those routes arrive. Each action is also written to the engine's log as an `operator action` line.
+The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token, and for every Flag Rule create, edit and delete (`action`: `cancel`, `flag_rule_create`, `flag_rule_update`, `flag_rule_delete`). Each action is also written to the engine's log as an `operator action` line.
 
 Query parameters, both optional: `limit` (1 to 100, default 25) and `cursor` (the previous page's `nextCursor`, opaque). Pages are cut on `(at, id)` as `GET /v1/dispatches` cuts on `(createdAt, id)`, and `nextCursor` is `null` only on the last page.
 
@@ -225,6 +225,64 @@ Query parameters, both optional: `limit` (1 to 100, default 25) and `cursor` (th
 ```
 
 `tokenKind` is `auth` or `operator`: which token made the request. The tokens are shared secrets, not identities, so an action names no person; `reason` is what the caller gave, or `null`.
+
+## Flag Rules (`/v1/flag-rules`)
+
+Operator-set conditions a Managed Dispatch is checked against at submission (ADR-0058). Reading takes either token; writing takes `OPERATOR_TOKEN` (ADR-0057).
+
+- `GET /v1/flag-rules`: `{ "rules": [<rule>, …] }`, every rule not deleted, oldest first.
+- `GET /v1/flag-rules/:id`: one rule, deleted or not. `404` for an unknown id.
+- `POST /v1/flag-rules`: creates version 1. `201` with the rule.
+- `PUT /v1/flag-rules/:id`: the whole new content, in the same body as `POST`; writes the next version. `200` with the rule. `409` (`RULE_DELETED`) for a deleted rule.
+- `DELETE /v1/flag-rules/:id`: the rule stops matching and leaves the list, but keeps its id and history. `200` with the rule; deleting it again changes nothing.
+
+Rules are versioned and forward-only: an edit never changes an earlier version, so a held Dispatch always names the version it matched. Every `POST`, `PUT` and `DELETE` that changes something writes one operator action, and takes an optional `reason`, like cancel.
+
+A body is `name`, `chain` (`base` or `solana`), `enabled` (optional, default `true`), `kind`, and exactly that kind's parameters. Any other field is a `400`.
+
+| `kind` | Parameters | Matches a Dispatch when |
+|---|---|---|
+| `item_over` | `asset`, `limit` | one `payment` item of `asset` is over `limit` |
+| `dispatch_total_over` | `asset`, `limit` | its `payment` items of `asset` add up to more than `limit` |
+| `daily_volume_over` | `asset`, `limit` | the `payment` items of `asset` in Managed Dispatches accepted in the last 24 hours and not cancelled, plus this one's, add up to more than `limit` |
+| `first_time_recipient` | none | a `payment` item's recipient has never had a confirmed payment from this engine on this chain |
+| `recipient_not_allowlisted` | `addresses` | a `payment` item's recipient is not in `addresses` |
+| `call_target_not_allowlisted` | `addresses` | a `call` item's `to` (Base) or `programId` (Solana) is not in `addresses` |
+
+`limit` is a decimal string in whole units of the asset (`"5000"`, `"0.5"`), unlike a `payment` item's `amount`, which is in the smallest unit. It must be more than zero and have no more decimal places than the asset. `asset` must be one the engine knows on that chain. `addresses` must each be valid on that chain; Base addresses are stored checksummed and compared without regard to case. A `400` names the field at fault: `{ "error": "limit: USDC has 6 decimal places, so \"1.0000001\" is too precise" }`.
+
+```json
+{ "name": "Large USDC payment", "chain": "base", "kind": "item_over", "asset": "USDC", "limit": "5000" }
+{ "name": "Large ETH batch", "chain": "base", "kind": "dispatch_total_over", "asset": "ETH", "limit": "1.5" }
+{ "name": "Daily SOL", "chain": "solana", "kind": "daily_volume_over", "asset": "SOL", "limit": "100" }
+{ "name": "New payee", "chain": "solana", "kind": "first_time_recipient" }
+{ "name": "Known payees", "chain": "base", "kind": "recipient_not_allowlisted", "addresses": ["0x5290…9EE7"] }
+{ "name": "Known programs", "chain": "solana", "kind": "call_target_not_allowlisted", "addresses": ["<program id>"] }
+```
+
+A rule, as every route returns it:
+
+```json
+{
+  "ruleId": "<id>",
+  "version": 2,
+  "name": "Large USDC payment",
+  "chain": "base",
+  "enabled": true,
+  "kind": "item_over",
+  "asset": "USDC",
+  "limit": "7500",
+  "createdAt": "2026-10-31T10:00:00.000Z",
+  "updatedAt": "2026-11-01T09:00:00.000Z",
+  "deletedAt": null,
+  "versions": [
+    { "version": 1, "name": "Large USDC payment", "chain": "base", "enabled": true, "kind": "item_over", "asset": "USDC", "limit": "5000", "createdAt": "2026-10-31T10:00:00.000Z" },
+    { "version": 2, "name": "Large USDC payment", "chain": "base", "enabled": true, "kind": "item_over", "asset": "USDC", "limit": "7500", "createdAt": "2026-11-01T09:00:00.000Z" }
+  ]
+}
+```
+
+The top level is the current version; `versions` lists every version, oldest first. `updatedAt` is when the current version was written.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

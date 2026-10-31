@@ -3,6 +3,7 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { FlagRule, FlagRuleSpec } from '../domain/flag-rule.js';
 import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
@@ -171,6 +172,26 @@ export interface DispatchStore {
    */
   cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome>;
   listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]>;
+
+  // --- Flag Rules (ADR-0058). Each write records its operator action in the same write (ADR-0057). ---
+
+  /** Writes version 1. */
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule>;
+  /** Writes the next version; the earlier ones stay as they were. */
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'>;
+  /** Marks it deleted, keeping every version. A repeat is `deleted: false` and records nothing. */
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'>;
+  /** Deleted rules included. */
+  getFlagRule(id: string): Promise<FlagRule | null>;
+  /** Every rule not deleted, oldest first. */
+  listFlagRules(): Promise<FlagRule[]>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */

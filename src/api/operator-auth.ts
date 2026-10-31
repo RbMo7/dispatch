@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
+import { err, ok, type Result } from '../domain/result.js';
 
 /** ADR-0022 and ADR-0057: `operator` is null when OPERATOR_TOKEN is unset. */
 export type ApiTokens = { auth: string; operator: string | null };
@@ -28,6 +29,18 @@ export function authedTokenKind(request: FastifyRequest, tokens: ApiTokens): Tok
   const kind = tokenKindOf(request, tokens);
   if (kind === null) throw new Error('authedTokenKind called on an unauthenticated request');
   return kind;
+}
+
+/** An operator action's `reason` from a JSON body: absent is null, present must be a non-empty string. */
+export function readReason(body: unknown): Result<string | null, string> {
+  if (body === undefined || body === null) return ok(null);
+  if (typeof body !== 'object' || Array.isArray(body)) return err('the body must be a JSON object');
+  const { reason } = body as { reason?: unknown };
+  if (reason === undefined) return ok(null);
+  if (typeof reason !== 'string' || reason.trim().length === 0) {
+    return err('reason: must be a non-empty string');
+  }
+  return ok(reason.trim());
 }
 
 /** ADR-0057: every recorded operator action is also logged. */

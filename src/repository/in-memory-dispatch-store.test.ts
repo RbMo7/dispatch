@@ -8,6 +8,7 @@ import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
+import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
@@ -24,6 +25,7 @@ describe('InMemoryDispatchStore', () => {
   runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
   runListConformanceSuite(() => new InMemoryDispatchStore());
   runTimelineConformanceSuite(() => new InMemoryDispatchStore());
+  runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

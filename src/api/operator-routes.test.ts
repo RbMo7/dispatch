@@ -38,7 +38,13 @@ async function submit(app: App, key: string, headers = CLIENT): Promise<string> 
 }
 
 /** Every operator-only route; later issues add theirs here. */
-const OPERATOR_ONLY = [{ method: 'GET', url: '/v1/activity' }] as const;
+const SOME_ID = '00000000-0000-4000-8000-000000000000';
+const OPERATOR_ONLY = [
+  { method: 'GET', url: '/v1/activity' },
+  { method: 'POST', url: '/v1/flag-rules' },
+  { method: 'PUT', url: `/v1/flag-rules/${SOME_ID}` },
+  { method: 'DELETE', url: `/v1/flag-rules/${SOME_ID}` },
+] as const;
 
 describe('OPERATOR_TOKEN (ADR-0057)', () => {
   it('refuses to start when it equals AUTH_TOKEN, or is set but empty', async () => {

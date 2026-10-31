@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { FlagRule, FlagRuleSpec, FlagRuleVersion } from '../domain/flag-rule.js';
 import type {
   OperatorAction,
   OperatorActionKind,
@@ -48,6 +49,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
   private readonly operatorActions: OperatorAction[] = [];
+  private readonly flagRules = new Map<string, FlagRule>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -144,6 +146,62 @@ export class InMemoryDispatchStore implements DispatchStore {
         .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
         .slice(0, query.limit),
     );
+  }
+
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
+    const id = randomUUID();
+    const current: FlagRuleVersion = { ...spec, ruleId: id, version: 1, createdAt: this.now() };
+    const rule: FlagRule = {
+      id,
+      createdAt: current.createdAt,
+      deletedAt: null,
+      current,
+      versions: [current],
+    };
+    this.flagRules.set(id, rule);
+    this.recordAction('flag_rule_create', id, actor);
+    return Promise.resolve(rule);
+  }
+
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve('deleted');
+    const current: FlagRuleVersion = {
+      ...spec,
+      ruleId: id,
+      version: rule.current.version + 1,
+      createdAt: this.now(),
+    };
+    const updated = { ...rule, current, versions: [...rule.versions, current] };
+    this.flagRules.set(id, updated);
+    this.recordAction('flag_rule_update', id, actor);
+    return Promise.resolve(updated);
+  }
+
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve({ rule, deleted: false });
+    const deleted = { ...rule, deletedAt: this.now() };
+    this.flagRules.set(id, deleted);
+    this.recordAction('flag_rule_delete', id, actor);
+    return Promise.resolve({ rule: deleted, deleted: true });
+  }
+
+  getFlagRule(id: string): Promise<FlagRule | null> {
+    return Promise.resolve(this.flagRules.get(id) ?? null);
+  }
+
+  listFlagRules(): Promise<FlagRule[]> {
+    return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {

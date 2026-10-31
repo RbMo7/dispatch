@@ -23,6 +23,7 @@ import {
   type ApiTokens,
   authedTokenKind,
   logOperatorAction,
+  readReason,
   requireToken,
 } from './operator-auth.js';
 import { isUuid } from './uuid.js';
@@ -135,18 +136,6 @@ async function translateItem(
       `items[${index}]: unknown item type "${String(type)}" — must be "payment" or "call"`,
     ),
   );
-}
-
-/** An operator action's `reason` from a JSON body: absent is null, present must be a non-empty string. */
-function readReason(body: unknown): Result<string | null, string> {
-  if (body === undefined || body === null) return ok(null);
-  if (typeof body !== 'object' || Array.isArray(body)) return err('the body must be a JSON object');
-  const { reason } = body as { reason?: unknown };
-  if (reason === undefined) return ok(null);
-  if (typeof reason !== 'string' || reason.trim().length === 0) {
-    return err('reason must be a non-empty string');
-  }
-  return ok(reason.trim());
 }
 
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
