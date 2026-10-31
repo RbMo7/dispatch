@@ -42,48 +42,55 @@ export const dispatches = pgTable(
   ],
 );
 
-export const transactions = pgTable('transactions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  /**
-   * Deliberately NOT a foreign key: this points at either `dispatches.id`
-   * (a Managed Dispatch's Call) or `relay_dispatches.id` (ADR-0031's
-   * RelayDispatch, always exactly one Transaction) — a single-table FK
-   * can't express "one of two tables." This is the intentional
-   * replacement for that referential-integrity check, not a gap left
-   * open: `Coordinator.maybeAbandon` already resolves which owner a
-   * Transaction belongs to (tries getDispatch, falls back to
-   * getRelayDispatch, throws if neither matches — a genuinely orphaned
-   * row still surfaces loudly). Nothing in this repo ever deletes a
-   * Dispatch/RelayDispatch row, so there's no live risk the dropped FK's
-   * old ON DELETE behavior was actually guarding against.
-   */
-  dispatchId: uuid('dispatch_id').notNull(),
-  callIndex: integer('call_index').notNull(),
-  chain: text('chain').notNull(),
-  signedBytes: text('signed_bytes'),
-  hash: text('hash'),
-  status: text('status').notNull().default('PENDING'),
-  error: jsonb('error').$type<DispatchError | null>(),
-  broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
-  /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
-  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
-  /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
-  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
-  /** #109: when this Transaction was marked FAILED — what the timeline reports it at. */
-  failedAt: timestamp('failed_at', { withTimezone: true }),
-  /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
-  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
-  /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
-  lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
-  /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
-  replacesTransactionId: uuid('replaces_transaction_id'),
-  /** #9: fee-bump attempts made for this Call so far, failed ones included. */
-  feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
-  /** ADR-0054: the Proposal a multisig Call belongs to — null for every other Transaction. */
-  proposalId: uuid('proposal_id').references((): AnyPgColumn => proposals.id),
-  /** ADR-0054: this Call's position inside its Proposal. */
-  proposalPosition: integer('proposal_position'),
-});
+export const transactions = pgTable(
+  'transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Deliberately NOT a foreign key: this points at either `dispatches.id`
+     * (a Managed Dispatch's Call) or `relay_dispatches.id` (ADR-0031's
+     * RelayDispatch, always exactly one Transaction) — a single-table FK
+     * can't express "one of two tables." This is the intentional
+     * replacement for that referential-integrity check, not a gap left
+     * open: `Coordinator.maybeAbandon` already resolves which owner a
+     * Transaction belongs to (tries getDispatch, falls back to
+     * getRelayDispatch, throws if neither matches — a genuinely orphaned
+     * row still surfaces loudly). Nothing in this repo ever deletes a
+     * Dispatch/RelayDispatch row, so there's no live risk the dropped FK's
+     * old ON DELETE behavior was actually guarding against.
+     */
+    dispatchId: uuid('dispatch_id').notNull(),
+    callIndex: integer('call_index').notNull(),
+    chain: text('chain').notNull(),
+    signedBytes: text('signed_bytes'),
+    hash: text('hash'),
+    status: text('status').notNull().default('PENDING'),
+    error: jsonb('error').$type<DispatchError | null>(),
+    broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
+    /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
+    abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+    /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /** #109: when this Transaction was marked FAILED — what the timeline reports it at. */
+    failedAt: timestamp('failed_at', { withTimezone: true }),
+    /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
+    lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+    /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
+    replacesTransactionId: uuid('replaces_transaction_id'),
+    /** #9: fee-bump attempts made for this Call so far, failed ones included. */
+    feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
+    /** ADR-0054: the Proposal a multisig Call belongs to — null for every other Transaction. */
+    proposalId: uuid('proposal_id').references((): AnyPgColumn => proposals.id),
+    /** ADR-0054: this Call's position inside its Proposal. */
+    proposalPosition: integer('proposal_position'),
+  },
+  // Every read of a Dispatch, and of a list page, looks its Transactions up by Dispatch.
+  (table) => [
+    index('transactions_dispatch_id_call_index_idx').on(table.dispatchId, table.callIndex),
+  ],
+);
 
 /**
  * ADR-0054: one multisig transaction proposed for Approvers to decide on,
@@ -135,14 +142,18 @@ export const proposals = pgTable(
   ],
 );
 
-export const attempts = pgTable('attempts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  transactionId: uuid('transaction_id')
-    .notNull()
-    .references(() => transactions.id),
-  broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
-  error: jsonb('error').$type<DispatchError | null>(),
-});
+export const attempts = pgTable(
+  'attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transactionId: uuid('transaction_id')
+      .notNull()
+      .references(() => transactions.id),
+    broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
+    error: jsonb('error').$type<DispatchError | null>(),
+  },
+  (table) => [index('attempts_transaction_id_idx').on(table.transactionId)],
+);
 
 /**
  * base-chain-handler issue 02: a persisted per-(chain, Sender) nonce->hash

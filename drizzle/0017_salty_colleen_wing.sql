@@ -1,0 +1,2 @@
+CREATE INDEX "attempts_transaction_id_idx" ON "attempts" USING btree ("transaction_id");--> statement-breakpoint
+CREATE INDEX "transactions_dispatch_id_call_index_idx" ON "transactions" USING btree ("dispatch_id","call_index");
