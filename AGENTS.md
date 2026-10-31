@@ -21,6 +21,7 @@ Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domai
 - **`core-engine-scaffold`**: one issue at a time. Implement issue `NN`, stop, and let it be reviewed before starting `NN+1` — this is the foundation everything else plugs into, so mistakes here are the most expensive to leave uncaught.
 - **Chain-specific work** (`solana-chain-handler` and every chain after it): work through a whole feature's `spec.md` — all its issues — in one pass, then report back. No per-issue check-in required once the scaffold itself is settled and proven.
 - **Branches, commits and PRs**: work goes on a branch and a PR into `main`, never straight to `main`. Update the docs in the same PR as the code. Commit messages and PR bodies carry no agent attribution lines (no `Co-Authored-By`, no "Generated with").
+- **No agent trails**: nothing committed, pushed or posted names an AI agent or tool as an author: commit messages, PR titles and bodies, issue comments, code comments, docs, and file names. Agent working files (decision trails, plans, scratch notes, review reports, screenshots) stay outside the repo or in an ignored path, never in a commit.
 
 ## Where things stand
 
