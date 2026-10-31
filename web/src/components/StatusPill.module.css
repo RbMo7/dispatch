@@ -1,0 +1,76 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--space-2);
+  white-space: nowrap;
+  vertical-align: middle;
+  transition:
+    color 200ms,
+    background-color 200ms;
+}
+
+.content {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pill[data-status='cancelled'] .label {
+  text-decoration: line-through;
+}
+
+.glyph {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+}
+
+.hollowDot,
+.pulseDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.hollowDot {
+  border: 1.5px solid currentColor;
+}
+
+.pulseDot {
+  position: relative;
+  background: currentColor;
+}
+
+/* The only loop in the console, and it stops under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .pulseDot::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 1.6s ease-out infinite;
+  }
+}
+
+@keyframes pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}

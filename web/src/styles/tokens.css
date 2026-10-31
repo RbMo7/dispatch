@@ -1,0 +1,91 @@
+/*
+ * Every colour is one light-dark() pair, so a theme is just a color-scheme:
+ * the page follows prefers-color-scheme, and [data-theme] pins a subtree
+ * (the whole page for the manual toggle, a panel in the primitives gallery).
+ * Chrome resolves light-dark() in a custom property where it is declared, not
+ * where it is used, so the tokens are declared again on every [data-theme].
+ * scripts/check-contrast.ts reads this file; keep each value a plain hex,
+ * a var(), or a light-dark() of those.
+ */
+:root,
+[data-theme] {
+  color-scheme: light dark;
+
+  --canvas: light-dark(#f6f7f9, #0b0c0e);
+  --surface: light-dark(#ffffff, #141518);
+  --surface-sunken: light-dark(#eef0f3, #1b1d21);
+  --border: light-dark(#e6e8ec, #26282d);
+  --ink: light-dark(#0e1013, #f3f4f6);
+  --ink-muted: light-dark(#6b7280, #9097a1);
+  --ink-faint: light-dark(#9aa1ac, #5f6670);
+  --accent: light-dark(#ff4f00, #ff6a26);
+  --accent-soft: light-dark(#ffede5, #3a1d10);
+  /* The accent itself is 2.9:1 on accent-soft in light; text on it needs this. */
+  --accent-ink: light-dark(#c23b00, #ff6a26);
+
+  /* Status pill tones. Dark fills are each hue at 18% over the dark --surface. */
+  --pill-neutral-fg: light-dark(#4b5563, #c3c8d0);
+  --pill-neutral-bg: light-dark(#f1f2f4, #1e2126);
+  --pill-muted-fg: light-dark(#5e6573, #a3aab4);
+  --pill-muted-bg: light-dark(#f1f2f4, #24262b);
+  --pill-info-fg: light-dark(#1d4ed8, #93b4ff);
+  --pill-info-bg: light-dark(#e8eeff, #161f3b);
+  --pill-attention-fg: var(--accent-ink);
+  --pill-attention-bg: var(--accent-soft);
+  --pill-success-fg: light-dark(#15803d, #5edb8c);
+  --pill-success-bg: light-dark(#e7f7ec, #14281f);
+  --pill-warning-fg: light-dark(#b45309, #f5b451);
+  --pill-warning-bg: light-dark(#fef3e2, #312015);
+  --pill-danger-fg: light-dark(#b91c1c, #ff8a8a);
+  --pill-danger-bg: light-dark(#fdecec, #321619);
+  --pill-stale-fg: light-dark(#6b4e16, #d9b877);
+  --pill-stale-bg: light-dark(#f6f0e4, #241f18);
+
+  --chain-solana: #9945ff;
+  --chain-base: #0052ff;
+
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-12: 0.75rem;
+  --text-13: 0.8125rem;
+  --text-14: 0.875rem;
+  --text-16: 1rem;
+  --text-20: 1.25rem;
+  --text-28: 1.75rem;
+  --text-40: 2.5rem;
+  --text-64: 4rem;
+  --text-88: 5.5rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --radius-input: 8px;
+  --radius-card: 16px;
+  --radius-modal: 20px;
+  --radius-pill: 9999px;
+
+  --shadow-overlay: 0 12px 32px rgb(14 16 19 / 0.1);
+  --scrim: light-dark(rgb(14 16 19 / 0.24), rgb(0 0 0 / 0.5));
+
+  --layer-overlay: 100;
+}
+
+/* After the block above, so these win over its color-scheme. */
+:root[data-theme='light'],
+[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'],
+[data-theme='dark'] {
+  color-scheme: dark;
+}

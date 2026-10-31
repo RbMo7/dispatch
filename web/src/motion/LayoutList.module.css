@@ -1,0 +1,20 @@
+.list {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-input);
+  background: var(--surface);
+}
+
+.item + .item {
+  border-top: 1px solid var(--border);
+}

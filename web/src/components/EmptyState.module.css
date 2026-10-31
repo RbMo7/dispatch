@@ -1,0 +1,32 @@
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+}
+
+.icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-2);
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-14);
+  font-weight: 600;
+}
+
+.body {
+  max-width: 36ch;
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--text-13);
+}

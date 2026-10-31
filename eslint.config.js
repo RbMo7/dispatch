@@ -40,6 +40,7 @@ export default tseslint.config(
       // verifier/fixtures holds the one-off script that built the Squads test
       // fixtures with @sqds/multisig, a dependency the verifier itself never has.
       'verifier/fixtures/**',
+      'web/dist/**',
     ],
   },
 );
