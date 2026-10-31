@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -34,7 +35,11 @@ export const dispatches = pgTable(
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],
+  (table) => [
+    uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey),
+    // #110: `GET /v1/dispatches` pages newest first on `(created_at, id)`.
+    index('dispatches_created_at_id_idx').on(table.createdAt, table.id),
+  ],
 );
 
 export const transactions = pgTable('transactions', {
@@ -186,5 +191,8 @@ export const relayDispatches = pgTable(
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   },
-  (table) => [uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey)],
+  (table) => [
+    uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey),
+    index('relay_dispatches_created_at_id_idx').on(table.createdAt, table.id),
+  ],
 );

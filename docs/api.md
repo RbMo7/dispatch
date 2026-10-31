@@ -141,7 +141,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
 }
 ```
 
-Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. A page is full unless it is the last; `nextCursor` is `null` on the last page.
+Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
 
 ## `POST /v1/dispatch/:id/cancel`
 

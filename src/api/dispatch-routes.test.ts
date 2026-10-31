@@ -10,6 +10,7 @@ import { CHAINS } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
+import { MAX_SCANNED_ROWS } from './dispatch-list.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
 
@@ -1490,6 +1491,54 @@ describe('GET /v1/dispatches (#110)', () => {
 
     expect(first.dispatches).toHaveLength(25);
     expect(second.dispatches).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('stops a filtered scan after MAX_SCANNED_ROWS rows and hands back a cursor to keep paging', async () => {
+    const { app, store } = await buildTestApp();
+    const confirmed = await store.createRelayDispatch({
+      chain: 'base',
+      idempotencyKey: 'confirmed',
+      signedTransaction: 'signed',
+    });
+    await store.claimQueuedRelayDispatches(CHAINS, 1);
+    const transaction = await store.createTransaction({
+      dispatchId: confirmed.id,
+      callIndex: 0,
+      chain: 'base',
+      signedBytes: 'signed',
+      hash: 'hash-1',
+    });
+    await store.setRelayDispatchTransaction(confirmed.id, transaction.id);
+    await store.markConfirmed(transaction.id);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    for (let i = 0; i < MAX_SCANNED_ROWS; i++) {
+      await store.createRelayDispatch({
+        chain: 'base',
+        idempotencyKey: `claimed-${i}`,
+        signedTransaction: 'signed',
+      });
+    }
+    await store.claimQueuedRelayDispatches(CHAINS, MAX_SCANNED_ROWS);
+
+    const first = (
+      await app.inject({
+        method: 'GET',
+        url: '/v1/dispatches?status=confirmed',
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+    const second = (
+      await app.inject({
+        method: 'GET',
+        url: `/v1/dispatches?status=confirmed&cursor=${first.nextCursor ?? ''}`,
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+
+    expect(first.dispatches).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    expect(second.dispatches.map((d) => d.dispatchId)).toEqual([confirmed.id]);
     expect(second.nextCursor).toBeNull();
   });
 

@@ -109,21 +109,31 @@ function storedStatusesFor(status: ListStatus): NonNullable<DispatchListQuery['s
 }
 
 /**
+ * The most rows one request reads looking for matches. A derived-status
+ * filter that matches nothing would otherwise read the whole table.
+ */
+export const MAX_SCANNED_ROWS = 500;
+
+/**
  * One page of `GET /v1/dispatches`. A status filter is on the derived status,
  * which the store cannot see, so rows are scanned in listing order until the
- * page is full and one more match proves there is a next page. The cursor is
- * the last row returned, so a page never skips or repeats a row.
+ * page is full and one more match proves there is a next page, or until
+ * `MAX_SCANNED_ROWS` have been read. The cursor is the last row returned, or
+ * the last row read when the scan stopped short, so a page never skips or
+ * repeats a row, though it may be short or even empty.
  */
 export async function listDispatchPage(store: DispatchStore, filter: DispatchListFilter) {
   const { cursor, status, ...query } = filter;
   const dispatches: ReturnType<typeof summarizeDispatch>[] = [];
   let lastReturned: DispatchCursor | null = null;
   let after = cursor;
+  let scanned = 0;
   for (;;) {
+    const limit = Math.min(filter.limit + 1, MAX_SCANNED_ROWS - scanned);
     const batch = await store.listDispatches({
       ...query,
       after,
-      limit: filter.limit + 1,
+      limit,
       ...(status ? { storedStatuses: storedStatusesFor(status) } : {}),
     });
     for (const listed of batch) {
@@ -135,8 +145,10 @@ export async function listDispatchPage(store: DispatchStore, filter: DispatchLis
       dispatches.push(summary);
       lastReturned = listed.cursor;
     }
+    scanned += batch.length;
     const last = batch.at(-1);
-    if (!last || batch.length <= filter.limit) return { dispatches, nextCursor: null };
+    if (!last || batch.length < limit) return { dispatches, nextCursor: null };
+    if (scanned === MAX_SCANNED_ROWS) return { dispatches, nextCursor: encodeCursor(last.cursor) };
     after = last.cursor;
   }
 }
