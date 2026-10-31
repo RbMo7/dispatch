@@ -96,7 +96,7 @@ Every entry has `at` (ISO 8601) and `kind`. `items` are the positions of the Cal
 | `proposal_created` | A Multisig Sender's Proposal was written down | `proposalId`, `chainRef`, `items` |
 | `proposal_approval` | The Approvers' decision, as the engine last read it: `at` is when the engine acted on it (wrote the execute, or the Proposal timed out or was resolved), and `null` while the Proposal is still open. `null` entries come last | `proposalId`, `state`, `approvals`, `threshold` |
 | `proposal_timed_out` | Nobody decided by the deadline (ADR-0053) | `proposalId` |
-| `proposal_resolved` | The Proposal ended | `proposalId`, `outcome`: `executed`, `rejected` or `failed` |
+| `proposal_resolved` | The Proposal ended. A Proposal cancelled in Squads reads `rejected`: the engine records it as `APPROVAL_REJECTED`, like a rejection | `proposalId`, `outcome`: `executed`, `rejected` or `failed` |
 
 ## `GET /v1/dispatches`
 
@@ -148,7 +148,7 @@ Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `crea
 Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
 
 - `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
-- `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the same shape as every other refused request.
+- `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the structured shape of a refusal that has an error code, such as a `400` with `CHAIN_NOT_ENABLED` or `CHAIN_REJECTED`. A refusal with no error code, such as a `401` or a `404`, is `{ "error": "..." }`.
 - `404`: no Dispatch has this id.
 
 `cancelled` is terminal and stored, not derived. Resubmitting a cancelled Dispatch's `Idempotency-Key` returns it (`202`, `status: "cancelled"`) and creates nothing new; send a new key to try again. An open Proposal cannot be cancelled here: rejecting it is the Approvers' call, in Squads or Safe.
