@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
+import { docsPlugin } from './scripts/docs.ts';
 import { THEME_BOOT_SCRIPT } from './src/theme.ts';
 
 // One codebase, two builds, chosen by --mode. Each page is its own HTML entry
@@ -53,7 +54,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     appType: 'mpa',
-    plugins: [react(), spaFallback(build), themeBoot],
+    plugins: [react(), spaFallback(build), themeBoot, docsPlugin(resolve('..'))],
     build: {
       outDir: `dist/${mode}`,
       emptyOutDir: true,
