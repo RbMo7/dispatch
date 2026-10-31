@@ -14,6 +14,7 @@
 }
 
 .pane,
+.sheet,
 .modal {
   position: relative;
   display: flex;
@@ -31,6 +32,15 @@
   width: min(440px, calc(100vw - 2 * var(--space-2)));
   border: 1px solid var(--border);
   border-radius: var(--radius-modal);
+}
+
+.sheet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(300px, calc(100vw - var(--space-12)));
+  border-right: 1px solid var(--border);
 }
 
 .modal {

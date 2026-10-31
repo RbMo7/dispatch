@@ -62,7 +62,10 @@ const markdown = unified().use(remarkParse).use(remarkGfm).use(remarkRehype).use
  * problem, on a broken internal link or anchor, a page with no title, or a
  * Markdown file under docs/ that the table leaves out.
  */
-export async function buildDocs(root: string, nav: readonly NavSection[] = NAV): Promise<BuiltDocs> {
+export async function buildDocs(
+  root: string,
+  nav: readonly NavSection[] = NAV,
+): Promise<BuiltDocs> {
   const problems: string[] = [];
   const sections = plan(root, nav, problems);
   const planned = sections.flatMap((section) => section.pages);
@@ -77,7 +80,7 @@ export async function buildDocs(root: string, nav: readonly NavSection[] = NAV):
   for (const page of planned) {
     const raw = readFileSync(path.join(root, page.source), 'utf8');
     const { body, status } = splitFrontmatter(raw);
-    const tree = (await markdown.run(markdown.parse(body))) as Root;
+    const tree = await markdown.run(markdown.parse(body));
 
     const title = page.title ?? takeTitle(tree);
     if (title === undefined) {
@@ -141,16 +144,14 @@ function plan(root: string, nav: readonly NavSection[], problems: string[]) {
     if (!('adrDirectory' in section.pages)) {
       return {
         title: section.title,
-        pages: section.pages.map(
-          (page): Planned => ({
-            slug: page.slug ?? path.basename(page.source, '.md'),
-            source: page.source,
-            section: section.title,
-            title: page.title,
-            label: page.label,
-            adrNumber: undefined,
-          }),
-        ),
+        pages: section.pages.map((page): Planned => ({
+          slug: page.slug ?? path.basename(page.source, '.md'),
+          source: page.source,
+          section: section.title,
+          title: page.title,
+          label: page.label,
+          adrNumber: undefined,
+        })),
       };
     }
     const directory = section.pages.adrDirectory;
@@ -162,22 +163,21 @@ function plan(root: string, nav: readonly NavSection[], problems: string[]) {
       .sort((a, b) => a.number.localeCompare(b.number));
     return {
       title: section.title,
-      pages: adrs.map(
-        ({ file, number }): Planned => ({
-          slug: `adr/${number}`,
-          source: `${directory}/${file}`,
-          section: section.title,
-          title: undefined,
-          label: undefined,
-          adrNumber: number,
-        }),
-      ),
+      pages: adrs.map(({ file, number }): Planned => ({
+        slug: `adr/${number}`,
+        source: `${directory}/${file}`,
+        section: section.title,
+        title: undefined,
+        label: undefined,
+        adrNumber: number,
+      })),
     };
   });
 
   const sources = new Set(sections.flatMap((section) => section.pages.map((page) => page.source)));
   for (const source of sources) {
-    if (!existsSync(path.join(root, source))) problems.push(`${source}: in the nav table but missing`);
+    if (!existsSync(path.join(root, source)))
+      problems.push(`${source}: in the nav table but missing`);
   }
   for (const source of markdownUnder(root, 'docs')) {
     if (!sources.has(source)) {
@@ -241,7 +241,7 @@ function collectIds(tree: Root): Set<string> {
 
 async function idsOfFile(root: string, source: string): Promise<Set<string>> {
   const raw = readFileSync(path.join(root, source), 'utf8');
-  return collectIds((await markdown.run(markdown.parse(splitFrontmatter(raw).body))) as Root);
+  return collectIds(await markdown.run(markdown.parse(splitFrontmatter(raw).body)));
 }
 
 // An API route heading (`## POST /v1/dispatch`) gets a method badge styled
@@ -348,9 +348,10 @@ function rewriteLinks(
 function wrapCodeBlocks(tree: Root, highlighter: Highlighter): void {
   visit(tree, 'element', (node, index, parent) => {
     const code = node.children[0];
-    if (node.tagName !== 'pre' || !isElement(code, 'code') || !parent || index === undefined) return;
+    if (node.tagName !== 'pre' || !isElement(code, 'code') || !parent || index === undefined)
+      return;
 
-    const fence = String((code.properties.className as string[] | undefined)?.[0] ?? '');
+    const fence = String(code.properties.className?.[0] ?? '');
     const lang = fence.replace(/^language-/, '') || 'text';
     const meta = (code.data as { meta?: string } | undefined)?.meta ?? '';
     const title = /\btitle="([^"]+)"/.exec(meta)?.[1];
@@ -387,7 +388,7 @@ function groupTabs(tree: Root): void {
     if (!('children' in node)) return;
     const children = node.children as ElementContent[];
     const out: ElementContent[] = [];
-    for (let i = 0; i < children.length; ) {
+    for (let i = 0; i < children.length;) {
       const run: Element[] = [];
       let j = i;
       while (j < children.length) {
@@ -408,7 +409,7 @@ function groupTabs(tree: Root): void {
       out.push(tabs(run, `tabs-${group}`));
       i = j;
     }
-    node.children = out as typeof node.children;
+    node.children = out;
   });
 }
 
@@ -436,7 +437,8 @@ function tabs(figures: Element[], id: string): Element {
     ),
     ...figures.map((figure, i) => {
       // Without dataTitle the panels no longer look like a run to group.
-      const { dataTitle: _title, ...properties } = figure.properties;
+      const properties = { ...figure.properties };
+      delete properties.dataTitle;
       figure.properties = {
         ...properties,
         role: 'tabpanel',

@@ -1,0 +1,308 @@
+/*
+ * The page HTML comes from scripts/docs.ts with plain class names, so its
+ * elements are styled through :global() under .prose.
+ */
+
+.header {
+  margin-bottom: var(--space-8);
+}
+
+.eyebrow {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--text-13);
+  font-weight: 500;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-28);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.status {
+  display: inline-block;
+  margin: var(--space-4) 0 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-input);
+  background: var(--pill-neutral-bg);
+  color: var(--pill-neutral-fg);
+  font-size: var(--text-13);
+}
+
+.prose {
+  font-size: var(--text-16);
+  line-height: 1.7;
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose :global(:is(h2, h3, h4)) {
+  scroll-margin-top: 80px;
+  font-weight: 600;
+}
+
+.prose :global(h2) {
+  margin: var(--space-12) 0 var(--space-4);
+  font-size: var(--text-20);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.prose :global(h3) {
+  margin: var(--space-8) 0 var(--space-3);
+  font-size: var(--text-16);
+  line-height: 1.4;
+}
+
+.prose :global(h4) {
+  margin: var(--space-6) 0 var(--space-2);
+  font-size: var(--text-14);
+}
+
+.prose :global(:is(p, ul, ol)) {
+  margin: 0 0 var(--space-4);
+}
+
+.prose :global(:is(ul, ol)) {
+  padding-left: 1.4em;
+}
+
+.prose :global(li) {
+  margin: var(--space-1) 0;
+}
+
+.prose :global(li > :is(p, ul, ol)) {
+  margin-bottom: var(--space-2);
+}
+
+.prose :global(a) {
+  text-decoration: underline;
+  text-decoration-color: var(--ink-faint);
+  text-underline-offset: 3px;
+}
+
+.prose :global(a:hover) {
+  text-decoration-color: currentColor;
+}
+
+.prose :global(strong) {
+  font-weight: 600;
+}
+
+.prose :global(:not(pre) > code) {
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius-input);
+  background: var(--surface-sunken);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.prose :global(:is(h2, h3) code) {
+  padding: 0;
+  background: none;
+  font-size: 0.92em;
+}
+
+.prose :global(blockquote) {
+  margin: 0 0 var(--space-4);
+  padding: 0 var(--space-4);
+  border-left: 2px solid var(--border);
+  color: var(--ink-muted);
+}
+
+.prose :global(hr) {
+  margin: var(--space-10) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Wide tables scroll inside the measure instead of widening the page. */
+.prose :global(table) {
+  display: block;
+  max-width: 100%;
+  margin: 0 0 var(--space-6);
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--text-14);
+  line-height: 1.5;
+}
+
+.prose :global(:is(th, td)) {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose :global(:is(th, td):first-child) {
+  padding-left: 0;
+}
+
+.prose :global(th) {
+  color: var(--ink-muted);
+  font-size: var(--text-13);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.prose :global(.code) {
+  margin: 0 0 var(--space-6);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface-sunken);
+}
+
+.prose :global(.code-bar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.prose :global(.code-lang) {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+}
+
+.prose :global(.code-copy) {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--text-12);
+  cursor: pointer;
+}
+
+.prose :global(.code-copy:hover) {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.prose :global(pre) {
+  margin: 0;
+  padding: var(--space-4);
+  overflow-x: auto;
+  font-size: var(--text-13);
+  line-height: 1.6;
+}
+
+/* Shiki writes both themes' colours as variables; the page's colour scheme picks one. */
+.prose :global(:is(.shiki, .shiki span)) {
+  color: light-dark(var(--shiki-light), var(--shiki-dark));
+}
+
+.prose :global(.code-tabs) {
+  margin: 0 0 var(--space-6);
+}
+
+.prose :global(.code-tabs .code) {
+  margin: 0;
+}
+
+.prose :global(.code-tabs [role='tablist']) {
+  display: flex;
+  width: max-content;
+  gap: 2px;
+  margin-bottom: var(--space-2);
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+}
+
+.prose :global([role='tab']) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--text-13);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.prose :global([role='tab'][aria-selected='true']) {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-16);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: var(--text-13);
+}
+
+.edit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-decoration: none;
+}
+
+.edit:hover {
+  color: var(--ink);
+}
+
+.source {
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+}
+
+/* The method badge, in the status-pill style, wherever it appears: API
+   route headings and the "On this page" rail. */
+:global(.method) {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--pill-info-bg);
+  color: var(--pill-info-fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-12);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  vertical-align: 0.15em;
+}
+
+:global(.method[data-method='POST']) {
+  background: var(--pill-success-bg);
+  color: var(--pill-success-fg);
+}
+
+:global(.method:is([data-method='PUT'], [data-method='PATCH'])) {
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-fg);
+}
+
+:global(.method[data-method='DELETE']) {
+  background: var(--pill-danger-bg);
+  color: var(--pill-danger-fg);
+}

@@ -15,6 +15,7 @@ interface Kind {
 // under reduced motion, both still arrive as a plain fade.
 const KINDS = {
   pane: { className: styles.pane, hidden: { x: '100%', opacity: 0 }, transition: paneSlide },
+  sheet: { className: styles.sheet, hidden: { x: '-100%', opacity: 0 }, transition: paneSlide },
   modal: { className: styles.modal, hidden: { scale: 0.96, opacity: 0 }, transition: modalScale },
 } satisfies Record<string, Kind>;
 
@@ -71,8 +72,9 @@ function Overlay({
   );
 }
 
-// Mounted only while open: takes focus in, closes on Escape, locks page
-// scroll, and hands focus back to whatever opened it.
+// Mounted only while open: takes focus in (to a [data-autofocus] child when
+// there is one), closes on Escape, locks page scroll, and hands focus back to
+// whatever opened it.
 function FocusAndEscape({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -85,7 +87,7 @@ function FocusAndEscape({ onClose, children }: { onClose: () => void; children: 
     const opener = document.activeElement as HTMLElement | null;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    ref.current?.focus();
+    (ref.current?.querySelector<HTMLElement>('[data-autofocus]') ?? ref.current)?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close.current();
     };
@@ -106,6 +108,10 @@ function FocusAndEscape({ onClose, children }: { onClose: () => void; children: 
 
 export function Pane(props: OverlayProps) {
   return <Overlay kind="pane" {...props} />;
+}
+
+export function Sheet(props: OverlayProps) {
+  return <Overlay kind="sheet" {...props} />;
 }
 
 export function Modal(props: OverlayProps) {
