@@ -1,6 +1,7 @@
 import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
 import styles from './console.module.css';
+import { DispatchesPage } from './dispatches/DispatchesPage';
 import { LiveProvider } from './live';
 import { RouterProvider, useRouter } from './router';
 import { SendersProvider } from './senderData';
@@ -34,7 +35,7 @@ function CurrentPage() {
     case 'overview':
       return <Pending title="Overview" />;
     case 'dispatches':
-      return <Pending title="Dispatches" />;
+      return <DispatchesPage />;
     case 'senders':
       return <Pending title="Senders & Keys" />;
   }
