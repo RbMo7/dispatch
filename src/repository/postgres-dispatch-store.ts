@@ -26,7 +26,7 @@ import type {
   ProposalPhase,
 } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
-import type { Transaction, TransactionStatus } from '../domain/transaction.js';
+import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
 import type {
   CancelOutcome,
@@ -57,6 +57,9 @@ function toDispatch(row: DispatchRow): Dispatch {
     status: row.status as DispatchStatus,
     retryPolicy: row.retryPolicy,
     bulkCall: row.bulkCall ?? null,
+    createdAt: row.createdAt,
+    claimedAt: row.claimedAt,
+    cancelledAt: row.cancelledAt,
   };
 }
 
@@ -73,6 +76,7 @@ function toTransaction(row: TransactionRow): Transaction {
     broadcastAt: row.broadcastAt,
     abandonedAt: row.abandonedAt,
     confirmedAt: row.confirmedAt,
+    failedAt: row.failedAt,
     lastCheckedAt: row.lastCheckedAt,
     lastBroadcastAt: row.lastBroadcastAt,
     replacesTransactionId: row.replacesTransactionId,
@@ -123,6 +127,9 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
     signedTransaction: row.signedTransaction,
     status: row.status as RelayDispatchStatus,
     transactionId: row.transactionId,
+    createdAt: row.createdAt,
+    claimedAt: row.claimedAt,
+    cancelledAt: row.cancelledAt,
   };
 }
 
@@ -172,6 +179,16 @@ export class PostgresDispatchStore implements DispatchStore {
       orderBy: transactions.callIndex,
     });
     return rows.map(toTransaction);
+  }
+
+  async listAttempts(dispatchId: string): Promise<Attempt[]> {
+    const rows = await this.db
+      .select({ attempt: attempts })
+      .from(attempts)
+      .innerJoin(transactions, eq(transactions.id, attempts.transactionId))
+      .where(eq(transactions.dispatchId, dispatchId))
+      .orderBy(attempts.broadcastAt);
+    return rows.map(({ attempt }) => ({ ...attempt, error: attempt.error ?? null }));
   }
 
   async claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
@@ -537,6 +554,7 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         status: 'FAILED',
         error: input.error,
+        failedAt: new Date(),
       })
       .returning();
 
@@ -580,7 +598,7 @@ export class PostgresDispatchStore implements DispatchStore {
   async markFailed(transactionId: string, error: DispatchError): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'FAILED', error })
+      .set({ status: 'FAILED', error, failedAt: new Date() })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -818,6 +836,7 @@ export class PostgresDispatchStore implements DispatchStore {
           hash: null,
           signedBytes: null,
           error: null,
+          failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
         })
@@ -858,6 +877,7 @@ export class PostgresDispatchStore implements DispatchStore {
             ? { hash: null, signedBytes: null }
             : {}),
           ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'FAILED' ? { failedAt: now } : {}),
           ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
         })
         .where(

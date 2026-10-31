@@ -1240,3 +1240,101 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
     expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
   });
 });
+
+describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
+  type TimelineBody = { timeline?: { at: string; kind: string; hash?: string }[] };
+
+  async function confirmedDispatch() {
+    const { app, store } = await buildTestApp();
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'key-1',
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+    await store.claimQueued(CHAINS, 10);
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'base',
+      signedBytes: 'bytes',
+      hash: 'hash-1',
+    });
+    await store.markConfirmed(transaction.id);
+    return { app, store, id: dispatch.id };
+  }
+
+  it('adds the timeline, oldest first, with ISO timestamps', async () => {
+    const { app, id } = await confirmedDispatch();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}?include=timeline`,
+      headers: AUTH_HEADERS,
+    });
+
+    const body = response.json<GetResponseBody & TimelineBody>();
+    expect(body.status).toBe('confirmed');
+    expect(body.timeline?.map((e) => [e.kind, e.hash])).toEqual([
+      ['created', undefined],
+      ['claimed', undefined],
+      ['written', 'hash-1'],
+      ['confirmed', 'hash-1'],
+    ]);
+    expect(body.timeline?.every((e) => !Number.isNaN(Date.parse(e.at)))).toBe(true);
+  });
+
+  it('leaves the body without the flag exactly as it was', async () => {
+    const { app, id } = await confirmedDispatch();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.body).toBe(
+      JSON.stringify({
+        dispatchId: id,
+        mode: 'managed',
+        status: 'confirmed',
+        items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+      }),
+    );
+  });
+
+  it('adds the timeline to a Relay Dispatch', async () => {
+    const { app } = await buildTestApp();
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-1' },
+      payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+    });
+    const id = submitted.json<PostResponseBody>().dispatchId;
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}?include=timeline`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<RelayGetResponseBody & TimelineBody>()).toMatchObject({
+      mode: 'relay',
+      status: 'queued',
+      timeline: [{ kind: 'created' }],
+    });
+  });
+
+  it('rejects an unknown include with 400', async () => {
+    const { app, id } = await confirmedDispatch();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}?include=everything`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+});

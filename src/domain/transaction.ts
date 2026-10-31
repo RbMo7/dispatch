@@ -53,6 +53,8 @@ export type Transaction = {
    * (a re-check that found the receipt gone), set again if it later re-confirms.
    */
   confirmedAt: Date | null;
+  /** #109: when this Transaction was marked FAILED — null unless it is FAILED. */
+  failedAt: Date | null;
   /** #21: when the pending poll last picked this Transaction up — null until its first poll. What `listPendingTransactions` rotates on, so rows that stay PENDING can't starve newer ones. */
   lastCheckedAt: Date | null;
   /** #9: when these exact signed bytes were last sent — first broadcast or a later rebroadcast Attempt. What the stuck timer (ADR-0037) measures against. */

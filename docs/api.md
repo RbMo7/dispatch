@@ -62,6 +62,42 @@ An item stays `broadcasting` while its transaction is unresolved. That includes 
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
 
+### `?include=timeline`
+
+`GET /v1/dispatch/:id?include=timeline` adds a `timeline` array to the same body, Managed or Relay: what happened to the Dispatch, oldest first, rebuilt from the timestamps the engine already keeps. Without the flag the body is exactly as above. Any other `include` value is a `400`.
+
+```json
+"timeline": [
+  { "at": "2026-10-31T10:00:00.000Z", "kind": "created" },
+  { "at": "2026-10-31T10:00:01.200Z", "kind": "claimed" },
+  { "at": "2026-10-31T10:00:01.900Z", "kind": "written", "hash": "0xaa…", "items": [0], "replaces": null },
+  { "at": "2026-10-31T10:01:02.000Z", "kind": "attempt", "hash": "0xaa…", "items": [0], "error": null },
+  { "at": "2026-10-31T10:02:03.000Z", "kind": "written", "hash": "0xbb…", "items": [0], "replaces": "0xaa…" },
+  { "at": "2026-10-31T10:02:03.000Z", "kind": "replaced", "hash": "0xaa…", "items": [0], "by": "0xbb…" },
+  { "at": "2026-10-31T10:02:03.400Z", "kind": "sent", "hash": "0xbb…", "items": [0] },
+  { "at": "2026-10-31T10:02:20.000Z", "kind": "confirmed", "hash": "0xbb…", "items": [0] },
+  { "at": "2026-10-31T10:02:20.000Z", "kind": "dropped", "hash": "0xaa…", "items": [0], "by": "0xbb…" }
+]
+```
+
+Every entry has `at` (ISO 8601) and `kind`. `items` are the positions of the Calls an entry is about, several when one transaction carries a bundle; a Relay Dispatch's one transaction is item `0`. `hash` names the transaction version.
+
+| `kind` | When | Extra fields |
+|---|---|---|
+| `created` | `POST /v1/dispatch` stored it | |
+| `claimed` | The worker last claimed it. A large Dispatch re-stamps this as it sends, so it can come after its first transactions | |
+| `cancelled` | It was cancelled (above) | |
+| `written` | A transaction version was signed and written down, before it was sent (ADR-0041) | `hash`, `items`, `replaces` (the hash it replaced, or `null`) |
+| `sent` | The node accepted it. Only shown while the version has no `attempt`: a resend overwrites this moment | `hash`, `items` |
+| `attempt` | The same bytes were sent again; `error` is the node's answer if it refused | `hash`, `items`, `error` |
+| `replaced` | A newer version took its place: a fee-bump (ADR-0037). It may still be the one that lands | `hash`, `items`, `by` |
+| `dropped` | It can never land: a newer version replaced it after expiry (ADR-0042), or another version settled the Call | `hash`, `items`, `by` (or `null`) |
+| `confirmed`, `failed`, `abandoned` | Its outcome. A `failed` entry with `hash: null` failed before anything was signed | `hash`, `items`, and `error` for `failed` and `abandoned` |
+| `proposal_created` | A Multisig Sender's Proposal was written down | `proposalId`, `chainRef`, `items` |
+| `proposal_approval` | The Approvers' decision, as the engine last read it: `at` is when the engine acted on it (wrote the execute, or the Proposal timed out or was resolved), and `null` while the Proposal is still open. `null` entries come last | `proposalId`, `state`, `approvals`, `threshold` |
+| `proposal_timed_out` | Nobody decided by the deadline (ADR-0053) | `proposalId` |
+| `proposal_resolved` | The Proposal ended | `proposalId`, `outcome`: `executed`, `rejected` or `failed` |
+
 ## `POST /v1/dispatch/:id/cancel`
 
 Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.

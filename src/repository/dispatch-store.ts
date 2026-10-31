@@ -5,7 +5,7 @@ import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
-import type { Transaction } from '../domain/transaction.js';
+import type { Attempt, Transaction } from '../domain/transaction.js';
 
 /** ADR-0054: a multisig Call claimed, validated and funded, to be written down as `UNPROPOSED`. */
 export type NewUnproposedInput = {
@@ -127,6 +127,8 @@ export interface DispatchStore {
   getDispatch(id: string): Promise<Dispatch | null>;
   /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/api.md) is built from. */
   listTransactions(dispatchId: string): Promise<Transaction[]>;
+  /** #109: every Attempt (rebroadcast) of every Transaction of a Dispatch or Relay Dispatch, oldest first. */
+  listAttempts(dispatchId: string): Promise<Attempt[]>;
   /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). Never a cancelled one. */
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
   /**

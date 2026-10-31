@@ -11,6 +11,7 @@ import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
+import { runTimelineConformanceSuite } from './timeline-conformance.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
@@ -42,6 +43,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
   runCancelConformanceSuite(() => new PostgresDispatchStore(db));
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
+  runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

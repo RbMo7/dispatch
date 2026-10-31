@@ -30,4 +30,9 @@ export type RelayDispatch<C extends Chain = Chain> = {
   signedTransaction: string;
   status: RelayDispatchStatus;
   transactionId: string | null;
+  createdAt: Date;
+  /** #20: when a worker last claimed it. */
+  claimedAt: Date | null;
+  /** ADR-0056: set exactly when `status` is `cancelled`. */
+  cancelledAt: Date | null;
 };

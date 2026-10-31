@@ -14,6 +14,7 @@ import type { Proposal } from '../domain/proposal.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+import { buildTimeline } from './timeline.js';
 
 export type DispatchRouteDeps = {
   store: DispatchStore;
@@ -193,31 +194,26 @@ function toWireApproval(proposal: Proposal) {
 }
 
 /** `GET /v1/dispatch/:id`'s body for a Managed or Relay Dispatch, or null when neither exists. */
-async function readDispatchView(store: DispatchStore, id: string) {
+async function readDispatchView(
+  store: DispatchStore,
+  id: string,
+  options: { timeline: boolean } = { timeline: false },
+) {
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
-    if (dispatch.status === 'cancelled') {
-      return {
-        dispatchId: dispatch.id,
-        mode: 'managed',
-        status: 'cancelled',
-        items: dispatch.items.map(() => ({
-          status: 'cancelled',
-          transactionHash: null,
-          error: null,
-        })),
-      };
-    }
-    const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
+    const allVersions = await store.listTransactions(dispatch.id);
+    const transactions = allVersions.filter(isCurrentVersion);
     const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
     // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
-    const proposalById = new Map(
-      transactions.some((t) => t.proposalId !== null)
-        ? (await store.listProposalsForDispatch(dispatch.id)).map((p) => [p.id, p])
-        : [],
-    );
+    const proposals = transactions.some((t) => t.proposalId !== null)
+      ? await store.listProposalsForDispatch(dispatch.id)
+      : [];
+    const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
     const items = dispatch.items.map((_, index) => {
+      if (dispatch.status === 'cancelled') {
+        return { status: 'cancelled', transactionHash: null, error: null };
+      }
       const transaction = transactionByCallIndex.get(index);
       if (!transaction) {
         return { status: 'queued', transactionHash: null, error: null };
@@ -238,6 +234,16 @@ async function readDispatchView(store: DispatchStore, id: string) {
       mode: 'managed',
       status: deriveDispatchStatus(dispatch, transactions),
       items,
+      ...(options.timeline
+        ? {
+            timeline: buildTimeline({
+              dispatch,
+              transactions: allVersions,
+              attempts: await store.listAttempts(dispatch.id),
+              proposals,
+            }),
+          }
+        : {}),
     };
   }
 
@@ -247,7 +253,8 @@ async function readDispatchView(store: DispatchStore, id: string) {
   // Dispatch's items-array shape, not a fake single-item version of it.
   const relayDispatch = await store.getRelayDispatch(id);
   if (relayDispatch) {
-    const [transaction] = await store.listTransactions(relayDispatch.id);
+    const relayTransactions = await store.listTransactions(relayDispatch.id);
+    const [transaction] = relayTransactions;
     return {
       dispatchId: relayDispatch.id,
       mode: 'relay',
@@ -258,6 +265,16 @@ async function readDispatchView(store: DispatchStore, id: string) {
           : 'queued',
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,
+      ...(options.timeline
+        ? {
+            timeline: buildTimeline({
+              dispatch: relayDispatch,
+              transactions: relayTransactions,
+              attempts: await store.listAttempts(relayDispatch.id),
+              proposals: [],
+            }),
+          }
+        : {}),
     };
   }
 
@@ -395,11 +412,21 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     },
   );
 
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { include?: 'timeline' } }>(
     '/v1/dispatch/:id',
-    { preHandler: auth },
+    {
+      preHandler: auth,
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { include: { type: 'string', enum: ['timeline'] } },
+        },
+      },
+    },
     async (request, reply) => {
-      const view = await readDispatchView(store, request.params.id);
+      const view = await readDispatchView(store, request.params.id, {
+        timeline: request.query.include === 'timeline',
+      });
       if (!view) return reply.code(404).send({ error: 'not found' });
       return reply.send(view);
     },

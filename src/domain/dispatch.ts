@@ -42,6 +42,11 @@ export type Dispatch<C extends Chain = Chain> = {
   retryPolicy: boolean;
   /** #11 (ADR-0038): opted into Bulk Call — items go out as `aggregate3Value` chunks through this caller-named aggregator. Null for the default one-transaction-per-item mode. */
   bulkCall: BulkCall | null;
+  createdAt: Date;
+  /** #20: when a worker last claimed it; re-stamped as a heartbeat while it sends, and on a reclaim. */
+  claimedAt: Date | null;
+  /** ADR-0056: set exactly when `status` is `cancelled`. */
+  cancelledAt: Date | null;
 };
 
 /** #11 (ADR-0038): a request's Bulk Call opt-in, as resolved at the API edge (`maxBatchSize` already defaulted and bounded). */

@@ -36,8 +36,6 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
-  /** #20: when each Dispatch / Relay Dispatch was last claimed. */
-  private readonly claimedAt = new Map<string, Date>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -58,6 +56,9 @@ export class InMemoryDispatchStore implements DispatchStore {
       status: 'queued',
       retryPolicy: input.retryPolicy,
       bulkCall: input.bulkCall ?? null,
+      createdAt: this.now(),
+      claimedAt: null,
+      cancelledAt: null,
     };
     this.dispatches.set(dispatch.id, dispatch);
 
@@ -76,15 +77,23 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(matches);
   }
 
+  listAttempts(dispatchId: string): Promise<Attempt[]> {
+    return Promise.resolve(
+      [...this.transactions.values()]
+        .filter((t) => t.dispatchId === dispatchId)
+        .flatMap((t) => this.attempts.get(t.id) ?? [])
+        .sort((a, b) => a.broadcastAt.getTime() - b.broadcastAt.getTime()),
+    );
+  }
+
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
     const claimed: Dispatch[] = [];
     for (const dispatch of this.dispatches.values()) {
       if (claimed.length >= limit) break;
       if (dispatch.status !== 'queued' || !chains.includes(dispatch.chain)) continue;
 
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting' };
+      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
       this.dispatches.set(dispatch.id, broadcasting);
-      this.claimedAt.set(dispatch.id, this.now());
       claimed.push(broadcasting);
     }
 
@@ -98,8 +107,11 @@ export class InMemoryDispatchStore implements DispatchStore {
     if (status === undefined) return Promise.resolve('not_found');
     if (status === 'cancelled') return Promise.resolve('cancelled');
     if (status !== 'queued') return Promise.resolve('already_claimed');
-    if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled' });
-    if (relayDispatch) this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled' });
+    const cancelledAt = this.now();
+    if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled', cancelledAt });
+    if (relayDispatch) {
+      this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled', cancelledAt });
+    }
     return Promise.resolve('cancelled');
   }
 
@@ -116,6 +128,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: this.now(),
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: this.now(),
       replacesTransactionId: null,
@@ -144,7 +157,10 @@ export class InMemoryDispatchStore implements DispatchStore {
   }
 
   touchClaims(dispatchIds: string[]): Promise<void> {
-    for (const id of dispatchIds) if (this.claimedAt.has(id)) this.claimedAt.set(id, this.now());
+    for (const id of dispatchIds) {
+      const dispatch = this.dispatches.get(id);
+      if (dispatch?.claimedAt) this.dispatches.set(id, { ...dispatch, claimedAt: this.now() });
+    }
     return Promise.resolve();
   }
 
@@ -161,6 +177,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: null,
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: this.now(),
       lastCheckedAt: null,
       lastBroadcastAt: null,
       replacesTransactionId: null,
@@ -244,7 +261,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       this.attempts.get(transactionId)?.push({
         id: randomUUID(),
         transactionId,
-        broadcastAt: new Date(),
+        broadcastAt: this.now(),
         error: error ?? null,
       });
       this.transactions.set(transactionId, { ...transaction, lastBroadcastAt: this.now() });
@@ -269,6 +286,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: now,
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: now,
       replacesTransactionId: predecessor.id,
@@ -316,7 +334,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   ): Promise<Dispatch[]> {
     const stale = [...this.dispatches.values()]
       .filter((dispatch) => {
-        const claimed = this.claimedAt.get(dispatch.id);
+        const claimed = dispatch.claimedAt;
         if (
           dispatch.status !== 'broadcasting' ||
           !chains.includes(dispatch.chain) ||
@@ -332,8 +350,9 @@ export class InMemoryDispatchStore implements DispatchStore {
         return sent.size < dispatch.items.length;
       })
       .slice(0, limit);
-    for (const dispatch of stale) this.claimedAt.set(dispatch.id, this.now());
-    return Promise.resolve(stale);
+    const reclaimed = stale.map((dispatch) => ({ ...dispatch, claimedAt: this.now() }));
+    for (const dispatch of reclaimed) this.dispatches.set(dispatch.id, dispatch);
+    return Promise.resolve(reclaimed);
   }
 
   reclaimStaleRelayDispatches(
@@ -344,7 +363,7 @@ export class InMemoryDispatchStore implements DispatchStore {
     const stale = [...this.relayDispatches.values()]
       .filter((relay) => {
         if (!chains.includes(relay.chain)) return false;
-        const claimed = this.claimedAt.get(relay.id);
+        const claimed = relay.claimedAt;
         // No Transaction row at all — not merely an unwritten link (a crash between the two writes).
         const hasTransaction = [...this.transactions.values()].some(
           (t) => t.dispatchId === relay.id,
@@ -354,8 +373,9 @@ export class InMemoryDispatchStore implements DispatchStore {
         );
       })
       .slice(0, limit);
-    for (const relay of stale) this.claimedAt.set(relay.id, this.now());
-    return Promise.resolve(stale);
+    const reclaimed = stale.map((relay) => ({ ...relay, claimedAt: this.now() }));
+    for (const relay of reclaimed) this.relayDispatches.set(relay.id, relay);
+    return Promise.resolve(reclaimed);
   }
 
   countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>> {
@@ -396,7 +416,12 @@ export class InMemoryDispatchStore implements DispatchStore {
   markFailed(transactionId: string, error: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'FAILED', error });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'FAILED',
+        error,
+        failedAt: this.now(),
+      });
     });
   }
 
@@ -437,6 +462,9 @@ export class InMemoryDispatchStore implements DispatchStore {
       signedTransaction: input.signedTransaction,
       status: 'queued',
       transactionId: null,
+      createdAt: this.now(),
+      claimedAt: null,
+      cancelledAt: null,
     };
     this.relayDispatches.set(relayDispatch.id, relayDispatch);
 
@@ -453,9 +481,12 @@ export class InMemoryDispatchStore implements DispatchStore {
       if (claimed.length >= limit) break;
       if (relayDispatch.status !== 'queued' || !chains.includes(relayDispatch.chain)) continue;
 
-      const broadcasting: RelayDispatch = { ...relayDispatch, status: 'broadcasting' };
+      const broadcasting: RelayDispatch = {
+        ...relayDispatch,
+        status: 'broadcasting',
+        claimedAt: this.now(),
+      };
       this.relayDispatches.set(relayDispatch.id, broadcasting);
-      this.claimedAt.set(relayDispatch.id, this.now());
       claimed.push(broadcasting);
     }
 
@@ -494,6 +525,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         broadcastAt: null,
         abandonedAt: null,
         confirmedAt: null,
+        failedAt: null,
         lastCheckedAt: null,
         lastBroadcastAt: null,
         replacesTransactionId: null,
@@ -702,6 +734,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           hash: null,
           signedBytes: null,
           error: null,
+          failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
         };
@@ -731,6 +764,7 @@ export class InMemoryDispatchStore implements DispatchStore {
             ? { signedBytes: null }
             : {}),
           ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'FAILED' ? { failedAt: now } : {}),
           ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
         };
         this.transactions.set(call.id, next);
