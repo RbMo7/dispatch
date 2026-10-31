@@ -1,6 +1,7 @@
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
 import type { AssetDecimals } from './asset-decimals.js';
+import type { Network } from './network.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount } from '../domain/proposal.js';
 import type { Result } from '../domain/result.js';
@@ -14,6 +15,7 @@ import type { SignerPins } from '../signer/client.js';
  */
 export type SenderConfig = {
   chain: Chain;
+  network: Network;
   /** What pays the payments: the plain key, the Squads vault, or the Safe. */
   address: string;
   assets: readonly string[];
@@ -58,6 +60,7 @@ export type HolderBalances = {
 
 export type SenderView = {
   chain: Chain;
+  network: Network;
   mode: 'single' | 'squads' | 'safe';
   address: string;
   multisig: {
@@ -124,6 +127,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
 
   return {
     chain,
+    network: config.network,
     mode: approval?.mode ?? 'single',
     address: config.address,
     multisig:

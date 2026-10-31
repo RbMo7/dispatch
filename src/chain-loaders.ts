@@ -44,6 +44,7 @@ import { logger } from './logger.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
 import type { AssetDecimals } from './api/asset-decimals.js';
+import { baseNetwork, solanaNetwork, type Network } from './api/network.js';
 import type { SenderConfig, SenderReads } from './api/senders.js';
 import type { DispatchError } from './domain/errors.js';
 import { err, ok, type Result } from './domain/result.js';
@@ -384,41 +385,60 @@ export function assetDecimalsFromConfig(): AssetDecimals {
   return (chain, asset) => decimals[chain][asset];
 }
 
-export function senderConfigsFor(
+async function readSolanaNetwork(): Promise<Network> {
+  const connection = new Connection(config.solana.rpcUrl, {
+    fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
+  });
+  try {
+    return solanaNetwork(await connection.getGenesisHash());
+  } catch (cause) {
+    logger.warn({ err: cause }, 'senders: Solana genesis hash read failed; network is unknown');
+    return 'unknown';
+  }
+}
+
+export async function senderConfigsFor(
   registry: ChainRegistry,
   assetDecimals: AssetDecimals,
-): SenderConfig[] {
+): Promise<SenderConfig[]> {
   const { senderAddresses, approvalRewatchWindowMsByChain } = coordinatorConfigFor(registry);
+  const networks: Record<Chain, () => Promise<Network>> = {
+    base: () => Promise.resolve(baseNetwork(config.base.chainId)),
+    solana: readSolanaNetwork,
+  };
   const multisigAddresses: Partial<Record<Chain, string | undefined>> = {
     solana: resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress,
     base: resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress,
   };
-  return [...registry.handlers].map(([chain, handler]) => {
-    const address = senderAddresses.get(chain);
-    if (!address) {
-      throw new Error(
-        `Chain "${chain}" is enabled but has no Sender address: set ${chain.toUpperCase()}_SENDER_ADDRESS, or the multisig settings that imply it.`,
-      );
-    }
-    const approval = handler.approval;
-    return {
-      chain,
-      address,
-      assets: assetsByChain[chain](),
-      assetDecimals,
-      ...(approval
-        ? {
-            approval: {
-              mode: approval.holders.sender === 'vault' ? ('squads' as const) : ('safe' as const),
-              multisigAddress: multisigAddresses[chain] ?? address,
-              engineKey: approval.proposerAddress,
-              holders: approval.holders,
-              rewatchWindowMs: approvalRewatchWindowMsByChain.get(chain) ?? 0,
-            },
-          }
-        : {}),
-    };
-  });
+  return Promise.all(
+    [...registry.handlers].map(async ([chain, handler]): Promise<SenderConfig> => {
+      const address = senderAddresses.get(chain);
+      if (!address) {
+        throw new Error(
+          `Chain "${chain}" is enabled but has no Sender address: set ${chain.toUpperCase()}_SENDER_ADDRESS, or the multisig settings that imply it.`,
+        );
+      }
+      const approval = handler.approval;
+      return {
+        chain,
+        network: await networks[chain](),
+        address,
+        assets: assetsByChain[chain](),
+        assetDecimals,
+        ...(approval
+          ? {
+              approval: {
+                mode: approval.holders.sender === 'vault' ? ('squads' as const) : ('safe' as const),
+                multisigAddress: multisigAddresses[chain] ?? address,
+                engineKey: approval.proposerAddress,
+                holders: approval.holders,
+                rewatchWindowMs: approvalRewatchWindowMsByChain.get(chain) ?? 0,
+              },
+            }
+          : {}),
+      };
+    }),
+  );
 }
 
 export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): SenderReads {
