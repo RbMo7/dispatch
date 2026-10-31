@@ -540,11 +540,10 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     expect(signedKinds).toContain('vaultTransactionAccountsClose');
     expect(signedKinds).not.toContain('proposalApprove');
     expect(signedKinds).not.toContain('proposalReject');
-    // The engine's own requests were never refused. The one refusal is the startup probe, which sends
-    // a deliberately undecodable byte and treats a 403 as "the key exists" (probeSignerForSolanaAddress).
+    // The engine's own requests were never refused: startup reads the key's pin (ADR-0055) instead of
+    // probing the Signer with a sign request.
     const refusals = signer.audit.filter((line) => line.decision === 'refused');
-    expect(refusals).toHaveLength(1);
-    expect(refusals[0]?.reason).toMatch(/undecodable transaction/);
+    expect(refusals).toEqual([]);
     expect(signer.audit.every((line) => line.address === fixture.member.publicKey.toBase58())).toBe(
       true,
     );
