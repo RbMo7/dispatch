@@ -40,7 +40,13 @@ export function Tabs<T extends string>({ label, tabs, value, onChange, children 
 
   return (
     <>
-      <div ref={list} className={styles.list} role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+      <div
+        ref={list}
+        className={styles.list}
+        role="tablist"
+        aria-label={label}
+        onKeyDown={onKeyDown}
+      >
         {tabs.map((tab) => {
           const selected = tab.id === value;
           return (

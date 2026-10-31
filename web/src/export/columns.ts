@@ -25,12 +25,10 @@ export function dispatchColumns(assets: readonly string[]): ExportColumn<Dispatc
     { header: 'Status', width: 18, cell: (row) => text(STATUSES[row.status].label) },
     { header: 'Created', width: 20, cell: (row) => date(row.createdAt) },
     { header: 'Items', width: 8, cell: (row) => integer(row.itemCount) },
-    ...assets.map(
-      (asset): ExportColumn<DispatchSummary> => ({
-        header: `${asset} total`,
-        width: 30,
-        cell: (row) => amount(row.totals.find((total) => total.asset === asset) ?? null),
-      }),
-    ),
+    ...assets.map((asset): ExportColumn<DispatchSummary> => ({
+      header: `${asset} total`,
+      width: 30,
+      cell: (row) => amount(row.totals.find((total) => total.asset === asset) ?? null),
+    })),
   ];
 }

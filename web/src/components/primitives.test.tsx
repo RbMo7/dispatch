@@ -43,7 +43,9 @@ describe('hidden balances', () => {
 
     const hidden = screen.getByLabelText('Hidden USDC amount');
     expect(hidden.textContent).toBe('••••USDC');
-    expect(screen.getByRole('button', { name: 'Show balances' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Show balances' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
 
     cleanup();
     view();
@@ -74,7 +76,9 @@ describe('FlowGraph', () => {
 
   it('gives the stage bar one segment per trunk stage, none for a branch', () => {
     const { container } = render(<FlowGraph flow={flow} />);
-    const segments = [...container.querySelectorAll('[data-segment]')].map((s) => s.getAttribute('data-segment'));
+    const segments = [...container.querySelectorAll('[data-segment]')].map((s) =>
+      s.getAttribute('data-segment'),
+    );
     expect(segments).toEqual(['done', 'current', 'todo']);
   });
 
@@ -82,7 +86,16 @@ describe('FlowGraph', () => {
     const onSelect = vi.fn();
     render(
       <FlowGraph
-        flow={{ ...flow, stages: [{ kind: 'branch-failed', title: 'Item failures, 3', links: [{ label: 'Show in Items', onSelect }] }] }}
+        flow={{
+          ...flow,
+          stages: [
+            {
+              kind: 'branch-failed',
+              title: 'Item failures, 3',
+              links: [{ label: 'Show in Items', onSelect }],
+            },
+          ],
+        }}
       />,
     );
     await userEvent.setup().click(screen.getByRole('button', { name: 'Show in Items ›' }));

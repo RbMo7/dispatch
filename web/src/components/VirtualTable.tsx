@@ -24,7 +24,14 @@ interface VirtualTableProps<Row> {
   empty?: ReactNode;
 }
 
-export function VirtualTable<Row>({ label, rows, columns, rowKey, height, empty }: VirtualTableProps<Row>) {
+export function VirtualTable<Row>({
+  label,
+  rows,
+  columns,
+  rowKey,
+  height,
+  empty,
+}: VirtualTableProps<Row>) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -38,14 +45,28 @@ export function VirtualTable<Row>({ label, rows, columns, rowKey, height, empty 
 
   return (
     <div className={styles.table} role="table" aria-label={label} aria-rowcount={rows.length + 1}>
-      <div className={styles.header} role="row" aria-rowindex={1} style={{ gridTemplateColumns: template }}>
+      <div
+        className={styles.header}
+        role="row"
+        aria-rowindex={1}
+        style={{ gridTemplateColumns: template }}
+      >
         {columns.map((column) => (
-          <span key={column.id} role="columnheader" className={styles.cell} data-align={column.align}>
+          <span
+            key={column.id}
+            role="columnheader"
+            className={styles.cell}
+            data-align={column.align}
+          >
             {column.header}
           </span>
         ))}
       </div>
-      <div ref={scroller} className={styles.scroller} style={height === undefined ? undefined : { height }}>
+      <div
+        ref={scroller}
+        className={styles.scroller}
+        style={height === undefined ? undefined : { height }}
+      >
         {rows.length === 0 ? (
           empty
         ) : (
@@ -58,10 +79,18 @@ export function VirtualTable<Row>({ label, rows, columns, rowKey, height, empty 
                   role="row"
                   aria-rowindex={virtual.index + 2}
                   className={styles.row}
-                  style={{ gridTemplateColumns: template, transform: `translateY(${virtual.start}px)` }}
+                  style={{
+                    gridTemplateColumns: template,
+                    transform: `translateY(${virtual.start}px)`,
+                  }}
                 >
                   {columns.map((column) => (
-                    <span key={column.id} role="cell" className={styles.cell} data-align={column.align}>
+                    <span
+                      key={column.id}
+                      role="cell"
+                      className={styles.cell}
+                      data-align={column.align}
+                    >
                       {column.render(row)}
                     </span>
                   ))}

@@ -9,7 +9,6 @@
   border-bottom: 1px solid var(--border);
 }
 
-
 .sidebar {
   display: flex;
   width: 232px;
@@ -129,7 +128,6 @@
   font-size: var(--text-12);
 }
 
-
 .main {
   display: flex;
   min-width: 0;
@@ -246,7 +244,6 @@
   text-align: center;
 }
 
-
 .paneInner {
   display: flex;
   min-height: 100%;
@@ -305,7 +302,6 @@
   min-width: 0;
   margin: 0;
 }
-
 
 .items {
   display: flex;
@@ -367,7 +363,6 @@
   flex: 1;
 }
 
-
 .muted {
   color: var(--muted);
   font-size: var(--text-12-5);
@@ -402,7 +397,6 @@
   justify-content: center;
   margin-top: 10px;
 }
-
 
 .primitives {
   display: grid;

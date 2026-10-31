@@ -27,7 +27,9 @@ export function Menu({ label, icon, items, disabled }: MenuProps) {
   const close = useCallback(() => setOpen(false), []);
   usePopover(open, close, root, trigger);
 
-  const itemsIn = () => [...(root.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+  const itemsIn = () => [
+    ...(root.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []),
+  ];
 
   function openAt(which: 'first' | 'last') {
     setOpen(true);
@@ -79,7 +81,13 @@ export function Menu({ label, icon, items, disabled }: MenuProps) {
         <CaretDown size={12} aria-hidden="true" className={styles.caret} />
       </Button>
       {open && (
-        <div id={menuId} role="menu" aria-label={label} className={styles.menu} onKeyDown={onMenuKey}>
+        <div
+          id={menuId}
+          role="menu"
+          aria-label={label}
+          className={styles.menu}
+          onKeyDown={onMenuKey}
+        >
           {items.map((item) => (
             <button
               key={item.id}

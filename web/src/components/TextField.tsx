@@ -14,7 +14,12 @@ export function TextField({ label, help, ...input }: TextFieldProps) {
       <label className={styles.label} htmlFor={id}>
         {label}
       </label>
-      <input id={id} className={styles.input} aria-describedby={help ? `${id}-help` : undefined} {...input} />
+      <input
+        id={id}
+        className={styles.input}
+        aria-describedby={help ? `${id}-help` : undefined}
+        {...input}
+      />
       {help && (
         <div id={`${id}-help`} className={styles.help}>
           {help}

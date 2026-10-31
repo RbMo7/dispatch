@@ -1,4 +1,9 @@
-import { type AnchorHTMLAttributes, type ButtonHTMLAttributes, forwardRef, type ReactNode } from 'react';
+import {
+  type AnchorHTMLAttributes,
+  type ButtonHTMLAttributes,
+  forwardRef,
+  type ReactNode,
+} from 'react';
 
 import styles from './Button.module.css';
 
@@ -17,24 +22,23 @@ export type ButtonProps = CommonProps &
     | ({ href?: undefined } & ButtonHTMLAttributes<HTMLButtonElement>)
   );
 
-export const Button = forwardRef<HTMLButtonElement & HTMLAnchorElement, ButtonProps>(function Button(
-  { variant = 'secondary', icon = false, children, className, ...rest },
-  ref,
-) {
-  const classes = [styles.button, styles[variant], icon && styles.icon, className]
-    .filter(Boolean)
-    .join(' ');
+export const Button = forwardRef<HTMLButtonElement & HTMLAnchorElement, ButtonProps>(
+  function Button({ variant = 'secondary', icon = false, children, className, ...rest }, ref) {
+    const classes = [styles.button, styles[variant], icon && styles.icon, className]
+      .filter(Boolean)
+      .join(' ');
 
-  if (rest.href !== undefined) {
+    if (rest.href !== undefined) {
+      return (
+        <a ref={ref} className={classes} {...rest}>
+          {children}
+        </a>
+      );
+    }
     return (
-      <a ref={ref} className={classes} {...rest}>
+      <button ref={ref} type="button" className={classes} {...rest}>
         {children}
-      </a>
+      </button>
     );
-  }
-  return (
-    <button ref={ref} type="button" className={classes} {...rest}>
-      {children}
-    </button>
-  );
-});
+  },
+);

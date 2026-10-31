@@ -55,11 +55,7 @@ export function SenderCard({
       <div className={styles.footer}>
         <span>{footer.label}</span>
         <span className={styles.footerValue}>
-          {'fee' in footer ? (
-            <Amount {...footer.fee} variant="plain" unit />
-          ) : (
-            footer.text
-          )}
+          {'fee' in footer ? <Amount {...footer.fee} variant="plain" unit /> : footer.text}
         </span>
       </div>
     </a>

@@ -57,7 +57,13 @@ function Screen() {
   const dispatches = useMemo(
     () =>
       DISPATCHES.map((d): GalleryDispatch =>
-        cancelled.has(d.id) ? { ...d, status: 'cancelled', items: d.items.map((i) => ({ ...i, status: 'cancelled' as const })) } : d,
+        cancelled.has(d.id)
+          ? {
+              ...d,
+              status: 'cancelled',
+              items: d.items.map((i) => ({ ...i, status: 'cancelled' as const })),
+            }
+          : d,
       ),
     [cancelled],
   );
@@ -105,17 +111,26 @@ function Screen() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (confirming || event.metaKey || event.ctrlKey || target.closest('input, textarea, [role="dialog"], [role="menu"]')) return;
+      if (
+        confirming ||
+        event.metaKey ||
+        event.ctrlKey ||
+        target.closest('input, textarea, [role="dialog"], [role="menu"]')
+      )
+        return;
       if (event.key === 'Escape') {
         setSelected(null);
         return;
       }
       if (event.key !== 'j' && event.key !== 'k') return;
-      const buttons = [...document.querySelectorAll<HTMLElement>('[data-dispatch-list] [data-row]')];
+      const buttons = [
+        ...document.querySelectorAll<HTMLElement>('[data-dispatch-list] [data-row]'),
+      ];
       if (buttons.length === 0) return;
       const at = buttons.indexOf(document.activeElement as HTMLElement);
       const from = at === -1 ? buttons.findIndex((b) => b.dataset.row === selected) : at;
-      const next = event.key === 'j' ? Math.min(buttons.length - 1, from + 1) : Math.max(0, from - 1);
+      const next =
+        event.key === 'j' ? Math.min(buttons.length - 1, from + 1) : Math.max(0, from - 1);
       buttons[next]?.focus();
     };
     document.addEventListener('keydown', onKey);
@@ -124,7 +139,10 @@ function Screen() {
 
   async function exportDispatches(format: 'csv' | 'xlsx') {
     const assets = [...new Set(rows.flatMap((d) => d.totals.map((t) => t.asset)))];
-    download(await exportFile(format, dispatchColumns(assets), rows), dispatchesFileName(range, format));
+    download(
+      await exportFile(format, dispatchColumns(assets), rows),
+      dispatchesFileName(range, format),
+    );
     toast(`Exported ${count.format(rows.length)} ${rows.length === 1 ? 'row' : 'rows'}`);
   }
 
@@ -168,7 +186,9 @@ function Screen() {
             onExportItems={(format, items) => {
               void exportFile(format, ITEM_COLUMNS, items).then((blob) => {
                 download(blob, itemsFileName(dispatch.id, format));
-                toast(`Exported ${count.format(items.length)} ${items.length === 1 ? 'row' : 'rows'}`);
+                toast(
+                  `Exported ${count.format(items.length)} ${items.length === 1 ? 'row' : 'rows'}`,
+                );
               });
             }}
             onClose={() => setSelected(null)}

@@ -1,6 +1,13 @@
 import { Check, X } from '@phosphor-icons/react';
 
-import { type Dot, type Flow, type Stage, STAGE_LOOK, type StageLink, stageSegments } from '../domain/flow';
+import {
+  type Dot,
+  type Flow,
+  type Stage,
+  STAGE_LOOK,
+  type StageLink,
+  stageSegments,
+} from '../domain/flow';
 import styles from './FlowGraph.module.css';
 import { MonoValue } from './MonoValue';
 import { StackedBar } from './StackedBar';

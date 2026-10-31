@@ -1,5 +1,8 @@
 function pill<S extends string>(status: S) {
-  return { color: `var(--pill-${status}-fg)`, backgroundColor: `var(--pill-${status}-bg)` } as const;
+  return {
+    color: `var(--pill-${status}-fg)`,
+    backgroundColor: `var(--pill-${status}-bg)`,
+  } as const;
 }
 
 export const STATUSES = {

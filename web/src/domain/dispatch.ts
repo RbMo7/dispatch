@@ -18,7 +18,13 @@ export interface DispatchSummary {
 
 export type ItemStatus = Extract<
   Status,
-  'queued' | 'awaiting_approval' | 'broadcasting' | 'confirmed' | 'failed' | 'abandoned' | 'cancelled'
+  | 'queued'
+  | 'awaiting_approval'
+  | 'broadcasting'
+  | 'confirmed'
+  | 'failed'
+  | 'abandoned'
+  | 'cancelled'
 >;
 
 interface ItemBase {

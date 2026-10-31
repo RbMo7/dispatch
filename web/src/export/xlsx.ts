@@ -8,7 +8,8 @@ function amountCell(money: Money): Cell {
   const number = Number(exact);
   if (money.decimals <= 100 && number.toFixed(money.decimals) === exact) {
     const shown = DISPLAY_DECIMALS[money.asset];
-    const format = shown === undefined ? '#,##0.######' : shown > 0 ? `#,##0.${'0'.repeat(shown)}` : '#,##0';
+    const format =
+      shown === undefined ? '#,##0.######' : shown > 0 ? `#,##0.${'0'.repeat(shown)}` : '#,##0';
     return { type: Number, value: number, format };
   }
   return { type: String, value: exact };

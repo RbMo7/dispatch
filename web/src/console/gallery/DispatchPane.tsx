@@ -61,7 +61,12 @@ export function DispatchPane(props: DispatchPaneProps) {
       footer={
         <>
           {firstHash ? (
-            <Button variant="secondary" href={CHAINS[dispatch.chain].txUrl(firstHash)} target="_blank" rel="noreferrer">
+            <Button
+              variant="secondary"
+              href={CHAINS[dispatch.chain].txUrl(firstHash)}
+              target="_blank"
+              rel="noreferrer"
+            >
               Open in explorer
             </Button>
           ) : (
@@ -69,7 +74,12 @@ export function DispatchPane(props: DispatchPaneProps) {
               Open in explorer
             </Button>
           )}
-          <Button variant="danger" className={styles.pushRight} disabled={!cancellable} onClick={props.onCancel}>
+          <Button
+            variant="danger"
+            className={styles.pushRight}
+            disabled={!cancellable}
+            onClick={props.onCancel}
+          >
             Cancel Dispatch
           </Button>
         </>
@@ -87,7 +97,9 @@ export function DispatchPane(props: DispatchPaneProps) {
           <div className={styles.summary}>
             <div className={styles.muted}>{dispatch.when}</div>
             <div className={styles.summaryLine}>
-              <span className={styles.summaryName}>{dispatch.label ?? `${dispatch.itemCount} payments`}</span>
+              <span className={styles.summaryName}>
+                {dispatch.label ?? `${dispatch.itemCount} payments`}
+              </span>
               <span className={styles.summaryTotal}>
                 <Amount {...total} variant="raised" />
               </span>
@@ -117,7 +129,13 @@ export function DispatchPane(props: DispatchPaneProps) {
                 <dt>Chain</dt>
                 <dd>{CHAINS[dispatch.chain].label}</dd>
                 <dt>Sender</dt>
-                <dd>{dispatch.sender.includes(' ') ? dispatch.sender : <MonoValue value={dispatch.sender} />}</dd>
+                <dd>
+                  {dispatch.sender.includes(' ') ? (
+                    dispatch.sender
+                  ) : (
+                    <MonoValue value={dispatch.sender} />
+                  )}
+                </dd>
                 <dt>Items</dt>
                 <dd>{dispatch.itemCount.toLocaleString('en-US')}</dd>
                 <dt>Retry policy</dt>

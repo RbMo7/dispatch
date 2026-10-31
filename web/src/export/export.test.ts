@@ -26,7 +26,10 @@ const ITEMS: Item[] = [
     amount: { raw: '17256001', decimals: 6, asset: 'USDC' },
     status: 'failed',
     transactionHash: null,
-    error: { code: 'INVALID_RECIPIENT', message: 'No code at the address, and the token says "no", refusing it' },
+    error: {
+      code: 'INVALID_RECIPIENT',
+      message: 'No code at the address, and the token says "no", refusing it',
+    },
   },
   {
     index: 2,
@@ -141,9 +144,36 @@ describe('CSV export', () => {
 
   it('writes dates as ISO 8601 and a column per asset total for Dispatches', () => {
     const rows = parseCsv(toCsv(dispatchColumns(['USDC', 'SOL']), DISPATCHES).slice(1));
-    expect(rows[0]).toEqual(['Id', 'Mode', 'Chain', 'Status', 'Created', 'Items', 'USDC total', 'SOL total']);
-    expect(rows[1]).toEqual(['7f3a91c2', 'managed', 'Base', 'Broadcasting', '2026-10-31T14:02:11.000Z', '37', '12480.000000', '']);
-    expect(rows[2]).toEqual(['5ac83f1e', 'relay', 'Solana', 'Failed', '2026-10-30T12:20:02.000Z', '1', '', '0.081370000']);
+    expect(rows[0]).toEqual([
+      'Id',
+      'Mode',
+      'Chain',
+      'Status',
+      'Created',
+      'Items',
+      'USDC total',
+      'SOL total',
+    ]);
+    expect(rows[1]).toEqual([
+      '7f3a91c2',
+      'managed',
+      'Base',
+      'Broadcasting',
+      '2026-10-31T14:02:11.000Z',
+      '37',
+      '12480.000000',
+      '',
+    ]);
+    expect(rows[2]).toEqual([
+      '5ac83f1e',
+      'relay',
+      'Solana',
+      'Failed',
+      '2026-10-30T12:20:02.000Z',
+      '1',
+      '',
+      '0.081370000',
+    ]);
   });
 });
 
@@ -151,7 +181,16 @@ describe('Excel export', () => {
   it('reads back with numbers as numbers, dates as dates and text untouched', async () => {
     const blob = await toXlsx(dispatchColumns(['USDC', 'SOL']), DISPATCHES);
     const rows = await readSheet(blob);
-    expect(rows[0]).toEqual(['Id', 'Mode', 'Chain', 'Status', 'Created', 'Items', 'USDC total', 'SOL total']);
+    expect(rows[0]).toEqual([
+      'Id',
+      'Mode',
+      'Chain',
+      'Status',
+      'Created',
+      'Items',
+      'USDC total',
+      'SOL total',
+    ]);
     expect(rows[1]).toEqual([
       '7f3a91c2',
       'managed',
@@ -180,7 +219,9 @@ describe('Excel export', () => {
   it('freezes the header row and formats amounts with the asset decimals', async () => {
     const blob = await toXlsx(dispatchColumns(['USDC', 'SOL']), DISPATCHES);
     const files = unzipSync(new Uint8Array(await blob.arrayBuffer()));
-    const sheetName = Object.keys(files).find((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))!;
+    const sheetName = Object.keys(files).find((name) =>
+      /^xl\/worksheets\/sheet\d+\.xml$/.test(name),
+    )!;
     const sheet = strFromU8(files[sheetName]!);
     expect(sheet).toMatch(/<pane[^>]*ySplit="1"[^>]*state="frozen"/);
     const styles = strFromU8(files['xl/styles.xml']!);

@@ -23,10 +23,18 @@ const CHAIN_OPTIONS = [
   { value: 'base', label: 'Base' },
 ] as const;
 
-const longDay = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+const longDay = new Intl.DateTimeFormat('en-US', {
+  weekday: 'long',
+  month: 'short',
+  day: 'numeric',
+});
 
 function dayHeading(date: Date): string {
-  const days = Math.round((FIXTURE_TODAY.getTime() - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) / 86_400_000);
+  const days = Math.round(
+    (FIXTURE_TODAY.getTime() -
+      new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) /
+      86_400_000,
+  );
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : longDay.format(date);
 }
 
@@ -62,12 +70,22 @@ export function DispatchList(props: DispatchListProps) {
           aria-label="Select every Dispatch shown"
           checked={allChecked}
           indeterminate={someChecked && !allChecked}
-          onChange={(event) => props.onCheck(rows.map((row) => row.id), event.target.checked)}
+          onChange={(event) =>
+            props.onCheck(
+              rows.map((row) => row.id),
+              event.target.checked,
+            )
+          }
         />
         <h1 className={styles.pageTitle}>Dispatches</h1>
         <div className={styles.controls}>
           <DateRangeControl value={props.range} onChange={props.onRange} today={FIXTURE_TODAY} />
-          <SegmentedControl label="Chain" options={CHAIN_OPTIONS} value={props.chain} onChange={props.onChain} />
+          <SegmentedControl
+            label="Chain"
+            options={CHAIN_OPTIONS}
+            value={props.chain}
+            onChange={props.onChain}
+          />
           <SearchField
             label="Search Dispatches by id or address"
             placeholder="Search"
@@ -140,4 +158,3 @@ export function DispatchList(props: DispatchListProps) {
     </main>
   );
 }
-

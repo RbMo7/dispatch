@@ -22,7 +22,10 @@ function rescale(value: bigint, from: number, to: number): bigint {
   return negative ? -quotient : quotient;
 }
 
-function digits(value: bigint, decimals: number): { negative: boolean; whole: string; fraction: string } {
+function digits(
+  value: bigint,
+  decimals: number,
+): { negative: boolean; whole: string; fraction: string } {
   const negative = value < 0n;
   const text = (negative ? -value : value).toString().padStart(decimals + 1, '0');
   return {

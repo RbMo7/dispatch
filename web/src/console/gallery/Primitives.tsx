@@ -30,7 +30,9 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
   const [step, setStep] = useState(0);
   const [range, setRange] = useState<(typeof RANGES)[number]['value']>('24h');
   const toast = useToast();
-  const pills = ALL_STATUSES.map((status, index) => (index === 0 ? STEPS[step % STEPS.length]! : status));
+  const pills = ALL_STATUSES.map((status, index) =>
+    index === 0 ? STEPS[step % STEPS.length]! : status,
+  );
 
   return (
     <div className={styles.primitives}>
@@ -52,7 +54,11 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
         title="Status"
         className={styles.span7}
         aside={
-          <Button variant="quiet" className={styles.smallQuiet} onClick={() => setStep((s) => s + 1)}>
+          <Button
+            variant="quiet"
+            className={styles.smallQuiet}
+            onClick={() => setStep((s) => s + 1)}
+          >
             Step the first pill
           </Button>
         }
@@ -62,15 +68,27 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
             <StatusPill key={index} status={status} />
           ))}
         </div>
-        <p className={styles.help}>Text only, no icons or dots. Colour fades over 160 ms when a status changes.</p>
+        <p className={styles.help}>
+          Text only, no icons or dots. Colour fades over 160 ms when a status changes.
+        </p>
       </Card>
 
-      <Card title="In flight" link={{ label: 'Dispatches', href: '#dispatches' }} className={styles.span4}>
+      <Card
+        title="In flight"
+        link={{ label: 'Dispatches', href: '#dispatches' }}
+        className={styles.span4}
+      >
         <div className={styles.inFlight}>
           <div className={styles.bigNumber}>14</div>
           <div className={styles.muted}>9 broadcasting, 3 awaiting approval, 2 held</div>
         </div>
-        <svg viewBox="0 0 320 70" width="100%" height="70" aria-hidden="true" className={styles.chart}>
+        <svg
+          viewBox="0 0 320 70"
+          width="100%"
+          height="70"
+          aria-hidden="true"
+          className={styles.chart}
+        >
           <path
             d="M0 52 L40 50 L80 51 L120 44 L160 46 L200 40 L240 41 L280 30 L300 31"
             fill="none"
@@ -79,18 +97,48 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
             strokeLinejoin="round"
             strokeLinecap="round"
           />
-          <path d="M0 56 L320 18" fill="none" stroke="var(--border-strong)" strokeWidth="1" strokeDasharray="3 4" />
-          <circle cx="300" cy="31" r="4" fill="var(--surface)" stroke="var(--accent)" strokeWidth="2" />
+          <path
+            d="M0 56 L320 18"
+            fill="none"
+            stroke="var(--border-strong)"
+            strokeWidth="1"
+            strokeDasharray="3 4"
+          />
+          <circle
+            cx="300"
+            cy="31"
+            r="4"
+            fill="var(--surface)"
+            stroke="var(--accent)"
+            strokeWidth="2"
+          />
         </svg>
         <div className={styles.center}>
           <SegmentedControl label="Range" options={RANGES} value={range} onChange={setRange} />
         </div>
       </Card>
 
-      <Card title="Senders" link={{ label: 'Senders & Keys', href: '#senders' }} className={styles.span4}>
+      <Card
+        title="Senders"
+        link={{ label: 'Senders & Keys', href: '#senders' }}
+        className={styles.span4}
+      >
         <div className={styles.senderRows}>
-          <SenderRow chain="solana" name="Treasury vault" balance={money('1842.30', 'USDC')} committed={money('700.00', 'USDC')} note="committed to open Proposals" />
-          <SenderRow chain="base" name="Payouts sender" balance={money('0.8412', 'ETH')} committed={money('0.7650', 'ETH')} low note="committed, 0.0762 free" />
+          <SenderRow
+            chain="solana"
+            name="Treasury vault"
+            balance={money('1842.30', 'USDC')}
+            committed={money('700.00', 'USDC')}
+            note="committed to open Proposals"
+          />
+          <SenderRow
+            chain="base"
+            name="Payouts sender"
+            balance={money('0.8412', 'ETH')}
+            committed={money('0.7650', 'ETH')}
+            low
+            note="committed, 0.0762 free"
+          />
         </div>
       </Card>
 
@@ -116,8 +164,17 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
 
       <Card title="Form controls" className={styles.span7}>
         <div className={styles.formGrid}>
-          <TextField label="Operator token" type="password" defaultValue="op_live_7Qm2Xc9Lr4" help="Kept for this tab only." />
-          <TextField label="Reason for release" placeholder="Checked against payroll file 2026-10" help="Required. It goes in the Activity log." />
+          <TextField
+            label="Operator token"
+            type="password"
+            defaultValue="op_live_7Qm2Xc9Lr4"
+            help="Kept for this tab only."
+          />
+          <TextField
+            label="Reason for release"
+            placeholder="Checked against payroll file 2026-10"
+            help="Required. It goes in the Activity log."
+          />
         </div>
         <div className={styles.formRow}>
           <Checkbox label="Include cancelled" defaultChecked />
@@ -155,7 +212,14 @@ export function Primitives({ onOpenModal }: { onOpenModal: () => void }) {
   );
 }
 
-function SenderRow({ chain, name, balance, committed, low = false, note }: {
+function SenderRow({
+  chain,
+  name,
+  balance,
+  committed,
+  low = false,
+  note,
+}: {
   chain: 'solana' | 'base';
   name: string;
   balance: ReturnType<typeof money>;
@@ -190,8 +254,8 @@ export function CancelSummary() {
         <Amount {...money('3215.50', 'USDC')} />
       </div>
       <p className={styles.cancelText}>
-        The engine hasn't claimed it yet, so nothing has been signed. All 128 payments will be marked
-        cancelled. Send it again with a new Idempotency-Key if you need it.
+        The engine hasn't claimed it yet, so nothing has been signed. All 128 payments will be
+        marked cancelled. Send it again with a new Idempotency-Key if you need it.
       </p>
     </>
   );

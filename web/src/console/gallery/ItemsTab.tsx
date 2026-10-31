@@ -17,7 +17,12 @@ export type ItemFilter = 'all' | ItemStatus;
 const count = new Intl.NumberFormat('en-US');
 
 const COLUMNS: readonly Column<Item>[] = [
-  { id: 'index', header: '#', width: '30px', render: (item) => <span className={styles.muted}>{item.index + 1}</span> },
+  {
+    id: 'index',
+    header: '#',
+    width: '30px',
+    render: (item) => <span className={styles.muted}>{item.index + 1}</span>,
+  },
   {
     id: 'target',
     header: 'Recipient',
@@ -31,7 +36,12 @@ const COLUMNS: readonly Column<Item>[] = [
     align: 'end',
     render: (item) => (item.amount ? <Amount {...item.amount} /> : null),
   },
-  { id: 'status', header: 'Status', width: '104px', render: (item) => <StatusPill status={item.status} /> },
+  {
+    id: 'status',
+    header: 'Status',
+    width: '104px',
+    render: (item) => <StatusPill status={item.status} />,
+  },
   {
     id: 'hash',
     header: 'Hash',

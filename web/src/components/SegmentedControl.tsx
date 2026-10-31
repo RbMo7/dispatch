@@ -15,7 +15,12 @@ interface SegmentedControlProps<T extends string> {
   onChange: (value: T) => void;
 }
 
-export function SegmentedControl<T extends string>({ label, options, value, onChange }: SegmentedControlProps<T>) {
+export function SegmentedControl<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+}: SegmentedControlProps<T>) {
   const group = useRef<HTMLDivElement>(null);
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -29,7 +34,13 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
   }
 
   return (
-    <div ref={group} className={styles.group} role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+    <div
+      ref={group}
+      className={styles.group}
+      role="radiogroup"
+      aria-label={label}
+      onKeyDown={onKeyDown}
+    >
       {options.map((option) => {
         const checked = option.value === value;
         return (

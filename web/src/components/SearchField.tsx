@@ -11,7 +11,13 @@ interface SearchFieldProps {
   width?: number;
 }
 
-export function SearchField({ label, value, onChange, placeholder, width = 220 }: SearchFieldProps) {
+export function SearchField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  width = 220,
+}: SearchFieldProps) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <div className={styles.field} style={{ width }}>

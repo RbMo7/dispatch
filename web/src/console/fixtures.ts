@@ -108,7 +108,13 @@ const explorer = (chain: Chain, hash: string) => ({
   href: CHAINS[chain].txUrl(hash),
 });
 
-function stage(kind: Stage['kind'], title: string, atTime: string, detail?: string, extra?: Partial<Stage>): Stage {
+function stage(
+  kind: Stage['kind'],
+  title: string,
+  atTime: string,
+  detail?: string,
+  extra?: Partial<Stage>,
+): Stage {
   return { kind, title, ...(atTime && { at: atTime }), ...(detail && { detail }), ...extra };
 }
 
@@ -152,18 +158,44 @@ export const DISPATCHES: GalleryDispatch[] = [
     bulkCall: 'Yes, through the aggregator',
     claimedAt: at(0, '14:02:12'),
     idempotencyKey: 'payroll-2026-10-31-contractors',
-    items: makeItems({ seed: 37, chain: 'base', total: money('12480.00', 'USDC'), runs: [['broadcasting', 37]], sharedHash: H1 }),
+    items: makeItems({
+      seed: 37,
+      chain: 'base',
+      total: money('12480.00', 'USDC'),
+      runs: [['broadcasting', 37]],
+      sharedHash: H1,
+    }),
     flowFor: () => ({
       summary: 'Stage 5 of 6, waiting for a block',
       elapsed: '1 min 41 s so far',
       stages: [
         stage('done', 'Submitted', '14:02:11', '37 payments through the API'),
-        stage('done', 'Claimed', '14:02:12', 'Funding Check passed: 12,480.00 USDC needed, 31,906.44 held'),
+        stage(
+          'done',
+          'Claimed',
+          '14:02:12',
+          'Funding Check passed: 12,480.00 USDC needed, 31,906.44 held',
+        ),
         stage('done', 'Signed', '14:02:13', 'AWS KMS key 0x8b21…44fe, nonce 1,204'),
         stage('done', 'Sent', '14:02:14', 'Bulk Call through the aggregator, 0x7f3a…2a41'),
-        stage('branch-done', 'Fee bumped', '14:03:15', 'No block after 60 s, so both fees went up 15%. Replacement 0x19c2…d07e at the same nonce.'),
-        stage('current', 'Confirming', 'now', 'Watching both versions. Whichever lands first settles all 37 payments.'),
-        stage('end-todo', 'Transaction hash', '', `Shown here once a version lands. Until then the latest is ${H1.slice(0, 10)}…`),
+        stage(
+          'branch-done',
+          'Fee bumped',
+          '14:03:15',
+          'No block after 60 s, so both fees went up 15%. Replacement 0x19c2…d07e at the same nonce.',
+        ),
+        stage(
+          'current',
+          'Confirming',
+          'now',
+          'Watching both versions. Whichever lands first settles all 37 payments.',
+        ),
+        stage(
+          'end-todo',
+          'Transaction hash',
+          '',
+          `Shown here once a version lands. Until then the latest is ${H1.slice(0, 10)}…`,
+        ),
       ],
     }),
   },
@@ -188,19 +220,39 @@ export const DISPATCHES: GalleryDispatch[] = [
       elapsed: '43 min 48 s so far',
       stages: [
         stage('done', 'Submitted', '13:20:04', '1,000 payments through the API'),
-        stage('done', 'Claimed', '13:20:05', 'Funding Check passed: 184,326.71 USDC needed, 231,906.44 held'),
-        stage('current', 'Signed and sent', 'now', 'Nonces 1,205 onward, eight in flight at a time', {
-          count: { reached: 640, of: 1000 },
-        }),
-        stage('branch-failed', 'Item failures, 3', '13:41:27', 'Two recipients refused and one transfer reverted. The rest carry on.', {
-          links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
-        }),
+        stage(
+          'done',
+          'Claimed',
+          '13:20:05',
+          'Funding Check passed: 184,326.71 USDC needed, 231,906.44 held',
+        ),
+        stage(
+          'current',
+          'Signed and sent',
+          'now',
+          'Nonces 1,205 onward, eight in flight at a time',
+          {
+            count: { reached: 640, of: 1000 },
+          },
+        ),
+        stage(
+          'branch-failed',
+          'Item failures, 3',
+          '13:41:27',
+          'Two recipients refused and one transfer reverted. The rest carry on.',
+          {
+            links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
+          },
+        ),
         stage('current', 'Confirmed', 'now', 'Each payment counts once its block is final', {
           count: { reached: 612, of: 1000 },
         }),
         stage('end-todo', '1,000 transaction hashes', '', '640 sent so far. The first one:', {
           hash: LARGE_ITEMS[0]!.transactionHash!,
-          links: [explorer('base', LARGE_ITEMS[0]!.transactionHash!), { label: 'Show all in Items', onSelect: () => showItems() }],
+          links: [
+            explorer('base', LARGE_ITEMS[0]!.transactionHash!),
+            { label: 'Show all in Items', onSelect: () => showItems() },
+          ],
         }),
       ],
     }),
@@ -220,17 +272,33 @@ export const DISPATCHES: GalleryDispatch[] = [
     bulkCall: 'Not applicable',
     claimedAt: at(0, '11:47:04'),
     idempotencyKey: 'grants-q4-tranche-4',
-    items: makeItems({ seed: 6, chain: 'solana', total: money('48000.00', 'USDC'), runs: [['awaiting_approval', 6]] }),
+    items: makeItems({
+      seed: 6,
+      chain: 'solana',
+      total: money('48000.00', 'USDC'),
+      runs: [['awaiting_approval', 6]],
+    }),
     flowFor: () => ({
       summary: 'Stage 4 of 7, waiting on Approvers',
       elapsed: '2 h 31 min so far',
       stages: [
         stage('done', 'Submitted', '11:47:03', '6 payments through the API'),
-        stage('done', 'Claimed', '11:47:04', 'Funding Check passed on the vault and the member key'),
+        stage(
+          'done',
+          'Claimed',
+          '11:47:04',
+          'Funding Check passed on the vault and the member key',
+        ),
         stage('done', 'Proposed', '11:47:06', 'Proposal 41 in Squads holds all 6 transfers'),
-        stage('current', 'Approvals, 1 of 2', '11:52:40', 'Deadline in 66 hours. The engine never approves.', {
-          links: [{ label: 'Open proposal 41 in Squads', href: 'https://app.squads.so' }],
-        }),
+        stage(
+          'current',
+          'Approvals, 1 of 2',
+          '11:52:40',
+          'Deadline in 66 hours. The engine never approves.',
+          {
+            links: [{ label: 'Open proposal 41 in Squads', href: 'https://app.squads.so' }],
+          },
+        ),
         stage('todo', 'Executed', '', 'The engine executes once the threshold is met'),
         stage('todo', 'Confirmed', ''),
         stage('end-todo', 'Transaction hash', '', 'Appears after execution'),
@@ -252,15 +320,26 @@ export const DISPATCHES: GalleryDispatch[] = [
     bulkCall: 'Not applicable',
     claimedAt: null,
     idempotencyKey: 'rewards-2026-10-31',
-    items: makeItems({ seed: 128, chain: 'solana', total: money('3215.50', 'USDC'), runs: [['queued', 128]] }),
+    items: makeItems({
+      seed: 128,
+      chain: 'solana',
+      total: money('3215.50', 'USDC'),
+      runs: [['queued', 128]],
+    }),
     flowFor: () => ({
       summary: 'Stage 2 of 6, held for review',
       elapsed: 'Held for 4 h 58 min',
       stages: [
         stage('done', 'Submitted', '09:15:22', '128 payments through the API'),
-        stage('current', 'Held', '09:15:22', 'Matched "First-time recipient" for 4 addresses. Nothing has been signed.', {
-          links: [{ label: 'Review and release', href: '#held' }],
-        }),
+        stage(
+          'current',
+          'Held',
+          '09:15:22',
+          'Matched "First-time recipient" for 4 addresses. Nothing has been signed.',
+          {
+            links: [{ label: 'Review and release', href: '#held' }],
+          },
+        ),
         stage('todo', 'Claimed', ''),
         stage('todo', 'Signed and sent', ''),
         stage('todo', 'Confirmed', ''),
@@ -283,7 +362,13 @@ export const DISPATCHES: GalleryDispatch[] = [
     bulkCall: 'No',
     claimedAt: at(0, '08:30:42'),
     idempotencyKey: 'gas-topup-relayer-7',
-    items: makeItems({ seed: 1, chain: 'base', total: money('0.2500', 'ETH'), runs: [['confirmed', 1]], sharedHash: H4 }),
+    items: makeItems({
+      seed: 1,
+      chain: 'base',
+      total: money('0.2500', 'ETH'),
+      runs: [['confirmed', 1]],
+      sharedHash: H4,
+    }),
     flowFor: () => ({
       summary: 'Done in 8 s',
       elapsed: 'Confirmed at 08:30:49',
@@ -293,7 +378,10 @@ export const DISPATCHES: GalleryDispatch[] = [
         stage('done', 'Signed', '08:30:43', 'AWS KMS key 0x8b21…44fe, nonce 1,198'),
         stage('done', 'Sent', '08:30:44', 'Accepted by the node on the first attempt'),
         stage('done', 'Confirmed', '08:30:49', 'Block 21,604,377, now 412 blocks deep'),
-        stage('end-done', 'Transaction hash', '', undefined, { hash: H4, links: [explorer('base', H4)] }),
+        stage('end-done', 'Transaction hash', '', undefined, {
+          hash: H4,
+          links: [explorer('base', H4)],
+        }),
       ],
     }),
   },
@@ -316,7 +404,11 @@ export const DISPATCHES: GalleryDispatch[] = [
       seed: 14,
       chain: 'base',
       total: money('6904.12', 'USDC'),
-      runs: [['confirmed', 8], ['failed', 1], ['confirmed', 5]],
+      runs: [
+        ['confirmed', 8],
+        ['failed', 1],
+        ['confirmed', 5],
+      ],
       failures: { 8: INVALID_RECIPIENT },
     }),
     flowFor: (showItems) => ({
@@ -326,9 +418,15 @@ export const DISPATCHES: GalleryDispatch[] = [
         stage('done', 'Submitted', '17:58:09', '14 payments through the API'),
         stage('done', 'Claimed', '17:58:10', 'Funding Check passed'),
         stage('done', 'Signed and sent', '17:58:12', '14 transactions, nonces 1,180 to 1,193'),
-        stage('branch-failed', 'Item 9 failed', '17:58:12', 'INVALID_RECIPIENT: the address has no code and the token refuses it. Nothing was spent.', {
-          links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
-        }),
+        stage(
+          'branch-failed',
+          'Item 9 failed',
+          '17:58:12',
+          'INVALID_RECIPIENT: the address has no code and the token refuses it. Nothing was spent.',
+          {
+            links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
+          },
+        ),
         stage('done', 'Confirmed', '17:59:31', '13 transactions, blocks 21,571,902 to 21,571,911'),
         stage('end-done', '13 transaction hashes', '', 'First of 13, the rest are under Items', {
           hash: H5,
@@ -357,16 +455,36 @@ export const DISPATCHES: GalleryDispatch[] = [
       chain: 'solana',
       total: money('0.0814', 'SOL'),
       runs: [['failed', 1]],
-      failures: { 0: { code: 'CHAIN_REJECTED', message: 'Expired: the blockhash is past its last valid height.' } },
+      failures: {
+        0: {
+          code: 'CHAIN_REJECTED',
+          message: 'Expired: the blockhash is past its last valid height.',
+        },
+      },
     }),
     flowFor: () => ({
       summary: 'Failed at stage 3 of 4',
       elapsed: 'Ended at 12:21:33',
       stages: [
         stage('done', 'Received', '12:20:02', 'A signed v0 transaction, every signature verified'),
-        stage('done', 'Broadcast', '12:20:03', 'Resent the same bytes 11 times while the blockhash was valid'),
-        stage('failed', 'Expired', '12:21:33', 'The blockhash is past its last valid height. The engine has no key to re-sign a Relay Dispatch.'),
-        stage('end-failed', 'No transaction landed', '', 'Ask the wallet that signed it for a fresh transaction.'),
+        stage(
+          'done',
+          'Broadcast',
+          '12:20:03',
+          'Resent the same bytes 11 times while the blockhash was valid',
+        ),
+        stage(
+          'failed',
+          'Expired',
+          '12:21:33',
+          'The blockhash is past its last valid height. The engine has no key to re-sign a Relay Dispatch.',
+        ),
+        stage(
+          'end-failed',
+          'No transaction landed',
+          '',
+          'Ask the wallet that signed it for a fresh transaction.',
+        ),
       ],
     }),
   },
@@ -385,13 +503,23 @@ export const DISPATCHES: GalleryDispatch[] = [
     bulkCall: 'Yes, through the aggregator',
     claimedAt: null,
     idempotencyKey: 'refunds-2026-10-30-am',
-    items: makeItems({ seed: 9, chain: 'base', total: money('1120.00', 'USDC'), runs: [['cancelled', 9]] }),
+    items: makeItems({
+      seed: 9,
+      chain: 'base',
+      total: money('1120.00', 'USDC'),
+      runs: [['cancelled', 9]],
+    }),
     flowFor: () => ({
       summary: 'Cancelled before it was claimed',
       elapsed: 'Ended at 10:06:10',
       stages: [
         stage('done', 'Submitted', '10:04:51', '9 payments through the API'),
-        stage('end-cancelled', 'Cancelled', '10:06:10', 'Withdrawn by an operator. Nothing was signed or sent.'),
+        stage(
+          'end-cancelled',
+          'Cancelled',
+          '10:06:10',
+          'Withdrawn by an operator. Nothing was signed or sent.',
+        ),
       ],
     }),
   },
