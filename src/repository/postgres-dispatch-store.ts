@@ -29,6 +29,7 @@ import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatc
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
 import type {
+  CancelOutcome,
   ChainScope,
   CommittedHolder,
   DispatchStore,
@@ -203,6 +204,37 @@ export class PostgresDispatchStore implements DispatchStore {
 
       return rows.map(toDispatch);
     });
+  }
+
+  async cancelDispatch(id: string): Promise<CancelOutcome> {
+    // The `status = 'queued'` guard is the whole race: claimQueued locks the rows it takes, so
+    // this update either commits first (the claim then skips the row) or re-reads it claimed.
+    const cancelledAt = new Date();
+    const [managed] = await this.db
+      .update(dispatches)
+      .set({ status: 'cancelled', cancelledAt })
+      .where(and(eq(dispatches.id, id), eq(dispatches.status, 'queued')))
+      .returning({ id: dispatches.id });
+    if (managed) return 'cancelled';
+    const [relay] = await this.db
+      .update(relayDispatches)
+      .set({ status: 'cancelled', cancelledAt })
+      .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
+      .returning({ id: relayDispatches.id });
+    if (relay) return 'cancelled';
+
+    const [existing] = await this.db
+      .select({ status: dispatches.status })
+      .from(dispatches)
+      .where(eq(dispatches.id, id))
+      .union(
+        this.db
+          .select({ status: relayDispatches.status })
+          .from(relayDispatches)
+          .where(eq(relayDispatches.id, id)),
+      );
+    if (!existing) return 'not_found';
+    return existing.status === 'cancelled' ? 'cancelled' : 'already_claimed';
   }
 
   async listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {

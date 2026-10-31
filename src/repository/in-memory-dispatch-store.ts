@@ -8,6 +8,7 @@ import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
 import type {
+  CancelOutcome,
   ChainScope,
   CommittedHolder,
   DispatchStore,
@@ -88,6 +89,18 @@ export class InMemoryDispatchStore implements DispatchStore {
     }
 
     return Promise.resolve(claimed);
+  }
+
+  cancelDispatch(id: string): Promise<CancelOutcome> {
+    const dispatch = this.dispatches.get(id);
+    const relayDispatch = this.relayDispatches.get(id);
+    const status = dispatch?.status ?? relayDispatch?.status;
+    if (status === undefined) return Promise.resolve('not_found');
+    if (status === 'cancelled') return Promise.resolve('cancelled');
+    if (status !== 'queued') return Promise.resolve('already_claimed');
+    if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled' });
+    if (relayDispatch) this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled' });
+    return Promise.resolve('cancelled');
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {

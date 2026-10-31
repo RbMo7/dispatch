@@ -1,6 +1,6 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch` and `GET /v1/dispatch/:id`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id` and `POST /v1/dispatch/:id/cancel`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## `POST /v1/dispatch`
 
@@ -42,7 +42,7 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 {
   "dispatchId": "<id>",
   "mode": "managed",
-  "status": "queued | broadcasting | confirmed | failed | partial",
+  "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
     { "status": "confirmed", "transactionHash": "<hash>", "error": null },
     { "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
@@ -52,7 +52,7 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
-Per-item `status` is `queued | awaiting_approval | broadcasting | confirmed | failed | abandoned` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses, never stored as its own terminal value — only `queued`/`broadcasting` are ever persisted directly (ADR-0009's outbox transition), so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
+Per-item `status` is `queued | awaiting_approval | broadcasting | confirmed | failed | abandoned | cancelled` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses — only `queued`/`broadcasting` (ADR-0009's outbox transition) and `cancelled` (below) are ever persisted directly, so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
 
 On Solana, an item whose transaction expired without landing is resubmitted with a fresh blockhash, up to 3 times, whatever `retryPolicy` says: the expired one was never charged, so this costs nothing extra (ADR-0042). Its `transactionHash` then changes to the resubmission's. After the third it is `failed`, as is an expired Relay Dispatch, which the engine has no key to re-sign.
 
@@ -61,6 +61,16 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
+
+## `POST /v1/dispatch/:id/cancel`
+
+Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
+
+- `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
+- `409`: the worker already claimed it, whatever its items' state since. The body is `{ "error": { "code": "ALREADY_CLAIMED", "message": "..." } }`.
+- `404`: no Dispatch has this id.
+
+`cancelled` is terminal and stored, not derived. Resubmitting a cancelled Dispatch's `Idempotency-Key` returns it (`202`, `status: "cancelled"`) and creates nothing new; send a new key to try again. An open Proposal cannot be cancelled here: rejecting it is the Approvers' call, in Squads or Safe.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 
@@ -142,7 +152,7 @@ Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "st
 {
   "dispatchId": "<id>",
   "mode": "relay",
-  "status": "queued | broadcasting | confirmed | failed | abandoned",
+  "status": "queued | broadcasting | confirmed | failed | abandoned | cancelled",
   "transactionHash": "<hash>",
   "error": null
 }

@@ -1,8 +1,19 @@
 import type { DispatchItem } from './call.js';
 import type { Chain } from './chain.js';
 
-/** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. */
-export type DispatchStatus = 'queued' | 'broadcasting' | 'confirmed' | 'failed' | 'partial';
+/** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. `cancelled` (ADR-0056) is stored, like `queued` and `broadcasting`; the rest are derived. */
+export type DispatchStatus =
+  'queued' | 'broadcasting' | 'confirmed' | 'failed' | 'partial' | 'cancelled';
+
+/** docs/api.md's per-item status, also a Relay Dispatch's top-level one: adds `abandoned` and `awaiting_approval`, never `partial`. */
+export type ItemStatus =
+  | 'queued'
+  | 'awaiting_approval'
+  | 'broadcasting'
+  | 'confirmed'
+  | 'failed'
+  | 'abandoned'
+  | 'cancelled';
 
 /**
  * A Dispatch's items are always Call, paired with the Payment each came

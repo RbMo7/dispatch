@@ -1111,3 +1111,132 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
     expect(lookups).toEqual([]);
   });
 });
+
+describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
+  type App = Awaited<ReturnType<typeof buildTestApp>>['app'];
+  const twoCalls = {
+    chain: 'base',
+    items: [
+      { type: 'call', to: '0xabc', data: '0x', value: '0' },
+      { type: 'call', to: '0xdef', data: '0x', value: '0' },
+    ],
+  };
+
+  async function submit(app: App, key = 'key-1'): Promise<string> {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': key },
+      payload: twoCalls,
+    });
+    return response.json<PostResponseBody>().dispatchId;
+  }
+
+  const cancel = (app: App, id: string) =>
+    app.inject({ method: 'POST', url: `/v1/dispatch/${id}/cancel`, headers: AUTH_HEADERS });
+
+  it('rejects a request without a valid bearer token', async () => {
+    const { app } = await buildTestApp();
+    const id = await submit(app);
+
+    const response = await app.inject({ method: 'POST', url: `/v1/dispatch/${id}/cancel` });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('cancels an unclaimed Dispatch: it and every item read cancelled, and it is never claimed', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app);
+
+    const response = await cancel(app, id);
+
+    const cancelled = {
+      dispatchId: id,
+      mode: 'managed',
+      status: 'cancelled',
+      items: [
+        { status: 'cancelled', transactionHash: null, error: null },
+        { status: 'cancelled', transactionHash: null, error: null },
+      ],
+    };
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(cancelled);
+    const read = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}`,
+      headers: AUTH_HEADERS,
+    });
+    expect(read.json()).toEqual(cancelled);
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+
+  it('answers a repeat cancel with 200 and the current state', async () => {
+    const { app } = await buildTestApp();
+    const id = await submit(app);
+    await cancel(app, id);
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<GetResponseBody>().status).toBe('cancelled');
+  });
+
+  it('refuses a claimed Dispatch with 409 ALREADY_CLAIMED', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app);
+    await store.claimQueued(CHAINS, 10);
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe('ALREADY_CLAIMED');
+  });
+
+  it('answers 404 for an unknown id', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await cancel(app, 'no-such-dispatch');
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('cancels an unclaimed Relay Dispatch', async () => {
+    const { app, store } = await buildTestApp();
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-1' },
+      payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+    });
+    const id = submitted.json<PostResponseBody>().dispatchId;
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      dispatchId: id,
+      mode: 'relay',
+      status: 'cancelled',
+      transactionHash: null,
+      error: null,
+    });
+    expect(await store.claimQueuedRelayDispatches(CHAINS, 10)).toEqual([]);
+  });
+
+  it('returns a cancelled Dispatch for its Idempotency-Key, creating nothing new', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app, 'key-1');
+    await cancel(app, id);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
+      payload: twoCalls,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ dispatchId: id, status: 'cancelled' });
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+});

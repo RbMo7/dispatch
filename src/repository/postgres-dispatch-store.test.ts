@@ -7,6 +7,7 @@ import { db } from '../db/client.js';
 import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
+import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
@@ -39,6 +40,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   });
 
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
+  runCancelConformanceSuite(() => new PostgresDispatchStore(db));
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
@@ -175,6 +177,39 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       expect(claimed.map((d) => d.id).sort()).toEqual([a.id, b.id].sort());
       expect(claimed.every((d) => d.status === 'broadcasting')).toBe(true);
       expect(await store.claimQueued(CHAINS, 10)).toEqual([]); // already claimed, not re-claimed
+    });
+  });
+
+  describe('cancelDispatch racing claimQueued (ADR-0056)', () => {
+    it('lets exactly one of a concurrent cancel and claim win, and stores the winner', async () => {
+      for (let round = 0; round < 5; round++) {
+        await truncateAll();
+        const created = await Promise.all(
+          Array.from({ length: 20 }, () =>
+            store.createDispatch({
+              chain: 'solana',
+              idempotencyKey: randomUUID(),
+              items: [solanaItem],
+              retryPolicy: false,
+            }),
+          ),
+        );
+
+        const [claimed, ...outcomes] = await Promise.all([
+          store.claimQueued(CHAINS, 100),
+          ...created.map((d) => store.cancelDispatch(d.id)),
+        ]);
+
+        const claimedIds = new Set(claimed.map((d) => d.id));
+        for (const [i, dispatch] of created.entries()) {
+          const cancelled = outcomes[i] === 'cancelled';
+          expect(cancelled).toBe(!claimedIds.has(dispatch.id));
+          expect(outcomes[i]).toBe(cancelled ? 'cancelled' : 'already_claimed');
+          expect((await store.getDispatch(dispatch.id))?.status).toBe(
+            cancelled ? 'cancelled' : 'broadcasting',
+          );
+        }
+      }
     });
   });
 

@@ -70,6 +70,13 @@ export type ProposalOutcome = {
 /** Whose balance a committed amount is held against: the multisig Sender, or the key that pays the engine's own costs. */
 export type CommittedHolder = 'sender' | 'proposer';
 
+/**
+ * ADR-0056: how a cancel ended. `cancelled` also when it already was (a
+ * repeat cancel is not an error); `already_claimed` when the worker's claim
+ * won, whatever has happened since.
+ */
+export type CancelOutcome = 'cancelled' | 'already_claimed' | 'not_found';
+
 export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
   idempotencyKey: string;
@@ -120,8 +127,14 @@ export interface DispatchStore {
   getDispatch(id: string): Promise<Dispatch | null>;
   /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/api.md) is built from. */
   listTransactions(dispatchId: string): Promise<Transaction[]>;
-  /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). */
+  /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). Never a cancelled one. */
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
+  /**
+   * ADR-0056: cancels the Managed or Relay Dispatch `id` if it is still
+   * unclaimed, in one conditional write against the claim, so a cancel and
+   * a claim can never both win.
+   */
+  cancelDispatch(id: string): Promise<CancelOutcome>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */

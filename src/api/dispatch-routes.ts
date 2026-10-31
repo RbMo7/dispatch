@@ -8,7 +8,7 @@ import type {
 } from '../chain-handler/chain-handler.js';
 import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
-import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
+import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Proposal } from '../domain/proposal.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
@@ -126,7 +126,7 @@ async function translateItem(
 }
 
 /** The wire's lowercase per-item status vocabulary (docs/api.md) — distinct from Transaction's own uppercase one. */
-function toWireItemStatus(status: TransactionStatus): string {
+function toWireItemStatus(status: TransactionStatus): ItemStatus {
   switch (status) {
     case 'PENDING':
       return 'broadcasting';
@@ -163,7 +163,7 @@ function isCurrentVersion(transaction: Transaction): boolean {
  * not double-counted as "in progress" here.
  */
 function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {
-  if (dispatch.status === 'queued') return 'queued';
+  if (dispatch.status === 'queued' || dispatch.status === 'cancelled') return dispatch.status;
 
   // ADR-0054: a Call waiting to be proposed or approved is still in progress, and the Dispatch gains no status of its own for it.
   const stillPending =
@@ -192,6 +192,78 @@ function toWireApproval(proposal: Proposal) {
   };
 }
 
+/** `GET /v1/dispatch/:id`'s body for a Managed or Relay Dispatch, or null when neither exists. */
+async function readDispatchView(store: DispatchStore, id: string) {
+  const dispatch = await store.getDispatch(id);
+  if (dispatch) {
+    if (dispatch.status === 'cancelled') {
+      return {
+        dispatchId: dispatch.id,
+        mode: 'managed',
+        status: 'cancelled',
+        items: dispatch.items.map(() => ({
+          status: 'cancelled',
+          transactionHash: null,
+          error: null,
+        })),
+      };
+    }
+    const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
+    const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
+    // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
+    const proposalById = new Map(
+      transactions.some((t) => t.proposalId !== null)
+        ? (await store.listProposalsForDispatch(dispatch.id)).map((p) => [p.id, p])
+        : [],
+    );
+
+    const items = dispatch.items.map((_, index) => {
+      const transaction = transactionByCallIndex.get(index);
+      if (!transaction) {
+        return { status: 'queued', transactionHash: null, error: null };
+      }
+      const proposal = transaction.proposalId
+        ? proposalById.get(transaction.proposalId)
+        : undefined;
+      return {
+        status: toWireItemStatus(transaction.status),
+        transactionHash: transaction.hash,
+        error: transaction.error,
+        ...(proposal ? { approval: toWireApproval(proposal) } : {}),
+      };
+    });
+
+    return {
+      dispatchId: dispatch.id,
+      mode: 'managed',
+      status: deriveDispatchStatus(dispatch, transactions),
+      items,
+    };
+  }
+
+  // ADR-0031: a Relay Dispatch is always exactly one already-signed
+  // transaction, never a batch — its response shape (dispatchId, mode,
+  // status, transactionHash, error) is honestly distinct from Managed
+  // Dispatch's items-array shape, not a fake single-item version of it.
+  const relayDispatch = await store.getRelayDispatch(id);
+  if (relayDispatch) {
+    const [transaction] = await store.listTransactions(relayDispatch.id);
+    return {
+      dispatchId: relayDispatch.id,
+      mode: 'relay',
+      status: transaction
+        ? toWireItemStatus(transaction.status)
+        : relayDispatch.status === 'cancelled'
+          ? 'cancelled'
+          : 'queued',
+      transactionHash: transaction?.hash ?? null,
+      error: transaction?.error ?? null,
+    };
+  }
+
+  return null;
+}
+
 function checkAuth(authToken: string) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (request.headers.authorization !== `Bearer ${authToken}`) {
@@ -200,7 +272,7 @@ function checkAuth(authToken: string) {
   };
 }
 
-/** `POST /v1/dispatch` and `GET /v1/dispatch/:id` against the wire format pinned in docs/api.md (issue 08). */
+/** `POST /v1/dispatch`, `GET /v1/dispatch/:id` and its cancel, against the wire format pinned in docs/api.md (issue 08). */
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
   const { store, chainRegistry, authToken, defaultRetryPolicy } = deps;
   const auth = checkAuth(authToken);
@@ -327,68 +399,28 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     '/v1/dispatch/:id',
     { preHandler: auth },
     async (request, reply) => {
-      const dispatch = await store.getDispatch(request.params.id);
-      if (dispatch) {
-        const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
-        const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
-        // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
-        const proposalById = new Map(
-          transactions.some((t) => t.proposalId !== null)
-            ? (await store.listProposalsForDispatch(dispatch.id)).map((p) => [p.id, p])
-            : [],
-        );
+      const view = await readDispatchView(store, request.params.id);
+      if (!view) return reply.code(404).send({ error: 'not found' });
+      return reply.send(view);
+    },
+  );
 
-        const items = dispatch.items.map((_, index) => {
-          const transaction = transactionByCallIndex.get(index);
-          if (!transaction) {
-            return { status: 'queued', transactionHash: null, error: null };
-          }
-          const proposal = transaction.proposalId
-            ? proposalById.get(transaction.proposalId)
-            : undefined;
-          return {
-            status: toWireItemStatus(transaction.status),
-            transactionHash: transaction.hash,
-            error: transaction.error,
-            ...(proposal ? { approval: toWireApproval(proposal) } : {}),
-          };
-        });
-
-        return reply.send({
-          dispatchId: dispatch.id,
-          mode: 'managed',
-          status: deriveDispatchStatus(dispatch, transactions),
-          items,
+  app.post<{ Params: { id: string } }>(
+    '/v1/dispatch/:id/cancel',
+    { preHandler: auth },
+    async (request, reply) => {
+      const outcome = await store.cancelDispatch(request.params.id);
+      if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'already_claimed') {
+        return reply.code(409).send({
+          error: {
+            code: 'ALREADY_CLAIMED',
+            message:
+              'the engine has already claimed this Dispatch, so it can no longer be cancelled',
+          },
         });
       }
-
-      // ADR-0031: a Relay Dispatch is always exactly one already-signed
-      // transaction, never a batch — its response shape (dispatchId, mode,
-      // status, transactionHash, error) is honestly distinct from Managed
-      // Dispatch's items-array shape, not a fake single-item version of it.
-      const relayDispatch = await store.getRelayDispatch(request.params.id);
-      if (relayDispatch) {
-        const [transaction] = await store.listTransactions(relayDispatch.id);
-        if (!transaction) {
-          return reply.send({
-            dispatchId: relayDispatch.id,
-            mode: 'relay',
-            status: 'queued',
-            transactionHash: null,
-            error: null,
-          });
-        }
-
-        return reply.send({
-          dispatchId: relayDispatch.id,
-          mode: 'relay',
-          status: toWireItemStatus(transaction.status),
-          transactionHash: transaction.hash,
-          error: transaction.error,
-        });
-      }
-
-      return reply.code(404).send({ error: 'not found' });
+      return reply.send(await readDispatchView(store, request.params.id));
     },
   );
 
