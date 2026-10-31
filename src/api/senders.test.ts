@@ -46,7 +46,6 @@ const safe: SenderConfig = {
   },
 };
 
-/** A fake chain and Signer: balances by `address:asset`, pins by address; anything else fails. */
 function fakeReads(options: {
   balances?: Record<string, string>;
   pins?: Record<string, PolicyRead>;

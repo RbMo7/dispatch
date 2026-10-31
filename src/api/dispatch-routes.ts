@@ -28,7 +28,6 @@ export type DispatchRouteDeps = {
   authToken: string;
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
-  /** Lets a console format the smallest-unit amounts the API returns. */
   assetDecimals: AssetDecimals;
 };
 
@@ -141,7 +140,6 @@ export function checkAuth(authToken: string) {
   };
 }
 
-/** `POST /v1/dispatch`, `GET /v1/dispatch/:id` and its cancel, against the wire format pinned in docs/api.md (issue 08). */
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
   const { store, chainRegistry, authToken, defaultRetryPolicy, assetDecimals } = deps;
   const auth = checkAuth(authToken);

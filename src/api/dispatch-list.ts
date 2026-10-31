@@ -9,7 +9,6 @@ import type { AssetDecimals } from './asset-decimals.js';
 import { summarizeDispatch } from './dispatch-view.js';
 import { isUuid } from './uuid.js';
 
-/** Every top-level status a listed row can have, Managed (`partial`) or Relay (`abandoned`). */
 const LIST_STATUSES = [
   'queued',
   'broadcasting',
@@ -24,7 +23,6 @@ type ListStatus = (typeof LIST_STATUSES)[number];
 export const DEFAULT_LIST_LIMIT = 25;
 export const MAX_LIST_LIMIT = 100;
 
-/** `GET /v1/dispatches`'s query, as the wire sends it; Fastify's schema has already checked the enums and the limit. */
 export type RawListQuery = {
   cursor?: string;
   limit?: number;
@@ -96,7 +94,6 @@ export function parseListQuery(raw: RawListQuery): Result<DispatchListFilter, st
   });
 }
 
-/** The stored statuses a row can have and still read as `status`, so the store skips the rest. */
 function storedStatusesFor(status: ListStatus): NonNullable<DispatchListQuery['storedStatuses']> {
   switch (status) {
     case 'cancelled':
@@ -109,10 +106,6 @@ function storedStatusesFor(status: ListStatus): NonNullable<DispatchListQuery['s
   }
 }
 
-/**
- * The most rows one request reads looking for matches. A derived-status
- * filter that matches nothing would otherwise read the whole table.
- */
 export const MAX_SCANNED_ROWS = 500;
 
 /**

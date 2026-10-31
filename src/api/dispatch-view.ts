@@ -9,14 +9,12 @@ import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store
 import type { AssetDecimals } from './asset-decimals.js';
 import { buildTimeline } from './timeline.js';
 
-/** A Relay Dispatch's top-level status: its one Transaction's, read as an item (ADR-0031). */
 function deriveRelayStatus(relayDispatch: RelayDispatch, transactions: Transaction[]): ItemStatus {
   const [transaction] = transactions;
   if (transaction) return toWireItemStatus(transaction.status);
   return relayDispatch.status === 'cancelled' ? 'cancelled' : 'queued';
 }
 
-/** The wire's lowercase per-item status vocabulary (docs/api.md) — distinct from Transaction's own uppercase one. */
 function toWireItemStatus(status: TransactionStatus): ItemStatus {
   switch (status) {
     case 'PENDING':
@@ -71,7 +69,6 @@ function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): 
   return 'partial';
 }
 
-/** What the caller asked for on an item, as docs/api.md names it, so a reader never has to decode the Call. */
 function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf: AssetDecimals) {
   if (payment) {
     const { recipient, asset, amount } = payment;
@@ -89,7 +86,6 @@ function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf
     : { type: 'call' as const, programId: call.programId };
 }
 
-/** docs/api.md's per-item `approval` block: what the Approvers have done about the Proposal this Call is in. */
 function toWireApproval(proposal: Proposal) {
   return {
     state: proposal.approvalState,
@@ -101,7 +97,6 @@ function toWireApproval(proposal: Proposal) {
   };
 }
 
-/** `GET /v1/dispatch/:id`'s body for a Managed or Relay Dispatch, or null when neither exists. */
 export async function readDispatchView(
   store: DispatchStore,
   id: string,
@@ -188,7 +183,6 @@ export async function readDispatchView(
   return null;
 }
 
-/** #110: one row of `GET /v1/dispatches`: the `GET /v1/dispatch/:id` summary without items, plus what a list needs. */
 export function summarizeDispatch(listed: ListedDispatch, decimalsOf: AssetDecimals) {
   if (listed.mode === 'relay') {
     const [transaction] = listed.transactions;

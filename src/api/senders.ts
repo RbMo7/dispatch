@@ -31,7 +31,6 @@ export type SenderConfig = {
   };
 };
 
-/** The external reads a SenderView needs. Each can fail on its own. */
 export type SenderReads = {
   getBalance(chain: Chain, address: string, asset: string): Promise<Result<Balance, DispatchError>>;
   readPins(address: string): Promise<PolicyRead>;
@@ -142,7 +141,6 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
 
 export const SENDERS_CACHE_MS = 15_000;
 
-/** Every Sender, read at most once per 15 s however often a console polls; a failed read is not kept. */
 export function cachedSenders(
   configs: readonly SenderConfig[],
   reads: SenderReads,

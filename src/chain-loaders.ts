@@ -341,7 +341,6 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
   };
 }
 
-/** #111: the native asset, then every known token, for each chain this build has. */
 const assetsByChain: Record<Chain, () => string[]> = {
   solana: () => [
     SOLANA_NATIVE_ASSET,
@@ -350,7 +349,6 @@ const assetsByChain: Record<Chain, () => string[]> = {
   base: () => [BASE_NATIVE_ASSET, ...Object.keys(parseBaseKnownTokens(config.base.knownTokens))],
 };
 
-/** The configured native assets and known tokens, read once at startup; the handlers keep the same registries. */
 export function assetDecimalsFromConfig(): AssetDecimals {
   const decimals: Record<Chain, Record<string, number>> = {
     solana: { [SOLANA_NATIVE_ASSET]: 9 },
@@ -365,7 +363,6 @@ export function assetDecimalsFromConfig(): AssetDecimals {
   return (chain, asset) => decimals[chain][asset];
 }
 
-/** #111: what `GET /v1/senders` reports for each chain `registry` has a Chain Handler for. */
 export function senderConfigsFor(
   registry: ChainRegistry,
   assetDecimals: AssetDecimals,
@@ -403,7 +400,6 @@ export function senderConfigsFor(
   });
 }
 
-/** #111: the live reads behind `GET /v1/senders`: balances through each Chain Handler, pins from the Signer, thresholds from the chain. */
 export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): SenderReads {
   const signerClient = new SignerClient(
     config.signerUrl,

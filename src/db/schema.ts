@@ -37,7 +37,6 @@ export const dispatches = pgTable(
   },
   (table) => [
     uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey),
-    // #110: `GET /v1/dispatches` pages newest first on `(created_at, id)`.
     index('dispatches_created_at_id_idx').on(table.createdAt, table.id),
   ],
 );
@@ -86,7 +85,6 @@ export const transactions = pgTable(
     /** ADR-0054: this Call's position inside its Proposal. */
     proposalPosition: integer('proposal_position'),
   },
-  // Every read of a Dispatch, and of a list page, looks its Transactions up by Dispatch.
   (table) => [
     index('transactions_dispatch_id_call_index_idx').on(table.dispatchId, table.callIndex),
   ],

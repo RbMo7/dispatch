@@ -11,7 +11,6 @@ const item: DispatchItem<'solana'> = {
   payment: null,
 };
 
-/** ADR-0056: cancelling a Dispatch, run against both the fake and the real store so they agree. */
 export function runCancelConformanceSuite(makeStore: () => DispatchStore): void {
   describe('cancelDispatch (ADR-0056)', () => {
     const newDispatch = (store: DispatchStore, idempotencyKey = randomUUID()) =>

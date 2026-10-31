@@ -16,7 +16,6 @@ const solanaItem: DispatchItem<'solana'> = {
   payment: { recipient: 'r', asset: 'USDC', amount: '10' },
 };
 
-/** Lets each step land on a later millisecond, so the order under test is the order of the steps. */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 async function timelineOf(store: DispatchStore, id: string): Promise<TimelineEntry[]> {
@@ -33,7 +32,6 @@ async function timelineOf(store: DispatchStore, id: string): Promise<TimelineEnt
   });
 }
 
-/** Drops `at` so the entries read as the story they tell, in order. */
 function story(timeline: TimelineEntry[]) {
   for (let i = 1; i < timeline.length; i++) {
     const [prev, next] = [timeline[i - 1]?.at, timeline[i]?.at];
@@ -42,10 +40,6 @@ function story(timeline: TimelineEntry[]) {
   return timeline.map(({ at: _at, ...rest }) => rest);
 }
 
-/**
- * #109: the timeline rebuilt from what each store keeps. Run against both the
- * fake and the real store, so the timestamps it relies on are written by both.
- */
 export function runTimelineConformanceSuite(makeStore: () => DispatchStore): void {
   describe('timeline (#109)', () => {
     it('shows each version of a fee-bumped Base Call, its Attempts, and which version landed', async () => {

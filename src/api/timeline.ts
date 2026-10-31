@@ -63,7 +63,6 @@ type Outcome = Extract<
   { kind: 'replaced' | 'dropped' | 'confirmed' | 'failed' | 'abandoned' }
 >;
 
-/** Oldest first; an entry with no moment (`at: null`) is current state, so it goes last. */
 export function buildTimeline({
   dispatch,
   transactions,
@@ -85,7 +84,6 @@ export function buildTimeline({
     return settled?.confirmedAt ?? settled?.failedAt ?? null;
   };
 
-  // A version is every row sharing one hash: one row per Call it carries.
   const versions = new Map<string, Transaction[]>();
   for (const t of transactions) {
     const key = t.hash ?? `row:${t.id}`;

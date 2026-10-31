@@ -12,7 +12,6 @@ const items: { [C in Chain]: DispatchItem<C> } = {
   solana: { call: { programId: 'prog', accounts: [], data: 'ZGF0YQ==' }, payment: null },
 };
 
-/** The fake store's clock is milliseconds; a tick keeps creation order and listing order the same. */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 2));
 
 function newManaged(store: DispatchStore, chain: Chain = 'base') {
@@ -39,7 +38,6 @@ function newRelay(store: DispatchStore, chain: Chain = 'base') {
   });
 }
 
-/** Every id the store lists for `query`, page by page. */
 async function listAll(
   store: DispatchStore,
   query: Omit<DispatchListQuery, 'after'>,
@@ -57,7 +55,6 @@ async function listAll(
   }
 }
 
-/** #110: the console's list, run against both the fake and the real store. */
 export function runListConformanceSuite(makeStore: () => DispatchStore): void {
   describe('listDispatches (#110)', () => {
     it('pages Managed and Relay Dispatches newest first, skipping and repeating nothing while new ones arrive', async () => {

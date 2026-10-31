@@ -45,7 +45,8 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
-    assetDecimals: (chain, asset) => ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    assetDecimals: (chain, asset) =>
+      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
     listSenders: () => Promise.resolve([]),
   });
   return { app, store };
