@@ -1189,7 +1189,27 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
     const response = await cancel(app, id);
 
     expect(response.statusCode).toBe(409);
-    expect(response.json<{ error: { code: string } }>().error.code).toBe('ALREADY_CLAIMED');
+    expect(response.json<{ code: string }>().code).toBe('ALREADY_CLAIMED');
+  });
+
+  it('answers 401 before checking the query of an unauthenticated request', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({ method: 'GET', url: '/v1/dispatches?limit=500' });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 404 for an id that is not a UUID', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatch/not-a-uuid',
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it('answers 404 for an unknown id', async () => {

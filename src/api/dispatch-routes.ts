@@ -129,6 +129,12 @@ async function translateItem(
   );
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(id: string): boolean {
+  return UUID.test(id);
+}
+
 export function checkAuth(authToken: string) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (request.headers.authorization !== `Bearer ${authToken}`) {
@@ -144,7 +150,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
-    { schema: postDispatchSchema, preHandler: auth },
+    { schema: postDispatchSchema, onRequest: auth },
     async (request, reply) => {
       const idempotencyKey = request.headers['idempotency-key'];
       if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {
@@ -262,7 +268,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
 
   app.get<{ Querystring: RawListQuery }>(
     '/v1/dispatches',
-    { preHandler: auth, schema: { querystring: listQuerySchema } },
+    { onRequest: auth, schema: { querystring: listQuerySchema } },
     async (request, reply) => {
       const filter = parseListQuery(request.query);
       if (!filter.ok) return reply.code(400).send({ error: filter.error });
@@ -273,7 +279,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
   app.get<{ Params: { id: string }; Querystring: { include?: 'timeline' } }>(
     '/v1/dispatch/:id',
     {
-      preHandler: auth,
+      onRequest: auth,
       schema: {
         querystring: {
           type: 'object',
@@ -282,6 +288,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       },
     },
     async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const view = await readDispatchView(store, request.params.id, {
         timeline: request.query.include === 'timeline',
       });
@@ -292,17 +299,15 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
 
   app.post<{ Params: { id: string } }>(
     '/v1/dispatch/:id/cancel',
-    { preHandler: auth },
+    { onRequest: auth },
     async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const outcome = await store.cancelDispatch(request.params.id);
       if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
       if (outcome === 'already_claimed') {
         return reply.code(409).send({
-          error: {
-            code: 'ALREADY_CLAIMED',
-            message:
-              'the engine has already claimed this Dispatch, so it can no longer be cancelled',
-          },
+          code: 'ALREADY_CLAIMED',
+          message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
       return reply.send(await readDispatchView(store, request.params.id));

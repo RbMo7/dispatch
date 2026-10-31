@@ -148,7 +148,7 @@ Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `crea
 Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
 
 - `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
-- `409`: the worker already claimed it, whatever its items' state since. The body is `{ "error": { "code": "ALREADY_CLAIMED", "message": "..." } }`.
+- `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the same shape as every other refused request.
 - `404`: no Dispatch has this id.
 
 `cancelled` is terminal and stored, not derived. Resubmitting a cancelled Dispatch's `Idempotency-Key` returns it (`202`, `status: "cancelled"`) and creates nothing new; send a new key to try again. An open Proposal cannot be cancelled here: rejecting it is the Approvers' call, in Squads or Safe.
