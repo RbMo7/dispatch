@@ -42,6 +42,8 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 {
   "dispatchId": "<id>",
   "mode": "managed",
+  "chain": "base",
+  "createdAt": "2026-10-31T10:00:00.000Z",
   "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "decimals": 6, "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
@@ -62,7 +64,7 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 
 An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
-Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
+Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted. Both also carry `chain` (`base` or `solana`, as submitted) and `createdAt` (ISO 8601, when the engine accepted the Dispatch), the same values its `GET /v1/dispatches` row shows.
 
 ### `?include=timeline`
 
@@ -143,7 +145,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
 }
 ```
 
-Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit, each with the asset's `decimals` as on a `payment` item (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
+Each row is the `GET /v1/dispatch/:id` body without `items`, plus `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit, each with the asset's `decimals` as on a `payment` item (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
 
 ## `POST /v1/dispatch/:id/cancel`
 
@@ -164,6 +166,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
   "senders": [
     {
       "chain": "solana",
+      "network": "devnet",
       "mode": "squads",
       "address": "<vault>",
       "multisig": { "address": "<multisig>", "threshold": 2, "engineKey": "<member key>" },
@@ -193,6 +196,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 }
 ```
 
+- `network` is the network the engine talks to for that chain, so a reader can link to the right explorer. On `base` it comes from `BASE_CHAIN_ID`: `"base"` for 8453, `"base-sepolia"` for 84532, and `{ "chainId": <n> }` for any other. On `solana` it comes from the RPC's genesis hash, read once at startup: `"mainnet-beta"`, `"devnet"`, `"testnet"`, or `"unknown"` for any other hash. A failed read also gives `"unknown"` and a line in the engine's log; the engine still starts.
 - `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
@@ -282,6 +286,8 @@ Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "st
 {
   "dispatchId": "<id>",
   "mode": "relay",
+  "chain": "base",
+  "createdAt": "2026-10-31T10:00:00.000Z",
   "status": "queued | broadcasting | confirmed | failed | abandoned | cancelled",
   "transactionHash": "<hash>",
   "error": null

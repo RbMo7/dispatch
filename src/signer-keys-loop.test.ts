@@ -17,6 +17,7 @@ const LEAK = 'internal-detail-9876543210';
 
 const sender: SenderConfig = {
   chain: 'base',
+  network: 'base-sepolia',
   address: '0xSender',
   assets: ['ETH'],
   assetDecimals: () => 18,

@@ -21,12 +21,14 @@ const assetDecimals: SenderConfig['assetDecimals'] = (_chain, asset) =>
 
 const plain: SenderConfig = {
   chain: 'base',
+  network: 'base-sepolia',
   address: '0xSender',
   assets: ['ETH', 'USDC'],
   assetDecimals,
 };
 const squads: SenderConfig = {
   chain: 'solana',
+  network: 'devnet',
   address: 'Vault111',
   assets: ['SOL', 'USDC'],
   assetDecimals,
@@ -40,6 +42,7 @@ const squads: SenderConfig = {
 };
 const safe: SenderConfig = {
   chain: 'base',
+  network: { chainId: 31337 },
   address: '0xSafe',
   assets: ['ETH'],
   assetDecimals,
@@ -127,6 +130,7 @@ describe('GET /v1/senders (#111)', () => {
       senders: [
         {
           chain: 'base',
+          network: 'base-sepolia',
           mode: 'single',
           address: '0xSender',
           multisig: null,
@@ -174,6 +178,7 @@ describe('GET /v1/senders (#111)', () => {
       senders: [
         {
           chain: 'solana',
+          network: 'devnet',
           mode: 'squads',
           address: 'Vault111',
           multisig: { address: 'Multisig111', threshold: 2, engineKey: 'Member111' },
@@ -220,6 +225,7 @@ describe('GET /v1/senders (#111)', () => {
     expect(response.json()).toMatchObject({
       senders: [
         {
+          network: { chainId: 31337 },
           mode: 'safe',
           multisig: { address: '0xSafe', threshold: 3, engineKey: '0xExecutor' },
           balances: [
