@@ -1,4 +1,4 @@
-Status: designed 2026-10-31; ADR-0056 accepted; no tickets filed yet
+Status: designed 2026-10-31; ADR-0056 accepted; engine and docs tickets #109–#114 filed; console UI and landing tickets wait on the design pattern
 
 # Web console and docs site
 
