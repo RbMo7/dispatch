@@ -357,7 +357,12 @@ export function senderConfigsFor(registry: ChainRegistry): SenderConfig[] {
     base: resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress,
   };
   return [...registry.handlers].map(([chain, handler]) => {
-    const address = senderAddresses.get(chain) ?? '';
+    const address = senderAddresses.get(chain);
+    if (!address) {
+      throw new Error(
+        `Chain "${chain}" is enabled but has no Sender address: set ${chain.toUpperCase()}_SENDER_ADDRESS, or the multisig settings that imply it.`,
+      );
+    }
     const approval = handler.approval;
     return {
       chain,
