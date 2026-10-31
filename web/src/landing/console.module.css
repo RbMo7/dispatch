@@ -17,6 +17,12 @@
   height: 100%;
 }
 
+/* Flag Rules are not shipped, so the console's Held page stays out of the picture. */
+.screen a[href='#held'],
+.sidebar a[href='#held'] {
+  display: none;
+}
+
 .flow {
   padding: var(--space-5);
   background: var(--surface);

@@ -27,7 +27,7 @@ export const SOLANA: Mark = {
 export const BASE: Mark = {
   name: 'Base',
   svg: mono(base),
-  tile: { bg: 'var(--chain-base)', fg: ON_CHAIN },
+  tile: { bg: '#0052ff', fg: ON_CHAIN },
 };
 export const SQUADS: Mark = {
   name: 'Squads',
