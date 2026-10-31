@@ -129,6 +129,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
         chainRegistry,
         authToken: AUTH_TOKEN,
         defaultRetryPolicy: false,
+        listSenders: () => Promise.resolve([]),
       });
 
       const postResponse = await app.inject({
@@ -185,6 +186,7 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
 
     const idempotencyKey = `relay-e2e-malformed-${Date.now()}`;

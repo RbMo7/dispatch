@@ -51,7 +51,13 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
       (chainRegistry) => ({
         store,
         chainRegistry,
-        app: buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false }),
+        app: buildApp({
+          store,
+          chainRegistry,
+          authToken: AUTH_TOKEN,
+          defaultRetryPolicy: false,
+          listSenders: () => Promise.resolve([]),
+        }),
       }),
     );
   }

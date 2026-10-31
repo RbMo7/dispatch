@@ -133,7 +133,13 @@ async function main() {
         }),
       ),
   });
-  const app = buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false });
+  const app = buildApp({
+    store,
+    chainRegistry,
+    authToken: AUTH_TOKEN,
+    defaultRetryPolicy: false,
+    listSenders: () => Promise.resolve([]),
+  });
 
   const postResponse = await app.inject({
     method: 'POST',

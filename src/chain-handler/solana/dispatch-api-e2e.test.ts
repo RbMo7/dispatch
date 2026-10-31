@@ -108,6 +108,7 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
 
     const postResponse = await app.inject({
@@ -205,6 +206,7 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
 
     const hugeAmount = '999999999999999999'; // far beyond the real balance, no risk of accidentally succeeding

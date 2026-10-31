@@ -132,6 +132,7 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       chainRegistry: registry,
       authToken: API_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
   }, 180_000);
 

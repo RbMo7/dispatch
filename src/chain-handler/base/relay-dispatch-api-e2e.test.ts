@@ -178,6 +178,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
 
     for (const signedTransaction of [
@@ -211,6 +212,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      listSenders: () => Promise.resolve([]),
     });
     const post = await app.inject({
       method: 'POST',

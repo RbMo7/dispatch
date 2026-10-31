@@ -45,6 +45,7 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
+    listSenders: () => Promise.resolve([]),
   });
   return { app, store };
 }

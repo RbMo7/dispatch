@@ -118,7 +118,13 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
         knownTokens,
       }),
   });
-  const app = buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false });
+  const app = buildApp({
+    store,
+    chainRegistry,
+    authToken: AUTH_TOKEN,
+    defaultRetryPolicy: false,
+    listSenders: () => Promise.resolve([]),
+  });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const baseUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   console.log(`Engine API listening on ${baseUrl}`);

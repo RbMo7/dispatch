@@ -647,6 +647,7 @@ describe.skipIf(!RUN)(
         chainRegistry: registry,
         authToken: API_TOKEN,
         defaultRetryPolicy: false,
+        listSenders: () => Promise.resolve([]),
       });
     }, 180_000);
 

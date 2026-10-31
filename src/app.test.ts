@@ -10,6 +10,7 @@ async function testApp() {
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
+    listSenders: () => Promise.resolve([]),
   });
 }
 
