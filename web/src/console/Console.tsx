@@ -3,6 +3,7 @@ import { ToastProvider } from '../components/Toast';
 import styles from './console.module.css';
 import { DispatchesPage } from './dispatches/DispatchesPage';
 import { LiveProvider } from './live';
+import { Overview } from './overview/Overview';
 import { RouterProvider, useRouter } from './router';
 import { SendersProvider } from './senderData';
 import { SessionProvider } from './session';
@@ -33,7 +34,7 @@ function CurrentPage() {
   const { page } = useRouter();
   switch (page) {
     case 'overview':
-      return <Pending title="Overview" />;
+      return <Overview />;
     case 'dispatches':
       return <DispatchesPage />;
     case 'senders':
