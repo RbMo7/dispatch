@@ -1,13 +1,13 @@
 import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
-import styles from './console.module.css';
 import { DispatchesPage } from './dispatches/DispatchesPage';
 import { LiveProvider } from './live';
 import { Overview } from './overview/Overview';
 import { RouterProvider, useRouter } from './router';
+import { SendersPage } from './senders/SendersPage';
 import { SendersProvider } from './senderData';
 import { SessionProvider } from './session';
-import { PageBar, Shell } from './Shell';
+import { Shell } from './Shell';
 import { SignIn } from './SignIn';
 
 export function Console() {
@@ -38,15 +38,6 @@ function CurrentPage() {
     case 'dispatches':
       return <DispatchesPage />;
     case 'senders':
-      return <Pending title="Senders & Keys" />;
+      return <SendersPage />;
   }
-}
-
-/** A page not built yet: the shell and its bar, so navigation already works. */
-function Pending({ title }: { title: string }) {
-  return (
-    <main className={styles.main}>
-      <PageBar title={title} />
-    </main>
-  );
 }
