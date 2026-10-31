@@ -15,10 +15,18 @@ import {
 } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  operatorActions,
+  proposals,
+  relayDispatches,
+  transactions,
+} from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
 import type {
   ApprovalState,
   AssetAmount,
@@ -37,12 +45,14 @@ import type {
   DispatchListQuery,
   DispatchStore,
   ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
 } from './dispatch-store.js';
@@ -227,22 +237,28 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async cancelDispatch(id: string): Promise<CancelOutcome> {
+  async cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
     // The `status = 'queued'` guard is the whole race: claimQueued locks the rows it takes, so
     // this update either commits first (the claim then skips the row) or re-reads it claimed.
-    const cancelledAt = new Date();
-    const [managed] = await this.db
-      .update(dispatches)
-      .set({ status: 'cancelled', cancelledAt })
-      .where(and(eq(dispatches.id, id), eq(dispatches.status, 'queued')))
-      .returning({ id: dispatches.id });
-    if (managed) return 'cancelled';
-    const [relay] = await this.db
-      .update(relayDispatches)
-      .set({ status: 'cancelled', cancelledAt })
-      .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
-      .returning({ id: relayDispatches.id });
-    if (relay) return 'cancelled';
+    const cancelled = await this.db.transaction(async (tx) => {
+      const cancelledAt = new Date();
+      const [managed] = await tx
+        .update(dispatches)
+        .set({ status: 'cancelled', cancelledAt })
+        .where(and(eq(dispatches.id, id), eq(dispatches.status, 'queued')))
+        .returning({ id: dispatches.id });
+      const [relay] = managed
+        ? []
+        : await tx
+            .update(relayDispatches)
+            .set({ status: 'cancelled', cancelledAt })
+            .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
+            .returning({ id: relayDispatches.id });
+      if (!managed && !relay) return false;
+      await tx.insert(operatorActions).values({ ...actor, action: 'cancel', targetId: id });
+      return true;
+    });
+    if (cancelled) return 'cancelled';
 
     const [existing] = await this.db
       .select({ status: dispatches.status })
@@ -255,7 +271,32 @@ export class PostgresDispatchStore implements DispatchStore {
           .where(eq(relayDispatches.id, id)),
       );
     if (!existing) return 'not_found';
-    return existing.status === 'cancelled' ? 'cancelled' : 'already_claimed';
+    return existing.status === 'cancelled' ? 'already_cancelled' : 'already_claimed';
+  }
+
+  async listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    const rows = await this.db
+      .select({
+        row: operatorActions,
+        exactAt: sql<string>`to_char(${operatorActions.at} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(operatorActions)
+      .where(
+        after
+          ? sql`(${operatorActions.at}, ${operatorActions.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      )
+      .orderBy(desc(operatorActions.at), desc(operatorActions.id))
+      .limit(query.limit);
+    return rows.map(({ row, exactAt }) => ({
+      action: {
+        ...row,
+        action: row.action as OperatorActionKind,
+        tokenKind: row.tokenKind as TokenKind,
+      },
+      cursor: { createdAt: exactAt, id: row.id },
+    }));
   }
 
   async listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {

@@ -57,7 +57,7 @@ export function encodeCursor(cursor: DispatchCursor): string {
   return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString('base64url');
 }
 
-function decodeCursor(raw: string): DispatchCursor | null {
+export function decodeCursor(raw: string): DispatchCursor | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
     if (!Array.isArray(parsed) || parsed.length !== 2) return null;

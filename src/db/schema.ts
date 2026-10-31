@@ -205,3 +205,17 @@ export const relayDispatches = pgTable(
     index('relay_dispatches_created_at_id_idx').on(table.createdAt, table.id),
   ],
 );
+
+/** ADR-0057: one row per cancel, release and Flag Rule write, never updated. */
+export const operatorActions = pgTable(
+  'operator_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+    action: text('action').notNull(),
+    targetId: uuid('target_id').notNull(),
+    tokenKind: text('token_kind').notNull(),
+    reason: text('reason'),
+  },
+  (table) => [index('operator_actions_at_id_idx').on(table.at, table.id)],
+);

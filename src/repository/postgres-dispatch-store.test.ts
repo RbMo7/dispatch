@@ -4,7 +4,14 @@ import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { db } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  operatorActions,
+  proposals,
+  relayDispatches,
+  transactions,
+} from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import { runCancelConformanceSuite } from './cancel-conformance.js';
@@ -29,7 +36,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -201,7 +208,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
 
         const [claimed, ...outcomes] = await Promise.all([
           store.claimQueued(CHAINS, 100),
-          ...created.map((d) => store.cancelDispatch(d.id)),
+          ...created.map((d) => store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null })),
         ]);
 
         const claimedIds = new Set(claimed.map((d) => d.id));

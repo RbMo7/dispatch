@@ -1,15 +1,28 @@
 import Fastify from 'fastify';
 
+import { registerActivityRoutes } from './api/activity-routes.js';
 import { type DispatchRouteDeps, registerDispatchRoutes } from './api/dispatch-routes.js';
+import { parseApiTokens } from './api/operator-auth.js';
 import { registerSenderRoutes, type SenderRouteDeps } from './api/sender-routes.js';
 import { logger } from './logger.js';
 
-export function buildApp(deps: DispatchRouteDeps & Pick<SenderRouteDeps, 'listSenders'>) {
+export type AppDeps = Omit<DispatchRouteDeps, 'tokens'> &
+  Pick<SenderRouteDeps, 'listSenders'> & {
+    /** Operator-configured shared secret (ADR-0022). */
+    authToken: string;
+    /** ADR-0057: optional; unset turns the operator-only routes off. */
+    operatorToken?: string | undefined;
+  };
+
+/** Throws, so the engine refuses to start, when OPERATOR_TOKEN is empty or equals AUTH_TOKEN. */
+export function buildApp({ authToken, operatorToken, ...deps }: AppDeps) {
+  const tokens = parseApiTokens(authToken, operatorToken);
   const app = Fastify({ loggerInstance: logger });
 
   app.get('/health', () => ({ status: 'ok' }));
-  app.register(registerDispatchRoutes, deps);
-  app.register(registerSenderRoutes, { authToken: deps.authToken, listSenders: deps.listSenders });
+  app.register(registerDispatchRoutes, { ...deps, tokens });
+  app.register(registerSenderRoutes, { tokens, listSenders: deps.listSenders });
+  app.register(registerActivityRoutes, { tokens, store: deps.store });
 
   return app;
 }

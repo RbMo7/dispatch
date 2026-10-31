@@ -127,6 +127,13 @@
       "when": 1793470635749,
       "tag": "0017_salty_colleen_wing",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793476095104,
+      "tag": "0018_flag_rules",
+      "breakpoints": true
     }
   ]
 }

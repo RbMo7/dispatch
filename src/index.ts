@@ -18,6 +18,7 @@ const app = buildApp({
   store,
   chainRegistry,
   authToken: config.authToken,
+  operatorToken: config.operatorToken,
   defaultRetryPolicy: config.defaultRetryPolicy,
   assetDecimals,
   listSenders: cachedSenders(

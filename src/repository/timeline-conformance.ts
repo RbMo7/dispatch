@@ -338,7 +338,7 @@ export function runTimelineConformanceSuite(makeStore: () => DispatchStore): voi
         retryPolicy: false,
       });
       await tick();
-      await store.cancelDispatch(dispatch.id);
+      await store.cancelDispatch(dispatch.id, { tokenKind: 'auth', reason: null });
 
       expect(story(await timelineOf(store, dispatch.id))).toEqual([
         { kind: 'created' },

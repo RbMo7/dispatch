@@ -1,6 +1,15 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel` and `GET /v1/senders`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `GET /v1/senders` and `GET /v1/activity`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+
+## Tokens
+
+Every `/v1` route takes `Authorization: Bearer <token>`, with one of two operator-configured tokens:
+
+- `AUTH_TOKEN` (ADR-0022): the API client's token. Submit, read and cancel.
+- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `GET /v1/activity`, and the release and Flag Rule routes once they exist.
+
+An operator-only route answers `403` to `AUTH_TOKEN`, and `403` to everyone when `OPERATOR_TOKEN` is unset, with an `error` saying it is not configured. Any other token is `401`. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
 
 ## `POST /v1/dispatch`
 
@@ -147,7 +156,7 @@ Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `crea
 
 ## `POST /v1/dispatch/:id/cancel`
 
-Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
+Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Either token. The body is optional: `{ "reason": "<non-empty string>" }`, kept in the activity record (below); any other `reason` is a `400`. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins. A cancel that lands writes one operator action, in the same write; a repeat cancel or a refused one writes none.
 
 - `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
 - `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the structured shape of a refusal that has an error code, such as a `400` with `CHAIN_NOT_ENABLED` or `CHAIN_REJECTED`. A refusal with no error code, such as a `401` or a `404`, is `{ "error": "..." }`.
@@ -192,6 +201,30 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answers on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`).
 - A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error says whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
+
+## `GET /v1/activity`
+
+The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token; later entries for releases and Flag Rule changes join it as those routes arrive. Each action is also written to the engine's log as an `operator action` line.
+
+Query parameters, both optional: `limit` (1 to 100, default 25) and `cursor` (the previous page's `nextCursor`, opaque). Pages are cut on `(at, id)` as `GET /v1/dispatches` cuts on `(createdAt, id)`, and `nextCursor` is `null` only on the last page.
+
+```json
+{
+  "actions": [
+    {
+      "id": "<id>",
+      "at": "2026-10-31T10:00:00.000Z",
+      "action": "cancel",
+      "targetId": "<dispatch id>",
+      "tokenKind": "auth",
+      "reason": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+`tokenKind` is `auth` or `operator`: which token made the request. The tokens are shared secrets, not identities, so an action names no person; `reason` is what the caller gave, or `null`.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type {
+  OperatorAction,
+  OperatorActionKind,
+  OperatorActor,
+} from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
@@ -16,12 +21,14 @@ import type {
   DispatchListQuery,
   DispatchStore,
   ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
 } from './dispatch-store.js';
@@ -40,6 +47,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
+  private readonly operatorActions: OperatorAction[] = [];
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -104,19 +112,38 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(claimed);
   }
 
-  cancelDispatch(id: string): Promise<CancelOutcome> {
+  cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
     const dispatch = this.dispatches.get(id);
     const relayDispatch = this.relayDispatches.get(id);
     const status = dispatch?.status ?? relayDispatch?.status;
     if (status === undefined) return Promise.resolve('not_found');
-    if (status === 'cancelled') return Promise.resolve('cancelled');
+    if (status === 'cancelled') return Promise.resolve('already_cancelled');
     if (status !== 'queued') return Promise.resolve('already_claimed');
     const cancelledAt = this.now();
     if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled', cancelledAt });
     if (relayDispatch) {
       this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled', cancelledAt });
     }
+    this.recordAction('cancel', id, actor);
     return Promise.resolve('cancelled');
+  }
+
+  private recordAction(action: OperatorActionKind, targetId: string, actor: OperatorActor): void {
+    this.operatorActions.push({ ...actor, id: randomUUID(), at: this.now(), action, targetId });
+  }
+
+  listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    return Promise.resolve(
+      this.operatorActions
+        .map((action) => ({
+          action,
+          cursor: { createdAt: action.at.toISOString(), id: action.id },
+        }))
+        .filter((l) => !after || compareNewestFirst(after, l.cursor) < 0)
+        .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+        .slice(0, query.limit),
+    );
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {
