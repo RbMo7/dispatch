@@ -17,14 +17,31 @@ pnpm dev          # engine build at http://localhost:5173/console
 pnpm dev:public   # public build at http://localhost:5173/
 ```
 
-`/console/_primitives` shows every primitive and status pill in both themes, with the motion demos.
+`/console/_primitives` is the primitives gallery: one composed Dispatches screen (sidebar with Sender cards and the hide-balances eye, page bar with the date range, chain filter, search and Export, day-grouped rows, and the docked pane with Flow, Items and Details), then every primitive below it. Its data is in `src/console/fixtures.ts`: the seven Dispatches from the approved board plus one of 1,000 payments, generated from a fixed seed. The selection is in the URL, so any state can be linked: `?dispatch=a40d6e93&tab=items&status=failed`. `?theme=dark` previews dark for one page view without storing it, on any page.
+
+## Look
+
+The design pattern is `.scratch/web-console/design.md`; the approved board is `.scratch/web-console/board-a.html`. Light is the default everywhere. Dark is the viewer's stored choice from the Appearance setting (`ThemeSetting`), never the system preference, and there is no theme toggle in any page header.
+
+- `src/styles/tokens.css`: every design token, as `light-dark()` pairs; `[data-theme='dark']` on `<html>` switches them. Hanken Grotesk for text, Geist Mono for ids, hashes and addresses, both self-hosted.
+- Cards and the docked pane are flat, with a hairline. Only things that float over the page have a shadow: the modal, and also the Export menu, the calendar popover and the toast, which would otherwise read as part of the page under them.
+- `scripts/check-contrast.ts`: fails `pnpm test` if any text pair the components use (each status pill, ink and muted on every surface, accent text, labels on the accent and danger fills, the toast) is under 4.5:1 in either theme. `--faint-text` is only for disabled labels, which WCAG exempts.
 
 ## Layout
 
-- `src/styles/tokens.css`: every design token. Colours are `light-dark()` pairs, so a theme is a `color-scheme`; `[data-theme]` pins one on the page (the manual toggle, stored in `localStorage`) or on a subtree.
-- `src/components/`: Button, Card, StatusPill, ChainDot, MonoValue, EmptyState, ThemeToggle. `status.ts` is the one table from status to label, glyph and tone.
-- `src/motion/`: the spring layout list, the pane and modal (`Overlay.tsx`), scroll reveal, and the shared transitions. `MotionConfig reducedMotion="user"` (in `src/mount.tsx`) turns every transform into a plain fade under `prefers-reduced-motion`.
-- `scripts/check-contrast.ts`: fails `pnpm test` if any pill's text, or the ink and muted text, is under 4.5:1 against its fill in either theme.
+- `src/domain/`: the typed tables everything else reads. `status.ts` (status to label and pill tokens), `assets.ts` (amounts and display decimals), `chains.ts` (label, explorer, chain mark), `flow.ts` (stage kind to dot, card, bar segment and line), `dateRange.ts` (presets and day ranges), `dispatch.ts` (the Dispatch and item shapes).
+- `src/components/`: Button, StatusPill, Card, Amount, MonoValue, SenderCard, StackedBar, ChainDot, FlowGraph, Tabs, SegmentedControl, SearchField, DateRangeControl, Menu, Checkbox, TextField, EmptyState, DockedPane, VirtualTable, Toast, EyeToggle, ThemeSetting. The Modal (and the docs' narrow-screen Sheet) is in `src/motion/Overlay.tsx`; `ModalFrame` is its box without the overlay.
+- `src/balances.tsx`: hidden balances, one context remembered per viewer in local storage. Every `Amount` reads it, so balances, totals and item amounts all mask together; units, ids, hashes, counts and bars stay.
+- `src/export/`: CSV and Excel writers over typed columns (`columns.ts` has the Dispatches list and the items of one Dispatch), the file names from design.md, and the browser download.
+- `src/motion/transitions.ts`: the shared spring and durations. `MotionConfig reducedMotion="user"` (in `src/mount.tsx`) drops every transform under `prefers-reduced-motion` and keeps the fades. Nothing in the console loops.
+
+## Amounts
+
+The engine reports an amount as an integer string in the asset's smallest unit plus the asset's `decimals` (`{ raw: "1250000000", decimals: 6, asset: "USDC" }` is 1,250 USDC). `Amount` takes that shape and all arithmetic is BigInt on the string, never a float: 18-decimal ETH does not fit a double.
+
+- **Display** is fixed per asset: USDC 2 decimals, SOL 4, ETH 4. Any other asset shows up to 6 decimals with trailing zeros trimmed. Rounding is **half to even** (banker's rounding), so `1.005` USDC shows as `1.00` and `1.015` as `1.02`.
+- **Exports** carry the exact value at full precision, never the rounded one. CSV writes it as a plain decimal with every one of the asset's decimals (`1250.000000`). Excel writes a number, formatted to the display decimals, only when the number reads back as exactly the same decimal at the asset's precision; otherwise it writes the exact decimal as text, so nothing is lost.
+- CSV is UTF-8 with a BOM, a header row, CRLF and RFC 4180 quoting. A text cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading apostrophe so a spreadsheet does not run it as a formula. Excel files have one sheet, the header row frozen, and dates as real dates. Hidden balances never apply to exports.
 
 ## Docs
 
