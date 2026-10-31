@@ -1,6 +1,6 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches` and `POST /v1/dispatch/:id/cancel`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel` and `GET /v1/senders`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## `POST /v1/dispatch`
 
@@ -152,6 +152,44 @@ Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056).
 - `404`: no Dispatch has this id.
 
 `cancelled` is terminal and stored, not derived. Resubmitting a cancelled Dispatch's `Idempotency-Key` returns it (`202`, `status: "cancelled"`) and creates nothing new; send a new key to try again. An open Proposal cannot be cancelled here: rejecting it is the Approvers' call, in Squads or Safe.
+
+## `GET /v1/senders`
+
+One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain and the Signer itself, so a browser never talks to either, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC and Signer reads per 15 seconds.
+
+```json
+{
+  "senders": [
+    {
+      "chain": "solana",
+      "mode": "squads",
+      "address": "<vault>",
+      "multisig": { "address": "<multisig>", "threshold": 2, "engineKey": "<member key>" },
+      "balances": [
+        {
+          "holder": "vault",
+          "address": "<vault>",
+          "assets": [
+            { "asset": "SOL", "balance": "9000000", "committed": "0" },
+            { "asset": "USDC", "balance": { "error": "RPC_UNAVAILABLE" }, "committed": "120" }
+          ]
+        },
+        {
+          "holder": "memberKey",
+          "address": "<member key>",
+          "assets": [{ "asset": "SOL", "balance": "3000000", "committed": "2039280" }]
+        }
+      ],
+      "signerKey": { "address": "<member key>", "curve": "ed25519", "allowedMultisig": "<multisig>" }
+    }
+  ]
+}
+```
+
+- `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
+- `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
+- `signerKey` is what the Signer answers on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`).
+- A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error says whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

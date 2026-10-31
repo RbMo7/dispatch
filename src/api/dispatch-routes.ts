@@ -129,7 +129,7 @@ async function translateItem(
   );
 }
 
-function checkAuth(authToken: string) {
+export function checkAuth(authToken: string) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (request.headers.authorization !== `Bearer ${authToken}`) {
       await reply.code(401).send({ error: 'unauthorized' });

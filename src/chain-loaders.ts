@@ -6,7 +6,10 @@ import {
   BASE_REORG_RECHECK_WINDOW_MS,
   BaseChainHandler,
 } from './chain-handler/base/base-chain-handler.js';
-import { parseBaseKnownTokens } from './chain-handler/base/known-tokens.js';
+import {
+  NATIVE_ASSET_SYMBOL as BASE_NATIVE_ASSET,
+  parseBaseKnownTokens,
+} from './chain-handler/base/known-tokens.js';
 import { SafeApproval } from './chain-handler/base/safe/safe-approval.js';
 import { resolveBaseSafeConfig } from './chain-handler/base/safe/safe-config.js';
 import { readSafeState } from './chain-handler/base/safe/safe-reads.js';
@@ -19,7 +22,10 @@ import {
 } from './chain-handler/solana/multisig/multisig-config.js';
 import { SquadsApproval } from './chain-handler/solana/multisig/squads-approval.js';
 import { runMultisigStartupChecks } from './chain-handler/solana/multisig/startup-checks.js';
-import { parseSolanaKnownTokens } from './chain-handler/solana/known-tokens.js';
+import {
+  NATIVE_ASSET_SYMBOL as SOLANA_NATIVE_ASSET,
+  parseSolanaKnownTokens,
+} from './chain-handler/solana/known-tokens.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
   SolanaChainHandler,
@@ -37,6 +43,10 @@ import { db } from './db/client.js';
 import { logger } from './logger.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
+import type { SenderConfig, SenderReads } from './api/senders.js';
+import type { DispatchError } from './domain/errors.js';
+import { err, ok, type Result } from './domain/result.js';
+import type { DispatchStore } from './repository/dispatch-store.js';
 
 /**
  * The one place this build's real Chain Handler loaders — and the
@@ -327,5 +337,105 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
     stuckHandling,
     approvalDeadlineMsByChain,
     approvalRewatchWindowMsByChain,
+  };
+}
+
+/** #111: the native asset, then every known token, for each chain this build has. */
+const assetsByChain: Record<Chain, () => string[]> = {
+  solana: () => [
+    SOLANA_NATIVE_ASSET,
+    ...Object.keys(parseSolanaKnownTokens(config.solana.knownTokens)),
+  ],
+  base: () => [BASE_NATIVE_ASSET, ...Object.keys(parseBaseKnownTokens(config.base.knownTokens))],
+};
+
+/** #111: what `GET /v1/senders` reports for each chain `registry` has a Chain Handler for. */
+export function senderConfigsFor(registry: ChainRegistry): SenderConfig[] {
+  const { senderAddresses, approvalRewatchWindowMsByChain } = coordinatorConfigFor(registry);
+  const multisigAddresses: Partial<Record<Chain, string | undefined>> = {
+    solana: resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress,
+    base: resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress,
+  };
+  return [...registry.handlers].map(([chain, handler]) => {
+    const address = senderAddresses.get(chain) ?? '';
+    const approval = handler.approval;
+    return {
+      chain,
+      address,
+      assets: assetsByChain[chain](),
+      ...(approval
+        ? {
+            approval: {
+              mode: approval.holders.sender === 'vault' ? ('squads' as const) : ('safe' as const),
+              multisigAddress: multisigAddresses[chain] ?? address,
+              engineKey: approval.proposerAddress,
+              holders: approval.holders,
+              rewatchWindowMs: approvalRewatchWindowMsByChain.get(chain) ?? 0,
+            },
+          }
+        : {}),
+    };
+  });
+}
+
+/** #111: the live reads behind `GET /v1/senders`: balances through each Chain Handler, pins from the Signer, thresholds from the chain. */
+export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): SenderReads {
+  const signerClient = new SignerClient(
+    config.signerUrl,
+    config.signerAuthToken,
+    config.rpcTimeoutMs,
+  );
+  const fetchFn = fetchWithTimeout(fetch, config.rpcTimeoutMs);
+  const unavailable = (chain: Chain, cause: unknown): Result<number, DispatchError> => {
+    logger.warn({ chain, err: cause }, 'senders: multisig threshold read failed');
+    return err({ code: 'RPC_UNAVAILABLE', message: 'multisig threshold read failed' });
+  };
+  const thresholdReaders: Partial<Record<Chain, () => Promise<number>>> = {
+    solana: async () => {
+      const multisig = resolveSolanaMultisigConfig(config.solana.multisig);
+      if (!multisig) throw new Error('not a multisig Sender');
+      const connection = new Connection(config.solana.rpcUrl, {
+        commitment: 'confirmed',
+        fetch: fetchFn,
+      });
+      const state = await readMultisigState(connection, multisig.multisigAddress);
+      const account = state.account?.multisig;
+      if (!account || 'undecodable' in account) throw new Error('multisig account unreadable');
+      return account.threshold;
+    },
+    base: async () => {
+      const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
+      if (!safe) throw new Error('not a Safe Sender');
+      const client = createPublicClient({ transport: http(config.base.rpcUrl, { fetchFn }) });
+      return (await readSafeState(client, safe.safeAddress)).threshold;
+    },
+  };
+  return {
+    getBalance: async (chain, address, asset) => {
+      const handler = registry.get(chain);
+      if (!handler.ok) return handler;
+      const balance = await handler.value.getBalance(address, asset);
+      if (!balance.ok)
+        logger.warn({ chain, asset, error: balance.error }, 'senders: balance read failed');
+      return balance;
+    },
+    readPins: async (address) => {
+      const read = await signerClient.readPins(address);
+      if (read.kind !== 'pins')
+        logger.warn({ address, read }, 'senders: Signer policy read failed');
+      return read;
+    },
+    readThreshold: async (chain) => {
+      const reader = thresholdReaders[chain];
+      if (!reader) return unavailable(chain, new Error('no threshold reader'));
+      try {
+        return ok(await reader());
+      } catch (cause) {
+        return unavailable(chain, cause);
+      }
+    },
+    listCommitted: (chain, holder, timedOutSince) =>
+      store.listCommitted(chain, holder, timedOutSince),
+    now: () => new Date(),
   };
 }
