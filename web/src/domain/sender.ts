@@ -29,6 +29,8 @@ export interface SignerKey {
   chainIds: number[];
   allowedSafe: string | null;
   allowedMultisig: string | null;
+  /** When the worker last read the key from the Signer (ADR-0059). */
+  readAt: string;
 }
 
 export interface Sender {

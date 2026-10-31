@@ -158,7 +158,7 @@ function SignerBlock({ sender }: { sender: Sender }) {
         <span className={styles.holdingName}>Signer key</span>
       </div>
       {!sender.signerKey.ok ? (
-        <p className={styles.fieldError}>The Signer did not answer: {sender.signerKey.error}.</p>
+        <p className={styles.fieldError}>Signer key: {sender.signerKey.error}.</p>
       ) : (
         <dl className={styles.kv}>
           <div className={styles.kvRow}>
@@ -166,6 +166,10 @@ function SignerBlock({ sender }: { sender: Sender }) {
             <dd>
               <MonoValue value={sender.signerKey.value.address} head={8} tail={6} />
             </dd>
+          </div>
+          <div className={styles.kvRow}>
+            <dt>Last read</dt>
+            <dd>{new Date(sender.signerKey.value.readAt).toLocaleString()}</dd>
           </div>
           <div className={styles.kvRow}>
             <dt>Curve</dt>

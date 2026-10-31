@@ -383,7 +383,15 @@ function signerKey(value: unknown, path: string): SignerKey {
     chainIds: json.chainIds === undefined ? [] : list(json.chainIds, `${path}.chainIds`, integer),
     allowedSafe: nullableString(json.allowedSafe, `${path}.allowedSafe`),
     allowedMultisig: nullableString(json.allowedMultisig, `${path}.allowedMultisig`),
+    readAt: string(json.readAt, `${path}.readAt`),
   };
+}
+
+function signerKeyRead(value: unknown, path: string): Read<SignerKey> {
+  if (typeof value === 'object' && value !== null && (value as Json).status === 'not_read_yet') {
+    return { ok: false, error: 'the worker has not read this key yet' };
+  }
+  return read(value, path, signerKey);
 }
 
 function sender(value: unknown, path: string): Sender {
@@ -400,7 +408,7 @@ function sender(value: unknown, path: string): Sender {
       engineKey: string(multisig.engineKey, `${path}.multisig.engineKey`),
     },
     balances: list(json.balances, `${path}.balances`, holding),
-    signerKey: read(json.signerKey, `${path}.signerKey`, signerKey),
+    signerKey: signerKeyRead(json.signerKey, `${path}.signerKey`),
   };
 }
 

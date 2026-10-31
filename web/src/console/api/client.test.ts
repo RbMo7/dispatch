@@ -149,6 +149,41 @@ describe('the API client', () => {
     expect(sender!.signerKey).toEqual({ ok: false, error: 'the Signer could not be reached' });
   });
 
+  it('reads a Signer key the worker has not read yet, and one it has', async () => {
+    const base = {
+      chain: 'base',
+      network: 'base-sepolia',
+      mode: 'single',
+      address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
+      multisig: null,
+      balances: [],
+    };
+    const { fetcher } = engine({
+      '/v1/senders': {
+        status: 200,
+        body: {
+          senders: [
+            { ...base, signerKey: { status: 'not_read_yet' } },
+            {
+              ...base,
+              signerKey: {
+                address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
+                curve: 'secp256k1',
+                readAt: '2026-11-01T09:14:02.511Z',
+              },
+            },
+          ],
+        },
+      },
+    });
+    const [unread, read] = await createApiClient('t', () => {}, fetcher).listSenders();
+    expect(unread!.signerKey).toEqual({ ok: false, error: 'the worker has not read this key yet' });
+    expect(read!.signerKey).toMatchObject({
+      ok: true,
+      value: { curve: 'secp256k1', readAt: '2026-11-01T09:14:02.511Z' },
+    });
+  });
+
   it("reads a Dispatch's chain and creation time from its own detail, in one request", async () => {
     const { fetcher, calls } = engine({
       [`/v1/dispatch/${ID}`]: {
