@@ -271,17 +271,9 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     },
   );
 
-  app.get<{ Params: { id: string }; Querystring: { include?: 'timeline' } }>(
+  app.get<{ Params: { id: string }; Querystring: { include?: unknown } }>(
     '/v1/dispatch/:id',
-    {
-      onRequest: auth,
-      schema: {
-        querystring: {
-          type: 'object',
-          properties: { include: { type: 'string', enum: ['timeline'] } },
-        },
-      },
-    },
+    { onRequest: auth },
     async (request, reply) => {
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const view = await readDispatchView(store, request.params.id, {

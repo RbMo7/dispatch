@@ -64,7 +64,7 @@ Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-le
 
 ### `?include=timeline`
 
-`GET /v1/dispatch/:id?include=timeline` adds a `timeline` array to the same body, Managed or Relay: what happened to the Dispatch, oldest first, rebuilt from the timestamps the engine already keeps. Without the flag the body is exactly as above. Any other `include` value is a `400`.
+`GET /v1/dispatch/:id?include=timeline` adds a `timeline` array to the same body, Managed or Relay: what happened to the Dispatch, oldest first, rebuilt from the timestamps the engine already keeps. Without the flag, or with any other `include` value, the body is exactly as above.
 
 ```json
 "timeline": [

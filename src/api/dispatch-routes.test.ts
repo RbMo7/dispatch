@@ -1354,17 +1354,26 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
     });
   });
 
-  it('rejects an unknown include with 400', async () => {
-    const { app, id } = await confirmedDispatch();
+  it.each(['include=everything', 'include=timeline&include=timeline', 'include='])(
+    'answers %s with the plain body, exactly as without it',
+    async (query) => {
+      const { app, id } = await confirmedDispatch();
 
-    const response = await app.inject({
-      method: 'GET',
-      url: `/v1/dispatch/${id}?include=everything`,
-      headers: AUTH_HEADERS,
-    });
+      const plain = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${id}`,
+        headers: AUTH_HEADERS,
+      });
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${id}?${query}`,
+        headers: AUTH_HEADERS,
+      });
 
-    expect(response.statusCode).toBe(400);
-  });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe(plain.body);
+    },
+  );
 });
 
 describe('GET /v1/dispatches (#110)', () => {
