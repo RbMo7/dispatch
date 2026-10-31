@@ -1,3 +1,4 @@
+import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
@@ -68,6 +69,17 @@ function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): 
   return 'partial';
 }
 
+/** What the caller asked for on an item, as docs/api.md names it, so a reader never has to decode the Call. */
+function toWireRequest({ call, payment }: DispatchItem) {
+  if (payment) {
+    const { recipient, asset, amount } = payment;
+    return { type: 'payment' as const, recipient, asset, amount };
+  }
+  return 'to' in call
+    ? { type: 'call' as const, to: call.to }
+    : { type: 'call' as const, programId: call.programId };
+}
+
 /** docs/api.md's per-item `approval` block: what the Approvers have done about the Proposal this Call is in. */
 function toWireApproval(proposal: Proposal) {
   return {
@@ -97,18 +109,20 @@ export async function readDispatchView(
       : [];
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
-    const items = dispatch.items.map((_, index) => {
+    const items = dispatch.items.map((item, index) => {
+      const request = toWireRequest(item);
       if (dispatch.status === 'cancelled') {
-        return { status: 'cancelled', transactionHash: null, error: null };
+        return { ...request, status: 'cancelled', transactionHash: null, error: null };
       }
       const transaction = transactionByCallIndex.get(index);
       if (!transaction) {
-        return { status: 'queued', transactionHash: null, error: null };
+        return { ...request, status: 'queued', transactionHash: null, error: null };
       }
       const proposal = transaction.proposalId
         ? proposalById.get(transaction.proposalId)
         : undefined;
       return {
+        ...request,
         status: toWireItemStatus(transaction.status),
         transactionHash: transaction.hash,
         error: transaction.error,

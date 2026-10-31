@@ -607,8 +607,65 @@ describe('GET /v1/dispatch/:id', () => {
       dispatchId: dispatch.id,
       mode: 'managed',
       status: 'queued',
-      items: [{ status: 'queued', transactionHash: null, error: null }],
+      items: [{ type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null }],
     });
+  });
+
+  it('reports what the caller asked for on each item, payment or call, on either chain', async () => {
+    const base = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'base',
+      items: [
+        {
+          call: { to: '0xusdc', data: '0xa9059cbb', value: '0' },
+          payment: { recipient: '0xbob', asset: 'USDC', amount: '2500000' },
+        },
+        { call: { to: '0xcontract', data: '0x1234', value: '7' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+    const solana = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'solana',
+      items: [
+        {
+          call: { programId: '11111111111111111111111111111111', accounts: [], data: 'AgAAAA==' },
+          payment: { recipient: 'Bob1111', asset: 'SOL', amount: '1000' },
+        },
+        { call: { programId: 'Memo1111', accounts: [], data: 'aGk=' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+
+    const itemsOf = async (id: string) =>
+      (
+        await app.inject({ method: 'GET', url: `/v1/dispatch/${id}`, headers: AUTH_HEADERS })
+      ).json<GetResponseBody>().items;
+
+    expect(await itemsOf(base.id)).toEqual([
+      {
+        type: 'payment',
+        recipient: '0xbob',
+        asset: 'USDC',
+        amount: '2500000',
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
+      { type: 'call', to: '0xcontract', status: 'queued', transactionHash: null, error: null },
+    ]);
+    expect(await itemsOf(solana.id)).toEqual([
+      {
+        type: 'payment',
+        recipient: 'Bob1111',
+        asset: 'SOL',
+        amount: '1000',
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
+      { type: 'call', programId: 'Memo1111', status: 'queued', transactionHash: null, error: null },
+    ]);
   });
 
   it('reports confirmed once every item is confirmed', async () => {
@@ -638,7 +695,9 @@ describe('GET /v1/dispatch/:id', () => {
       dispatchId: dispatch.id,
       mode: 'managed',
       status: 'confirmed',
-      items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+      items: [
+        { type: 'call', to: '0xabc', status: 'confirmed', transactionHash: 'hash-1', error: null },
+      ],
     });
   });
 
@@ -730,8 +789,10 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(body.status).toBe('partial');
     expect(body.items).toEqual([
-      { status: 'confirmed', transactionHash: 'hash-1', error: null },
+      { type: 'call', to: '0xa', status: 'confirmed', transactionHash: 'hash-1', error: null },
       {
+        type: 'call',
+        to: '0xb',
         status: 'failed',
         transactionHash: null,
         error: { code: 'INSUFFICIENT_FUNDS', message: 'short' },
@@ -984,8 +1045,8 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       dispatchId: expect.any(String) as string,
       mode: 'managed',
       items: [
-        { status: 'queued', transactionHash: null, error: null },
-        { status: 'queued', transactionHash: null, error: null },
+        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
+        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
       ],
     });
   });
@@ -1010,8 +1071,14 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       chainRef: squadsRef,
     };
     expect(body.items).toEqual([
-      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
-      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
+      ...[0, 1].map(() => ({
+        type: 'call',
+        to: '0xabc',
+        status: 'awaiting_approval',
+        transactionHash: null,
+        error: null,
+        approval,
+      })),
     ]);
   });
 
@@ -1118,7 +1185,15 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
         dispatchId: dispatch.id,
         mode: 'managed',
         status: 'confirmed',
-        items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+        items: [
+          {
+            type: 'call',
+            to: '0xabc',
+            status: 'confirmed',
+            transactionHash: 'hash-1',
+            error: null,
+          },
+        ],
       }),
     );
     expect(lookups).toEqual([]);
@@ -1168,8 +1243,8 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
       mode: 'managed',
       status: 'cancelled',
       items: [
-        { status: 'cancelled', transactionHash: null, error: null },
-        { status: 'cancelled', transactionHash: null, error: null },
+        { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
+        { type: 'call', to: '0xdef', status: 'cancelled', transactionHash: null, error: null },
       ],
     };
     expect(response.statusCode).toBe(200);
@@ -1327,7 +1402,15 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
         dispatchId: id,
         mode: 'managed',
         status: 'confirmed',
-        items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+        items: [
+          {
+            type: 'call',
+            to: '0xabc',
+            status: 'confirmed',
+            transactionHash: 'hash-1',
+            error: null,
+          },
+        ],
       }),
     );
   });

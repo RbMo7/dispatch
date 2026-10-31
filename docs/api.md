@@ -44,11 +44,13 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
   "mode": "managed",
   "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
-    { "status": "confirmed", "transactionHash": "<hash>", "error": null },
-    { "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
+    { "type": "payment", "recipient": "<address>", "asset": "USDC", "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
+    { "type": "call", "programId": "<program id>", "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
   ]
 }
 ```
+
+Each item starts with what the caller asked for, in the order the request listed them: a `payment` item repeats its `type`, `recipient`, `asset` and `amount` (the integer string the caller sent, in the asset's smallest unit); a `call` item gives its `type` and its target, `to` on `base` or `programId` on `solana`, and leaves out the rest of the Call (`data`, `value`, `accounts`). A Bulk Call or Multisig Sender item reads the same way: these are the items as submitted, not the transactions that carried them.
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
@@ -201,6 +203,10 @@ An item whose Call belongs to a Proposal carries an `approval` block. It is pres
 
 ```json
 {
+  "type": "payment",
+  "recipient": "<address>",
+  "asset": "USDC",
+  "amount": "15",
   "status": "awaiting_approval",
   "transactionHash": null,
   "error": null,
