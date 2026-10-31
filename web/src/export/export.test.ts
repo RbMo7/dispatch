@@ -71,7 +71,6 @@ const DISPATCHES: DispatchSummary[] = [
   },
 ];
 
-// A minimal RFC 4180 reader, written from the RFC, to read the writer's output back.
 function parseCsv(input: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];

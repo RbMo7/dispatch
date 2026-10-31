@@ -54,8 +54,6 @@ interface ItemsTabProps {
   onExport: (format: ExportFormat, rows: readonly Item[]) => void;
 }
 
-// Counts, filters and search run once over the item array, never per row,
-// so a thousand items cost the same as ten.
 export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }: ItemsTabProps) {
   const counts = useMemo(() => {
     const tally = new Map<ItemStatus, number>();

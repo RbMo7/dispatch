@@ -3,10 +3,6 @@ export type Theme = (typeof THEMES)[number];
 
 export const THEME_STORAGE_KEY = 'dispatch-theme';
 
-// Runs inline in each page's <head> (vite.config.ts injects it) so a stored
-// choice applies before first paint. `?theme=dark` previews a theme for one
-// page view without storing it. Kept as a string: it never goes through the
-// bundle.
 export const THEME_BOOT_SCRIPT = `try{var q=new URLSearchParams(location.search).get('theme');var t=q||localStorage.getItem('${THEME_STORAGE_KEY}');if(t==='dark')document.documentElement.dataset.theme='dark'}catch(e){}`;
 
 export function readTheme(): Theme {

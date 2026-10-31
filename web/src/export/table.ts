@@ -1,6 +1,5 @@
 import type { Money } from '../domain/assets';
 
-// A typed cell, so each writer keeps amounts exact and dates as dates.
 export type ExportCell =
   | { type: 'text'; value: string | null }
   | { type: 'integer'; value: number }

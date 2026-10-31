@@ -1,7 +1,5 @@
 import { type RefObject, useEffect } from 'react';
 
-// While open: a click outside `root` or Escape closes it, and Escape hands
-// focus back to `trigger`.
 export function usePopover(
   open: boolean,
   close: () => void,

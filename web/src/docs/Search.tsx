@@ -12,7 +12,6 @@ const MAX_HITS = 12;
 
 let index: Promise<MiniSearch<SearchEntry>> | undefined;
 
-// The index is its own chunk, fetched the first time anyone searches.
 function loadIndex(): Promise<MiniSearch<SearchEntry>> {
   index ??= import('virtual:docs-search').then(({ default: json }) =>
     MiniSearch.loadJSON<SearchEntry>(json, SEARCH_OPTIONS),

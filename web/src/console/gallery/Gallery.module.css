@@ -9,7 +9,6 @@
   border-bottom: 1px solid var(--border);
 }
 
-/* Sidebar */
 
 .sidebar {
   display: flex;
@@ -130,7 +129,6 @@
   font-size: var(--text-12);
 }
 
-/* Dispatches list */
 
 .main {
   display: flex;
@@ -248,7 +246,6 @@
   text-align: center;
 }
 
-/* Detail pane */
 
 .paneInner {
   display: flex;
@@ -309,7 +306,6 @@
   margin: 0;
 }
 
-/* Items tab */
 
 .items {
   display: flex;
@@ -371,7 +367,6 @@
   flex: 1;
 }
 
-/* Shared bits */
 
 .muted {
   color: var(--muted);
@@ -408,7 +403,6 @@
   margin-top: 10px;
 }
 
-/* Primitives section */
 
 .primitives {
   display: grid;

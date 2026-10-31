@@ -7,7 +7,6 @@ interface Balances {
   setHidden: (hidden: boolean) => void;
 }
 
-// Without a provider, balances show and the toggle does nothing.
 const BalancesContext = createContext<Balances>({ hidden: false, setHidden: () => {} });
 
 function readHidden(): boolean {
@@ -18,7 +17,6 @@ function readHidden(): boolean {
   }
 }
 
-/** Hidden balances are a per-viewer display setting, remembered in this browser. */
 export function BalancesProvider({ children }: { children: ReactNode }) {
   const [hidden, setState] = useState(readHidden);
   const value = useMemo<Balances>(

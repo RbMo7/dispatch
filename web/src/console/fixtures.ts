@@ -1,12 +1,8 @@
-// Recorded-looking data for the primitives gallery: the seven Dispatches from
-// the approved board, plus one of 1,000 payments. Deterministic, so every
-// screenshot and export is the same.
 import { formatAmount, type Money } from '../domain/assets';
 import { CHAINS, type Chain } from '../domain/chains';
 import type { DispatchDetail, Item, ItemStatus } from '../domain/dispatch';
 import type { Flow, Stage } from '../domain/flow';
 
-/** The day the fixtures were recorded; the date range control counts back from it. */
 export const FIXTURE_TODAY = new Date(2026, 9, 31);
 
 function at(day: 0 | 1, time: string): Date {
@@ -42,11 +38,9 @@ function txHash(rand: () => number, chain: Chain): string {
   return chain === 'base' ? `0x${chars(rand, HEX, 64)}` : chars(rand, BASE58, 88);
 }
 
-/** On-chain decimals per fixture asset. */
 const DECIMALS = { USDC: 6, SOL: 9, ETH: 18 } as const;
 type FixtureAsset = keyof typeof DECIMALS;
 
-/** `money('12480.00', 'USDC')` is `{ raw: '12480000000', decimals: 6, asset: 'USDC' }`. */
 function money(decimal: string, asset: FixtureAsset): Money {
   const decimals = DECIMALS[asset];
   const [whole, fraction = ''] = decimal.split('.');
@@ -54,7 +48,6 @@ function money(decimal: string, asset: FixtureAsset): Money {
   return { raw, decimals, asset };
 }
 
-/** Splits `total` into `count` uneven raw amounts that add up to it exactly. */
 function split(rand: () => number, total: Money, count: number): Money[] {
   const units = BigInt(total.raw);
   const weights = Array.from({ length: count }, () => 0.15 + rand() ** 2);
@@ -68,9 +61,7 @@ interface ItemPlan {
   seed: number;
   chain: Chain;
   total: Money;
-  /** Statuses in item order, as runs. */
   runs: [ItemStatus, number][];
-  /** Every sent item shares this hash (one Bulk Call, one Proposal). */
   sharedHash?: string;
   failures?: Record<number, { code: string; message: string }>;
 }
@@ -108,7 +99,6 @@ const INVALID_RECIPIENT = {
 export type ShowItems = (filter?: ItemStatus) => void;
 
 export interface GalleryDispatch extends Omit<DispatchDetail, 'flow'> {
-  /** "Today, 14:02". */
   when: string;
   flowFor: (showItems: ShowItems) => Flow;
 }

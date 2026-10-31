@@ -8,7 +8,6 @@ const OPTIONS = [
   { value: 'dark', label: 'Dark' },
 ] as const satisfies readonly { value: Theme; label: string }[];
 
-/** The appearance setting. Light is the default; dark is this viewer's stored choice. */
 export function ThemeSetting() {
   const [theme, setTheme] = useState(readTheme);
   return (

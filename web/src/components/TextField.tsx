@@ -7,7 +7,6 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   help?: string;
 }
 
-// Label above, help below, never a placeholder standing in for the label.
 export function TextField({ label, help, ...input }: TextFieldProps) {
   const id = useId();
   return (

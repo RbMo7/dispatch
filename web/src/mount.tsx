@@ -7,8 +7,6 @@ import { MotionConfig } from 'motion/react';
 import { type ReactNode, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-// reducedMotion="user": with prefers-reduced-motion on, every transform and
-// layout animation is skipped and only opacity animates.
 export function mount(app: ReactNode): void {
   const root = document.getElementById('root');
   if (!root) throw new Error('missing #root');

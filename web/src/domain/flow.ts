@@ -1,6 +1,3 @@
-// A Dispatch's flow is a list of stages. Each kind fixes its dot, its card,
-// its segment in the stage bar (branches have none), and whether the line
-// into it is solid (reached) or dashed (not yet).
 export type StageKind =
   | 'done'
   | 'current'

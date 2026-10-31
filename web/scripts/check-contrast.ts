@@ -1,5 +1,3 @@
-// WCAG contrast of every text/fill pair the design promises at 4.5:1, in both
-// themes, computed from the values in tokens.css. Exits non-zero on a miss.
 import { readFileSync } from 'node:fs';
 
 const MIN_RATIO = 4.5;

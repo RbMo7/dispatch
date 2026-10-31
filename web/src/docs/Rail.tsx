@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import type { DocPage } from './manifest';
 import styles from './Rail.module.css';
 
-// A heading counts as the one being read once it passes under the top bar.
 const READING_LINE_PX = 96;
 
 export function Rail({ page }: { page: DocPage }) {

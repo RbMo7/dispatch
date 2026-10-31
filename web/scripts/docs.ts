@@ -28,7 +28,6 @@ import { EXCLUDED_DIRS, NAV, type NavSection, REPO_BLOB_URL } from '../src/docs/
 export interface BuiltDocs {
   manifest: DocsManifest;
   searchIndex: string;
-  // Absolute paths of every Markdown file read, for the dev server to watch.
   files: string[];
 }
 
@@ -41,7 +40,6 @@ interface Planned {
   adrNumber: string | undefined;
 }
 
-// A link to another page's anchor, checked once every page's ids are known.
 interface AnchorCheck {
   from: string;
   href: string;
@@ -225,7 +223,6 @@ function takeTitle(tree: Root): string | undefined {
   return h1 ? toString(h1) : undefined;
 }
 
-// The app renders the title itself, above the page.
 function removeTitle(tree: Root): void {
   const index = tree.children.findIndex((node) => isElement(node, 'h1'));
   if (index !== -1) tree.children.splice(index, 1);
@@ -244,8 +241,6 @@ async function idsOfFile(root: string, source: string): Promise<Set<string>> {
   return collectIds(await markdown.run(markdown.parse(splitFrontmatter(raw).body)));
 }
 
-// An API route heading (`## POST /v1/dispatch`) gets a method badge styled
-// like a status pill, and the path in code.
 function badgeHeadings(tree: Root): DocHeading[] {
   const headings: DocHeading[] = [];
   visit(tree, 'element', (node) => {
@@ -303,8 +298,6 @@ function excerpt(body: string): string {
   return `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 }
 
-// Relative links between Markdown files become site routes; links to other
-// repo files go to GitHub. Anything that resolves to nothing is a problem.
 function rewriteLinks(
   tree: Root,
   page: Planned,
@@ -380,8 +373,6 @@ function wrapCodeBlocks(tree: Root, highlighter: Highlighter): void {
   });
 }
 
-// Consecutive titled code blocks (```sh title="Solana", then ```sh
-// title="Base") become one block with a tab per title.
 function groupTabs(tree: Root): void {
   let group = 0;
   visit(tree, (node) => {
@@ -436,7 +427,6 @@ function tabs(figures: Element[], id: string): Element {
       ),
     ),
     ...figures.map((figure, i) => {
-      // Without dataTitle the panels no longer look like a run to group.
       const properties = { ...figure.properties };
       delete properties.dataTitle;
       figure.properties = {

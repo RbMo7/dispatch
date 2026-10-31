@@ -1,8 +1,3 @@
-/*
- * The page HTML comes from scripts/docs.ts with plain class names, so its
- * elements are styled through :global() under .prose.
- */
-
 .header {
   margin-bottom: var(--space-8);
 }
@@ -124,7 +119,6 @@
   border-top: 1px solid var(--border);
 }
 
-/* Wide tables scroll inside the measure instead of widening the page. */
 .prose :global(table) {
   display: block;
   max-width: 100%;
@@ -276,8 +270,6 @@
   font-size: var(--text-12);
 }
 
-/* The method badge, in the status-pill style, wherever it appears: API
-   route headings and the "On this page" rail. */
 :global(.method) {
   display: inline-flex;
   align-items: center;

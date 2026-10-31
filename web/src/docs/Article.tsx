@@ -11,8 +11,6 @@ interface ArticleProps {
   onNavigate: (href: string) => void;
 }
 
-// The page HTML is rendered at build time, so its code-block buttons, tabs
-// and internal links are wired here by delegation rather than as components.
 export function Article({ page, onNavigate }: ArticleProps) {
   function onClick(event: MouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
@@ -82,7 +80,6 @@ async function copyCode(button: HTMLButtonElement) {
   }
 }
 
-// Choosing Base in one example chooses it in every example on the page.
 function selectTab(chosen: HTMLElement, scope: HTMLElement) {
   const label = chosen.dataset.tab;
   for (const group of scope.querySelectorAll<HTMLElement>('.code-tabs')) {

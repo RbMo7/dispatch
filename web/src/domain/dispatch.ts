@@ -13,7 +13,6 @@ export interface DispatchSummary {
   status: Status;
   createdAt: Date;
   itemCount: number;
-  /** One per asset, as raw integer strings with their decimals. */
   totals: Money[];
 }
 
@@ -35,7 +34,6 @@ export interface PaymentItem extends ItemBase {
   amount: Money;
 }
 
-/** A Call: `to` on Base, `programId` on Solana, shown as its target. */
 export interface CallItem extends ItemBase {
   type: 'call';
   target: string;
@@ -48,7 +46,6 @@ export function itemTarget(item: Item): string {
   return item.type === 'payment' ? item.recipient : item.target;
 }
 
-/** What the console holds for one open Dispatch: the summary, its flow, and its items. */
 export interface DispatchDetail extends DispatchSummary {
   sender: string;
   retryPolicy: string;

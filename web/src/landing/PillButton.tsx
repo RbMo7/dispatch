@@ -3,7 +3,6 @@ import type { ReactNode } from 'react';
 
 import styles from './PillButton.module.css';
 
-// Pill buttons belong to the landing page only; the console uses Button.
 export function PillButton({
   href,
   variant = 'ink',

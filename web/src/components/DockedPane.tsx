@@ -15,7 +15,6 @@ interface DockedPaneProps {
   children: ReactNode;
 }
 
-// The detail column docked beside a list: a hairline, no shadow, no overlay.
 export function DockedPane({ title, meta, label, onClose, footer, children }: DockedPaneProps) {
   return (
     <section className={styles.pane} aria-label={label}>

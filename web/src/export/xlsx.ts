@@ -3,8 +3,6 @@ import writeXlsxFile, { type Cell, type SheetData } from 'write-excel-file/unive
 import { DISPLAY_DECIMALS, exactDecimal, type Money } from '../domain/assets';
 import type { ExportCell, ExportColumn } from './table';
 
-// A spreadsheet number only when the double reads back as exactly the same
-// decimal at the asset's precision; otherwise the exact text, so nothing is lost.
 function amountCell(money: Money): Cell {
   const exact = exactDecimal(money);
   const number = Number(exact);

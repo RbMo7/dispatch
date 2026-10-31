@@ -26,7 +26,6 @@ export function useLocation(): [Location, (href: string) => void] {
   return [location, navigate];
 }
 
-// A click the app should route itself: not a new tab, window or download.
 export function isPlainClick(event: MouseEvent): boolean {
   return (
     event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey

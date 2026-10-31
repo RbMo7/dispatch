@@ -9,7 +9,6 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 // from src/ (tsx) or dist/ (node).
 const ENGINE_WEB_ROOT = fileURLToPath(new URL('../web/dist/engine/', import.meta.url));
 
-// Each is an SPA under its own prefix: any path below it gets its index.html.
 const PAGES = ['console', 'docs'];
 
 /**
@@ -23,8 +22,8 @@ export const webStatic: FastifyPluginAsync<{ root?: string }> = async (
 ) => {
   if (!existsSync(root)) return;
 
-  // Vite puts every hashed file under assets/. Serving only that prefix keeps
-  // the API's other paths untouched, and a rebuild needs no restart.
+  // Serving only Vite's assets/ prefix keeps the API's other paths untouched,
+  // and a rebuild needs no restart.
   await app.register(fastifyStatic, {
     root: path.join(root, 'assets'),
     prefix: '/assets/',

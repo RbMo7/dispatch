@@ -6,8 +6,6 @@ import { StatusPill } from './StatusPill';
 
 afterEach(cleanup);
 
-// Every status docs/api.md reports, plus `held` (flag-rules), with the words
-// an operator reads on the pill.
 const EXPECTED: Record<Status, string> = {
   queued: 'Queued',
   broadcasting: 'Broadcasting',

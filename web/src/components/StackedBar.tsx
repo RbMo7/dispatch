@@ -7,8 +7,6 @@ interface StackedBarProps {
   low?: boolean;
 }
 
-// Proportions only, so it stays the same with balances hidden. The figures
-// beside it carry the meaning for assistive tech.
 export function StackedBar({ committed, low = false }: StackedBarProps) {
   const width = `${Math.min(1, Math.max(0, committed)) * 100}%`;
   return (

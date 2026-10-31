@@ -6,8 +6,6 @@ import { defineConfig, type Plugin } from 'vite';
 import { docsPlugin } from './scripts/docs.ts';
 import { THEME_BOOT_SCRIPT } from './src/theme.ts';
 
-// One codebase, two builds, chosen by --mode. Each page is its own HTML entry
-// with an SPA under its prefix; `home` is where the engine build sends `/`.
 const BUILDS = {
   engine: { pages: { console: 'console/index.html', docs: 'docs/index.html' }, home: '/console' },
   public: { pages: { landing: 'index.html', docs: 'docs/index.html' }, home: null },
@@ -19,8 +17,6 @@ function isBuildMode(mode: string): mode is keyof typeof BUILDS {
   return mode in BUILDS;
 }
 
-// The dev server's version of what src/web-static.ts does in the engine:
-// /console/anything and /docs/anything get their page's index.html.
 function spaFallback(build: Build): Plugin {
   const prefixes = Object.keys(build.pages).filter((page) => page !== 'landing');
   return {

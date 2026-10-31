@@ -17,7 +17,6 @@ interface AmountProps extends Money {
 
 const MASK = '••••';
 
-// `raw` is the integer string in the smallest unit, as the engine reports it.
 export function Amount({ variant = 'row', unit = false, ...money }: AmountProps) {
   const { hidden } = useBalances();
   const label = hidden ? `Hidden ${money.asset} amount` : `${formatAmount(money)} ${money.asset}`;

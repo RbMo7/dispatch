@@ -52,8 +52,6 @@
   list-style: none;
 }
 
-/* The 2 px line runs from under each dot to the next node: solid into a
-   stage that has been reached, dashed into one that has not. */
 .node {
   position: relative;
   display: flex;
@@ -74,8 +72,6 @@
   border-left: 2px dashed var(--border-strong);
 }
 
-/* A branch sits 30 px right of the trunk; a curved elbow joins it, and the
-   trunk carries on behind it to the next stage. */
 .node[data-branch] {
   margin-left: 30px;
 }

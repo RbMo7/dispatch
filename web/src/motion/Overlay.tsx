@@ -15,7 +15,6 @@ interface FrameProps {
   titleId?: string;
 }
 
-/** The modal's box: small uppercase title, close, body and footer. Also shown inline in the gallery. */
 export function ModalFrame({ title, onClose, footer, children, titleId }: FrameProps) {
   return (
     <div className={styles.frame}>
@@ -37,8 +36,6 @@ interface ModalProps extends Omit<FrameProps, 'titleId'> {
   open: boolean;
 }
 
-// One decision at a time: scales from 0.98 over 160 ms as the scrim fades in.
-// Under reduced motion only the fades remain.
 export function Modal({ open, ...frame }: ModalProps) {
   const titleId = useId();
   return createPortal(
@@ -81,7 +78,6 @@ interface SheetProps {
   children: ReactNode;
 }
 
-/** A left sheet for narrow screens (the docs navigation). */
 export function Sheet({ open, onClose, title, children }: SheetProps) {
   const titleId = useId();
   return createPortal(
@@ -122,9 +118,6 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
   );
 }
 
-// Mounted only while open: takes focus in (to a [data-autofocus] child when
-// there is one), closes on Escape, locks page scroll, and hands focus back to
-// whatever opened it.
 function FocusAndEscape({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);

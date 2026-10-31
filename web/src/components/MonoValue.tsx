@@ -17,7 +17,6 @@ interface MonoValueProps {
   full?: boolean;
 }
 
-// A hash, address or id: middle-truncated, the full value on hover, copied on click.
 export function MonoValue({ value, head, tail, full = false }: MonoValueProps) {
   const [copied, setCopied] = useState(false);
 

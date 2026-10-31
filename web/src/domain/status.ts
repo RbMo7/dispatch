@@ -1,6 +1,3 @@
-// Every status a Dispatch or one of its items can report (docs/api.md), plus
-// `held` from flag-rules and `cancelled` from ADR-0056. Each names its pill's
-// --pill-<status>-fg/-bg pair in tokens.css.
 function pill<S extends string>(status: S) {
   return { color: `var(--pill-${status}-fg)`, backgroundColor: `var(--pill-${status}-bg)` } as const;
 }

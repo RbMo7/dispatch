@@ -19,8 +19,6 @@ import { Sidebar } from './Sidebar';
 const TABS: readonly PaneTab[] = ['flow', 'items', 'details'];
 const count = new Intl.NumberFormat('en-US');
 
-// The selection lives in the URL (?dispatch=…&tab=…&status=…), as it will
-// on the Dispatches page, so a reviewer can link to any state.
 function fromUrl() {
   const params = new URLSearchParams(window.location.search);
   const id = params.get('dispatch');
@@ -104,7 +102,6 @@ function Screen() {
     setItemFilter(filter ?? 'all');
   }, []);
 
-  // j / k move through rows, Enter opens one (it is a button), Esc closes the pane.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;

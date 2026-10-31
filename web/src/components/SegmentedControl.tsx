@@ -15,7 +15,6 @@ interface SegmentedControlProps<T extends string> {
   onChange: (value: T) => void;
 }
 
-// A radio group: one tab stop, arrow keys move and select.
 export function SegmentedControl<T extends string>({ label, options, value, onChange }: SegmentedControlProps<T>) {
   const group = useRef<HTMLDivElement>(null);
 

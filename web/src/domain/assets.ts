@@ -1,7 +1,3 @@
-// The engine reports every amount as an integer string in the asset's
-// smallest unit plus that asset's `decimals` ("1250000000" and 6 is
-// 1,250 USDC). All arithmetic here is BigInt on those strings: 18-decimal
-// ETH does not fit a double.
 export interface Money {
   raw: string;
   decimals: number;
