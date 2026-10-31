@@ -1,0 +1,60 @@
+.page {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: var(--space-4);
+  background: var(--canvas);
+}
+
+.card {
+  display: flex;
+  width: min(400px, 100%);
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.brand {
+  font-size: var(--text-18);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.instance {
+  margin-top: calc(-1 * var(--space-3));
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-12-5);
+}
+
+.notice {
+  margin: 0;
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--sunken);
+  font-size: var(--text-13);
+}
+
+.error {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  color: var(--danger);
+  font-size: var(--text-12-5);
+}
+
+.submit {
+  width: 100%;
+}
+
+.docs {
+  color: var(--muted);
+  font-size: var(--text-12-5);
+  text-align: center;
+  text-decoration: none;
+}
+
+.docs:hover {
+  color: var(--ink);
+}
