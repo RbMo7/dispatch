@@ -7,7 +7,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 // Resolved from this file, so it is the same directory whether the API runs
 // from src/ (tsx) or dist/ (node).
-const ENGINE_WEB_ROOT = fileURLToPath(new URL('../web/dist/engine/', import.meta.url));
+export const ENGINE_WEB_ROOT = fileURLToPath(new URL('../web/dist/engine/', import.meta.url));
 
 const PAGES = ['console', 'docs'];
 

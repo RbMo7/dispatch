@@ -15,6 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start:api": "node dist/index.js",
     "start:worker": "node dist/worker.js",
+    "dispatch": "tsx src/setup/cli.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
