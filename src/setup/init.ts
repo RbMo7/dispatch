@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util';
 
 import { configFrom, type Env } from '../config.js';
 import { CHAINS, type Chain } from '../domain/chain.js';
+import { parseSenderName, type SenderName } from '../domain/sender.js';
 import {
   Cancelled,
   InitError,
@@ -17,6 +18,7 @@ import {
   addressesToFund,
   backendsIn,
   chainEnv,
+  clearedSenderVariables,
   CONTAINER_SIGNER_CONFIG,
   CURVE,
   databaseEnv,
@@ -26,6 +28,7 @@ import {
   FAUCETS,
   isChainAddress,
   NETWORK_NAMES,
+  networkOf,
   sameAddress,
   tokenEnv,
   updateSignerConfig,
@@ -46,7 +49,16 @@ import {
 import { clackUi, plainUi, type Ui } from './init-ui.js';
 import { parseEnvText, updateEnvText, writePrivateFile } from './env-file.js';
 import { describeMissing, findMissing, type Machine, type Probe } from './prerequisites.js';
-import { readSettings } from './settings.js';
+import {
+  entryFromVariables,
+  senderEntry,
+  senderNames,
+  VARIABLES_SENDER_NAME,
+  withDefault,
+  withSender,
+  type SendersFile,
+} from './senders-file.js';
+import { readSettings, type SenderSetup, type Settings } from './settings.js';
 import { CHAIN_NAMES } from './wording.js';
 
 type Output = { write: (text: string) => unknown };
@@ -79,7 +91,8 @@ export const INIT_USAGE = `Usage: pnpm dispatch init [--yes] [options]
 
 Sets up this engine: asks which chains to run and how each Sender signs,
 writes the Signer config and .env, starts the services and ends with doctor.
-Run it again to change one part or add a chain; it keeps everything else.
+Run it again to change one part, add a chain or add a named Sender to a
+chain; it keeps everything else.
 
   --yes                         no prompts: each question takes its default or its flag
   --chains <solana,base>        chains to enable
@@ -91,6 +104,9 @@ Run it again to change one part or add a chain; it keeps everything else.
   --<chain>-address <address>   privy, aws-kms: the key's address
   --solana-sender <plain|squads>, --solana-multisig <address>
   --base-sender <plain|safe>,     --base-safe <address>
+  --<chain>-sender-name <name>  add a named Sender to the chain, beside the ones it has,
+                                in the senders file (SENDERS_FILE, default senders.json)
+  --<chain>-default <name>      the Sender a Dispatch that names none pays from
   --database <compose|url>      Compose's Postgres (default) or a postgres:// URL
   --start, --no-start           start the services with Docker Compose (default: start)
 
@@ -112,7 +128,9 @@ function parseFlags(args: readonly string[]): { yes: boolean; help: boolean; fla
     'no-start': { type: 'boolean' },
   };
   for (const chain of CHAINS) {
-    for (const flag of CHAIN_FLAGS) options[`${chain}-${flag}`] = { type: 'string' };
+    for (const flag of [...CHAIN_FLAGS, 'sender-name', 'default']) {
+      options[`${chain}-${flag}`] = { type: 'string' };
+    }
     options[MULTISIG_FLAG[chain]] = { type: 'string' };
   }
   let values: Record<string, string | boolean | undefined>;
@@ -191,6 +209,10 @@ type Files = {
   signerConfigPath: string;
   keystore: string;
   signerConfig: Record<string, unknown>;
+  /** SENDERS_FILE, or `senders.json`, under the root. */
+  sendersPath: string;
+  /** The senders file (ADR-0060); undefined while there is none and today's variables describe the Senders. */
+  senders: SendersFile | undefined;
 };
 
 function readFiles(root: string): Files {
@@ -213,6 +235,25 @@ function readFiles(root: string): Files {
       );
     }
   }
+  const sendersPath = path.resolve(
+    root,
+    parseEnvText(envText).SENDERS_FILE?.trim() || 'senders.json',
+  );
+  let senders: Files['senders'];
+  if (existsSync(sendersPath)) {
+    let json: unknown;
+    try {
+      json = JSON.parse(readFileSync(sendersPath, 'utf8'));
+    } catch {
+      json = undefined;
+    }
+    if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+      throw new InitError(
+        `${sendersPath} is not a JSON object; fix or move it, then run init again`,
+      );
+    }
+    senders = json as SendersFile;
+  }
   return {
     envPath,
     envText,
@@ -220,11 +261,24 @@ function readFiles(root: string): Files {
     signerConfigPath,
     keystore: path.join(signerDir, 'keystore'),
     signerConfig,
+    sendersPath,
+    senders,
   };
 }
 
-/** What `--yes` and the prompts ask for one chain, given which flags answer it. */
-async function askChain(ask: Asker, flags: Flags, chain: Chain): Promise<ChainChoice> {
+/** The settings as the engine would read them from `env` and the senders file under the root. */
+function settingsAt(env: Env, files: Pick<Files, 'sendersPath'>): Settings {
+  return readSettings(configFrom(env), () =>
+    existsSync(files.sendersPath)
+      ? { kind: 'file', path: files.sendersPath, text: readFileSync(files.sendersPath, 'utf8') }
+      : { kind: 'variables' },
+  );
+}
+
+type NetworkChoice = Pick<ChainChoice, 'network' | 'rpcUrl'>;
+
+/** Which network a chain runs on and its RPC, given which flags answer it. */
+async function askNetwork(ask: Asker, flags: Flags, chain: Chain): Promise<NetworkChoice> {
   const name = CHAIN_NAMES[chain];
   let network: Network;
   for (;;) {
@@ -254,10 +308,30 @@ async function askChain(ask: Asker, flags: Flags, chain: Chain): Promise<ChainCh
     validate: (value) =>
       /^https?:\/\//.test(value) && URL.canParse(value) ? undefined : 'an http:// or https:// URL',
   });
+  return { network, rpcUrl };
+}
 
+/** The network and RPC a chain already runs on, for a Sender added to it. A Solana RPC whose URL doesn't say counts as mainnet, so the dev keyfile is never offered for it. */
+function currentNetwork(chain: Chain, env: Env): NetworkChoice {
+  const config = configFrom(env);
+  return {
+    network: networkOf(chain, env) ?? 'main',
+    rpcUrl: chain === 'solana' ? config.solana.rpcUrl : config.base.rpcUrl,
+  };
+}
+
+/** How one Sender signs and what kind it is. `senderName` is set for a named Sender (ADR-0060). */
+async function askSender(
+  ask: Asker,
+  chain: Chain,
+  network: Network,
+  senderName?: SenderName,
+): Promise<Pick<ChainChoice, 'signing' | 'sender'>> {
+  const name = CHAIN_NAMES[chain];
+  const which = senderName === undefined ? `${name} Sender` : `${name} Sender "${senderName}"`;
   const backend = await ask.select<Signing['backend']>({
     flag: `${chain}-signer`,
-    message: `How does the ${name} Sender sign?`,
+    message: `How does the ${which} sign?`,
     options: [
       { value: 'local', label: 'A new local encrypted key', hint: "made by the Signer's keys new" },
       { value: 'privy', label: 'An existing Privy wallet' },
@@ -299,7 +373,7 @@ async function askChain(ask: Asker, flags: Flags, chain: Chain): Promise<ChainCh
   const multisigKind = chain === 'solana' ? 'squads' : 'safe';
   const kind = await ask.select<'plain' | 'squads' | 'safe'>({
     flag: `${chain}-sender`,
-    message: `What kind of ${name} Sender?`,
+    message: `What kind of ${which}?`,
     options: [
       { value: 'plain', label: 'A plain wallet', hint: 'the key pays directly' },
       chain === 'solana'
@@ -319,7 +393,7 @@ async function askChain(ask: Asker, flags: Flags, chain: Chain): Promise<ChainCh
     sender =
       chain === 'solana' ? { kind: 'squads', multisig: address } : { kind: 'safe', safe: address };
   }
-  return { chain, network, rpcUrl, signing, sender };
+  return { signing, sender };
 }
 
 async function askDatabase(
@@ -390,8 +464,13 @@ async function newLocalKey(
     install.done("Installed the Signer's packages");
   }
   mkdirSync(files.keystore, { recursive: true, mode: 0o700 });
-  const name = freeKeyName(files.keystore, KEY_NAMES[choice.sender.kind](choice.chain));
-  const progress = ui.progress(`Creating the ${CHAIN_NAMES[choice.chain]} key "${name}"`);
+  const name = freeKeyName(
+    files.keystore,
+    choice.name === undefined
+      ? KEY_NAMES[choice.sender.kind](choice.chain)
+      : `${choice.chain}-${choice.name}`,
+  );
+  const progress = ui.progress(`Creating the ${choiceLabel(choice)} key "${name}"`);
   const result = await io.run(
     'pnpm',
     [
@@ -423,29 +502,160 @@ async function newLocalKey(
       `the Signer's keys new failed: ${result.stderr.trim() || 'no address printed'}`,
     );
   }
-  progress.done(`Created the ${CHAIN_NAMES[choice.chain]} key "${name}": ${address}`);
+  progress.done(`Created the ${choiceLabel(choice)} key "${name}": ${address}`);
   return { address, backend: 'local', keyRef: name };
+}
+
+function choiceLabel({ chain, name }: ChainChoice): string {
+  return name === undefined ? CHAIN_NAMES[chain] : `${CHAIN_NAMES[chain]} "${name}"`;
 }
 
 function keystoreHasKeys(keystore: string): boolean {
   return existsSync(keystore) && readdirSync(keystore).some((file) => file.endsWith('.json'));
 }
 
+/** A Sender set up in this run, and the engine key it takes over from, if any. */
+type Planned = { choice: ChainChoice; replaces?: string };
+
+/** The name a Sender has, or will have, in the senders file. */
+function fileName(sender: SenderSetup): SenderName {
+  return sender.name ?? VARIABLES_SENDER_NAME;
+}
+
+const NAME_RULE = '1 to 40 lowercase letters, digits or hyphens';
+
+/**
+ * The Senders to set up on one enabled chain; none when it is kept as it
+ * is. `--<chain>-sender-name`, or the prompt after keeping a chain, adds a
+ * named Sender beside the ones it has (ADR-0060).
+ */
+async function askChainSenders(
+  ask: Asker,
+  flags: Flags,
+  chain: Chain,
+  context: {
+    existing: readonly SenderSetup[];
+    held: (sender: SenderSetup) => boolean;
+    fileEnv: Env;
+    fileMode: boolean;
+  },
+): Promise<Planned[]> {
+  const { existing, held, fileEnv, fileMode } = context;
+  const replacing = (sender: SenderSetup | undefined) =>
+    sender?.accounts ? { replaces: sender.accounts.feePayer } : {};
+  const named = async (name: SenderName, network: NetworkChoice): Promise<ChainChoice> => ({
+    chain,
+    ...network,
+    name,
+    ...(await askSender(ask, chain, network.network, name)),
+  });
+
+  const flaggedName = flags[`${chain}-sender-name`];
+  if (typeof flaggedName === 'string') {
+    const name = parseSenderName(flaggedName);
+    if (!name) throw new InitError(`--${chain}-sender-name must be ${NAME_RULE}`);
+    const same = existing.find((sender) => fileName(sender) === name);
+    const keep =
+      same !== undefined &&
+      (await ask.confirm({
+        message: `Keep the ${CHAIN_NAMES[chain]} Sender "${name}" as it is?`,
+        initial: true,
+      }));
+    if (keep) return [];
+    const network =
+      existing.length > 0 ? currentNetwork(chain, fileEnv) : await askNetwork(ask, flags, chain);
+    return [{ choice: await named(name, network), ...replacing(same) }];
+  }
+
+  const flagged =
+    CHAIN_FLAGS.some((flag) => flags[`${chain}-${flag}`] !== undefined) ||
+    flags[MULTISIG_FLAG[chain]] !== undefined;
+  const keep =
+    existing.some(held) &&
+    !flagged &&
+    (await ask.confirm({
+      message: `Keep the ${CHAIN_NAMES[chain]} setup as it is?`,
+      initial: true,
+    }));
+  if (!keep) {
+    // A chain's own questions change its default Sender; a named one is added by name.
+    const target = existing.find((sender) => sender.isDefault) ?? existing[0];
+    const network = await askNetwork(ask, flags, chain);
+    if (fileMode) {
+      const name = target ? fileName(target) : VARIABLES_SENDER_NAME;
+      return [{ choice: await named(name, network), ...replacing(target) }];
+    }
+    const choice = { chain, ...network, ...(await askSender(ask, chain, network.network)) };
+    return [{ choice, ...replacing(target) }];
+  }
+
+  const add = await ask.confirm({
+    message: `Add another ${CHAIN_NAMES[chain]} Sender, with its own key?`,
+    initial: false,
+  });
+  if (!add) return [];
+  const taken = existing.map(fileName);
+  const name = parseSenderName(
+    await ask.text({
+      message: 'Its name, which a request gives as "sender"',
+      placeholder: 'such as refunds or treasury',
+      validate: (value) =>
+        !parseSenderName(value)
+          ? NAME_RULE
+          : taken.includes(value as SenderName)
+            ? `${CHAIN_NAMES[chain]} already has a Sender named "${value}"`
+            : undefined,
+    }),
+  )!;
+  return [{ choice: await named(name, currentNetwork(chain, fileEnv)) }];
+}
+
+/** With more than one Sender on a chain, which one a Dispatch that names none pays from. */
+async function askDefaults(
+  ask: Asker,
+  flags: Flags,
+  enabled: readonly Chain[],
+  file: SendersFile,
+  choices: readonly ChainChoice[],
+): Promise<Map<Chain, SenderName>> {
+  const defaults = new Map<Chain, SenderName>();
+  for (const chain of enabled) {
+    const changed = choices.filter((choice) => choice.chain === chain);
+    const names = [
+      ...new Set([...senderNames(file, chain), ...changed.map((choice) => choice.name!)]),
+    ];
+    if (names.length < 2 || (changed.length === 0 && flags[`${chain}-default`] === undefined)) {
+      continue;
+    }
+    const current = file[chain]?.default;
+    defaults.set(
+      chain,
+      await ask.select<SenderName>({
+        flag: `${chain}-default`,
+        message: `Which ${CHAIN_NAMES[chain]} Sender pays a Dispatch that names none?`,
+        options: names.map((name) => ({ value: name, label: name })),
+        initial: names.find((name) => name === current) ?? names[0]!,
+      }),
+    );
+  }
+  return defaults;
+}
+
 async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<number> {
   ui.intro('Dispatch setup');
   const files = readFiles(io.root);
   const fileEnv = parseEnvText(files.envText);
-  const settings = readSettings(configFrom(fileEnv));
-  /** A chain counts as set up once its Sender is configured and the Signer config holds its key. */
-  const setUpChains = new Map(
-    settings.chains.flatMap(({ chain, sender }) =>
-      sender && Object.keys(files.signerConfig).some((key) => sameAddress(key, sender.feePayer))
-        ? [[chain, sender.feePayer] as const]
-        : [],
-    ),
-  );
+  const settings = settingsAt(fileEnv, files);
+  const signerEntryFor = (address: string) => {
+    const key = Object.keys(files.signerConfig).find((k) => sameAddress(k, address));
+    return key === undefined ? undefined : (files.signerConfig[key] as { backend?: string });
+  };
+  /** A Sender counts as set up once it is configured and the Signer config holds its key. */
+  const held = (sender: SenderSetup) =>
+    sender.accounts !== undefined && signerEntryFor(sender.accounts.feePayer) !== undefined;
+  const setUpChains = new Set(settings.senders.filter(held).map((sender) => sender.chain));
   const firstRun = setUpChains.size === 0;
-  if (!firstRun) ui.note('Current setup', describeChains(fileEnv, files.signerConfig));
+  if (!firstRun) ui.note('Current setup', describeChains(fileEnv, settings, files.signerConfig));
 
   const enabled = await ask.multiselect<Chain>({
     flag: 'chains',
@@ -455,23 +665,43 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
       label: CHAIN_NAMES[chain],
       ...(setUpChains.has(chain) ? { hint: 'set up' } : {}),
     })),
-    initial: firstRun ? ['solana'] : [...setUpChains.keys()],
+    initial: firstRun ? ['solana'] : [...setUpChains],
   });
 
-  const choices: ChainChoice[] = [];
+  let planned: Planned[] = [];
   for (const chain of enabled) {
-    const flagged =
-      CHAIN_FLAGS.some((flag) => flags[`${chain}-${flag}`] !== undefined) ||
-      flags[MULTISIG_FLAG[chain]] !== undefined;
-    const keep =
-      setUpChains.has(chain) &&
-      !flagged &&
-      (await ask.confirm({
-        message: `Keep the ${CHAIN_NAMES[chain]} setup as it is?`,
-        initial: true,
-      }));
-    if (!keep) choices.push(await askChain(ask, flags, chain));
+    planned.push(
+      ...(await askChainSenders(ask, flags, chain, {
+        existing: settings.senders.filter((sender) => sender.chain === chain),
+        held,
+        fileEnv,
+        fileMode: files.senders !== undefined,
+      })),
+    );
   }
+  // ADR-0060: a named Sender needs a senders file, and with one the engine reads every chain's Senders from it.
+  const fileMode = files.senders !== undefined || planned.some(({ choice }) => choice.name);
+  if (fileMode) {
+    planned = planned.map(({ choice, ...rest }) => ({
+      ...rest,
+      choice: { ...choice, name: choice.name ?? VARIABLES_SENDER_NAME },
+    }));
+  }
+  const choices = planned.map(({ choice }) => choice);
+
+  let sendersFile: SendersFile = files.senders ?? {};
+  if (fileMode && files.senders === undefined) {
+    const config = configFrom(fileEnv);
+    for (const sender of settings.senders) {
+      const entry = entryFromVariables(sender, config);
+      if (entry && enabled.includes(sender.chain)) {
+        sendersFile = withSender(sendersFile, sender.chain, VARIABLES_SENDER_NAME, entry);
+      }
+    }
+  }
+  const defaults = fileMode
+    ? await askDefaults(ask, flags, enabled, sendersFile, choices)
+    : new Map<Chain, SenderName>();
   const database = await askDatabase(ask, flags, firstRun);
 
   const newKeys = choices.filter((choice) => choice.signing.backend === 'local');
@@ -480,13 +710,17 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     message: 'Start all services now?',
     initial: true,
   });
+  const replaced = (address: string) =>
+    planned.some(({ replaces }) => replaces !== undefined && sameAddress(replaces, address));
+  const keptKeys = settings.senders.flatMap(({ accounts }) =>
+    accounts && !replaced(accounts.feePayer) ? [accounts.feePayer] : [],
+  );
   const plannedBackends = new Set([
-    ...[...setUpChains.entries()]
-      .filter(([chain]) => enabled.includes(chain) && !choices.some((c) => c.chain === chain))
-      .flatMap(([, feePayer]) => {
-        const key = Object.keys(files.signerConfig).find((k) => sameAddress(k, feePayer));
-        return key ? [(files.signerConfig[key] as { backend?: string }).backend ?? ''] : [];
-      }),
+    ...settings.senders
+      .filter((sender) => enabled.includes(sender.chain) && held(sender))
+      .flatMap(({ accounts }) =>
+        replaced(accounts!.feePayer) ? [] : [signerEntryFor(accounts!.feePayer)?.backend ?? ''],
+      ),
     ...choices.map((choice) => choice.signing.backend),
   ]);
   let passphrase: string | undefined;
@@ -499,10 +733,10 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     }
   }
 
-  const held: HeldKey[] = [];
+  const heldKeys: HeldKey[] = [];
   for (const choice of choices) {
     const { signing } = choice;
-    held.push(
+    heldKeys.push(
       signing.backend === 'local'
         ? await newLocalKey(io, ui, files, choice, passphrase!)
         : signing.backend === 'keyfile'
@@ -511,17 +745,10 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     );
   }
 
-  const changes = choices.map((choice, i) => ({
-    choice,
-    key: held[i]!,
-    ...(setUpChains.has(choice.chain) ? { replaces: setUpChains.get(choice.chain)! } : {}),
-  }));
-  const keptKeys = [...setUpChains.entries()]
-    .filter(([chain]) => !choices.some((choice) => choice.chain === chain))
-    .map(([, feePayer]) => feePayer);
+  const changes = planned.map((plan, i) => ({ ...plan, key: heldKeys[i]! }));
   const signerConfig = updateSignerConfig(files.signerConfig, changes, [
     ...keptKeys,
-    ...held.map((key) => key.address),
+    ...heldKeys.map((key) => key.address),
   ]);
 
   const tokens = tokenEnv(fileEnv, io.randomToken);
@@ -533,21 +760,38 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     ...(database ? databaseEnv(database) : {}),
   };
   for (const { choice, key } of changes) Object.assign(updates, chainEnv(choice, key));
+  if (fileMode) {
+    for (const { choice, key } of changes) {
+      sendersFile = withSender(
+        sendersFile,
+        choice.chain,
+        choice.name!,
+        senderEntry(choice.chain, choice.sender, key.address),
+      );
+    }
+    for (const [chain, name] of defaults) sendersFile = withDefault(sendersFile, chain, name);
+    for (const chain of enabled) Object.assign(updates, clearedSenderVariables(chain));
+  }
   const envText = updateEnvText(files.envText, updates);
 
   const now = io.now();
-  mkdirSync(files.signerDir, { recursive: true });
-  const signerBackup = writePrivateFile(
-    files.signerConfigPath,
-    `${JSON.stringify(signerConfig, null, 2)}\n`,
-    now,
-  );
-  const envBackup = writePrivateFile(files.envPath, envText, now);
   const relative = (file: string) => path.relative(io.root, file);
-  ui.step(
-    `Wrote ${relative(files.signerConfigPath)} (mode 0600)${signerBackup ? `; the old one is ${relative(signerBackup)}` : ''}`,
+  const wrote = (file: string, backup: string | undefined) =>
+    ui.step(
+      `Wrote ${relative(file)} (mode 0600)${backup ? `; the old one is ${relative(backup)}` : ''}`,
+    );
+  mkdirSync(files.signerDir, { recursive: true });
+  wrote(
+    files.signerConfigPath,
+    writePrivateFile(files.signerConfigPath, `${JSON.stringify(signerConfig, null, 2)}\n`, now),
   );
-  ui.step(`Wrote .env (mode 0600)${envBackup ? `; the old one is ${relative(envBackup)}` : ''}`);
+  if (fileMode) {
+    wrote(
+      files.sendersPath,
+      writePrivateFile(files.sendersPath, `${JSON.stringify(sendersFile, null, 2)}\n`, now),
+    );
+  }
+  wrote(files.envPath, writePrivateFile(files.envPath, envText, now));
   const generated = Object.keys(tokens);
   if (generated.length > 0) {
     ui.info(
@@ -558,11 +802,11 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
   // The process environment already holds the old .env, loaded at startup, so the new file wins.
   const finalEnv: Env = { ...io.env, ...parseEnvText(envText) };
   const backends = backendsIn(signerConfig);
-  ui.note('Before you rely on it', nextSteps(choices, held, backends));
+  ui.note('Before you rely on it', nextSteps(choices, heldKeys, backends));
 
   const ownDatabase = (finalEnv.CONTAINER_DATABASE_URL ?? '') !== '';
   let servicesUp = true;
-  if (start) {
+  if (start && !fileMode) {
     servicesUp = await startServices(
       io.run,
       io.readiness ?? composeReadiness(io.run, io.root),
@@ -574,23 +818,30 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
       },
     );
   } else {
+    // docker-compose.yml mounts no senders file into the api and worker containers, so they would start without it.
+    if (start) {
+      ui.warn(
+        `Not starting the services: Compose's api and worker containers cannot read ${relative(files.sendersPath)}, so they run from this checkout instead.`,
+      );
+    }
+    const commands = composeCommands({ ownDatabase }).map((command) => command.join(' '));
     ui.note('Start the services later with', [
       ...(backends.has('local')
         ? ['read -rs SIGNER_KEYSTORE_PASSPHRASE && export SIGNER_KEYSTORE_PASSPHRASE']
         : []),
-      ...composeCommands({ ownDatabase }).map((command) => command.join(' ')),
+      ...(fileMode ? [...commands.slice(0, 2), 'pnpm dev:api', 'pnpm dev:worker'] : commands),
     ]);
   }
 
   ui.step('Running pnpm dispatch doctor');
   const doctorCode = await io.runDoctor(finalEnv);
 
-  const funding = addressesToFund(finalEnv);
+  const funding = addressesToFund(finalEnv, settingsAt(finalEnv, files));
   if (funding.length > 0) {
     ui.note(
       'Fund these addresses',
-      funding.flatMap(({ chain, address, pays, network }) => [
-        `${CHAIN_NAMES[chain]} ${address}`,
+      funding.flatMap(({ label, chain, address, pays, network }) => [
+        `${label} ${address}`,
         `  pays ${pays}${network === 'test' ? `; faucet: ${FAUCETS[chain]}` : ''}`,
       ]),
     );

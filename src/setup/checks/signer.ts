@@ -49,7 +49,7 @@ export const signerReachable: Check = {
       return fail('SIGNER_AUTH_TOKEN is not set, so the Signer refuses every request', TOKEN_FIX);
     }
     // The policy read is the one Signer route that never signs, so it is the probe.
-    const key = settings.chains.find((setup) => setup.sender)?.sender?.feePayer;
+    const key = settings.senders.find((setup) => setup.accounts)?.accounts?.feePayer;
     if (key === undefined) {
       return warn(notCheckedFinding('no enabled chain has a Sender to ask the Signer about'), {
         setting: 'ENABLED_CHAINS',
@@ -65,11 +65,11 @@ export const signerKeyHeld: Check = {
   area: 'signer',
   title: 'Key held',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
-  appliesTo: (setup) => setup.sender !== undefined,
-  run: async ({ config, signer }, { sender }) => {
+  scope: 'sender',
+  appliesTo: (setup) => setup.accounts !== undefined,
+  run: async ({ config, signer }, { accounts }) => {
     if (!signer) return warn(NO_SIGNER, START_SIGNER);
-    const key = sender!.feePayer;
+    const key = accounts!.feePayer;
     const read = await signer.readPins(key);
     switch (read.kind) {
       case 'pins':
@@ -98,26 +98,26 @@ export const signerPinned: Check = {
   area: 'signer',
   title: 'Pinned',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
+  scope: 'sender',
   appliesTo: (setup) => setup.multisig !== undefined,
   run: async (context, setup) => {
     if (!context.signer) return warn(NO_SIGNER, START_SIGNER);
     const startup = await context.multisigStartup(setup);
     const multisig = setup.multisig!;
-    const key = setup.sender!.feePayer;
+    const key = setup.accounts!.feePayer;
     const pinned = multisigFailures(startup, 'pinned');
     const [first] = pinned;
     if (first) {
       return fail(
         redactUrls(pinned.map((f) => f.message).join('; ')),
-        multisigFix(first.check, multisig, context.config),
+        multisigFix(first.check, setup, context),
       );
     }
     const [unanswered] = multisigFailures(startup, 'signer');
     if (unanswered) {
       return warn(
         notCheckedFinding(`the Signer did not answer for ${key} (see Signer: Key held)`),
-        multisigFix(unanswered.check, multisig, context.config),
+        multisigFix(unanswered.check, setup, context),
       );
     }
     const to =

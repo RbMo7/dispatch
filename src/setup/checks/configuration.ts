@@ -1,6 +1,6 @@
 import { CHAINS } from '../../domain/chain.js';
 import { fail, pass, warn, type Check, type CheckResult, type Fix } from '../check.js';
-import { senderVariable } from '../settings.js';
+import { senderVariable, type Settings } from '../settings.js';
 
 export const DEV_AUTH_TOKEN = 'dev-secret';
 export const MIN_TOKEN_LENGTH = 32;
@@ -87,6 +87,7 @@ export const enabledChains: Check = {
         value: 'solana, base, or solana,base',
       });
     }
+    if (settings.sendersFile !== undefined) return judgeSendersFile(settings);
     const missing = enabled.filter((chain) => senders[chain].trim() === '');
     const [firstMissing] = missing;
     if (firstMissing) {
@@ -115,6 +116,44 @@ export const enabledChains: Check = {
     return pass(enabled.map((chain) => `${chain} sends from ${senders[chain]}`).join('; '));
   },
 };
+
+/** ADR-0060: with a senders file, each enabled chain needs a Sender in it, and the per-chain Sender variables are ignored. */
+function judgeSendersFile(settings: Settings): CheckResult {
+  const file = settings.sendersFile!;
+  const missing = settings.enabledChains.filter(
+    (chain) => !settings.senders.some((sender) => sender.chain === chain),
+  );
+  if (missing.length > 0) {
+    return fail(
+      `the senders file ${file} gives ${missing.join(' and ')} no Sender (see Environment parses)`,
+      { step: `Fix ${file}; senders.example.json shows the shape` },
+    );
+  }
+  if (settings.warnings.length > 0) {
+    const ignored = [
+      ...new Set(settings.warnings.flatMap((w) => w.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? [])),
+    ];
+    return warn(settings.warnings.join('; '), {
+      setting: ignored.join(', '),
+      value: `empty: the senders file ${file} describes the Senders`,
+    });
+  }
+  return pass(
+    settings.enabledChains
+      .map((chain) => {
+        const senders = settings.senders.filter((sender) => sender.chain === chain);
+        const listed = senders.map(
+          (s) =>
+            `${s.name} (${s.accounts?.address ?? 'not parsed'}${s.isDefault ? ', the default' : ''})`,
+        );
+        const noDefault = senders.some((s) => s.isDefault)
+          ? ''
+          : '; no default, so each Dispatch names its Sender';
+        return `${chain} sends from ${listed.join(', ')}${noDefault}`;
+      })
+      .join('; '),
+  );
+}
 
 export function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;

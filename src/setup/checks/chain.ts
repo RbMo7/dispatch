@@ -13,8 +13,7 @@ export const rpcReachable: Check = {
   title: 'RPC reachable',
   runsIn: ['cli', 'worker'],
   scope: 'chain',
-  appliesTo: () => true,
-  run: async (context, { chain }) => {
+  run: async (context, chain) => {
     const where = `${rpcVariable(chain)} (${hostOf(rpcUrl(context.config, chain))})`;
     try {
       await context.chain(chain).network();
@@ -31,8 +30,7 @@ export const network: Check = {
   title: 'Network',
   runsIn: ['cli', 'worker'],
   scope: 'chain',
-  appliesTo: () => true,
-  run: async (context, { chain }) => {
+  run: async (context, chain) => {
     let read: NetworkRead;
     try {
       read = await context.chain(chain).network();

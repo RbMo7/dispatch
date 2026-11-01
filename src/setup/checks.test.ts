@@ -59,8 +59,10 @@ describe('setup checks', () => {
     it('runs no chain-specific check on a chain whose settings are broken', () => {
       const context = fakeContext(goodEnv({ SOLANA_KNOWN_TOKENS: 'bad' }));
 
-      expect(context.settings.chains.find((c) => c.chain === 'solana')).toEqual({
+      expect(context.settings.senders.find((s) => s.chain === 'solana')).toEqual({
         chain: 'solana',
+        name: null,
+        isDefault: true,
       });
     });
   });

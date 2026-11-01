@@ -7,11 +7,12 @@ import {
   type CheckResult,
   type Place,
 } from './check.js';
+import { senderLabel } from './settings.js';
 import { CHAIN_NAMES, errorText } from './wording.js';
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 10_000;
 
-/** One check as it will run: an engine check once, a chain check once per chain it applies to. */
+/** One check as it will run: an engine check once, a chain check once per chain, a Sender check once per Sender. */
 export type PlannedCheck = {
   id: string;
   area: Area;
@@ -34,14 +35,23 @@ export function planChecks(
       if (check.scope === 'engine') {
         return [{ ...header, run: async () => check.run(context) }];
       }
-      return context.settings.chains
-        .filter((setup) => check.appliesTo(setup))
-        .map((setup) => ({
+      if (check.scope === 'chain') {
+        return context.settings.enabledChains.map((chain) => ({
           ...header,
-          id: `${check.id}:${setup.chain}`,
-          title: `${check.title} (${CHAIN_NAMES[setup.chain]})`,
-          chain: setup.chain,
-          run: async () => check.run(context, setup),
+          id: `${check.id}:${chain}`,
+          title: `${check.title} (${CHAIN_NAMES[chain]})`,
+          chain,
+          run: async () => check.run(context, chain),
+        }));
+      }
+      return context.settings.senders
+        .filter((sender) => check.appliesTo(sender))
+        .map((sender) => ({
+          ...header,
+          id: [check.id, sender.chain, ...(sender.name === null ? [] : [sender.name])].join(':'),
+          title: `${check.title} (${senderLabel(sender)})`,
+          chain: sender.chain,
+          run: async () => check.run(context, sender),
         }));
     });
 }

@@ -25,7 +25,7 @@ import { ENGINE_WEB_ROOT } from '../web-static.js';
 import type { ApiEnvironment, ChainReads, CheckContext, MultisigStartup } from './check.js';
 import { safeStartup, squadsStartup } from './multisig-startup.js';
 import { postgresReads } from './postgres-reads.js';
-import { readSettings, type ChainSetup } from './settings.js';
+import { readSettings, type SenderAccounts, type SenderSetup } from './settings.js';
 import { errorText } from './wording.js';
 
 /** Under the per-check timeout, so a hung read is aborted before its check is given up on. */
@@ -55,7 +55,14 @@ export function cliContext(env: Env): { context: CheckContext; close: () => Prom
       : MAX_READ_TIMEOUT_MS;
   const database = postgresReads(config.databaseUrl, timeoutMs);
   const signer = new SignerClient(config.signerUrl, config.signerAuthToken, timeoutMs);
-  const chains = memo((chain: Chain) => CHAIN_READS[chain](config, timeoutMs));
+  // A balance read takes its address; the handler it goes through only needs to be buildable, so any Sender's accounts do.
+  const chains = memo((chain: Chain) =>
+    CHAIN_READS[chain](
+      config,
+      timeoutMs,
+      settings.senders.find((sender) => sender.chain === chain && sender.accounts)?.accounts,
+    ),
+  );
   let apiEnvironment: Promise<ApiEnvironment> | undefined;
 
   const context: CheckContext = {
@@ -65,7 +72,7 @@ export function cliContext(env: Env): { context: CheckContext; close: () => Prom
     database,
     chain: (chain) => chains(chain).reads,
     signer: { readPins: memo((address: string): Promise<PolicyRead> => signer.readPins(address)) },
-    multisigStartup: memo((setup: ChainSetup): Promise<MultisigStartup> =>
+    multisigStartup: memo((setup: SenderSetup): Promise<MultisigStartup> =>
       chains(setup.chain).multisigStartup(setup, (address) => context.signer!.readPins(address)),
     ),
     apiEnvironment: () => (apiEnvironment ??= composeApiEnvironment(env, timeoutMs)),
@@ -78,7 +85,7 @@ export function cliContext(env: Env): { context: CheckContext; close: () => Prom
 type ChainAccess = {
   reads: ChainReads;
   multisigStartup: (
-    setup: ChainSetup,
+    setup: SenderSetup,
     readPins: (address: string) => Promise<PolicyRead>,
   ) => Promise<MultisigStartup>;
 };
@@ -96,8 +103,14 @@ function balanceFrom(build: () => Promise<ChainHandler>): ChainReads['balance'] 
   };
 }
 
-const CHAIN_READS: Record<Chain, (config: Config, timeoutMs: number) => ChainAccess> = {
-  solana: (config, timeoutMs) => {
+type ChainAccessFactory = (
+  config: Config,
+  timeoutMs: number,
+  anySender: SenderAccounts | undefined,
+) => ChainAccess;
+
+const CHAIN_READS: Record<Chain, ChainAccessFactory> = {
+  solana: (config, timeoutMs, anySender) => {
     let connection: Connection | undefined;
     const connect = () =>
       (connection ??= new Connection(config.solana.rpcUrl, {
@@ -115,7 +128,7 @@ const CHAIN_READS: Record<Chain, (config: Config, timeoutMs: number) => ChainAcc
           Promise.resolve(
             new SolanaChainHandler({
               connection: connect(),
-              senderAddress: config.solana.senderAddress,
+              senderAddress: anySender?.address ?? config.solana.senderAddress,
               knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
               logger: silent,
             }),
@@ -130,19 +143,19 @@ const CHAIN_READS: Record<Chain, (config: Config, timeoutMs: number) => ChainAcc
         },
       },
       multisigStartup: (setup, readPins) => {
-        if (setup.multisig?.kind !== 'squads' || !setup.sender) {
+        if (setup.multisig?.kind !== 'squads' || !setup.accounts) {
           throw new Error('not a Squads Sender');
         }
         return squadsStartup({
           config: setup.multisig.config,
-          senderAddress: setup.sender.address,
+          senderAddress: setup.accounts.address,
           readMultisig: (address) => readMultisigState(connect(), address),
           readSignerPins: readPins,
         });
       },
     };
   },
-  base: (config, timeoutMs) => {
+  base: (config, timeoutMs, anySender) => {
     const fetchFn = fetchWithTimeout(fetch, timeoutMs);
     let client: ReturnType<typeof createPublicClient> | undefined;
     const connect = () =>
@@ -160,7 +173,7 @@ const CHAIN_READS: Record<Chain, (config: Config, timeoutMs: number) => ChainAcc
           BaseChainHandler.create({
             rpcUrl: config.base.rpcUrl,
             chainId: config.base.chainId,
-            senderAddress: config.base.senderAddress,
+            senderAddress: anySender?.feePayer ?? config.base.senderAddress,
             knownTokens: parseBaseKnownTokens(config.base.knownTokens),
             nonceHistoryStore: new InMemoryNonceHistoryStore(),
             fetch: fetchFn,
