@@ -57,9 +57,8 @@ export const databaseMigrated: Check = {
       );
     }
     if (pending.length === 0) return pass('every migration is applied');
-    return fail(
-      `${plural(pending.length, 'migration')} not applied: ${pending.join(', ')}`,
-      MIGRATE,
-    );
+    const named =
+      pending.length <= 3 ? pending.join(', ') : `${pending[0]} to ${pending[pending.length - 1]}`;
+    return fail(`${plural(pending.length, 'migration')} not applied: ${named}`, MIGRATE);
   },
 };

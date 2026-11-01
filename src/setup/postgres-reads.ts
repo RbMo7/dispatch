@@ -45,32 +45,42 @@ export function postgresReads(
         .filter((entry) => last === undefined || entry.when > last)
         .map((entry) => entry.tag);
     },
-    recentTransactions: async (chain: Chain, since: Date) => {
-      // A Managed Dispatch's Transactions only: a Relay Dispatch's fee is paid by whoever signed it.
-      const sent = and(
-        eq(transactions.chain, chain),
-        isNotNull(transactions.hash),
-        gte(transactions.broadcastAt, since),
-      );
-      const [counted] = await db
-        .select({ count: count() })
-        .from(transactions)
-        .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-        .where(sent);
-      const latest = await db
-        .select({ hash: transactions.hash })
-        .from(transactions)
-        .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-        .where(sent)
-        .orderBy(desc(transactions.broadcastAt))
-        .limit(FEE_SAMPLE_SIZE);
-      return {
-        count: counted?.count ?? 0,
-        latestHashes: latest.flatMap(({ hash }) => (hash === null ? [] : [hash])),
-      };
-    },
+    recentTransactions: (chain: Chain, since: Date) =>
+      unwrapQueryError(async () => {
+        // A Managed Dispatch's Transactions only: a Relay Dispatch's fee is paid by whoever signed it.
+        const sent = and(
+          eq(transactions.chain, chain),
+          isNotNull(transactions.hash),
+          gte(transactions.broadcastAt, since),
+        );
+        const [counted] = await db
+          .select({ count: count() })
+          .from(transactions)
+          .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+          .where(sent);
+        const latest = await db
+          .select({ hash: transactions.hash })
+          .from(transactions)
+          .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+          .where(sent)
+          .orderBy(desc(transactions.broadcastAt))
+          .limit(FEE_SAMPLE_SIZE);
+        return {
+          count: counted?.count ?? 0,
+          latestHashes: latest.flatMap(({ hash }) => (hash === null ? [] : [hash])),
+        };
+      }),
     close: () => client.end({ timeout: 1 }),
   };
+}
+
+/** drizzle's error leads with the SQL it sent; the Postgres error it wraps says what went wrong. */
+async function unwrapQueryError<T>(query: () => Promise<T>): Promise<T> {
+  try {
+    return await query();
+  } catch (cause) {
+    throw cause instanceof Error && cause.cause instanceof Error ? cause.cause : cause;
+  }
 }
 
 async function lastAppliedMigration(client: postgres.Sql): Promise<number | undefined> {

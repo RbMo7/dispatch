@@ -85,7 +85,7 @@ export const signerKeyHeld: Check = {
       case 'unreachable': {
         const answer = judgeAnswer(read, config);
         return warn(
-          notCheckedFinding('the Signer did not answer (see Signer: Reachable)'),
+          notCheckedFinding('the Signer could not be asked (see Signer: Reachable)'),
           answer.status === 'pass' ? START_SIGNER : answer.fix,
         );
       }

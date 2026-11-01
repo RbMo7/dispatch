@@ -168,6 +168,19 @@ describe('setup checks', () => {
       });
     });
 
+    it('names the first and last of many unapplied migrations', async () => {
+      const context = fakeContext(goodEnv(), {
+        database: {
+          ...fakeContext().database,
+          pendingMigrations: () => Promise.resolve(['0000_a', '0001_b', '0002_c', '0003_d']),
+        },
+      });
+
+      expect((await result(context, 'database.migrated')).finding).toBe(
+        '4 migrations not applied: 0000_a to 0003_d',
+      );
+    });
+
     it('warns that migrations went unchecked when the database is down', async () => {
       const context = fakeContext(goodEnv(), {
         database: {
