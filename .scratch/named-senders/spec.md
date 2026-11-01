@@ -1,4 +1,4 @@
-Status: drafted 2026-11-01; ADR-0060 proposed; not ticketed; open questions at the end
+Status: decided 2026-11-01; ADR-0060 accepted; tickets below
 
 # Named Senders: several Senders per chain, chosen per Dispatch
 
@@ -125,8 +125,8 @@ A Dispatch without `sender` pays from the chain's default Sender, so every exist
 6. `init` and `doctor` per Sender.
 7. Docs: the reference, the multi-Sender guide, and the senders file.
 
-## Open questions
+## Settled
 
-1. **Per-token Sender access.** With one API token, any client that can call the API can choose the multisig Sender or the hot Sender. Is that acceptable for now? Note that it only adds approvals; the hot Sender's Signer policy still caps what it can do. Or do you want tokens that can use only certain Senders, which would amend ADR-0022?
-2. **Config format.** A JSON senders file, as above, or YAML?
-3. **Flag Rules scope.** Should a Flag Rule be able to target one Sender (for example, hold only payouts from "payouts" over 5,000 USDC)? It's a small addition once both features exist; I'd add it as a follow-up.
+- One API token still reaches every Sender (ADR-0022 unchanged); a Sender's Signer policy bounds what it can sign. Per-token Sender access is not built.
+- The senders file is JSON.
+- Flag Rules gain an optional Sender scope as a follow-up, once both features are in.

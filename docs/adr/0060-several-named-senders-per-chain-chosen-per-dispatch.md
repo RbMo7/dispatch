@@ -1,6 +1,6 @@
 # Several named Senders per chain, chosen per Dispatch
 
-Proposed 2026-11-01. Amends the one-Sender-per-chain shape that every chain handler, the Coordinator and `GET /v1/senders` assume today.
+Accepted 2026-11-01. Amends the one-Sender-per-chain shape that every chain handler, the Coordinator and `GET /v1/senders` assume today.
 
 An application can need both: routine payouts sent straight away from a hot wallet, and treasury transfers that wait for a multisig's Approvers. With one Sender per chain, that choice is all or nothing per chain. Spec: `.scratch/named-senders/spec.md`.
 
