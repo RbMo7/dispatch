@@ -14,6 +14,13 @@ const chainRegistry = await loadChainRegistry();
 const assetDecimals = assetDecimalsFromConfig();
 const store = new PostgresDispatchStore(db);
 
+// ADR-0060: Dispatches from before named Senders read as their chain's default Sender's.
+for (const sender of chainRegistry.senders) {
+  if (sender.isDefault && sender.address) {
+    await store.assignUnassignedDispatches({ chain: sender.chain, address: sender.address });
+  }
+}
+
 const app = buildApp({
   store,
   chainRegistry,

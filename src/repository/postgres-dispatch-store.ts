@@ -12,6 +12,7 @@ import {
   notInArray,
   or,
   sql,
+  type SQL,
 } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
@@ -34,6 +35,7 @@ import type {
   ProposalPhase,
 } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -72,6 +74,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
     cancelledAt: row.cancelledAt,
+    senderAddress: row.senderAddress as SenderAddress | null,
   };
 }
 
@@ -161,6 +164,7 @@ export class PostgresDispatchStore implements DispatchStore {
         items: input.items,
         retryPolicy: input.retryPolicy,
         bulkCall: input.bulkCall ?? null,
+        senderAddress: input.senderAddress ?? null,
       })
       .onConflictDoNothing({ target: dispatches.idempotencyKey })
       .returning();
@@ -203,7 +207,34 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(({ attempt }) => ({ ...attempt, error: attempt.error ?? null }));
   }
 
+  async claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]> {
+    return this.claimWhere(
+      and(
+        eq(dispatches.status, 'queued'),
+        eq(dispatches.chain, sender.chain),
+        eq(dispatches.senderAddress, sender.address),
+      ),
+      limit,
+    );
+  }
+
+  async assignUnassignedDispatches(sender: SenderRef): Promise<number> {
+    const rows = await this.db
+      .update(dispatches)
+      .set({ senderAddress: sender.address })
+      .where(and(eq(dispatches.chain, sender.chain), isNull(dispatches.senderAddress)))
+      .returning({ id: dispatches.id });
+    return rows.length;
+  }
+
   async claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
+    return this.claimWhere(
+      and(eq(dispatches.status, 'queued'), inArray(dispatches.chain, chains)),
+      limit,
+    );
+  }
+
+  private async claimWhere(where: SQL | undefined, limit: number): Promise<Dispatch[]> {
     // Concurrency-safe outbox claim: lock and skip rows another worker is
     // already claiming, per ADR-0009's shared-outbox pattern. Via the query
     // builder (not a raw sql`` template) so the returned rows go through
@@ -213,7 +244,7 @@ export class PostgresDispatchStore implements DispatchStore {
       const claimable = await tx
         .select({ id: dispatches.id })
         .from(dispatches)
-        .where(and(eq(dispatches.status, 'queued'), inArray(dispatches.chain, chains)))
+        .where(where)
         .orderBy(dispatches.createdAt)
         .limit(limit)
         .for('update', { skipLocked: true });
@@ -659,12 +690,22 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+  async listUnproposed(
+    chain: Chain,
+    limit: number,
+    senderAddress?: string,
+  ): Promise<Transaction[]> {
     const rows = await this.db
       .select({ transaction: transactions })
       .from(transactions)
       .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-      .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+      .where(
+        and(
+          eq(transactions.status, 'UNPROPOSED'),
+          eq(transactions.chain, chain),
+          senderAddress === undefined ? undefined : eq(dispatches.senderAddress, senderAddress),
+        ),
+      )
       .orderBy(dispatches.createdAt, dispatches.id, transactions.callIndex)
       .limit(limit);
     return rows.map((row) => toTransaction(row.transaction));
@@ -907,10 +948,12 @@ export class PostgresDispatchStore implements DispatchStore {
     chain: Chain,
     holder: CommittedHolder,
     timedOutSince: Date,
+    senderAddress?: string,
   ): Promise<AssetAmount[]> {
     const rows = await this.db.query.proposals.findMany({
       where: and(
         eq(proposals.chain, chain),
+        senderAddress === undefined ? undefined : eq(proposals.senderAddress, senderAddress),
         or(
           inArray(proposals.phase, ['noted', 'open', 'executing']),
           and(eq(proposals.phase, 'timed_out'), gte(proposals.timedOutAt, timedOutSince)),
@@ -923,7 +966,15 @@ export class PostgresDispatchStore implements DispatchStore {
             .select({ callIndex: transactions.callIndex, items: dispatches.items })
             .from(transactions)
             .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-            .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+            .where(
+              and(
+                eq(transactions.status, 'UNPROPOSED'),
+                eq(transactions.chain, chain),
+                senderAddress === undefined
+                  ? undefined
+                  : eq(dispatches.senderAddress, senderAddress),
+              ),
+            )
         : [];
     return totalCommitted(
       holder,

@@ -8,6 +8,7 @@ import {
 } from './chain-loaders.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
+import type { SenderRef } from './domain/sender.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
 import { signerKeysLoop as runSignerKeysLoop } from './signer-keys-loop.js';
@@ -41,27 +42,22 @@ function sleep(ms: number): Promise<void> {
 
 const signer = workerSignerClient();
 const chainRegistry = await loadChainRegistry(signer);
-const {
-  senderAddresses,
-  abandonmentTimeoutMs,
-  reorgRecheckWindowMs,
-  stuckHandling,
-  approvalDeadlineMsByChain,
-  approvalRewatchWindowMsByChain,
-} = coordinatorConfigFor(chainRegistry);
+const { senders, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling } =
+  coordinatorConfigFor(chainRegistry);
 
 const store = new PostgresDispatchStore(db);
 const coordinator = new Coordinator({
   store,
   chainHandlers: chainRegistry.handlers,
-  senderAddresses,
+  senders,
   abandonmentTimeoutMs,
   reorgRecheckWindowMs,
   stuckHandling,
-  approvalDeadlineMsByChain,
-  approvalRewatchWindowMsByChain,
 });
 
+// ADR-0060: Dispatches from before named Senders get their chain's default
+// Sender first, so everything below can tell which Sender's handler owns them.
+await coordinator.assignUnassignedDispatches();
 // #20 review (ADR-0041): before anything is signed, reserve every nonce the
 // engine's in-flight Transactions hold — including one written down but never
 // sent before a crash, which recovery will send.
@@ -86,19 +82,38 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 /**
- * issue 12: claims new work (both dispatch modes) and advances whatever's
- * already broadcast, every tick. A failure here is caught and logged
- * rather than crashing the process — one bad tick (e.g. a transient RPC
- * outage) must not take the whole worker down; the next tick tries again.
+ * issue 12: claims new Relay Dispatches and advances whatever's already
+ * broadcast, every tick. A failure here is caught and logged rather than
+ * crashing the process — one bad tick (e.g. a transient RPC outage) must not
+ * take the whole worker down; the next tick tries again.
  */
 async function mainLoop(): Promise<void> {
   while (running) {
     try {
-      await coordinator.processQueuedDispatches(BATCH_LIMIT);
       await coordinator.processQueuedRelayDispatches(BATCH_LIMIT);
       await coordinator.pollPendingTransactions(BATCH_LIMIT);
     } catch (cause) {
       logger.error({ err: cause }, 'worker tick failed');
+    }
+    if (!running) break;
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * ADR-0060: claims and sends one Sender's Managed Dispatches, on that
+ * Sender's own loop, so a slow send, a full Proposal slot or a Signer refusal
+ * on one Sender never delays another Sender's next claim.
+ */
+async function senderLoop(sender: SenderRef): Promise<void> {
+  while (running) {
+    try {
+      await coordinator.processQueuedDispatchesFor(sender, BATCH_LIMIT);
+    } catch (cause) {
+      logger.error(
+        { err: cause, chain: sender.chain, sender: sender.address },
+        'sender tick failed',
+      );
     }
     if (!running) break;
     await sleep(POLL_INTERVAL_MS);
@@ -189,13 +204,22 @@ function signerKeysLoop(): Promise<void> {
   });
 }
 
-logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
+logger.info(
+  {
+    chains: [...chainRegistry.handlers.keys()],
+    senders: chainRegistry.senders.map(
+      (s) => `${s.chain}:${s.name}${s.isDefault ? ' (default)' : ''}`,
+    ),
+  },
+  'worker started',
+);
 
-// All six are self-scheduling loops, not setInterval: each only
+// All of these are self-scheduling loops, not setInterval: each only
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
 await Promise.all([
+  ...coordinator.senders.map((sender) => senderLoop(sender.ref)),
   mainLoop(),
   rewatchLoop(),
   reorgRecheckLoop(),

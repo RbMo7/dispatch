@@ -1,5 +1,6 @@
 import type { DispatchItem } from './call.js';
 import type { Chain } from './chain.js';
+import type { SenderAddress } from './sender.js';
 
 /** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. `cancelled` (ADR-0056) is stored, like `queued` and `broadcasting`; the rest are derived. */
 export type DispatchStatus =
@@ -47,6 +48,12 @@ export type Dispatch<C extends Chain = Chain> = {
   claimedAt: Date | null;
   /** ADR-0056: set exactly when `status` is `cancelled`. */
   cancelledAt: Date | null;
+  /**
+   * ADR-0060: the Sender that pays, its identity. Null only while stored
+   * without one (from before named Senders, or a caller that named none):
+   * its chain's default Sender takes it over before it is ever claimed.
+   */
+  senderAddress: SenderAddress | null;
 };
 
 /** #11 (ADR-0038): a request's Bulk Call opt-in, as resolved at the API edge (`maxBatchSize` already defaulted and bounded). */

@@ -5,6 +5,7 @@ import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type { SignerPins } from '../signer/client.js';
 
@@ -85,6 +86,8 @@ export type NewDispatchInput<C extends Chain = Chain> = {
   retryPolicy: boolean;
   /** #11: omitted (or null) for the default one-transaction-per-item mode. */
   bulkCall?: BulkCall | null;
+  /** ADR-0060: the Sender that pays. Omitted (or null), the chain's default Sender takes it over before the claim. */
+  senderAddress?: SenderAddress | null;
 };
 
 export type NewTransactionInput = {
@@ -166,6 +169,15 @@ export interface DispatchStore {
   listAttempts(dispatchId: string): Promise<Attempt[]>;
   /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). Never a cancelled one. */
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
+  /** ADR-0060: claimQueued for one Sender: only Dispatches it pays for, oldest first, so one Sender's queue never waits on another's. */
+  claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]>;
+  /**
+   * ADR-0060: gives every Dispatch of `sender.chain` stored with no Sender to
+   * `sender` (the chain's default), whatever its status, and returns how many.
+   * Idempotent: the backfill of the rows from before named Senders, and the
+   * guarantee that a claimed Dispatch always has its Sender.
+   */
+  assignUnassignedDispatches(sender: SenderRef): Promise<number>;
   /**
    * ADR-0056: cancels the Managed or Relay Dispatch `id` if it is still
    * unclaimed, in one conditional write against the claim, so a cancel and
@@ -242,8 +254,8 @@ export interface DispatchStore {
    * returned as it is, so a reclaimed Dispatch never gets a duplicate row.
    */
   noteUnproposed(inputs: NewUnproposedInput[]): Promise<Transaction[]>;
-  /** `chain`'s `UNPROPOSED` Transactions, first-claimed Dispatch first and by `callIndex` within one, so the caller can propose one Dispatch at a time. */
-  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]>;
+  /** `chain`'s `UNPROPOSED` Transactions (only `senderAddress`'s, when given: ADR-0060), first-claimed Dispatch first and by `callIndex` within one, so the caller can propose one Dispatch at a time. */
+  listUnproposed(chain: Chain, limit: number, senderAddress?: string): Promise<Transaction[]>;
   /**
    * Atomically writes a Proposal at phase `noted` and moves its Transactions
    * from `UNPROPOSED` to `AWAITING_APPROVAL`, setting `proposalId` and
@@ -313,8 +325,14 @@ export interface DispatchStore {
    * (the Funding Check subtracts it): the `committed` of Proposals that are
    * `noted`, `open` or `executing`, or `timed_out` since `timedOutSince` or
    * later (ADR-0053); for `sender`, also the payments of `UNPROPOSED` Calls.
+   * Given `senderAddress`, only that Sender's Proposals and Calls (ADR-0060).
    */
-  listCommitted(chain: Chain, holder: CommittedHolder, timedOutSince: Date): Promise<AssetAmount[]>;
+  listCommitted(
+    chain: Chain,
+    holder: CommittedHolder,
+    timedOutSince: Date,
+    senderAddress?: string,
+  ): Promise<AssetAmount[]>;
   /** Every Proposal that holds one of the Dispatch's Calls, oldest first — what `GET /v1/dispatch/:id` builds the `approval` block from. */
   listProposalsForDispatch(dispatchId: string): Promise<Proposal[]>;
 

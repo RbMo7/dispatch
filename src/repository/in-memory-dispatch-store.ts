@@ -5,6 +5,7 @@ import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import type { SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -65,6 +66,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       createdAt: this.now(),
       claimedAt: null,
       cancelledAt: null,
+      senderAddress: input.senderAddress ?? null,
     };
     this.dispatches.set(dispatch.id, dispatch);
 
@@ -104,6 +106,34 @@ export class InMemoryDispatchStore implements DispatchStore {
     }
 
     return Promise.resolve(claimed);
+  }
+
+  claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]> {
+    const claimed: Dispatch[] = [];
+    for (const dispatch of this.dispatches.values()) {
+      if (claimed.length >= limit) break;
+      if (
+        dispatch.status !== 'queued' ||
+        dispatch.chain !== sender.chain ||
+        dispatch.senderAddress !== sender.address
+      ) {
+        continue;
+      }
+      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      this.dispatches.set(dispatch.id, broadcasting);
+      claimed.push(broadcasting);
+    }
+    return Promise.resolve(claimed);
+  }
+
+  assignUnassignedDispatches(sender: SenderRef): Promise<number> {
+    let assigned = 0;
+    for (const dispatch of this.dispatches.values()) {
+      if (dispatch.chain !== sender.chain || dispatch.senderAddress !== null) continue;
+      this.dispatches.set(dispatch.id, { ...dispatch, senderAddress: sender.address });
+      assigned++;
+    }
+    return Promise.resolve(assigned);
   }
 
   cancelDispatch(id: string): Promise<CancelOutcome> {
@@ -581,10 +611,16 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(noted);
   }
 
-  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+  listUnproposed(chain: Chain, limit: number, senderAddress?: string): Promise<Transaction[]> {
     const dispatchOrder = new Map([...this.dispatches.keys()].map((id, index) => [id, index]));
     const unproposed = [...this.transactions.values()]
-      .filter((t) => t.status === 'UNPROPOSED' && t.chain === chain)
+      .filter(
+        (t) =>
+          t.status === 'UNPROPOSED' &&
+          t.chain === chain &&
+          (senderAddress === undefined ||
+            this.dispatches.get(t.dispatchId)?.senderAddress === senderAddress),
+      )
       .sort(
         (a, b) =>
           (dispatchOrder.get(a.dispatchId) ?? 0) - (dispatchOrder.get(b.dispatchId) ?? 0) ||
@@ -825,12 +861,22 @@ export class InMemoryDispatchStore implements DispatchStore {
     chain: Chain,
     holder: CommittedHolder,
     timedOutSince: Date,
+    senderAddress?: string,
   ): Promise<AssetAmount[]> {
     const proposals = [...this.proposals.values()].filter(
-      (p) => p.chain === chain && holdsCommitment(p, timedOutSince),
+      (p) =>
+        p.chain === chain &&
+        (senderAddress === undefined || p.senderAddress === senderAddress) &&
+        holdsCommitment(p, timedOutSince),
     );
     const unproposedPayments = [...this.transactions.values()]
-      .filter((t) => t.chain === chain && t.status === 'UNPROPOSED')
+      .filter(
+        (t) =>
+          t.chain === chain &&
+          t.status === 'UNPROPOSED' &&
+          (senderAddress === undefined ||
+            this.dispatches.get(t.dispatchId)?.senderAddress === senderAddress),
+      )
       .map((t) => this.dispatches.get(t.dispatchId)?.items[t.callIndex]?.payment ?? null);
     return Promise.resolve(totalCommitted(holder, proposals, unproposedPayments));
   }
