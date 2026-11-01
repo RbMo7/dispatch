@@ -15,7 +15,7 @@ const HELD_AT = '2026-11-01T09:12:44.318Z';
 const LEUR_ID = '4dc99cb4-a219-4b81-9580-45146942c0a1';
 const FLOW_MINT = 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4';
 
-const operatorPaths = ['/v1/activity', '/v1/flag-rules', '/release'];
+const operatorPaths = ['/v1/activity', '/v1/flag-rules', '/release', '/v1/rejected'];
 
 function sender(name: string, address: string, isDefault: boolean) {
   return {
@@ -266,6 +266,35 @@ function engine() {
           ],
           nextCursor: null,
         });
+      case 'GET /v1/rejected':
+        return answer(200, {
+          rejected: [
+            {
+              id: '2c4f7e1a-9b3d-4e58-a6c0-1d8f2b7e4a93',
+              at: new Date(Date.now() - 3_600_000).toISOString(),
+              status: 400,
+              chain: 'base',
+              idempotencyKey: 'payroll-2026-11-01-0417',
+              tokenKind: 'auth',
+              code: 'UNKNOWN_ASSET',
+              message: 'no known token configured for asset "USDT"',
+              chainDetail: { asset: 'USDT' },
+              body: {
+                chain: 'base',
+                items: [
+                  {
+                    type: 'payment',
+                    recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72',
+                    asset: 'USDT',
+                    amount: '25000000',
+                  },
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+          last24Hours: 3,
+        });
       default:
         return answer(404, { error: 'Not Found' });
     }
@@ -330,9 +359,33 @@ describe('signing in with OPERATOR_TOKEN', () => {
         'Senders & Keys',
         'Assets',
         'Activity',
+        'Rejected',
         'Setup',
       ]),
     );
+  });
+
+  it("counts the last day's refused requests under Needs attention, linking to Rejected", async () => {
+    await signIn(OPERATOR);
+
+    const entry = await screen.findByText('3 in the last 24 hours, each with what to fix');
+    expect(entry.closest('a')?.getAttribute('href')).toBe('/console/rejected');
+  });
+
+  it('explains a refused request and links to adding its asset, chain and symbol filled in', async () => {
+    const { user } = await signIn(OPERATOR, '/console/rejected');
+
+    expect(await screen.findByText('Unknown asset')).toBeTruthy();
+    expect(
+      screen.getByText('USDT is not a known asset on Base. Add it under Assets, then send again.'),
+    ).toBeTruthy();
+    expect(screen.getByText('Base, key payroll-2026-11-01-0417, API token')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Add it under Assets ›' }).getAttribute('href')).toBe(
+      '/console/assets?chain=base&symbol=USDT',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Show body' }));
+    expect(screen.getByLabelText('Request body').textContent).toContain('"asset": "USDT"');
   });
 
   it('names the rule and tints the item it matched, and releases only with a reason', async () => {

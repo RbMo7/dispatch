@@ -8,6 +8,7 @@ import { SearchField } from '../../components/SearchField';
 import { StatusPill } from '../../components/StatusPill';
 import { type Column, VirtualTable } from '../../components/VirtualTable';
 import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
+import { type ErrorContext, explainError } from '../../domain/errors';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
@@ -76,6 +77,19 @@ interface ItemsTabProps {
   onExport: (format: ExportFormat, items: readonly Item[]) => void;
   /** The Proposals these items sit in, with their Approvers. */
   approvals?: ReactNode;
+  /** Where an item's error happened, so its row can say why in plain words. */
+  errors: ErrorContext;
+}
+
+/** The error catalogue's one line on why an item failed, under the item; the next step on hover. */
+function ErrorLine({ item, errors }: { item: Item; errors: ErrorContext }) {
+  if (!item.error) return null;
+  const explained = explainError(item.error, errors);
+  return (
+    <span className={styles.itemError} title={`${explained.line}. ${explained.next}`}>
+      {explained.line}
+    </span>
+  );
 }
 
 export function ItemsTab({
@@ -86,6 +100,7 @@ export function ItemsTab({
   onSearch,
   onExport,
   approvals,
+  errors,
 }: ItemsTabProps) {
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const counts = useMemo(() => statusCounts(items), [items]);
@@ -146,9 +161,17 @@ export function ItemsTab({
         label={`Items, ${count.format(shown.length)} shown`}
         rows={rows}
         columns={COLUMNS}
-        rowKey={(row) => (row.kind === 'bundle' ? `bundle-${row.hash}` : row.item.index)}
+        rowKey={(row) =>
+          row.kind === 'bundle'
+            ? `bundle-${row.hash}`
+            : row.kind === 'error'
+              ? `error-${row.item.index}`
+              : row.item.index
+        }
         span={(row) =>
-          row.kind === 'bundle' ? (
+          row.kind === 'error' ? (
+            <ErrorLine item={row.item} errors={errors} />
+          ) : row.kind === 'bundle' ? (
             <button
               type="button"
               className={styles.bundle}

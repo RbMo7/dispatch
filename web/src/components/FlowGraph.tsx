@@ -121,7 +121,8 @@ function StageNode({
   );
 }
 
-function TextView({ text }: { text: Text }) {
+/** Stage prose, its amounts drawn as amounts so hidden balances mask them. */
+export function TextView({ text }: { text: Text }) {
   if (typeof text === 'string') return text;
   return text.map((part, index) =>
     typeof part === 'string' ? part : <Amount key={index} {...part} variant="plain" unit />,
@@ -137,7 +138,11 @@ function StageLinkView({
 }) {
   if ('href' in link) {
     return (
-      <a className={styles.link} href={link.href} target="_blank" rel="noreferrer">
+      <a
+        className={styles.link}
+        href={link.href}
+        {...(link.href.startsWith('/') ? {} : { target: '_blank', rel: 'noreferrer' })}
+      >
         {link.label} ›
       </a>
     );

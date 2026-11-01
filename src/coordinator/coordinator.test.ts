@@ -729,6 +729,22 @@ describe('Coordinator.pollPendingTransactions', () => {
     expect(transaction?.error?.code).toBe('CHAIN_REJECTED');
   });
 
+  it('fails it with the reason the Chain Handler reads from the chain, when it can read one (#169)', async () => {
+    const { store, handler, coordinator } = setup();
+    const transactionId = await createPendingTransaction(store, false);
+    const reverted: DispatchError = {
+      code: 'CHAIN_REJECTED',
+      message: 'reverted: always reverts',
+      chainDetail: { reason: 'always reverts' },
+    };
+    handler.getStatus.mockResolvedValueOnce(ok('FAILED'));
+    Object.assign(handler, { failureReason: vi.fn(() => Promise.resolve(reverted)) });
+
+    await coordinator.pollPendingTransactions(10);
+
+    expect(store.getTransaction(transactionId)?.error).toEqual(reverted);
+  });
+
   it('leaves a still-PENDING Transaction alone once getStatus itself fails, before its timeout elapses', async () => {
     const { store, handler, coordinator } = setup();
     const transactionId = await createPendingTransaction(store, false);

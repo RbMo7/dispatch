@@ -238,7 +238,10 @@ export const operatorActions = pgTable(
     tokenKind: text('token_kind').notNull(),
     reason: text('reason'),
   },
-  (table) => [index('operator_actions_at_id_idx').on(table.at, table.id)],
+  (table) => [
+    index('operator_actions_at_id_idx').on(table.at, table.id),
+    index('operator_actions_target_idx').on(table.targetId),
+  ],
 );
 
 /** ADR-0058: a Flag Rule's identity. Its content lives in `flag_rule_versions`. */
@@ -339,4 +342,24 @@ export const knownAssets = pgTable(
       .where(sql`${table.enabled}`),
     check('known_assets_decimals', sql`${table.decimals} BETWEEN 0 AND 255`),
   ],
+);
+
+/** ADR-0062: a `POST /v1/dispatch` refused with a 4xx other than 401. Pruned by the worker. */
+export const rejectedRequests = pgTable(
+  'rejected_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    at: timestamp('at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    status: integer('status').notNull(),
+    chain: text('chain'),
+    idempotencyKey: text('idempotency_key'),
+    tokenKind: text('token_kind').notNull(),
+    code: text('code'),
+    message: text('message').notNull(),
+    chainDetail: jsonb('chain_detail'),
+    body: jsonb('body'),
+  },
+  (table) => [index('rejected_requests_at_id_idx').on(table.at, table.id)],
 );

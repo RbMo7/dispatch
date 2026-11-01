@@ -42,11 +42,16 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID/cancel" \
       "transactionHash": null,
       "error": null
     }
-  ]
+  ],
+  "cancellation": {
+    "at": "2026-11-01T02:13:21.950Z",
+    "tokenKind": "auth",
+    "reason": "duplicate of refund 7730"
+  }
 }
 ```
 
-`200` returns the Dispatch, as [Get a Dispatch](../openapi.yaml#get-a-dispatch) does, now `cancelled` at the top level and on every item, with `transactionHash` and `error` both `null`. Cancelling a Dispatch that is already cancelled also answers `200`, with its current state, and records nothing new. A `reason` that is not a non-empty string is a `400`.
+`200` returns the Dispatch, as [Get a Dispatch](../openapi.yaml#get-a-dispatch) does, now `cancelled` at the top level and on every item, with `transactionHash` and `error` both `null`. `cancellation` says which token cancelled it, when, and the reason given, or `null` without one. Every later read of the Dispatch carries it too. Cancelling a Dispatch that is already cancelled also answers `200`, with its current state, and records nothing new. A `reason` that is not a non-empty string is a `400`.
 
 ## 3. If it was too late
 

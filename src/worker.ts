@@ -7,8 +7,10 @@ import {
   signerKeysFor,
   workerSignerClient,
 } from './chain-loaders.js';
+import { config } from './config.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
+import { REJECTED_REQUEST_CAP } from './domain/rejected-request.js';
 import type { SenderRef } from './domain/sender.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
@@ -43,6 +45,10 @@ const SHUTDOWN_FORCE_EXIT_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+if (!(config.rejectedRetentionDays > 0)) {
+  throw new Error('REJECTED_RETENTION_DAYS must be a positive number of days');
 }
 
 const store = new PostgresDispatchStore(db);
@@ -171,6 +177,23 @@ async function reclaimLoop(): Promise<void> {
   }
 }
 
+/** ADR-0062: refused requests are kept REJECTED_RETENTION_DAYS and at most 10,000, oldest dropped first. */
+const PRUNE_INTERVAL_MS = 60 * 60_000;
+
+async function pruneRejectedLoop(): Promise<void> {
+  while (running) {
+    try {
+      const before = new Date(Date.now() - config.rejectedRetentionDays * 86_400_000);
+      const dropped = await store.pruneRejectedRequests(before, REJECTED_REQUEST_CAP);
+      if (dropped > 0) logger.info({ dropped }, 'pruned refused requests');
+    } catch (cause) {
+      logger.error({ err: cause }, 'worker prune tick failed');
+    }
+    if (!running) break;
+    await sleep(PRUNE_INTERVAL_MS);
+  }
+}
+
 async function reorgRecheckLoop(): Promise<void> {
   while (running) {
     try {
@@ -253,6 +276,7 @@ await Promise.all([
   rewatchLoop(),
   reorgRecheckLoop(),
   reclaimLoop(),
+  pruneRejectedLoop(),
   approvalLoop(),
   signerKeysLoop(),
   setupChecksLoop(),

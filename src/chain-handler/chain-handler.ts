@@ -311,6 +311,13 @@ export interface ChainHandler<C extends Chain = Chain> {
   getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>>;
 
   /**
+   * #169, optional: why a transaction `getStatus` reported `FAILED`, read from
+   * the chain, as the `CHAIN_REJECTED` the Call fails with. Null when the chain
+   * cannot say, and the Coordinator then reports the plain failure.
+   */
+  failureReason?(hash: string): Promise<DispatchError | null>;
+
+  /**
    * #9 (ADR-0037), optional: only a chain that can fee-bump implements it.
    * Given the latest signed bytes of a stuck transaction, returns an
    * unsigned replacement at the same nonce with raised fees, for the

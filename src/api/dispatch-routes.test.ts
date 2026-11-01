@@ -1322,6 +1322,7 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
         { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
         { type: 'call', to: '0xdef', status: 'cancelled', transactionHash: null, error: null },
       ],
+      cancellation: { at: expect.any(String) as string, tokenKind: 'auth', reason: null },
     };
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(cancelled);
@@ -1401,6 +1402,7 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
       status: 'cancelled',
       transactionHash: null,
       error: null,
+      cancellation: { at: expect.any(String) as string, tokenKind: 'auth', reason: null },
     });
     expect(await store.claimQueuedRelayDispatches(CHAINS, 10)).toEqual([]);
   });

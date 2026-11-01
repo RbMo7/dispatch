@@ -24,6 +24,7 @@ import type {
   OperatorActor,
 } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
+import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import { ok, type Result } from '../domain/result.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
@@ -39,6 +40,7 @@ import type {
   DispatchStore,
   ListedDispatch,
   ListedOperatorAction,
+  ListedRejectedRequest,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -48,6 +50,7 @@ import type {
   OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
+  RejectedRequestQuery,
   SetupCheckRecord,
   SignerKeyRecord,
 } from './dispatch-store.js';
@@ -72,6 +75,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
   private setupChecks: SetupCheckRecord[] = [];
+  private rejectedRequests: RejectedRequest[] = [];
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -205,6 +209,56 @@ export class InMemoryDispatchStore implements DispatchStore {
         .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
         .slice(0, query.limit),
     );
+  }
+
+  getCancellation(dispatchId: string): Promise<OperatorAction | null> {
+    const cancel = this.operatorActions.find(
+      (a) => a.action === 'cancel' && a.targetId === dispatchId,
+    );
+    return Promise.resolve(cancel ? { ...cancel } : null);
+  }
+
+  recordRejectedRequest(request: NewRejectedRequest): Promise<void> {
+    // Strictly later than the last record, as Postgres's clock_timestamp() is, so newest-first is insertion order.
+    const last = this.rejectedRequests.at(-1)?.at.getTime() ?? -Infinity;
+    const at = new Date(Math.max(this.now().getTime(), last + 1));
+    this.rejectedRequests.push({ ...structuredClone(request), id: randomUUID(), at });
+    return Promise.resolve();
+  }
+
+  listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]> {
+    const { after } = query;
+    return Promise.resolve(
+      this.rejectedRequests
+        .map((request) => ({
+          request: structuredClone(request),
+          cursor: { createdAt: request.at.toISOString(), id: request.id },
+        }))
+        .filter((l) => !after || compareNewestFirst(after, l.cursor) < 0)
+        .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+        .slice(0, query.limit),
+    );
+  }
+
+  countRejectedRequestsSince(since: Date): Promise<number> {
+    return Promise.resolve(
+      this.rejectedRequests.filter((r) => r.at.getTime() >= since.getTime()).length,
+    );
+  }
+
+  pruneRejectedRequests(before: Date, keep: number): Promise<number> {
+    const kept = this.rejectedRequests
+      .filter((r) => r.at.getTime() >= before.getTime())
+      .sort((a, b) =>
+        compareNewestFirst(
+          { createdAt: a.at.toISOString(), id: a.id },
+          { createdAt: b.at.toISOString(), id: b.id },
+        ),
+      )
+      .slice(0, keep);
+    const dropped = this.rejectedRequests.length - kept.length;
+    this.rejectedRequests = kept;
+    return Promise.resolve(dropped);
   }
 
   createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {

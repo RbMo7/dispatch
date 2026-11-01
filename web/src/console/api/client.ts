@@ -13,6 +13,7 @@ import type { Status } from '../../domain/status';
 import {
   type ActivityPage,
   type DispatchPage,
+  type RejectedPage,
   MalformedResponse,
   parseActivity,
   parseAssetPreview,
@@ -24,6 +25,7 @@ import {
   parsePage,
   parsePreview,
   parseRefusal,
+  parseRejected,
   parseSenders,
   parseSetup,
   parseTokenKind,
@@ -102,6 +104,8 @@ export interface ApiClient {
   previewAsset(body: AssetRequest, signal?: AbortSignal): Promise<AssetPreview>;
   addAsset(body: AssetRequest): Promise<KnownAsset>;
   setAssetEnabled(id: string, enabled: boolean, reason?: string): Promise<KnownAsset>;
+  /** ADR-0062: refused `POST /v1/dispatch` requests, newest first, with the count of the last 24 hours. */
+  listRejected(cursor: string | null, signal?: AbortSignal, limit?: number): Promise<RejectedPage>;
 }
 
 export const PAGE_LIMIT = 100;
@@ -294,6 +298,11 @@ export function createApiClient(
           body: JSON.stringify(reason ? { enabled, reason } : { enabled }),
         }),
       );
+    },
+    listRejected(cursor, signal, limit = PAGE_LIMIT) {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (cursor) query.set('cursor', cursor);
+      return request(`/v1/rejected?${query}`, parseRejected, { signal: signal ?? null });
     },
   };
 }

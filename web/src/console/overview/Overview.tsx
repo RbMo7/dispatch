@@ -57,6 +57,14 @@ export function Overview() {
   );
   const history = usePoll({ key: `history:${range}`, load: loadH, delay: () => SENDERS_MS });
   const setup = useSetup();
+  const operator = useOperator();
+  // ADR-0062: only the operator token reads the refused-request record.
+  const loadR = useCallback(
+    async (signal: AbortSignal) =>
+      operator ? (await api.listRejected(null, signal, 1)).last24Hours : null,
+    [api, operator],
+  );
+  const rejected = usePoll({ key: 'rejected-count', load: loadR, delay: () => SENDERS_MS });
 
   return (
     <main className={styles.main}>
@@ -78,6 +86,7 @@ export function Overview() {
             attention={history.data?.attention}
             settled={history.data ? settledToday(history.data.rows.rows, new Date()) : null}
             setup={setup.data}
+            rejected={rejected.data ?? null}
           />
           <Card
             title="Recent"
@@ -321,6 +330,7 @@ function AttentionCard({
   attention,
   settled,
   setup,
+  rejected,
 }: {
   pulse: Pulse | undefined;
   attention:
@@ -331,6 +341,8 @@ function AttentionCard({
     | undefined;
   settled: number | null;
   setup: Setup | undefined;
+  /** Requests refused in the last 24 hours; null outside an operator session. */
+  rejected: number | null;
 }) {
   const oldest = pulse?.queued.complete ? pulse.queued.rows.at(-1) : undefined;
   const held = useHeld().data;
@@ -345,6 +357,14 @@ function AttentionCard({
       title: 'Setup problem',
       detail: `${AREA_LABEL[check.area]}, ${check.title}: ${check.finding}`,
       page: 'setup',
+    });
+  }
+  if (rejected) {
+    entries.push({
+      id: 'rejected',
+      title: 'Refused requests',
+      detail: `${count.format(rejected)} in the last 24 hours, each with what to fix`,
+      page: 'rejected',
     });
   }
   if (oldest) {

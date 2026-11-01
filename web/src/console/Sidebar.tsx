@@ -7,6 +7,7 @@ import {
   HandPalm,
   Key,
   ListChecks,
+  Prohibit,
   Rows,
   SignOut,
   SquaresFour,
@@ -27,6 +28,7 @@ const NAV = [
   { page: 'senders', label: 'Senders & Keys', Icon: Key },
   { page: 'assets', label: 'Assets', Icon: Coins },
   { page: 'activity', label: 'Activity', Icon: ClockCounterClockwise },
+  { page: 'rejected', label: 'Rejected', Icon: Prohibit },
   { page: 'setup', label: 'Setup', Icon: ListChecks },
 ] as const satisfies readonly { page: Page; label: string; Icon: unknown }[];
 

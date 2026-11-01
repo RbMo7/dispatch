@@ -134,6 +134,20 @@ function toWireApproval(proposal: Proposal, labelOf: ApproverLabelOf | undefined
   };
 }
 
+/** ADR-0056: who cancelled a cancelled Dispatch, when and why, from the operator action the cancel recorded. */
+async function cancellationView(store: DispatchStore, id: string, status: string) {
+  if (status !== 'cancelled') return {};
+  const cancel = await store.getCancellation(id);
+  if (!cancel) return {};
+  return {
+    cancellation: {
+      at: cancel.at.toISOString(),
+      tokenKind: cancel.tokenKind,
+      reason: cancel.reason,
+    },
+  };
+}
+
 /** ADR-0058: which rule versions matched which items, and the release. Kept after a release or cancel. */
 function toWireHold(hold: Hold) {
   return {
@@ -198,6 +212,7 @@ export async function readDispatchView(
       status: deriveDispatchStatus(dispatch, transactions),
       items,
       ...(hold ? { hold: toWireHold(hold) } : {}),
+      ...(await cancellationView(store, dispatch.id, dispatch.status)),
       ...(options.timeline
         ? {
             timeline: buildTimeline({
@@ -227,6 +242,7 @@ export async function readDispatchView(
       status: deriveRelayStatus(relayDispatch, relayTransactions),
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,
+      ...(await cancellationView(store, relayDispatch.id, relayDispatch.status)),
       ...(options.timeline
         ? {
             timeline: buildTimeline({

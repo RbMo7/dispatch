@@ -1434,18 +1434,16 @@ export class Coordinator {
     }
 
     if (statusResult.ok && statusResult.value === 'FAILED') {
-      if (transaction.proposalId) {
-        // ADR-0054: a still-approved Proposal is not FAILED while it can still execute.
-        return this.approvalFlow.failExecution(transaction, {
-          code: 'CHAIN_REJECTED',
-          message: `${transaction.chain} reported this transaction as failed`,
-        });
-      }
-      log.info({ settledHash: transaction.hash }, 'transaction failed');
-      await this.store.markFailed(transaction.id, {
+      const error: DispatchError = (await handler.failureReason?.(transaction.hash)) ?? {
         code: 'CHAIN_REJECTED',
         message: `${transaction.chain} reported this transaction as failed`,
-      });
+      };
+      if (transaction.proposalId) {
+        // ADR-0054: a still-approved Proposal is not FAILED while it can still execute.
+        return this.approvalFlow.failExecution(transaction, error);
+      }
+      log.info({ settledHash: transaction.hash, error }, 'transaction failed');
+      await this.store.markFailed(transaction.id, error);
       return true;
     }
 

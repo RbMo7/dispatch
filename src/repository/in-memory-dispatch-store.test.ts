@@ -13,6 +13,7 @@ import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
+import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
@@ -32,6 +33,7 @@ describe('InMemoryDispatchStore', () => {
   runTimelineConformanceSuite(() => new InMemoryDispatchStore());
   runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
   runKnownAssetConformanceSuite(() => new InMemoryDispatchStore());
+  runRejectedRequestConformanceSuite(() => new InMemoryDispatchStore());
   runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());
   runSetupCheckConformanceSuite(() => new InMemoryDispatchStore());
 

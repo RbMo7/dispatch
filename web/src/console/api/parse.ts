@@ -10,6 +10,7 @@ import { CHAINS, type Chain, type Network } from '../../domain/chains';
 import type {
   Approval,
   Approver,
+  Cancellation,
   ChainRef,
   DispatchDetail,
   DispatchError,
@@ -31,6 +32,7 @@ import {
   type RuleVersion,
   type TokenKind,
 } from '../../domain/flagRules';
+import type { ErrorDetail, ReadError } from '../../domain/errors';
 import type { AssetBalance, Holding, Read, Sender, SignerKey } from '../../domain/sender';
 import { AREAS, type Fix, type Setup, type SetupCheck, type WorkerRun } from '../../domain/setup';
 import { type Status, STATUSES } from '../../domain/status';
@@ -129,14 +131,33 @@ function dispatchError(value: unknown, path: string): DispatchError | null {
     code: string(json.code, `${path}.code`),
     message: string(json.message, `${path}.message`),
   };
-  const detail = json.chainDetail;
-  if (typeof detail === 'object' && detail !== null) {
-    const { asset, short } = detail as Json;
-    if (typeof asset === 'string' && typeof short === 'string' && /^\d+$/.test(short)) {
-      error.short = { asset, raw: short };
-    }
-  }
+  const detail = errorDetail(json.chainDetail);
+  if (detail.asset && detail.short) error.short = { asset: detail.asset, raw: detail.short };
+  if (Object.keys(detail).length > 0) error.detail = detail;
   return error;
+}
+
+/** The parts of `chainDetail` the error catalogue explains. Its shape depends on the code and the chain, so a field of another shape is left out, never an error. */
+function errorDetail(value: unknown): ErrorDetail {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const json = value as Json;
+  const text = (key: string) => {
+    const value = json[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+  const detail: ErrorDetail = {};
+  for (const key of ['asset', 'holder', 'address', 'status', 'reason'] as const) {
+    const v = text(key);
+    if (v) detail[key] = v;
+  }
+  const shortfall = text('short');
+  if (shortfall && /^\d+$/.test(shortfall)) detail.short = shortfall;
+  const deadlineAt = text('deadlineAt');
+  if (deadlineAt && !Number.isNaN(new Date(deadlineAt).getTime())) {
+    detail.deadlineAt = new Date(deadlineAt);
+  }
+  if (typeof json.httpStatus === 'number') detail.httpStatus = json.httpStatus;
+  return detail;
 }
 
 /** Absent on a Relay Dispatch, and on one the engine has not yet given to a Sender. */
@@ -337,6 +358,7 @@ export function parseDetail(value: unknown, names: AssetNames = bySymbol): Dispa
       transactionHash: nullableString(json.transactionHash, 'transactionHash'),
       error: dispatchError(json.error, 'error'),
       timeline,
+      cancellation: cancellation(json.cancellation),
     };
   }
   if (json.mode !== 'managed') fail('mode', 'managed or relay');
@@ -352,6 +374,17 @@ export function parseDetail(value: unknown, names: AssetNames = bySymbol): Dispa
     ),
     timeline,
     hold: json.hold === undefined ? null : hold(json.hold, 'hold'),
+    cancellation: cancellation(json.cancellation),
+  };
+}
+
+function cancellation(value: unknown): Cancellation | null {
+  if (value === undefined || value === null) return null;
+  const json = object(value, 'cancellation');
+  return {
+    at: date(json.at, 'cancellation.at'),
+    tokenKind: oneOf(json.tokenKind, ['auth', 'operator'] as const, 'cancellation.tokenKind'),
+    reason: nullableString(json.reason, 'cancellation.reason'),
   };
 }
 
@@ -724,5 +757,52 @@ export function parseActivity(value: unknown): ActivityPage {
       };
     }),
     nextCursor: nullableString(json.nextCursor, 'nextCursor'),
+  };
+}
+
+/** ADR-0062: one refused `POST /v1/dispatch`. */
+export interface RejectedRequest {
+  id: string;
+  at: Date;
+  status: number;
+  /** Null when the request named no chain the engine has. */
+  chain: Chain | null;
+  idempotencyKey: string | null;
+  tokenKind: TokenKind;
+  error: ReadError;
+  /** The body as sent, every item kept; null when it was not JSON. */
+  body: unknown;
+}
+
+export interface RejectedPage {
+  rejected: RejectedRequest[];
+  nextCursor: string | null;
+  last24Hours: number;
+}
+
+/** `GET /v1/rejected`. */
+export function parseRejected(value: unknown): RejectedPage {
+  const json = object(value, 'body');
+  return {
+    rejected: list(json.rejected, 'rejected', (entry, at) => {
+      const r = object(entry, at);
+      const detail = errorDetail(r.chainDetail);
+      return {
+        id: string(r.id, `${at}.id`),
+        at: date(r.at, `${at}.at`),
+        status: integer(r.status, `${at}.status`),
+        chain: r.chain === null ? null : oneOf(r.chain, CHAIN_NAMES, `${at}.chain`),
+        idempotencyKey: nullableString(r.idempotencyKey, `${at}.idempotencyKey`),
+        tokenKind: oneOf(r.tokenKind, ['auth', 'operator'] as const, `${at}.tokenKind`),
+        error: {
+          code: nullableString(r.code, `${at}.code`),
+          message: string(r.message, `${at}.message`),
+          ...(Object.keys(detail).length > 0 ? { detail } : {}),
+        },
+        body: r.body ?? null,
+      };
+    }),
+    nextCursor: nullableString(json.nextCursor, 'nextCursor'),
+    last24Hours: integer(json.last24Hours, 'last24Hours'),
   };
 }

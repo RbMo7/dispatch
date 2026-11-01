@@ -4,6 +4,7 @@ import { type Chain, type Network, proposalApp, proposalUrl, txLink } from './ch
 import {
   type Approval,
   type ApprovalState,
+  type Cancellation,
   type ChainRef,
   type DispatchError,
   type DispatchSummary,
@@ -15,6 +16,7 @@ import {
   type RelayDetail,
   type TimelineEntry,
 } from './dispatch';
+import { type ErrorContext, errorContext, explainError } from './errors';
 import type { Flow, Stage, StageKind, StageLink, Text } from './flow';
 
 /** How the caller formats a clock time; the flow itself stays free of time zones. */
@@ -81,8 +83,27 @@ function expired(error: DispatchError | null): boolean {
   return error?.message.includes('expired') ?? false;
 }
 
-function errorText(error: DispatchError | null): string {
-  return error ? `${error.code}: ${error.message}` : 'The chain refused it.';
+/** Texts end to end, neighbouring strings merged, so a sentence stays one string around its amounts. */
+function join(...texts: Text[]): Text {
+  const parts: (string | Money)[] = [];
+  for (const part of texts.flatMap((text) => (typeof text === 'string' ? [text] : text))) {
+    const last = parts.at(-1);
+    if (typeof part === 'string' && typeof last === 'string') parts[parts.length - 1] = last + part;
+    else parts.push(part);
+  }
+  return parts.length === 1 && typeof parts[0] === 'string' ? parts[0] : parts;
+}
+
+/** The catalogue's explanation of an error and what to do next. */
+function errorText(error: DispatchError | null, ctx: ErrorContext): Text {
+  if (!error) return 'The chain refused it.';
+  const { text, next } = explainError(error, ctx);
+  return join(text, ' ', next);
+}
+
+function errorLinks(error: DispatchError | null | undefined, ctx: ErrorContext): StageLink[] {
+  const fix = error ? explainError(error, ctx).fix : null;
+  return fix ? [fix] : [];
 }
 
 /** "37 payments, 12,480.00 USDC", with each total as an amount. */
@@ -112,7 +133,15 @@ function waitingStages(clock: FlowClock, created: Date): { stages: Stage[]; summ
   };
 }
 
-function cancelledFlow(base: Stage[], at: Date | undefined, clock: FlowClock): Flow {
+function cancelledFlow(
+  base: Stage[],
+  at: Date | undefined,
+  clock: FlowClock,
+  cancellation: Cancellation | null | undefined,
+): Flow {
+  const by = cancellation
+    ? ` Cancelled with the ${cancellation.tokenKind === 'operator' ? 'operator token' : 'API token'}${cancellation.reason ? `: ${cancellation.reason}` : ', no reason given'}.`
+    : '';
   return {
     summary: 'Cancelled before it was claimed',
     elapsed: at ? `Ended at ${clock.time(at)}` : 'Cancelled',
@@ -120,7 +149,7 @@ function cancelledFlow(base: Stage[], at: Date | undefined, clock: FlowClock): F
       ...base,
       stage('end-cancelled', 'Cancelled', {
         ...(at && { at: clock.time(at) }),
-        detail: 'Withdrawn before the engine claimed it, so nothing was signed or sent.',
+        detail: `Withdrawn before the engine claimed it, so nothing was signed or sent.${by}`,
       }),
     ],
   };
@@ -347,7 +376,7 @@ function managedFlow(
   ];
 
   if (detail.status === 'cancelled') {
-    return cancelledFlow(base, first(timeline, 'cancelled')?.at, clock);
+    return cancelledFlow(base, first(timeline, 'cancelled')?.at, clock, detail.cancellation);
   }
   if (detail.status === 'held') return heldFlow(base, created, clock);
 
@@ -375,6 +404,7 @@ function managedFlow(
   }
 
   const stages: Stage[] = [...base];
+  const errors = errorContext(chain, detail.sender, items);
   const unfunded = items.filter(
     (i) => i.status === 'failed' && i.error?.code === 'INSUFFICIENT_FUNDS',
   );
@@ -384,14 +414,17 @@ function managedFlow(
       ...(unfunded.length === 0 && { detail: 'Funding Check passed' }),
     }),
   );
-  const shortfall = fundingShortfall(unfunded, items);
+  const shortfall = fundingShortfall(unfunded, errors);
   // When nothing was funded the outcome stage says so; a branch would repeat it.
   if (unfunded.length > 0 && unfunded.length < total) {
     stages.push(
       stage('branch-failed', `Funding Check failed, ${n(unfunded.length)}`, {
         at: clock.time(claimed.at),
         detail: shortfall,
-        links: [{ label: 'Show in Items', items: 'failed' }],
+        links: [
+          { label: 'Show in Items', items: 'failed' },
+          ...errorLinks(unfunded[0]?.error, errors),
+        ],
       }),
     );
   }
@@ -479,9 +512,18 @@ function managedFlow(
         ...(at && { at: clock.time(at) }),
         detail:
           failures.length === 1
-            ? errorText(failures[0]!.error)
-            : `${[...new Set(failures.map((i) => i.error?.code ?? 'Unknown'))].join(', ')}`,
-        links: [{ label: 'Show in Items', items: 'failed' }],
+            ? errorText(failures[0]!.error, errors)
+            : [
+                ...new Set(
+                  failures.map((i) =>
+                    i.error ? explainError(i.error, errors).line : 'The chain refused it',
+                  ),
+                ),
+              ].join(', '),
+        links: [
+          { label: 'Show in Items', items: 'failed' },
+          ...(failures.length === 1 ? errorLinks(failures[0]!.error, errors) : []),
+        ],
       }),
     );
   }
@@ -535,7 +577,8 @@ function managedFlow(
       ...(outcomeKind === 'current' && { detail: 'Waiting for a block' }),
       ...(outcomeKind === 'failed' &&
         failure && {
-          detail: unfunded.length === total ? shortfall : outcomeDetail(failure, chain),
+          detail: unfunded.length === total ? shortfall : outcomeDetail(failure, chain, errors),
+          links: errorLinks(failure.error, errors),
         }),
       ...(total > 1 &&
         outcomeKind !== 'failed' &&
@@ -619,21 +662,15 @@ function managedFlow(
   };
 }
 
-/** "The Sender is short by 11.1158 SOL", with the shortfall as an amount when its decimals are known. */
-function fundingShortfall(unfunded: readonly Item[], items: readonly Item[]): Text {
-  const short = unfunded[0]?.error?.short;
-  const like = items.find((i) => i.type === 'payment' && i.amount && i.asset === short?.asset);
-  const amount = like?.type === 'payment' ? like.amount : null;
-  return short && amount
-    ? [
-        'The Funding Check found the Sender short by ',
-        { ...amount, raw: short.raw },
-        '. Nothing was signed.',
-      ]
+/** "payouts is short 11.1158 SOL. Fund 0x8b21…44fe.", with the shortfall as an amount when its decimals are known. */
+function fundingShortfall(unfunded: readonly Item[], ctx: ErrorContext): Text {
+  const error = unfunded[0]?.error;
+  return error
+    ? join(explainError(error, ctx).text, ' Nothing was signed.')
     : 'The Funding Check found the Sender could not cover it. Nothing was signed.';
 }
 
-function outcomeDetail(item: Item, chain: Chain): Text {
+function outcomeDetail(item: Item, chain: Chain, ctx: ErrorContext): Text {
   if (item.status === 'abandoned') {
     return item.error?.code === 'APPROVAL_TIMEOUT'
       ? 'Nobody approved it in time.'
@@ -644,7 +681,7 @@ function outcomeDetail(item: Item, chain: Chain): Text {
       ? 'Its blockhash expired three times without landing.'
       : 'It expired without landing.';
   }
-  return errorText(item.error);
+  return errorText(item.error, ctx);
 }
 
 function shortHash(hash: string): string {
@@ -665,7 +702,9 @@ function relayFlow(
       detail: 'A transaction the caller signed. The engine only sends it and watches it.',
     }),
   ];
-  if (status === 'cancelled') return cancelledFlow(base, first(timeline, 'cancelled')?.at, clock);
+  if (status === 'cancelled') {
+    return cancelledFlow(base, first(timeline, 'cancelled')?.at, clock, detail.cancellation);
+  }
 
   const claimed = last(timeline, 'claimed');
   if (!claimed) {
@@ -735,7 +774,8 @@ function relayFlow(
         ...(outcome && { at: clock.time(outcome.at) }),
         detail: abandoned
           ? 'No answer from the chain before the timeout. It may still land, so check before sending it again.'
-          : errorText(detail.error),
+          : errorText(detail.error, errorContext(detail.chain, null, [])),
+        links: errorLinks(detail.error, errorContext(detail.chain, null, [])),
       }),
     );
     stages.push(

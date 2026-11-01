@@ -53,6 +53,10 @@ tags:
     description: |
       The operator action record: every cancel that landed, every release, every Flag Rule
       create, edit and delete, and every Known Asset added, disabled or enabled, newest first.
+  - name: Rejected
+    description: |
+      Requests to create a Dispatch that the engine refused, newest first, so an operator can see a
+      client failing and fix what it needs, such as a missing Known Asset.
   - name: Health
     description: |
       A liveness check for load balancers and scripts.
@@ -784,6 +788,10 @@ paths:
                         status: cancelled
                         transactionHash: null
                         error: null
+                    cancellation:
+                      at: '2026-11-01T02:13:21.950Z'
+                      tokenKind: auth
+                      reason: duplicate of refund 7730
         '400':
           $ref: '#/components/responses/BadReason'
         '401':
@@ -1914,6 +1922,97 @@ paths:
         '403':
           $ref: '#/components/responses/OperatorOnly'
 
+  /v1/rejected:
+    get:
+      tags: [Rejected]
+      operationId: listRejectedRequests
+      summary: List refused requests
+      description: |
+        Every [Create a Dispatch](./openapi.yaml#create-a-dispatch) the engine refused with a `4xx`
+        other than `401`, newest first, a page at a time: when it came, which token sent it, its
+        `Idempotency-Key`, the error it got, and the body exactly as sent, every item kept. A
+        refused request stores no Dispatch, so this is the only trace of it. Only the operator
+        token can read it.
+
+        The body is kept as JSON, so its keys may come back in another order. `401`s are never
+        recorded, so a caller without a token cannot fill the record. The worker
+        keeps records for `REJECTED_RETENTION_DAYS` (30 by default) and at most 10,000 of them,
+        dropping the oldest first. `last24Hours` counts the records from the last 24 hours, whatever
+        the page. Pass `nextCursor` back as `cursor` until it is `null`.
+      security:
+        - operatorToken: []
+      parameters:
+        - name: limit
+          in: query
+          description: Records per page.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+          examples:
+            recent: { value: 25 }
+        - name: cursor
+          in: query
+          description: The `nextCursor` of the previous page, passed back as it came.
+          schema: { type: string }
+          examples:
+            badCursor: { value: not-a-cursor }
+      responses:
+        '200':
+          description: One page of refused requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectedPage'
+              examples:
+                recent:
+                  summary: The latest refusals
+                  value:
+                    rejected:
+                      - id: 5c6f7a4d-02ce-4b21-84a4-6a4456fb78f0
+                        at: '2026-11-01T16:40:18.680Z'
+                        status: 400
+                        chain: base
+                        idempotencyKey: er-mvy235bb-call
+                        tokenKind: auth
+                        code: CHAIN_REJECTED
+                        message: 'call data is not a well-formed (whole-byte) hex string: deposit'
+                        body:
+                          chain: base
+                          items:
+                            - { to: '0x6101864ad086cecf28d91b25068969a4d1129278', data: deposit, type: call, value: '0' }
+                      - id: ddd1fe79-78a7-4956-b965-60a9e51caaaa
+                        at: '2026-11-01T16:40:18.657Z'
+                        status: 400
+                        chain: base
+                        idempotencyKey: er-mvy235bb-usdt
+                        tokenKind: auth
+                        code: UNKNOWN_ASSET
+                        message: no known token configured for asset "USDT"
+                        chainDetail: { asset: USDT }
+                        body:
+                          chain: base
+                          items:
+                            - type: payment
+                              asset: USDT
+                              amount: '25000000'
+                              recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                    nextCursor: null
+                    last24Hours: 2
+        '400':
+          description: The cursor is not one this API issued.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PlainError'
+                  - $ref: '#/components/schemas/RequestError'
+              examples:
+                badCursor:
+                  summary: A cursor the API did not issue
+                  value: { error: cursor is not one this API issued }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+
   /v1/token:
     get:
       tags: [Activity]
@@ -2642,6 +2741,7 @@ components:
               - $ref: '#/components/schemas/PaymentItem'
               - $ref: '#/components/schemas/CallItem'
         hold: { $ref: '#/components/schemas/Hold' }
+        cancellation: { $ref: '#/components/schemas/Cancellation' }
         timeline:
           type: array
           description: Only with `include=timeline`.
@@ -2662,6 +2762,7 @@ components:
           enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled]
         transactionHash: { type: [string, 'null'] }
         error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        cancellation: { $ref: '#/components/schemas/Cancellation' }
         timeline:
           type: array
           description: Only with `include=timeline`. The one transaction is item `0`.
@@ -3118,6 +3219,55 @@ components:
         nextCursor:
           type: [string, 'null']
           description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+
+    RejectedRequest:
+      type: object
+      additionalProperties: false
+      required: [id, at, status, chain, idempotencyKey, tokenKind, code, message, body]
+      properties:
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time, description: When the engine refused it. }
+        status: { type: integer, description: 'The HTTP status it got, `400` to `499` but never `401`.' }
+        chain:
+          oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Chain' }]
+          description: 'The request''s `chain`, or `null` when it named none the API has. `body` keeps what was sent.'
+        idempotencyKey: { type: [string, 'null'], description: 'The `Idempotency-Key` header, or `null` without one.' }
+        tokenKind:
+          type: string
+          enum: [auth, operator]
+          description: Which token sent it.
+        code:
+          type: [string, 'null']
+          description: 'The error''s `code`, one of the [error codes](./errors.md#error-codes) or an `FST_ERR_*` request error. `null` for a plain error, which has only a message.'
+        message: { type: string, description: 'The error''s `message`, or a plain error''s `error`.' }
+        chainDetail: { description: 'The error''s `chainDetail`, when it had one.' }
+        body: { description: 'The request body as sent, every item kept, or `null` when it was not JSON.' }
+
+    RejectedPage:
+      type: object
+      additionalProperties: false
+      required: [rejected, nextCursor, last24Hours]
+      properties:
+        rejected:
+          type: array
+          items: { $ref: '#/components/schemas/RejectedRequest' }
+        nextCursor:
+          type: [string, 'null']
+          description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+        last24Hours: { type: integer, minimum: 0, description: How many requests were refused in the last 24 hours. }
+
+    Cancellation:
+      type: object
+      additionalProperties: false
+      required: [at, tokenKind, reason]
+      description: Who cancelled the Dispatch, when and why. Only on a `cancelled` Dispatch.
+      properties:
+        at: { type: string, format: date-time }
+        tokenKind:
+          type: string
+          enum: [auth, operator]
+          description: Which token cancelled it.
+        reason: { type: [string, 'null'], description: 'The reason given with the cancel, or `null`.' }
 
     SetupCheck:
       type: object

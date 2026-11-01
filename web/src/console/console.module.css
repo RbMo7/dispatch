@@ -1077,3 +1077,15 @@
   font-size: var(--text-13);
   font-weight: 400;
 }
+
+/* Why an item failed, on the line under it in the Items table, aligned with its recipient. */
+.itemError {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 44px;
+  color: var(--danger);
+  font-size: var(--text-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

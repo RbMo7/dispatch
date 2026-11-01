@@ -13,6 +13,7 @@ import type {
 import type { ConfigAsset, KnownAsset, NewKnownAsset } from '../domain/known-asset.js';
 import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
+import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Result } from '../domain/result.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
@@ -156,6 +157,11 @@ export type OperatorActionQuery = { after: DispatchCursor | null; limit: number 
 
 export type ListedOperatorAction = { action: OperatorAction; cursor: DispatchCursor };
 
+/** ADR-0062: a page of refused requests, newest first, cut on `(at, id)`. */
+export type RejectedRequestQuery = { after: DispatchCursor | null; limit: number };
+
+export type ListedRejectedRequest = { request: RejectedRequest; cursor: DispatchCursor };
+
 export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (
   { mode: 'managed'; dispatch: Dispatch } | { mode: 'relay'; dispatch: RelayDispatch }
 );
@@ -210,6 +216,16 @@ export interface DispatchStore {
    */
   cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome>;
   listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]>;
+  /** The cancel recorded for a Managed or Relay Dispatch: who cancelled it, when and why. Null when it was never cancelled. */
+  getCancellation(dispatchId: string): Promise<OperatorAction | null>;
+
+  // --- Refused requests (ADR-0062). ---
+
+  recordRejectedRequest(request: NewRejectedRequest): Promise<void>;
+  listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]>;
+  countRejectedRequestsSince(since: Date): Promise<number>;
+  /** Drops every record from before `before`, then all but the newest `keep`. Returns how many it dropped. */
+  pruneRejectedRequests(before: Date, keep: number): Promise<number>;
 
   // --- Flag Rules (ADR-0058). Each write records its operator action in the same write (ADR-0057). ---
 

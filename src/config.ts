@@ -4,6 +4,7 @@ import {
   deriveVaultAddress,
   parsePublicKey,
 } from './chain-handler/solana/multisig/multisig-config.js';
+import { DEFAULT_REJECTED_RETENTION_DAYS } from './domain/rejected-request.js';
 import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
 
 // A local, gitignored .env (RPC URLs, keys) for the API, the worker and
@@ -37,6 +38,8 @@ export const configFrom = (env: Env) => ({
   authToken: env.AUTH_TOKEN ?? 'dev-secret',
   /** ADR-0057: release and Flag Rule edits. Unset leaves them off; set, it must be non-empty and differ from AUTH_TOKEN. */
   operatorToken: env.OPERATOR_TOKEN,
+  /** ADR-0062: how many days the worker keeps refused `POST /v1/dispatch` requests (at most 10,000 of them). */
+  rejectedRetentionDays: Number(env.REJECTED_RETENTION_DAYS || DEFAULT_REJECTED_RETENTION_DAYS),
   /** Global Retry Policy default (ADR-0003) when a Dispatch request omits its own — off unless the operator opts in. */
   defaultRetryPolicy: env.DEFAULT_RETRY_POLICY === 'true',
   /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */
