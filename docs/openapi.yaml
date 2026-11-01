@@ -1934,7 +1934,8 @@ paths:
         refused request stores no Dispatch, so this is the only trace of it. Only the operator
         token can read it.
 
-        `401`s are never recorded, so a caller without a token cannot fill the record. The worker
+        The body is kept as JSON, so its keys may come back in another order. `401`s are never
+        recorded, so a caller without a token cannot fill the record. The worker
         keeps records for `REJECTED_RETENTION_DAYS` (30 by default) and at most 10,000 of them,
         dropping the oldest first. `last24Hours` counts the records from the last 24 hours, whatever
         the page. Pass `nextCursor` back as `cursor` until it is `null`.
@@ -1946,7 +1947,7 @@ paths:
           description: Records per page.
           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
           examples:
-            recent: { value: 3 }
+            recent: { value: 25 }
         - name: cursor
           in: query
           description: The `nextCursor` of the previous page, passed back as it came.
@@ -1962,14 +1963,26 @@ paths:
                 $ref: '#/components/schemas/RejectedPage'
               examples:
                 recent:
-                  summary: The latest three refusals
+                  summary: The latest refusals
                   value:
                     rejected:
-                      - id: 2c4f7e1a-9b3d-4e58-a6c0-1d8f2b7e4a93
-                        at: '2026-11-01T11:42:08.317Z'
+                      - id: 5c6f7a4d-02ce-4b21-84a4-6a4456fb78f0
+                        at: '2026-11-01T16:40:18.680Z'
                         status: 400
                         chain: base
-                        idempotencyKey: payroll-2026-11-01-0417
+                        idempotencyKey: er-mvy235bb-call
+                        tokenKind: auth
+                        code: CHAIN_REJECTED
+                        message: 'call data is not a well-formed (whole-byte) hex string: deposit'
+                        body:
+                          chain: base
+                          items:
+                            - { to: '0x6101864ad086cecf28d91b25068969a4d1129278', data: deposit, type: call, value: '0' }
+                      - id: ddd1fe79-78a7-4956-b965-60a9e51caaaa
+                        at: '2026-11-01T16:40:18.657Z'
+                        status: 400
+                        chain: base
+                        idempotencyKey: er-mvy235bb-usdt
                         tokenKind: auth
                         code: UNKNOWN_ASSET
                         message: no known token configured for asset "USDT"
@@ -1978,32 +1991,11 @@ paths:
                           chain: base
                           items:
                             - type: payment
-                              recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
                               asset: USDT
                               amount: '25000000'
-                      - id: 7b1e9d42-0c6a-4f3b-8e25-5a9c4d1f6b07
-                        at: '2026-11-01T11:40:51.904Z'
-                        status: 400
-                        chain: base
-                        idempotencyKey: vault-deposit-88
-                        tokenKind: auth
-                        code: CHAIN_REJECTED
-                        message: 'items[0]: data must be 0x-prefixed hex'
-                        body:
-                          chain: base
-                          items:
-                            - { type: call, to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72', data: deposit, value: '0' }
-                      - id: e3a85c16-4d27-4b9f-91f0-6c2b8e0d7a45
-                        at: '2026-11-01T11:39:12.026Z'
-                        status: 400
-                        chain: null
-                        idempotencyKey: payroll-2026-11-01-0416
-                        tokenKind: auth
-                        code: FST_ERR_VALIDATION
-                        message: body/chain must be equal to one of the allowed values
-                        body: { chain: ethereum, items: [] }
-                    nextCursor: WyIyMDI2LTExLTAxVDExOjM5OjEyLjAyNloiLCJlM2E4NWMxNi00ZDI3LTRiOWYtOTFmMC02YzJiOGUwZDdhNDUiXQ
-                    last24Hours: 7
+                              recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                    nextCursor: null
+                    last24Hours: 2
         '400':
           description: The cursor is not one this API issued.
           content:

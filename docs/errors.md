@@ -114,11 +114,11 @@ For `CHAIN_REJECTED` on a Base transaction that reverted, the engine replays it 
   "code": "CHAIN_REJECTED",
   "message": "reverted: always reverts",
   "chainDetail": {
-    "block": "38076954",
-    "gasUsed": "23437",
-    "gasLimit": "500000",
+    "block": "53146767",
     "reason": "always reverts",
-    "revertData": "0x08c379a0..."
+    "gasUsed": "21485",
+    "gasLimit": "500000",
+    "revertData": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e616c776179732072657665727473000000000000000000000000000000000000"
   }
 }
 ```

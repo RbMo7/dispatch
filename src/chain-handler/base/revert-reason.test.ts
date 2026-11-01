@@ -5,10 +5,11 @@ import { InMemoryNonceHistoryStore } from '../../repository/in-memory-nonce-hist
 import { BaseChainHandler } from './base-chain-handler.js';
 import { revertReason } from './revert-reason.js';
 
-const SENDER = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A';
-const VAULT = '0x9d3E2a1B0c4F5e6D7a8B9c0D1e2F3a4B5c6D7e8F';
-const HASH = `0x${'5c'.repeat(32)}`;
-const BLOCK = '0x2167f1a';
+const SENDER = '0x90C91Bd4Bc2f5e194a16Bb2062fe97BF5E4933b4';
+const VAULT = '0x6101864ad086cecf28d91b25068969a4d1129278';
+const HASH = '0x371e2361ccd2e79bff8bed7befdf6084545e5c864ec08dc146f80fbede150d96';
+const BLOCK = '0x32af48f';
+const SELECTOR = '0x975af67a';
 
 const errorString = encodeErrorResult({
   abi: [{ type: 'error', name: 'Error', inputs: [{ name: 'message', type: 'string' }] }],
@@ -16,7 +17,7 @@ const errorString = encodeErrorResult({
   args: ['always reverts'],
 });
 
-/** The node's answers for one reverted transaction, in the shapes Base Sepolia gives them. */
+/** The node's answers for FlowVault.revertAlways(), reverted on Base Sepolia in block 53146767; the eth_call error is the one sepolia.base.org gave. */
 function fakeRpc(opts: { gasUsed: string; call: { error?: unknown; result?: string } }) {
   const calls: { method: string; params: unknown[] }[] = [];
   const fetcher: typeof fetch = (_input, init) => {
@@ -38,7 +39,7 @@ function fakeRpc(opts: { gasUsed: string; call: { error?: unknown; result?: stri
         maxFeePerGas: '0xf4240',
         maxPriorityFeePerGas: '0x1',
         hash: HASH,
-        input: '0xb7d35d6b',
+        input: SELECTOR,
         nonce: '0x2a',
         to: VAULT.toLowerCase(),
         transactionIndex: '0x3',
@@ -88,7 +89,7 @@ async function handlerWith(fetcher: typeof fetch) {
 describe('BaseChainHandler.failureReason (#169)', () => {
   it('replays a reverted transaction at its block and reports the revert reason', async () => {
     const { fetcher, calls } = fakeRpc({
-      gasUsed: '0x5b8d',
+      gasUsed: '0x53ed',
       call: {
         error: { code: 3, message: 'execution reverted: always reverts', data: errorString },
       },
@@ -101,8 +102,8 @@ describe('BaseChainHandler.failureReason (#169)', () => {
       code: 'CHAIN_REJECTED',
       message: 'reverted: always reverts',
       chainDetail: {
-        block: String(Number(BLOCK)),
-        gasUsed: String(0x5b8d),
+        block: '53146767',
+        gasUsed: '21485',
         gasLimit: String(0x7a120),
         reason: 'always reverts',
         revertData: errorString,
@@ -113,7 +114,7 @@ describe('BaseChainHandler.failureReason (#169)', () => {
     expect(replay?.params[0]).toMatchObject({
       from: SENDER.toLowerCase(),
       to: VAULT.toLowerCase(),
-      data: '0xb7d35d6b',
+      data: SELECTOR,
     });
   });
 
@@ -128,7 +129,7 @@ describe('BaseChainHandler.failureReason (#169)', () => {
   });
 
   it('says so when the replay does not revert', async () => {
-    const { fetcher } = fakeRpc({ gasUsed: '0x5b8d', call: { result: '0x' } });
+    const { fetcher } = fakeRpc({ gasUsed: '0x53ed', call: { result: '0x' } });
     const handler = await handlerWith(fetcher);
 
     const error = await handler.failureReason(HASH);
@@ -138,7 +139,7 @@ describe('BaseChainHandler.failureReason (#169)', () => {
   });
 
   it('gives no reason when the chain cannot be read', async () => {
-    const { fetcher } = fakeRpc({ gasUsed: '0x5b8d', call: { result: '0x' } });
+    const { fetcher } = fakeRpc({ gasUsed: '0x53ed', call: { result: '0x' } });
     const handler = await handlerWith(fetcher);
     const down: typeof fetch = (input, init) =>
       (JSON.parse(init?.body as string) as { method: string }).method === 'eth_getTransactionByHash'
