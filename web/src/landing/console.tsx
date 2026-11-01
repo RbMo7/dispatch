@@ -3,8 +3,8 @@ import { useMemo } from 'react';
 import { FlowGraph } from '../components/FlowGraph';
 import { DISPATCHES, FIXTURE_TODAY, type GalleryDispatch } from '../console/fixtures';
 import { DispatchList } from '../console/gallery/DispatchList';
-import { DispatchPane } from '../console/gallery/DispatchPane';
-import { Sidebar } from '../console/gallery/Sidebar';
+import { DispatchPane } from '../console/dispatches/DispatchPane';
+import { GallerySidebar } from '../console/gallery/Sidebar';
 import { presetRange } from '../domain/dateRange';
 import styles from './console.module.css';
 
@@ -53,22 +53,32 @@ function List({ landed, selected }: { landed: boolean; selected: string | null }
 
 /** The Dispatches screen as the console renders it: sidebar, list, and the docked pane on its flow. */
 export function ConsoleScreen({ landed }: { landed: boolean }) {
+  const dispatch = recorded(LARGE);
   return (
     <div className={styles.screen}>
-      <Sidebar />
+      <GallerySidebar />
       <List landed={landed} selected={LARGE} />
       <DispatchPane
-        dispatch={recorded(LARGE)}
+        head={{
+          id: dispatch.id,
+          mode: dispatch.mode,
+          name: dispatch.label,
+          when: dispatch.when,
+          totals: dispatch.totals,
+          status: dispatch.status,
+        }}
+        flow={dispatch.flow}
+        items={dispatch.items}
+        details={[]}
         tab="flow"
         onTab={ignore}
-        showItems={ignore}
         itemFilter="all"
         onItemFilter={ignore}
         itemSearch=""
         onItemSearch={ignore}
         onExportItems={ignore}
+        explorerHref={null}
         onClose={ignore}
-        onCancel={ignore}
       />
     </div>
   );
@@ -86,7 +96,7 @@ export function DispatchRows() {
 export function SidebarView() {
   return (
     <div className={styles.sidebar}>
-      <Sidebar />
+      <GallerySidebar />
     </div>
   );
 }
@@ -95,7 +105,7 @@ export function Flow({ id }: { id: 'fee-bump' | 'approval' }) {
   const dispatch = recorded(id === 'fee-bump' ? FEE_BUMPED : AWAITING_APPROVAL);
   return (
     <div className={styles.flow}>
-      <FlowGraph flow={dispatch.flowFor(ignore)} />
+      <FlowGraph flow={dispatch.flow} />
     </div>
   );
 }
