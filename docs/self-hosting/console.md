@@ -23,17 +23,19 @@ There is no separate console password and there are no user accounts. Anyone hol
 
 **Overview.** Dispatches in flight, with a breakdown, and Dispatches created over the last hour, day or week against the period before. Each Sender's balance, with how much is committed. What needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, abandoned items, which may still land, and any failing setup check. The most recent Dispatches.
 
-**Dispatches.** Every Dispatch, newest first, grouped by day. Filter by date range (today, 7 days, 30 days, or a custom range), chain, status and mode. Type an id, or the start of one, and press Enter to open it. Each row shows the item count, the status and the total per asset. The URL holds the selection, the tab and the filters, so a link opens the same view.
+**Dispatches.** Every Dispatch, newest first, grouped by day. Filter by date range (today, 7 days, 30 days, or a custom range), chain, status and mode, and by Sender when a chain has more than one. On a chain with more than one Sender, each row names its Sender. Type an id, or the start of one, and press Enter to open it. Each row shows the item count, the status and the total per asset. The URL holds the selection, the tab and the filters, so a link opens the same view.
 
 Selecting a row opens its detail pane, with three tabs:
 
 - **Flow** shows each stage the Dispatch has been through, from created to confirmed, with times, down to fee bumps and Solana resubmissions, which branch off to the side, like failed items. The last stage is the transaction hash, with a link to the explorer for the engine's own network. For a Multisig Sender, the approval stage shows the votes, the threshold and the deadline, and links to the Proposal in Squads or Safe. A large Dispatch shows counts per stage ("Confirmed, 612 of 1,000") instead of a line per item.
 - **Items** lists every item with its recipient or call target, amount, status and hash. A strip of counts per status doubles as a filter, and a search box finds a recipient, target or hash. Items that share a transaction are grouped under it. The table stays fast at thousands of items.
-- **Details** lists the chain, the mode, the Sender, the item count, when the Dispatch was created and claimed, and its id.
+- **Details** lists the chain, the mode, the Sender's name and address, the item count, when the Dispatch was created and claimed, and its id.
 
-**Senders & Keys.** One card per enabled chain: the Sender's address and mode, the multisig and its threshold, the engine's own key, a table of balances with committed and free amounts, and what the Signer reports about the key: its curve, its pins and its chain IDs, and when the worker last read them. A line says plainly whether the key is pinned to this Safe or multisig. The Signer's backend is never shown, because the Signer does not report it.
+**Senders & Keys.** Every Sender, grouped by enabled chain, with the chain's default marked: the Sender's address and mode, the multisig and its threshold, the engine's own key, a table of balances with committed and free amounts, and what the Signer reports about the key: its curve, its pins and its chain IDs, and when the worker last read them. A line says plainly whether the key is pinned to this Safe or multisig. The Signer's backend is never shown, because the Signer does not report it.
 
 **Setup.** The same checks as `pnpm dispatch doctor`, from [Get the setup checks](../openapi.yaml#get-the-setup-checks). A summary says "All good" or how many things need you, then one card per area lists each check with its status, what it found, how to fix it, and when it last ran. The worker runs its checks at start and every five minutes. The database and console checks run when the page loads. A failing check also shows in the Overview's Needs attention. The page is read-only: configuration lives in files on the server.
+
+The sidebar has one card per Sender, titled with its name, with its chain and signing mode.
 
 A field the engine could not read, such as a balance while the RPC is down, shows its error in place, and the rest of the page still loads.
 
