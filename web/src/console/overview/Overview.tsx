@@ -13,13 +13,13 @@ import { share } from '../../domain/assets';
 import { CHAINS } from '../../domain/chains';
 import { dispatchName, type DispatchSummary, shortId } from '../../domain/dispatch';
 import { duration } from '../../domain/dispatchFlow';
-import { free, headlineAsset, isShort, payer } from '../../domain/sender';
+import { free, headlineAsset, isShort, payer, senderKey } from '../../domain/sender';
 import { AREA_LABEL, type Setup } from '../../domain/setup';
 import { describeFailure } from '../api/client';
 import styles from '../console.module.css';
 import { nextDelay, SENDERS_MS, usePoll } from '../live';
 import { Link, type Page, PAGES } from '../router';
-import { SENDER_NAME, useSenders } from '../senderData';
+import { useSenders } from '../senderData';
 import { useApi } from '../session';
 import { useSetup } from '../setup/setupData';
 import { PageBar } from '../Shell';
@@ -254,9 +254,9 @@ function SendersCard() {
             const balance = headline.balance;
             const short = balance.ok && isShort(balance.value, headline.committed);
             return (
-              <div key={sender.chain}>
+              <div key={senderKey(sender)}>
                 <div className={styles.senderRowLine}>
-                  <ChainDot chain={sender.chain}>{SENDER_NAME[sender.mode]}</ChainDot>
+                  <ChainDot chain={sender.chain}>{sender.name}</ChainDot>
                   {balance.ok ? (
                     <Amount {...balance.value} />
                   ) : (

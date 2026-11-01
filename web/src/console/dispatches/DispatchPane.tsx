@@ -9,7 +9,7 @@ import { MonoValue } from '../../components/MonoValue';
 import { StatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
-import type { Item, ItemFilter, Mode } from '../../domain/dispatch';
+import type { Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
 import type { Flow } from '../../domain/flow';
 import type { Status } from '../../domain/status';
 import type { ExportFormat } from '../../export/download';
@@ -151,5 +151,16 @@ export function DispatchPane(props: DispatchPaneProps) {
         </motion.div>
       </AnimatePresence>
     </DockedPane>
+  );
+}
+
+/** The Details tab's Sender: its name, then its address. */
+export function SenderDetail({ sender }: { sender: SenderRef | null }) {
+  if (!sender) return 'Not given to a Sender yet';
+  return (
+    <span className={styles.senderDetail}>
+      {sender.name ?? <span className={styles.muted}>No longer configured</span>}
+      <MonoValue value={sender.address} />
+    </span>
   );
 }

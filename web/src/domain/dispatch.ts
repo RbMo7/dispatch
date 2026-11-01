@@ -4,11 +4,22 @@ import type { Status } from './status';
 
 export type Mode = 'managed' | 'relay';
 
+/**
+ * The Sender a Managed Dispatch pays from. The address is the identity; `name` is
+ * null once no configured Sender has that address any more.
+ */
+export interface SenderRef {
+  name: string | null;
+  address: string;
+}
+
 /** A row of `GET /v1/dispatches`: what the list, the Overview and the export read. */
 export interface DispatchSummary {
   id: string;
   mode: Mode;
   chain: Chain;
+  /** Null for a Relay Dispatch, and for one stored before named Senders until the engine assigns it. */
+  sender: SenderRef | null;
   status: Status;
   createdAt: Date;
   itemCount: number;
@@ -139,6 +150,7 @@ export interface ManagedDetail {
   mode: 'managed';
   id: string;
   chain: Chain;
+  sender: SenderRef | null;
   createdAt: Date;
   status: Status;
   items: Item[];
@@ -168,7 +180,7 @@ export interface LoadedDispatch {
 export function summaryOf(detail: DispatchDetail): DispatchSummary {
   const { id, mode, chain, status, createdAt } = detail;
   if (detail.mode === 'relay')
-    return { id, mode, chain, status, createdAt, itemCount: 1, totals: [] };
+    return { id, mode, chain, sender: null, status, createdAt, itemCount: 1, totals: [] };
   const totals = new Map<string, Money>();
   for (const item of detail.items) {
     const amount = itemAmount(item);
@@ -183,6 +195,7 @@ export function summaryOf(detail: DispatchDetail): DispatchSummary {
     id,
     mode,
     chain,
+    sender: detail.sender,
     status,
     createdAt,
     itemCount: detail.items.length,

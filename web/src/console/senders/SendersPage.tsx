@@ -1,7 +1,7 @@
 import { Amount } from '../../components/Amount';
 import { Card } from '../../components/Card';
 import { MonoValue } from '../../components/MonoValue';
-import { CHAINS } from '../../domain/chains';
+import { type Chain, CHAINS } from '../../domain/chains';
 import {
   free,
   HOLDER_LABEL,
@@ -10,13 +10,22 @@ import {
   MODE_LABEL,
   pinnedToMultisig,
   type Sender,
+  senderKey,
 } from '../../domain/sender';
 import { describeFailure } from '../api/client';
 import styles from '../console.module.css';
-import { SENDER_NAME, useSenders } from '../senderData';
+import { useSenders } from '../senderData';
 import { PageBar } from '../Shell';
 
-/** One card per enabled chain's Sender, from `GET /v1/senders` alone. */
+/** The Senders grouped by chain, in the order the engine lists them. */
+function byChain(senders: readonly Sender[]): [Chain, Sender[]][] {
+  const groups = new Map<Chain, Sender[]>();
+  for (const sender of senders)
+    groups.set(sender.chain, [...(groups.get(sender.chain) ?? []), sender]);
+  return [...groups];
+}
+
+/** One card per Sender, grouped by enabled chain, from `GET /v1/senders` alone. */
 export function SendersPage() {
   const { data, error } = useSenders();
   return (
@@ -30,11 +39,16 @@ export function SendersPage() {
         ) : data.length === 0 ? (
           <p className={styles.noRows}>No chain is enabled on this engine (ENABLED_CHAINS).</p>
         ) : (
-          <div className={styles.senderCards}>
-            {data.map((sender) => (
-              <SenderPanel key={sender.chain} sender={sender} />
-            ))}
-          </div>
+          byChain(data).map(([chain, senders]) => (
+            <section key={chain} className={styles.chainGroup} aria-label={CHAINS[chain].label}>
+              <h2 className={styles.chainHeading}>{CHAINS[chain].label}</h2>
+              <div className={styles.senderCards}>
+                {senders.map((sender) => (
+                  <SenderPanel key={senderKey(sender)} sender={sender} />
+                ))}
+              </div>
+            </section>
+          ))
         )}
       </div>
     </main>
@@ -44,7 +58,19 @@ export function SendersPage() {
 function SenderPanel({ sender }: { sender: Sender }) {
   const { multisig } = sender;
   return (
-    <Card title={`${CHAINS[sender.chain].label} ${SENDER_NAME[sender.mode]}`}>
+    <Card
+      title={sender.name}
+      aside={
+        sender.isDefault && (
+          <span
+            className={styles.defaultLabel}
+            title="Pays for every Dispatch that names no Sender"
+          >
+            Default
+          </span>
+        )
+      }
+    >
       <dl className={styles.kv}>
         <div className={styles.kvRow}>
           <dt>Mode</dt>

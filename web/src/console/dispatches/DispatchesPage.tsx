@@ -5,14 +5,20 @@ import { Button } from '../../components/Button';
 import { DateRangeControl } from '../../components/DateRangeControl';
 import { FilterMenu, type FilterGroup } from '../../components/FilterMenu';
 import { Menu } from '../../components/Menu';
-import { MonoValue } from '../../components/MonoValue';
+import { MonoValue, truncateMiddle } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { CHAINS, type Chain, proposalApp, proposalUrl, txLink } from '../../domain/chains';
-import { dispatchName, type EntryOf, type Item, type LoadedDispatch } from '../../domain/dispatch';
+import {
+  dispatchName,
+  type DispatchSummary,
+  type EntryOf,
+  type Item,
+  type LoadedDispatch,
+} from '../../domain/dispatch';
 import { dispatchFlow } from '../../domain/dispatchFlow';
-import { payer } from '../../domain/sender';
+import { senderChoices } from '../../domain/sender';
 import { STATUSES } from '../../domain/status';
 import { dispatchColumns, ITEM_COLUMNS } from '../../export/columns';
 import {
@@ -27,12 +33,12 @@ import { Modal } from '../../motion/Overlay';
 import { describeFailure, isUuid } from '../api/client';
 import styles from '../console.module.css';
 import { useRouter } from '../router';
-import { useEnabledChains, useSenders } from '../senderData';
+import { useEnabledChains, useSenders, useSharedChains } from '../senderData';
 import { useApi } from '../session';
 import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
 import { useDispatch, useDispatchList } from './data';
-import { DispatchPane, type PaneHead } from './DispatchPane';
+import { DispatchPane, type PaneHead, SenderDetail } from './DispatchPane';
 import { dayHeading, DispatchRows } from './DispatchRows';
 import { collectDispatches, matchesSearch } from './exportList';
 import {
@@ -77,8 +83,26 @@ function chainOptions(enabled: Chain[]): { value: string; label: string }[] | nu
   ];
 }
 
-/** Below this page width the chain control moves into the Filters menu while the pane is open. */
+/**
+ * A Sender control only where a chain in view has more than one Sender; a
+ * Sender already in the URL stays offered so it can be cleared.
+ */
+function senderOptions(names: string[] | null, current: string | null) {
+  if (!names && !current) return null;
+  const all = names ?? [];
+  return [
+    { value: '', label: 'All' },
+    ...[...all, ...(current && !all.includes(current) ? [current] : [])].map((name) => ({
+      value: name,
+      label: name,
+    })),
+  ];
+}
+
+/** Below this page width the chain and Sender controls move into the Filters menu while the pane is open. */
 const ROOMY = 1500;
+/** More Senders than this do not fit as segments beside the chain control. */
+const SENDER_SEGMENTS = 3;
 
 export function DispatchesPage() {
   const { params, replaceParams } = useRouter();
@@ -100,6 +124,29 @@ export function DispatchesPage() {
   const compact = query.selected !== null && !roomy;
   const enabledChains = useEnabledChains();
   const chains = useMemo(() => chainOptions(enabledChains), [enabledChains]);
+  const senders = useSenders().data;
+  const shared = useSharedChains();
+  const senderControl = useMemo(
+    () => senderOptions(senderChoices(senders ?? [], query.chain), query.sender),
+    [senders, query.chain, query.sender],
+  );
+  const senderFolded =
+    senderControl !== null && (compact || senderControl.length - 1 > SENDER_SEGMENTS);
+  const senderOf = useCallback(
+    (row: DispatchSummary) =>
+      row.sender && shared.has(row.chain)
+        ? (row.sender.name ?? truncateMiddle(row.sender.address, 4, 4))
+        : null,
+    [shared],
+  );
+  const setChain = (value: string) => {
+    const chain = value as DispatchesQuery['chain'];
+    const kept =
+      query.sender !== null &&
+      (senderChoices(senders ?? [], chain)?.includes(query.sender) ?? false);
+    set({ chain, sender: kept ? query.sender : null });
+  };
+  const setSender = (sender: string) => set({ sender: sender || null });
 
   const select = useCallback(
     (id: string | null) => set({ selected: id, tab: 'flow', items: 'all' }),
@@ -145,7 +192,18 @@ export function DispatchesPage() {
             label: 'Chain',
             value: query.chain,
             options: chains.map((o) => (o.value === 'all' ? { ...o, label: 'Any chain' } : o)),
-            onChange: (chain: string) => set({ chain: chain as DispatchesQuery['chain'] }),
+            onChange: setChain,
+          },
+        ]
+      : []),
+    ...(senderFolded
+      ? [
+          {
+            id: 'sender',
+            label: 'Sender',
+            value: query.sender ?? '',
+            options: senderControl.map((o) => (o.value === '' ? { ...o, label: 'Any Sender' } : o)),
+            onChange: setSender,
           },
         ]
       : []),
@@ -167,7 +225,15 @@ export function DispatchesPage() {
               label="Chain"
               options={chains}
               value={query.chain}
-              onChange={(chain) => set({ chain: chain as DispatchesQuery['chain'] })}
+              onChange={setChain}
+            />
+          )}
+          {!senderFolded && senderControl && (
+            <SegmentedControl
+              label="Sender"
+              options={senderControl}
+              value={query.sender ?? ''}
+              onChange={setSender}
             />
           )}
           <FilterMenu label="Filters" groups={groups} />
@@ -198,6 +264,7 @@ export function DispatchesPage() {
           selected={query.selected}
           onSelect={select}
           today={today}
+          senderOf={senderOf}
           empty={
             <ListEmpty
               loading={!list.snap}
@@ -387,8 +454,9 @@ function Pane({
   useEffect(() => setNow(new Date()), [loaded]);
   useEffect(() => setItemSearch(''), [id]);
 
-  const sender = loaded && senders.data?.find((s) => s.chain === loaded.summary.chain);
-  const network = sender?.network ?? 'unknown';
+  // Every Sender on a chain talks to the same network.
+  const network =
+    (loaded && senders.data?.find((s) => s.chain === loaded.summary.chain)?.network) ?? 'unknown';
   const flow = useMemo(
     () => (loaded ? dispatchFlow(loaded, { now, time: (at) => clock.format(at) }, network) : null),
     [loaded, now, network],
@@ -432,10 +500,8 @@ function Pane({
           value:
             loaded.summary.mode === 'relay' ? (
               'Signed by the caller'
-            ) : sender ? (
-              <MonoValue value={payer(sender)?.address ?? sender.address} />
             ) : (
-              'Unknown'
+              <SenderDetail sender={loaded.summary.sender} />
             ),
         },
         { label: 'Items', value: count.format(loaded.summary.itemCount) },

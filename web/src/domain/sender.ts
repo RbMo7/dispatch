@@ -35,12 +35,40 @@ export interface SignerKey {
 
 export interface Sender {
   chain: Chain;
+  /** Unique per chain: the name `sender` takes on `POST /v1/dispatch`. */
+  name: string;
+  /** Whether a Dispatch that names no Sender pays from this one. */
+  isDefault: boolean;
   network: Network;
   mode: SenderMode;
   address: string;
   multisig: { address: string; threshold: Read<number>; engineKey: string } | null;
   balances: Holding[];
   signerKey: Read<SignerKey>;
+}
+
+/** Chain and name identify a Sender. */
+export function senderKey(sender: Pick<Sender, 'chain' | 'name'>): string {
+  return `${sender.chain}/${sender.name}`;
+}
+
+/** Chains with more than one Sender: only there does a Dispatch need its Sender named. */
+export function sharedChains(senders: readonly Sender[]): Set<Chain> {
+  const seen = new Set<Chain>();
+  const shared = new Set<Chain>();
+  for (const { chain } of senders) (seen.has(chain) ? shared : seen).add(chain);
+  return shared;
+}
+
+/**
+ * The names the Sender filter offers on `chain`, or null when no chain in view
+ * has more than one Sender. The API matches a name on every chain that has it,
+ * so a name shared across chains is one choice.
+ */
+export function senderChoices(senders: readonly Sender[], chain: Chain | 'all'): string[] | null {
+  const inView = senders.filter((sender) => chain === 'all' || sender.chain === chain);
+  if (sharedChains(inView).size === 0) return null;
+  return [...new Set(inView.map((sender) => sender.name))];
 }
 
 export const HOLDER_LABEL: Record<HolderName, string> = {

@@ -1,6 +1,5 @@
 import { createContext, type ReactNode, useCallback, useContext, useMemo } from 'react';
 
-import { truncateMiddle } from '../components/MonoValue';
 import { SenderCard, type SenderCardProps } from '../components/SenderCard';
 import {
   feePayer,
@@ -9,6 +8,8 @@ import {
   payer,
   pinnedToMultisig,
   type Sender,
+  senderKey,
+  sharedChains,
   signingLine,
 } from '../domain/sender';
 import type { Chain } from '../domain/chains';
@@ -34,17 +35,17 @@ export function useSenders(): Polled<Sender[]> {
   return senders;
 }
 
-/** The chains this engine has enabled: one Sender each, so they are exactly the Senders' chains. */
+/** The chains this engine has enabled: every one has at least one Sender, so they are exactly the Senders' chains. */
 export function useEnabledChains(): Chain[] {
   const { data } = useSenders();
   return useMemo(() => [...new Set((data ?? []).map((sender) => sender.chain))], [data]);
 }
 
-export const SENDER_NAME: Record<Sender['mode'], string> = {
-  single: 'Sender',
-  squads: 'Squads vault',
-  safe: 'Safe',
-};
+/** The enabled chains with more than one Sender. */
+export function useSharedChains(): Set<Chain> {
+  const { data } = useSenders();
+  return useMemo(() => sharedChains(data ?? []), [data]);
+}
 
 /** One Sender as a sidebar card: its headline balance, what is committed, and who pays fees. */
 export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null {
@@ -57,7 +58,7 @@ export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null
   return {
     chain: sender.chain,
     signing: signingLine(sender),
-    name: `${SENDER_NAME[sender.mode]} ${truncateMiddle(sender.address, 4, 4)}`,
+    name: sender.name,
     balance: headline.balance.ok ? headline.balance.value : { error: headline.balance.error },
     committed: headline.committed,
     footer:
@@ -91,7 +92,7 @@ export function SidebarSenders({ onOpen }: { onOpen: () => void }) {
     const card = senderCard(sender);
     return card ? (
       <SenderCard
-        key={sender.chain}
+        key={senderKey(sender)}
         {...card}
         href={PAGES.senders}
         onClick={(event) => {
