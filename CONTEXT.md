@@ -99,6 +99,14 @@ _Avoid_: Flagged (describes why, not the state), Paused, Pending review
 An operator's decision to let a Held Dispatch go ahead, recorded with a reason; it becomes `queued` and runs as if it had never been held. Needs the operator token, never the API token a client submits with (ADR-0057).
 _Avoid_: Approve (that's an Approver's vote on a Proposal), Unflag
 
+**Known Asset**:
+A token a chain's Senders can pay in: its mint or contract, with decimals, name and symbol read from the chain. Kept in a registry that operators extend from the console; the `*_KNOWN_TOKENS` settings seed it (ADR-0061). A payment in any other asset is refused with `UNKNOWN_ASSET`.
+_Avoid_: Token (ambiguous with an API token), Custom asset
+
+**Rejected Request**:
+A `POST /v1/dispatch` the engine refused before storing anything, kept for 30 days so an operator can see and fix what a client is getting wrong (ADR-0062). Never a Dispatch, and never has a status.
+_Avoid_: Failed Dispatch (it never existed)
+
 **Durable Nonce Execution**:
 An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Deferred (ADR-0048): without expiry, safe resubmission would first have to cancel the original by advancing the nonce, and no Sender needs the mode yet.
 _Avoid_: Nonce Account (the on-chain object the mode depends on, not the mode itself)
