@@ -1,5 +1,5 @@
 import type { Money } from './assets';
-import type { ItemFilter } from './dispatch';
+import type { Approver, ItemFilter } from './dispatch';
 
 export type StageKind =
   | 'done'
@@ -53,6 +53,8 @@ export interface Stage {
   /** For a large Dispatch: how many items have reached this stage. */
   count?: { reached: number; of: number };
   hash?: string;
+  /** A Proposal's Approvers and their decisions, on its approval stage. */
+  approvers?: readonly Approver[];
   links?: StageLink[];
 }
 

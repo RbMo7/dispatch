@@ -9,6 +9,7 @@ import { MonoValue, truncateMiddle } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
+import { proposalApprovals } from '../../domain/approval';
 import { CHAINS, type Chain, proposalApp, proposalUrl, txLink } from '../../domain/chains';
 import {
   dispatchName,
@@ -37,6 +38,7 @@ import { useEnabledChains, useSenders, useSharedChains } from '../senderData';
 import { useApi, useOperator } from '../session';
 import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
+import { ProposalApprovals } from './ProposalApprovals';
 import { useDispatch, useDispatchList } from './data';
 import { DispatchPane, type PaneHead, SenderDetail } from './DispatchPane';
 import { dayHeading, DispatchRows } from './DispatchRows';
@@ -490,6 +492,7 @@ function Pane({
     detail !== undefined && !claimed && (detail.status === 'queued' || detail.status === 'held');
   const reviewHold = operator && detail?.status === 'held';
   const openProposal = items?.find((i) => i.status === 'awaiting_approval' && i.approval)?.approval;
+  const proposals = useMemo(() => (items ? proposalApprovals(items) : []), [items]);
   const hashes = items
     ? items.map((i) => i.transactionHash)
     : [detail?.mode === 'relay' ? detail.transactionHash : null];
@@ -559,6 +562,11 @@ function Pane({
             <Button variant="quiet" href={proposalHref} target="_blank" rel="noreferrer">
               Reject it in {proposalApp(openProposal.chainRef)} ›
             </Button>
+          ) : undefined
+        }
+        approvals={
+          proposals.length > 0 ? (
+            <ProposalApprovals proposals={proposals} network={network} />
           ) : undefined
         }
         onClose={onClose}

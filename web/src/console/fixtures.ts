@@ -299,10 +299,27 @@ export const DISPATCHES: GalleryDispatch[] = [
         stage('done', 'Proposed', '11:47:06', 'Proposal 41 in Squads holds all 6 transfers'),
         stage(
           'current',
-          'Approvals, 1 of 2',
+          '1 of 2 approved, 1 more needed',
           '11:52:40',
           'Deadline in 66 hours. The engine never approves.',
           {
+            approvers: [
+              {
+                address: 'zAiRHXjdotsPGWYtDNkpX3oB88vDCoSPJHv9x9gCbh9',
+                label: 'Amara, finance',
+                decision: 'approved',
+              },
+              {
+                address: '7ehshELJsZhwe1P2JitpkHTwDrG97f9VH2sjNjZjC37b',
+                label: 'Tomasz, operations',
+                decision: 'pending',
+              },
+              {
+                address: 'GcqC2kbm3iVTypazwt8jTsaPoWpsMgDZLYPxE7XkQpY9',
+                label: null,
+                decision: 'pending',
+              },
+            ],
             links: [{ label: 'Open proposal 41 in Squads', href: 'https://app.squads.so' }],
           },
         ),

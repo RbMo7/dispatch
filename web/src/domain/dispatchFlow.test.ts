@@ -238,10 +238,22 @@ describe('the flow of one Dispatch', () => {
       proposal: '8xQyR1sT2uV3wX4yZ5a6B7c8D9e1F2g3H4i5J6k7L8m9',
       transactionIndex: 4,
     };
+    const approvers = [
+      {
+        address: 'HvT3kLm9qPz2Rb8sWc4xYd7eFg1hJn5oKp6uVa2bCd3E',
+        label: 'Priya',
+        decision: 'approved',
+      },
+      { address: '7sWq2Rt5yUi8oPa1sDf4gHj6kLz9xCv3bNm2QwE5rTy8', decision: 'pending' },
+      { address: '4dFg7hJk1lZx3cVb6nMq9wEr2tYu5iOp8aSd1fGh4jKl', decision: 'rejected' },
+      { address: '9mNb2vCx5zLk8jHg1fDs4aPo7iUy3tRe6wQq9sDf2gHj', decision: 'pending' },
+    ];
     const approval = {
       state: 'awaiting',
       approvals: 1,
       threshold: 3,
+      remaining: 2,
+      approvers,
       deadline: '2026-10-24T12:00:00.000Z',
       expected: { recipients: 2, totals: [{ asset: 'USDC', amount: '30' }] },
       chainRef,
@@ -302,14 +314,20 @@ describe('the flow of one Dispatch', () => {
       'done Submitted',
       'done Claimed',
       'done Proposed',
-      'current Approvals, 1 of 3',
+      'current 1 of 3 approved, 2 more needed',
       'todo Executed',
       'todo Confirmed',
       'end-todo Transaction hash',
     ]);
     expect(flow.summary).toBe('Stage 4 of 7, waiting on Approvers');
-    const approvals = titled(flow, 'Approvals, 1 of 3');
+    const approvals = titled(flow, '1 of 3 approved, 2 more needed');
     expect(approvals.detail).toBe('Deadline 12:00:00, in 2 days. The engine never approves.');
+    expect(approvals.approvers).toEqual([
+      { address: approvers[0]!.address, label: 'Priya', decision: 'approved' },
+      { address: approvers[1]!.address, label: null, decision: 'pending' },
+      { address: approvers[2]!.address, label: null, decision: 'rejected' },
+      { address: approvers[3]!.address, label: null, decision: 'pending' },
+    ]);
     expect(approvals.links).toEqual([
       {
         label: 'Open #4 in Squads',
@@ -543,6 +561,11 @@ describe('the flow of one Dispatch', () => {
                 state: 'awaiting',
                 approvals: 1,
                 threshold: 2,
+                remaining: 1,
+                approvers: [
+                  { address: '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a', decision: 'approved' },
+                  { address: '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b', decision: 'pending' },
+                ],
                 deadline: '2026-10-24T12:00:00.000Z',
                 expected: { recipients: 1, totals: [{ asset: 'USDC', amount: '15000000' }] },
                 chainRef,
@@ -592,6 +615,10 @@ describe('the flow of one Dispatch', () => {
     expect(titled(flow, 'Timed out').detail).toContain(
       'may still be approved and executed in Safe',
     );
+    expect(titled(flow, 'Timed out').approvers?.map((a) => a.decision)).toEqual([
+      'approved',
+      'pending',
+    ]);
     expect(titled(flow, 'Timed out').links).toEqual([
       {
         label: 'Open nonce 12 in Safe',

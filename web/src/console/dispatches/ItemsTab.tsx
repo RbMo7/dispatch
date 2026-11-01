@@ -1,5 +1,5 @@
 import { CaretDown, CaretRight, DownloadSimple } from '@phosphor-icons/react';
-import { useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 
 import { Amount } from '../../components/Amount';
 import { Menu } from '../../components/Menu';
@@ -74,9 +74,19 @@ interface ItemsTabProps {
   onSearch: (search: string) => void;
   /** Exports what the table shows: the current filter and search. */
   onExport: (format: ExportFormat, items: readonly Item[]) => void;
+  /** The Proposals these items sit in, with their Approvers. */
+  approvals?: ReactNode;
 }
 
-export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }: ItemsTabProps) {
+export function ItemsTab({
+  items,
+  filter,
+  onFilter,
+  search,
+  onSearch,
+  onExport,
+  approvals,
+}: ItemsTabProps) {
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const counts = useMemo(() => statusCounts(items), [items]);
   const shown = useMemo(() => filterItems(items, filter, search), [items, filter, search]);
@@ -96,6 +106,7 @@ export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }
 
   return (
     <div className={styles.items}>
+      {approvals && <div className={styles.paneApprovals}>{approvals}</div>}
       <div className={styles.chips} role="group" aria-label="Filter items by status">
         {chips.map((chip) => (
           <button
