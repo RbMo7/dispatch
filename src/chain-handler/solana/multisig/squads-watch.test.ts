@@ -359,7 +359,29 @@ describe('SquadsApproval.readProposal', () => {
     const { result } = await read({
       proposal: proposalBytes({ status: 'active', approved: [key(11)] }),
     });
-    expect(result).toEqual(ok({ status: 'active', approvals: 1, threshold: 2, executable: false }));
+    expect(result).toEqual(
+      ok({
+        status: 'active',
+        approvals: 1,
+        threshold: 2,
+        approvers: [
+          { address: key(11).toBase58(), decision: 'approved' },
+          { address: key(12).toBase58(), decision: 'pending' },
+        ],
+        executable: false,
+      }),
+    );
+  });
+
+  it('lists only the members who can vote, in member order, each with their decision', async () => {
+    const { result } = await read({
+      proposal: proposalBytes({ status: 'active', approved: [key(12)], rejected: [key(11)] }),
+    });
+    // The engine's own member (Initiate and Execute, no Vote) is never an Approver.
+    expect(result.ok && result.value.approvers).toEqual([
+      { address: key(11).toBase58(), decision: 'rejected' },
+      { address: key(12).toBase58(), decision: 'approved' },
+    ]);
   });
 
   it('a Draft proposal is still waiting for its approvers', async () => {
@@ -381,7 +403,16 @@ describe('SquadsApproval.readProposal', () => {
       proposal: proposalBytes({ status: 'approved', approved: [key(11), key(12)] }),
     });
     expect(result).toEqual(
-      ok({ status: 'approved', approvals: 2, threshold: 2, executable: true }),
+      ok({
+        status: 'approved',
+        approvals: 2,
+        threshold: 2,
+        approvers: [
+          { address: key(11).toBase58(), decision: 'approved' },
+          { address: key(12).toBase58(), decision: 'approved' },
+        ],
+        executable: true,
+      }),
     );
   });
 
@@ -396,6 +427,10 @@ describe('SquadsApproval.readProposal', () => {
         status: 'approved',
         approvals: 2,
         threshold: 2,
+        approvers: [
+          { address: key(11).toBase58(), decision: 'approved' },
+          { address: key(12).toBase58(), decision: 'approved' },
+        ],
         executeAfter: new Date((T0 + 3_600) * 1000),
         executable: false,
       }),
@@ -412,6 +447,10 @@ describe('SquadsApproval.readProposal', () => {
       proposal: proposalBytes({ status: 'rejected', rejected: [key(11), key(12)] }),
     });
     expect(rejected.result.ok && rejected.result.value.status).toBe('rejected');
+    expect(rejected.result.ok && rejected.result.value.approvers?.map((a) => a.decision)).toEqual([
+      'rejected',
+      'rejected',
+    ]);
     const cancelled = await read({
       proposal: proposalBytes({
         status: 'cancelled',
@@ -420,6 +459,10 @@ describe('SquadsApproval.readProposal', () => {
       }),
     });
     expect(cancelled.result.ok && cancelled.result.value.status).toBe('cancelled');
+    // Approved, then voted to cancel: the cancel is their last word.
+    expect(cancelled.result.ok && cancelled.result.value.approvers?.map((a) => a.decision)).toEqual(
+      ['rejected', 'rejected'],
+    );
   });
 
   it('an Executed proposal names the successful execute in its history', async () => {
@@ -446,6 +489,10 @@ describe('SquadsApproval.readProposal', () => {
         status: 'executed',
         approvals: 2,
         threshold: 2,
+        approvers: [
+          { address: key(11).toBase58(), decision: 'approved' },
+          { address: key(12).toBase58(), decision: 'approved' },
+        ],
         executedHash: 'exec-sig',
         executable: false,
       }),

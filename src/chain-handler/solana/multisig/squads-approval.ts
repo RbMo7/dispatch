@@ -56,7 +56,11 @@ import {
   SQUADS_PROGRAM_ID,
   type SolanaMultisigConfig,
 } from './multisig-config.js';
-import { decodeProposalAccount, type ProposalAccount } from './proposal-account.js';
+import {
+  decodeProposalAccount,
+  type ProposalAccount,
+  squadsApprovers,
+} from './proposal-account.js';
 import { summarizeTransfer, type TransferSummary } from './transfer-calls.js';
 import {
   compileVaultMessage,
@@ -882,6 +886,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     const base = {
       approvals: proposal.approved.length,
       threshold: multisig.threshold,
+      approvers: squadsApprovers(proposal, multisig),
       executable: false,
     };
     switch (proposal.status) {

@@ -17,7 +17,7 @@ import {
   parseListQuery,
   type RawListQuery,
 } from './dispatch-list.js';
-import { readDispatchView } from './dispatch-view.js';
+import { type ApproverLabelOf, readDispatchView } from './dispatch-view.js';
 import { findHoldMatches } from './hold-check.js';
 import type { AssetDecimals } from './asset-decimals.js';
 import {
@@ -147,6 +147,8 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
   const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
   const auth = requireToken(tokens);
   const nameOf = (chain: Chain, address: string) => chainRegistry.nameOf(chain, address);
+  const approverLabelOf: ApproverLabelOf = (chain, sender, approver) =>
+    chainRegistry.approverLabel(chain, sender, approver);
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
@@ -319,6 +321,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       const view = await readDispatchView(store, request.params.id, assetDecimals, {
         timeline: request.query.include === 'timeline',
         nameOf,
+        approverLabelOf,
       });
       if (!view) return reply.code(404).send({ error: 'not found' });
       return reply.send(view);
@@ -343,7 +346,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         });
       }
       return reply.send(
-        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+        await readDispatchView(store, request.params.id, assetDecimals, {
+          nameOf,
+          approverLabelOf,
+        }),
       );
     },
   );
@@ -371,7 +377,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         reason: reason.value,
       });
       return reply.send(
-        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+        await readDispatchView(store, request.params.id, assetDecimals, {
+          nameOf,
+          approverLabelOf,
+        }),
       );
     },
   );

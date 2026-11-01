@@ -365,7 +365,15 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     const view = await this.viewProposal(ref.safe, ref.safeTxHash);
     if (!view.ok) return view;
     const { state, service, signers } = view.value;
-    const base = { approvals: signers.size, threshold: state.threshold };
+    const base = {
+      approvals: signers.size,
+      threshold: state.threshold,
+      // On-chain owner order. A Safe has no per-owner rejection: an owner who has not confirmed is pending.
+      approvers: state.owners.map((owner) => ({
+        address: owner,
+        decision: signers.has(owner.toLowerCase()) ? ('approved' as const) : ('pending' as const),
+      })),
+    };
     const proposalNonce = BigInt(ref.nonce);
 
     // (1) Executed: the service says so, and the chain agrees (#88): its transaction is the proof of payment.

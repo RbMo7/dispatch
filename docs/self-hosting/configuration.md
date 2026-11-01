@@ -37,7 +37,8 @@ The file is a JSON object keyed by chain. Each chain has `senders`, an object ke
       "treasury": {
         "mode": "squads",
         "multisig": "4AzEDD9wGkvTs4hpRNGZ44tgt2xCZbwoFWNKZs28UkuC",
-        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV"
+        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV",
+        "approvers": { "2xUDRfJQTDjPuokctLdyAStss7fU3Cv1bZCgtRidCXwt": "Priya, finance" }
       }
     }
   },
@@ -60,10 +61,12 @@ Each Sender takes the fields of its `mode`, and any other field is a startup err
 | `mode` | Chain | Required | Optional |
 | --- | --- | --- | --- |
 | `single`, or left out | both | `address`: the Sender, whose key the Signer holds | none |
-| `squads` | `solana` | `multisig`: the Squads multisig account, not its vault. `memberKey`: the engine's own key, which proposes and executes. | `approvalDeadlineMs`, `approvalRewatchWindowMs` |
-| `safe` | `base` | `safe`: the Safe. `executor`: the engine's own key, a registered delegate and never an owner. | `txServiceUrl`, `apiKey`, `approvalDeadlineMs`, `approvalRewatchWindowMs`, `bundleLimit` |
+| `squads` | `solana` | `multisig`: the Squads multisig account, not its vault. `memberKey`: the engine's own key, which proposes and executes. | `approvalDeadlineMs`, `approvalRewatchWindowMs`, `approvers` |
+| `safe` | `base` | `safe`: the Safe. `executor`: the engine's own key, a registered delegate and never an owner. | `txServiceUrl`, `apiKey`, `approvalDeadlineMs`, `approvalRewatchWindowMs`, `bundleLimit`, `approvers` |
 
 The optional fields mean what the matching variables mean in [Solana Multisig Sender](#solana-multisig-sender) and [Base Safe Sender](#base-safe-sender), with the same defaults. The durations and `bundleLimit` are positive whole numbers, not strings. A Safe Sender without `apiKey` uses `BASE_SAFE_API_KEY`. A Squads Sender pays from its multisig's vault (index 0), and a Safe Sender from its Safe.
+
+`approvers` names the people who vote, so the console and the `approval` block show "Priya, finance" instead of an address. It maps an Approver's address (a Squads member, or a Safe owner) to a label of 1 to 40 characters. It changes nothing about who may approve: that is the multisig's own member or owner list, read from the chain. An Approver with no label is shown by address.
 
 The engine refuses to start, and lists every problem at once, when:
 
@@ -71,7 +74,8 @@ The engine refuses to start, and lists every problem at once, when:
 - a chain in `ENABLED_CHAINS` has no Senders in the file;
 - `default` names no Sender of its chain;
 - two Senders on a chain share an address, including a Multisig Sender's engine key;
-- an address is not valid on its chain, or a mixed-case Base address has a wrong checksum.
+- an address is not valid on its chain, or a mixed-case Base address has a wrong checksum;
+- `approvers` is not an object, lists an address twice, or has an empty label or one over 40 characters.
 
 A chain in the file but not in `ENABLED_CHAINS` is not read. Without `default`, every Dispatch on the chain must name its Sender, or it is refused with `SENDER_REQUIRED`. If any per-chain Sender variable, such as `SOLANA_SENDER_ADDRESS` or `BASE_SAFE_ADDRESS`, is set for a chain the file describes, the engine logs a warning that it ignores it.
 

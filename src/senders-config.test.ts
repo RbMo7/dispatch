@@ -22,6 +22,8 @@ const VAULT = deriveVaultAddress(MULTISIG).toBase58();
 const BASE_HOT = `0x${'a1'.repeat(20)}`;
 const SAFE = `0x${'b2'.repeat(20)}`;
 const EXECUTOR = `0x${'c3'.repeat(20)}`;
+const APPROVER = Keypair.generate().publicKey.toBase58();
+const OWNER = getAddress(`0x${'d4'.repeat(20)}`);
 
 const NO_VARIABLES: SenderVariables = {
   solana: {
@@ -80,6 +82,7 @@ const VALID = {
         multisig: MULTISIG.toBase58(),
         memberKey: MEMBER,
         approvalDeadlineMs: 3_600_000,
+        approvers: { [APPROVER]: 'Priya, finance' },
       },
     },
   },
@@ -87,7 +90,13 @@ const VALID = {
     default: 'payouts',
     senders: {
       payouts: { address: BASE_HOT },
-      vault: { mode: 'safe', safe: SAFE, executor: EXECUTOR, bundleLimit: 20 },
+      vault: {
+        mode: 'safe',
+        safe: SAFE,
+        executor: EXECUTOR,
+        bundleLimit: 20,
+        approvers: { [OWNER]: ' Tomasz ' },
+      },
     },
   },
 };
@@ -174,6 +183,7 @@ describe('parseSendersConfig with a senders file', () => {
         name: 'payouts',
         address: HOT,
         settings: { ...NO_VARIABLES.solana, senderAddress: HOT },
+        approverLabels: {},
       },
       {
         chain: 'solana',
@@ -186,6 +196,7 @@ describe('parseSendersConfig with a senders file', () => {
           memberAddress: MEMBER,
           approvalDeadlineMs: '3600000',
         },
+        approverLabels: { [APPROVER]: 'Priya, finance' },
       },
     ]);
     expect(base?.senders).toEqual([
@@ -195,6 +206,7 @@ describe('parseSendersConfig with a senders file', () => {
         address: getAddress(BASE_HOT),
         handlerAddress: getAddress(BASE_HOT),
         settings: { ...NO_VARIABLES.base, senderAddress: getAddress(BASE_HOT) },
+        approverLabels: {},
       },
       {
         chain: 'base',
@@ -208,6 +220,8 @@ describe('parseSendersConfig with a senders file', () => {
           safeExecutorAddress: getAddress(EXECUTOR),
           bundleLimit: '20',
         },
+        // Keyed case-insensitively, as EVM addresses compare.
+        approverLabels: { [OWNER.toLowerCase()]: 'Tomasz' },
       },
     ]);
   });
@@ -359,6 +373,48 @@ describe('parseSendersConfig rejects a senders file', () => {
         ['base'],
       ),
     ).toEqual(['base sender "vault": bundleLimit must be a positive whole number, got 0']);
+  });
+
+  it('with approver labels on a plain Sender, or labels that are not addresses and short names', () => {
+    expect(
+      problemsOf({ base: { senders: { payouts: { address: BASE_HOT, approvers: {} } } } }, [
+        'base',
+      ]),
+    ).toEqual(['base sender "payouts": "approvers" is not a field of a single Sender']);
+    const squads = (approvers: unknown) => ({
+      solana: {
+        senders: {
+          treasury: { mode: 'squads', multisig: MULTISIG.toBase58(), memberKey: MEMBER, approvers },
+        },
+      },
+    });
+    expect(problemsOf(squads(['Priya']), ['solana'])).toEqual([
+      'solana sender "treasury": approvers must be an object of Approver address to label',
+    ]);
+    expect(
+      problemsOf(squads({ nope: 'Priya', [APPROVER]: '', [HOT]: 'x'.repeat(41) }), ['solana']),
+    ).toEqual([
+      'solana sender "treasury": approvers: nope is not a valid base58 Solana address',
+      `solana sender "treasury": approvers: the label of ${APPROVER} must be 1 to 40 characters`,
+      `solana sender "treasury": approvers: the label of ${HOT} must be 1 to 40 characters`,
+    ]);
+    expect(
+      problemsOf(
+        {
+          base: {
+            senders: {
+              vault: {
+                mode: 'safe',
+                safe: SAFE,
+                executor: EXECUTOR,
+                approvers: { [OWNER]: 'Tomasz', [OWNER.toLowerCase()]: 'Tom' },
+              },
+            },
+          },
+        },
+        ['base'],
+      ),
+    ).toEqual([`base sender "vault": approvers: ${OWNER.toLowerCase()} is listed twice`]);
   });
 
   it('naming every problem at once, one per line', () => {

@@ -167,6 +167,7 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
                     approvalDeadlineMs: multisig.approvalDeadlineMs,
                     approvalRewatchWindowMs: multisig.approvalRewatchWindowMs,
                   },
+                  approverLabels: spec.approverLabels,
                 }
               : {}),
           };
@@ -218,6 +219,7 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
                     approvalDeadlineMs: safe.config.approvalDeadlineMs,
                     approvalRewatchWindowMs: safe.config.approvalRewatchWindowMs,
                   },
+                  approverLabels: spec.approverLabels,
                 }
               : {}),
           };

@@ -305,8 +305,9 @@ async function buildContractApp() {
       handler: await baseHandler('0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'),
     },
     {
-      ...sender('base', 'treasury', '0x5afe000000000000000000000000000000005afe', false),
-      handler: await baseHandler('0x5afe000000000000000000000000000000005afe'),
+      ...sender('base', 'treasury', SAFE_SENDER, false),
+      handler: await baseHandler(SAFE_SENDER),
+      approverLabels: { [OWNER_A.toLowerCase()]: 'Priya, finance' },
     },
     {
       ...sender('solana', 'payouts', '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf', true),
@@ -337,6 +338,10 @@ async function buildContractApp() {
   await app.ready();
   return { app, store, routes };
 }
+
+const SAFE_SENDER = '0x5afe000000000000000000000000000000005afe';
+const OWNER_A = '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a';
+const OWNER_B = '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b';
 
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 // ajv-formats is CommonJS, so under NodeNext its plugin is the default export's own default.
@@ -491,5 +496,83 @@ describe('docs/openapi.yaml against the real routes', () => {
 
     expect(failures).toEqual([]);
     expect(tooLate).not.toHaveLength(0);
+  });
+
+  it("answers a Multisig Sender's item with its Approvers, their labels and the approvals remaining", async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'approvers-contract',
+      items: [{ call: { to: OWNER_B, data: '0x', value: '1' }, payment: null }],
+      retryPolicy: false,
+      senderAddress: SAFE_SENDER as SenderAddress,
+    });
+    await store.claimQueued(CHAINS, 100);
+    const [call] = await store.noteUnproposed([
+      { dispatchId: dispatch.id, callIndex: 0, chain: 'base' },
+    ]);
+    const chainRef = {
+      kind: 'safe',
+      safe: SAFE_SENDER,
+      safeTxHash: `0x${'ab'.repeat(32)}`,
+      nonce: 3,
+    } as const;
+    const proposal = await store.createProposal({
+      dispatchId: dispatch.id,
+      chain: 'base',
+      senderAddress: SAFE_SENDER,
+      chainRef,
+      payload: 'payload',
+      proposalRef: chainRef.safeTxHash,
+      sequence: 3,
+      threshold: 2,
+      deadlineAt: new Date('2026-11-04T12:00:00.000Z'),
+      executeAfter: null,
+      proposeSignedBytes: null,
+      proposeHash: null,
+      expected: { recipients: 1, totals: [{ asset: 'ETH', amount: '1' }] },
+      committed: { sender: [], proposer: [] },
+      transactionIds: [call!.id],
+    });
+    await store.updateProposal(proposal.id, {
+      phase: 'open',
+      approvals: 1,
+      approvers: [
+        { address: OWNER_A, decision: 'approved' },
+        { address: OWNER_B, decision: 'pending' },
+      ],
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const body = response.json<{ items: { approval: unknown }[] }>();
+
+    expect(
+      validate(
+        pointer(
+          'paths',
+          '/v1/dispatch/{id}',
+          'get',
+          'responses',
+          '200',
+          'content',
+          'application/json',
+          'schema',
+        ),
+        body,
+      ),
+    ).toEqual([]);
+    expect(body.items[0]?.approval).toMatchObject({
+      approvals: 1,
+      threshold: 2,
+      remaining: 1,
+      approvers: [
+        { address: OWNER_A, label: 'Priya, finance', decision: 'approved' },
+        { address: OWNER_B, decision: 'pending' },
+      ],
+    });
+    expect(body.items[0]?.approval).not.toHaveProperty(['approvers', 1, 'label']);
   });
 });

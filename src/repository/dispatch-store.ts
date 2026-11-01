@@ -29,7 +29,7 @@ export type NewUnproposedInput = {
  * ADR-0054/0041: a Proposal written down before it is sent. `transactionIds`
  * are the Dispatch's `UNPROPOSED` Transactions it holds, in position order.
  * Everything else about the row starts at its defaults (phase `noted`,
- * approvals 0, `nextCheckAt` now).
+ * approvals 0, no approvers read yet, `nextCheckAt` now).
  */
 export type NewProposalInput = Pick<
   Proposal,
@@ -57,6 +57,7 @@ export type ProposalPatch = Partial<
     | 'approvalState'
     | 'approvals'
     | 'threshold'
+    | 'approvers'
     | 'executeAfter'
     | 'timedOutAt'
     | 'resolvedAt'
