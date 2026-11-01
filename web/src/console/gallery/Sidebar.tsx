@@ -1,13 +1,16 @@
 import { SenderCard } from '../../components/SenderCard';
-import { money } from '../fixtures';
+import { DISPATCHES, money } from '../fixtures';
 import { Sidebar } from '../Sidebar';
 
-/** The console's sidebar with the board's two recorded Sender cards. */
-export function GallerySidebar() {
+const HELD = DISPATCHES.filter((d) => d.status === 'held').length;
+
+/** The console's sidebar with the board's two recorded Sender cards; `operator` adds the operator pages and the held count. */
+export function GallerySidebar({ operator = false }: { operator?: boolean }) {
   return (
     <Sidebar
       current="dispatches"
-      operator={false}
+      operator={operator}
+      held={operator ? HELD : null}
       instance="dispatch-eu-1"
       connection="live"
       senders={

@@ -8,14 +8,12 @@ import { GallerySidebar } from '../console/gallery/Sidebar';
 import { presetRange } from '../domain/dateRange';
 import styles from './console.module.css';
 
-// The recorded Dispatches from the console gallery, minus the held one: Flag Rules are not shipped yet.
-const RECORDED = DISPATCHES.filter((d) => d.status !== 'held');
 const RANGE = presetRange('7d', FIXTURE_TODAY);
 const NONE: ReadonlySet<string> = new Set();
 const ignore = () => {};
 
 function recorded(id: string): GalleryDispatch {
-  const dispatch = RECORDED.find((d) => d.id === id);
+  const dispatch = DISPATCHES.find((d) => d.id === id);
   if (!dispatch) throw new Error(`no recorded Dispatch ${id}`);
   return dispatch;
 }
@@ -29,8 +27,8 @@ function List({ landed, selected }: { landed: boolean; selected: string | null }
   const rows = useMemo(
     () =>
       landed
-        ? RECORDED.map((d) => (d.id === FEE_BUMPED ? { ...d, status: 'confirmed' as const } : d))
-        : RECORDED,
+        ? DISPATCHES.map((d) => (d.id === FEE_BUMPED ? { ...d, status: 'confirmed' as const } : d))
+        : DISPATCHES,
     [landed],
   );
   return (
@@ -56,7 +54,7 @@ export function ConsoleScreen({ landed }: { landed: boolean }) {
   const dispatch = recorded(LARGE);
   return (
     <div className={styles.screen}>
-      <GallerySidebar />
+      <GallerySidebar operator />
       <List landed={landed} selected={LARGE} />
       <DispatchPane
         head={{
@@ -96,7 +94,7 @@ export function DispatchRows() {
 export function SidebarView() {
   return (
     <div className={styles.sidebar}>
-      <GallerySidebar />
+      <GallerySidebar operator />
     </div>
   );
 }
