@@ -39,6 +39,8 @@ An error reaches you in one of two places. If the API refuses your request, the 
 | `FST_ERR_CTP_INVALID_JSON_BODY` | `400` | The body is not valid JSON. |
 | `FST_ERR_CTP_BODY_TOO_LARGE` | `413` | The body is over 1 MiB. Split the run into several Dispatches. |
 
+The engine records every refused request to create a Dispatch, except a `401`, with its body, for the operator to read with [List refused requests](./openapi.yaml#list-refused-requests) or on the console's Rejected page. A refusal still stores no Dispatch and does not use up its key.
+
 Branch on `code` when the body has one of the [error codes](#error-codes) below. Otherwise branch on the HTTP status, and show `error` or `message` to people.
 
 ## HTTP status codes
@@ -104,6 +106,22 @@ For a Multisig Sender it also names which balance is short, its address, and how
 ```
 
 `holder` is `vault` or `memberKey` on Solana, and `safe` or `executor` on Base. The vault or the Safe pays the payments. The engine's own key, the Squads member key or the Safe executor, pays the network fees and any Proposal rent. `committed` is the amount of that asset already held back on that balance, in the smallest unit, by Proposals in flight or timed out and still watched, by Calls waiting to be proposed, and on the proposing key by Proposal rent that stays locked until the Proposal is closed. `short` is the extra the holder needs, `committed` included.
+
+For `CHAIN_REJECTED` on a Base transaction that reverted, the engine replays it with `eth_call` at its block to read why, and `message` starts with `reverted:`. `chainDetail` has the block, the gas used and the gas limit, plus `reason` and the raw `revertData`. A `require` message is the reason as written, a `Panic` is named by its meaning, and a custom error by its selector. A transaction that used all its gas says it ran out of gas. When the chain cannot be read, the item fails with the plain message and no reason:
+
+```json
+{
+  "code": "CHAIN_REJECTED",
+  "message": "reverted: always reverts",
+  "chainDetail": {
+    "block": "38076954",
+    "gasUsed": "23437",
+    "gasLimit": "500000",
+    "reason": "always reverts",
+    "revertData": "0x08c379a0..."
+  }
+}
+```
 
 For `APPROVAL_TIMEOUT`, `chainDetail` is `{ "deadlineAt": "<ISO 8601>" }`. For an `APPROVAL_REJECTED` the engine found while watching a Proposal, it is `{ "status": "rejected" }`, `"cancelled"` or `"stale"`.
 

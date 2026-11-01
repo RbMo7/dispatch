@@ -28,6 +28,7 @@ import {
   requireOperator,
   requireToken,
 } from './operator-auth.js';
+import { recordRejection } from './rejected-routes.js';
 import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
@@ -152,7 +153,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
-    { schema: postDispatchSchema, onRequest: auth },
+    { schema: postDispatchSchema, onRequest: auth, onSend: recordRejection(store, tokens) },
     async (request, reply) => {
       const idempotencyKey = request.headers['idempotency-key'];
       if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {

@@ -24,6 +24,7 @@ import {
   flagRuleVersions,
   knownAssets,
   operatorActions,
+  rejectedRequests,
   proposals,
   relayDispatches,
   setupChecks,
@@ -49,7 +50,12 @@ import {
   type KnownAsset,
   type NewKnownAsset,
 } from '../domain/known-asset.js';
-import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
+import type {
+  OperatorAction,
+  OperatorActionKind,
+  OperatorActor,
+  TokenKind,
+} from '../domain/operator-action.js';
 import { ok, type Result } from '../domain/result.js';
 import type {
   ApprovalState,
@@ -58,6 +64,7 @@ import type {
   Proposal,
   ProposalPhase,
 } from '../domain/proposal.js';
+import type { NewRejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Area } from '../setup/check.js';
@@ -72,6 +79,7 @@ import type {
   DispatchStore,
   ListedDispatch,
   ListedOperatorAction,
+  ListedRejectedRequest,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -79,6 +87,7 @@ import type {
   NewTransactionInput,
   NewUnproposedInput,
   OperatorActionQuery,
+  RejectedRequestQuery,
   ProposalOutcome,
   ProposalPatch,
   SetupCheckRecord,
@@ -500,6 +509,82 @@ export class PostgresDispatchStore implements DispatchStore {
       },
       cursor: { createdAt: exactAt, id: row.id },
     }));
+  }
+
+  async getCancellation(dispatchId: string): Promise<OperatorAction | null> {
+    const [row] = await this.db
+      .select()
+      .from(operatorActions)
+      .where(and(eq(operatorActions.targetId, dispatchId), eq(operatorActions.action, 'cancel')))
+      .orderBy(operatorActions.at)
+      .limit(1);
+    return row ? { ...row, action: 'cancel', tokenKind: row.tokenKind as TokenKind } : null;
+  }
+
+  async recordRejectedRequest(request: NewRejectedRequest): Promise<void> {
+    const { error, ...rest } = request;
+    await this.db.insert(rejectedRequests).values({
+      ...rest,
+      code: error.code,
+      message: error.message,
+      chainDetail: error.chainDetail ?? null,
+    });
+  }
+
+  async listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]> {
+    const { after } = query;
+    const rows = await this.db
+      .select({
+        row: rejectedRequests,
+        exactAt: sql<string>`to_char(${rejectedRequests.at} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(rejectedRequests)
+      .where(
+        after
+          ? sql`(${rejectedRequests.at}, ${rejectedRequests.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      )
+      .orderBy(desc(rejectedRequests.at), desc(rejectedRequests.id))
+      .limit(query.limit);
+    return rows.map(({ row, exactAt }) => ({
+      request: {
+        id: row.id,
+        at: row.at,
+        status: row.status,
+        chain: row.chain as Chain | null,
+        idempotencyKey: row.idempotencyKey,
+        tokenKind: row.tokenKind as TokenKind,
+        error: {
+          code: row.code,
+          message: row.message,
+          ...(row.chainDetail === null ? {} : { chainDetail: row.chainDetail }),
+        },
+        body: row.body,
+      },
+      cursor: { createdAt: exactAt, id: row.id },
+    }));
+  }
+
+  async countRejectedRequestsSince(since: Date): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(rejectedRequests)
+      .where(gte(rejectedRequests.at, since));
+    return row?.count ?? 0;
+  }
+
+  async pruneRejectedRequests(before: Date, keep: number): Promise<number> {
+    const old = await this.db
+      .delete(rejectedRequests)
+      .where(lt(rejectedRequests.at, before))
+      .returning({ id: rejectedRequests.id });
+    const over = await this.db.execute<{ id: string }>(sql`
+      DELETE FROM ${rejectedRequests} WHERE ${rejectedRequests.id} IN (
+        SELECT ${rejectedRequests.id} FROM ${rejectedRequests}
+        ORDER BY ${rejectedRequests.at} DESC, ${rejectedRequests.id} DESC
+        OFFSET ${keep}
+      ) RETURNING ${rejectedRequests.id}`);
+    return old.length + over.length;
   }
 
   async createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {

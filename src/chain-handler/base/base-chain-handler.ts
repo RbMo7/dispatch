@@ -50,6 +50,7 @@ import {
   type CallTrace,
 } from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
+import { revertDataOf, revertReason } from './revert-reason.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
 import {
   extractMessage,
@@ -981,6 +982,60 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         return ok('PENDING');
       }
       return err(mapBaseFailure(cause));
+    }
+  }
+
+  /**
+   * #169: replays a reverted transaction with `eth_call` at its block to read
+   * the revert reason. A transaction that used all its gas ran out of it. Null
+   * when the chain cannot be read, so a missing reason never delays the failure.
+   */
+  async failureReason(hash: string): Promise<DispatchError | null> {
+    try {
+      const [transaction, receipt] = await Promise.all([
+        this.client.getTransaction({ hash: hash as `0x${string}` }),
+        this.client.getTransactionReceipt({ hash: hash as `0x${string}` }),
+      ]);
+      if (receipt.status === 'success') return null;
+      const detail = {
+        block: receipt.blockNumber.toString(),
+        gasUsed: receipt.gasUsed.toString(),
+        gasLimit: transaction.gas.toString(),
+      };
+      if (receipt.gasUsed >= transaction.gas) {
+        return {
+          code: 'CHAIN_REJECTED',
+          message: `reverted: ran out of gas (used all ${transaction.gas} of its gas limit)`,
+          chainDetail: { ...detail, reason: 'out of gas' },
+        };
+      }
+      try {
+        await this.client.call({
+          account: transaction.from,
+          ...(transaction.to ? { to: transaction.to } : {}),
+          data: transaction.input,
+          value: transaction.value,
+          gas: transaction.gas,
+          blockNumber: receipt.blockNumber,
+        });
+      } catch (cause) {
+        if (isRpcOutage(cause)) return null;
+        const { reason, revertData } = revertReason(revertDataOf(cause));
+        return {
+          code: 'CHAIN_REJECTED',
+          message: `reverted: ${reason}`,
+          chainDetail: { ...detail, reason, revertData },
+        };
+      }
+      return {
+        code: 'CHAIN_REJECTED',
+        message:
+          'reverted on chain, but replaying it at its block did not revert, so the chain gives no reason',
+        chainDetail: detail,
+      };
+    } catch (cause) {
+      this.logger.warn({ hash, err: cause }, 'could not read why a transaction failed');
+      return null;
     }
   }
 

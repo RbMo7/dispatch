@@ -176,6 +176,13 @@
       "when": 1793548993573,
       "tag": "0024_proposal_approvers",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793549837602,
+      "tag": "0025_rejected_requests",
+      "breakpoints": true
     }
   ]
 }

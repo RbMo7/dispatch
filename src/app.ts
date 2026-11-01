@@ -5,6 +5,7 @@ import { type AssetRouteDeps, registerAssetRoutes } from './api/asset-routes.js'
 import { type DispatchRouteDeps, registerDispatchRoutes } from './api/dispatch-routes.js';
 import { registerFlagRuleRoutes } from './api/flag-rule-routes.js';
 import { parseApiTokens } from './api/operator-auth.js';
+import { registerRejectedRoutes } from './api/rejected-routes.js';
 import { registerSenderRoutes, type SenderRouteDeps } from './api/sender-routes.js';
 import { registerSetupRoutes, type SetupRouteDeps } from './api/setup-routes.js';
 import { registerTokenRoutes } from './api/token-routes.js';
@@ -31,6 +32,7 @@ export function buildApp({ authToken, operatorToken, assets, readToken, ...deps 
   app.register(registerSenderRoutes, { tokens, listSenders: deps.listSenders });
   app.register(registerSetupRoutes, { tokens, readSetup: deps.readSetup });
   app.register(registerActivityRoutes, { tokens, store: deps.store });
+  app.register(registerRejectedRoutes, { tokens, store: deps.store });
   app.register(registerTokenRoutes, { tokens });
   app.register(registerFlagRuleRoutes, {
     tokens,
