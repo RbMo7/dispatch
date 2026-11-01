@@ -253,6 +253,8 @@ export const flagRuleVersions = pgTable(
     version: integer('version').notNull(),
     name: text('name').notNull(),
     chain: text('chain').notNull(),
+    /** #149: null applies the version to every Sender on `chain`. */
+    senderAddress: text('sender_address'),
     enabled: boolean('enabled').notNull(),
     definition: jsonb('definition').notNull().$type<FlagRuleDefinitionJson>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

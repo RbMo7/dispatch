@@ -32,6 +32,7 @@ export function buildApp({ authToken, operatorToken, ...deps }: AppDeps) {
     tokens,
     store: deps.store,
     assetDecimals: deps.assetDecimals,
+    senders: deps.chainRegistry,
   });
   app.register(webStatic);
 

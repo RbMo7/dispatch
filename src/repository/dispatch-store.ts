@@ -231,8 +231,13 @@ export interface DispatchStore {
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]>;
   /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
   firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
-  /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches created since `since` and not cancelled. */
-  acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>>;
+  /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches (only `senderAddress`'s, when given: #149) created since `since` and not cancelled. */
+  acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>>;
   /** #119: up to `limit` of `chain`'s Managed Dispatches created at or after `since`, newest first, whatever their status. */
   listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]>;
   /** ADR-0058: why the Dispatch was held, or null if it never was. */

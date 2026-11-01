@@ -1,5 +1,6 @@
 import type { DispatchItem } from './call.js';
 import type { Chain } from './chain.js';
+import type { SenderAddress } from './sender.js';
 
 /**
  * A limit on one asset (ADR-0058). `limit` is what the operator wrote, in
@@ -40,6 +41,8 @@ export function definitionFromJson(json: FlagRuleDefinitionJson): FlagRuleDefini
 export type FlagRuleSpec = {
   name: string;
   chain: Chain;
+  /** #149: the one Sender the rule applies to, by address (its identity, ADR-0060); null for every Sender on `chain`. */
+  senderAddress: SenderAddress | null;
   enabled: boolean;
   definition: FlagRuleDefinition;
 };
@@ -68,12 +71,32 @@ export type Hold = {
   release: { at: Date; reason: string } | null;
 };
 
+/** What a rule is checked against: a Managed Dispatch about to be stored, or one already stored in a preview. */
+export type HoldCandidate = {
+  chain: Chain;
+  senderAddress: SenderAddress | null;
+  items: readonly DispatchItem[];
+};
+
+/** #149: a rule scoped to a Sender applies only to that Sender's Dispatches; an unscoped one to its whole chain. */
+export function appliesTo(
+  rule: Pick<FlagRuleSpec, 'chain' | 'senderAddress'>,
+  candidate: HoldCandidate,
+): boolean {
+  return (
+    rule.chain === candidate.chain &&
+    (rule.senderAddress === null || rule.senderAddress === candidate.senderAddress)
+  );
+}
+
 /** What matching needs from the database, read before the Dispatch is stored. */
 export type FlagRuleFacts = {
   /** Recipients, by `addressKey`, with a confirmed payment from this engine on the chain. */
   confirmedRecipients: ReadonlySet<string>;
-  /** Per asset, in its smallest unit: payments in Managed Dispatches accepted in the last 24 hours and not cancelled. */
+  /** Per asset, in its smallest unit: payments in Managed Dispatches on the chain accepted in the last 24 hours and not cancelled. */
   acceptedVolume: ReadonlyMap<string, bigint>;
+  /** The same, from the candidate's own Sender only: what a rule scoped to it counts (#149). */
+  senderVolume: ReadonlyMap<string, bigint>;
 };
 
 export const DAILY_VOLUME_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -101,11 +124,11 @@ const sum = (payments: PaymentAt[]) => payments.reduce((total, p) => total + p.u
 const indices = (matched: { index: number }[]) => matched.map((m) => m.index);
 
 function matchingItems(
-  chain: Chain,
-  definition: FlagRuleDefinition,
-  items: readonly DispatchItem[],
+  rule: FlagRuleVersion,
+  { chain, items }: HoldCandidate,
   facts: FlagRuleFacts,
 ): number[] {
+  const { definition } = rule;
   const payments = paymentsOf(items);
   switch (definition.kind) {
     case 'item_over':
@@ -118,7 +141,8 @@ function matchingItems(
     }
     case 'daily_volume_over': {
       const ofAsset = payments.filter((p) => p.asset === definition.asset);
-      const before = facts.acceptedVolume.get(definition.asset) ?? 0n;
+      const volume = rule.senderAddress === null ? facts.acceptedVolume : facts.senderVolume;
+      const before = volume.get(definition.asset) ?? 0n;
       return ofAsset.length > 0 && before + sum(ofAsset) > definition.limitUnits
         ? indices(ofAsset)
         : [];
@@ -141,33 +165,41 @@ function matchingItems(
 /**
  * ADR-0058: every enabled rule version a Managed Dispatch's items match,
  * each with every item it matched. Amounts compare as integers in the
- * asset's smallest unit. `rules` are the chain's enabled current versions.
+ * asset's smallest unit. `rules` are enabled current versions; only those
+ * that apply to the candidate's chain and Sender are checked (#149).
  */
 export function matchFlagRules(
-  chain: Chain,
-  items: readonly DispatchItem[],
+  candidate: HoldCandidate,
   rules: readonly FlagRuleVersion[],
   facts: FlagRuleFacts,
 ): RuleMatch[] {
   return rules.flatMap((rule) => {
-    const matched = matchingItems(chain, rule.definition, items, facts);
+    if (!appliesTo(rule, candidate)) return [];
+    const matched = matchingItems(rule, candidate, facts);
     return matched.length > 0 ? [{ rule, items: matched }] : [];
   });
 }
 
-/** The database reads `matchFlagRules` needs for these items, and no more. */
+/** The database reads `matchFlagRules` needs for this candidate, and no more. */
 export function factsNeeded(
-  chain: Chain,
-  items: readonly DispatchItem[],
+  candidate: HoldCandidate,
   rules: readonly FlagRuleVersion[],
-): { recipients: string[]; assets: string[] } {
-  const payments = paymentsOf(items);
-  const definitions = rules.map((r) => r.definition);
-  const recipients = definitions.some((d) => d.kind === 'first_time_recipient')
-    ? [...new Set(payments.map((p) => addressKey(chain, p.recipient)))]
+): { recipients: string[]; chainAssets: string[]; senderAssets: string[] } {
+  const payments = paymentsOf(candidate.items);
+  const applying = rules.filter((rule) => appliesTo(rule, candidate));
+  const recipients = applying.some((r) => r.definition.kind === 'first_time_recipient')
+    ? [...new Set(payments.map((p) => addressKey(candidate.chain, p.recipient)))]
     : [];
-  const assets = definitions.flatMap((d) =>
-    d.kind === 'daily_volume_over' && payments.some((p) => p.asset === d.asset) ? [d.asset] : [],
-  );
-  return { recipients, assets: [...new Set(assets)] };
+  const volumeAssets = (scoped: boolean) => [
+    ...new Set(
+      applying.flatMap(({ definition: d, senderAddress }) =>
+        d.kind === 'daily_volume_over' &&
+        (senderAddress !== null) === scoped &&
+        payments.some((p) => p.asset === d.asset)
+          ? [d.asset]
+          : [],
+      ),
+    ),
+  ];
+  return { recipients, chainAssets: volumeAssets(false), senderAssets: volumeAssets(true) };
 }

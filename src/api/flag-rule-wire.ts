@@ -11,7 +11,17 @@ import type {
   FlagRuleVersion,
 } from '../domain/flag-rule.js';
 import { err, ok, type Result } from '../domain/result.js';
+import type { SenderAddress } from '../domain/sender.js';
 import type { AssetDecimals } from './asset-decimals.js';
+
+/** #149: the configured Senders of a chain, which a rule's `sender` names and its reads show by name. */
+export type FlagRuleSenders = {
+  sendersOf(chain: Chain): readonly { name: string; address: SenderAddress | null }[];
+  nameOf(chain: Chain, address: string): string | null;
+};
+
+/** What a rule body is checked against: the engine's configured assets and Senders. */
+export type FlagRuleConfig = { decimalsOf: AssetDecimals; senders: FlagRuleSenders };
 
 /** Each kind's own parameters: anything else in the body is refused, so a typo never goes unnoticed. */
 const PARAMETERS: Record<FlagRuleKind, readonly string[]> = {
@@ -23,7 +33,7 @@ const PARAMETERS: Record<FlagRuleKind, readonly string[]> = {
   call_target_not_allowlisted: ['addresses'],
 };
 const KINDS = Object.keys(PARAMETERS) as FlagRuleKind[];
-const COMMON = ['name', 'chain', 'enabled', 'kind', 'reason'];
+const COMMON = ['name', 'chain', 'sender', 'enabled', 'kind', 'reason'];
 
 const DECIMAL = /^(\d+)(?:\.(\d+))?$/;
 
@@ -91,11 +101,32 @@ function parseDefinition(
   }
 }
 
+/** #149: absent or null scopes the rule to every Sender on `chain`; a name, to that one Sender. */
+function parseSenderScope(
+  chain: Chain,
+  raw: unknown,
+  senders: FlagRuleSenders,
+): Result<SenderAddress | null, string> {
+  if (raw === undefined || raw === null) return ok(null);
+  if (typeof raw !== 'string') return err('sender: must be the name of a Sender, or null');
+  const configured = senders.sendersOf(chain);
+  const named = configured.find((s) => s.name === raw);
+  if (!named) {
+    const names = configured.map((s) => s.name).join(', ');
+    return err(`sender: ${chain} has no Sender named "${raw}" (${names})`);
+  }
+  if (named.address === null) return err(`sender: "${raw}" on ${chain} has no address configured`);
+  return ok(named.address);
+}
+
 /** What a rule checks, without its name or switch: all a preview needs. */
 export function parseFlagRuleCheck(
   raw: unknown,
-  decimalsOf: AssetDecimals,
-): Result<{ chain: Chain; definition: FlagRuleDefinition }, string> {
+  { decimalsOf, senders }: FlagRuleConfig,
+): Result<
+  { chain: Chain; senderAddress: SenderAddress | null; definition: FlagRuleDefinition },
+  string
+> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return err('the body must be a JSON object');
   }
@@ -108,8 +139,16 @@ export function parseFlagRuleCheck(
     (key) => !COMMON.includes(key) && !PARAMETERS[ruleKind].includes(key),
   );
   if (extra !== undefined) return err(`${extra}: not a parameter of ${ruleKind}`);
+  const senderAddress = parseSenderScope(chain as Chain, body.sender, senders);
+  if (!senderAddress.ok) return senderAddress;
   const definition = parseDefinition(ruleKind, chain as Chain, body, decimalsOf);
-  return definition.ok ? ok({ chain: chain as Chain, definition: definition.value }) : definition;
+  return definition.ok
+    ? ok({
+        chain: chain as Chain,
+        senderAddress: senderAddress.value,
+        definition: definition.value,
+      })
+    : definition;
 }
 
 /**
@@ -119,9 +158,9 @@ export function parseFlagRuleCheck(
  */
 export function parseFlagRuleSpec(
   raw: unknown,
-  decimalsOf: AssetDecimals,
+  config: FlagRuleConfig,
 ): Result<FlagRuleSpec, string> {
-  const check = parseFlagRuleCheck(raw, decimalsOf);
+  const check = parseFlagRuleCheck(raw, config);
   if (!check.ok) return check;
   const { name, enabled = true } = raw as Record<string, unknown>;
   if (typeof name !== 'string' || name.trim().length === 0) {
@@ -140,25 +179,31 @@ export function toWireDefinition(definition: FlagRuleDefinition) {
   return definition;
 }
 
-function toWireVersion(version: FlagRuleVersion) {
+function toWireVersion(version: FlagRuleVersion, senders: FlagRuleSenders) {
+  const { chain, senderAddress } = version;
   return {
     version: version.version,
     name: version.name,
-    chain: version.chain,
+    chain,
+    sender:
+      senderAddress === null
+        ? null
+        : { name: senders.nameOf(chain, senderAddress), address: senderAddress },
     enabled: version.enabled,
     ...toWireDefinition(version.definition),
     createdAt: version.createdAt.toISOString(),
   };
 }
 
-export function toWireRule(rule: FlagRule) {
-  const { createdAt, ...current } = toWireVersion(rule.current);
+/** A Sender no longer configured keeps its scope, shown by address with a null name (ADR-0060). */
+export function toWireRule(rule: FlagRule, senders: FlagRuleSenders) {
+  const { createdAt, ...current } = toWireVersion(rule.current, senders);
   return {
     ruleId: rule.id,
     ...current,
     createdAt: rule.createdAt.toISOString(),
     updatedAt: createdAt,
     deletedAt: rule.deletedAt?.toISOString() ?? null,
-    versions: rule.versions.map(toWireVersion),
+    versions: rule.versions.map((version) => toWireVersion(version, senders)),
   };
 }

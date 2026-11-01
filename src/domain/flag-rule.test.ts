@@ -7,12 +7,16 @@ import {
   type FlagRuleDefinition,
   type FlagRuleFacts,
   type FlagRuleVersion,
+  type HoldCandidate,
   matchFlagRules,
 } from './flag-rule.js';
+import type { SenderAddress } from './sender.js';
 
 const ALICE = '0x52908400098527886E0F7030069857D2E4169EE7';
 const BOB = '0x8617E340B3D01FA5F11F306F4090FD50E238070D';
 const TOKEN = '0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359';
+const PAYOUTS = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' as SenderAddress;
+const TREASURY = '0x5afE000000000000000000000000000000005AFE' as SenderAddress;
 
 const pay = (amount: string, asset = 'USDC', recipient = ALICE): DispatchItem => ({
   call: { to: TOKEN, data: '0x', value: '0' },
@@ -23,19 +27,37 @@ const call = (to: string): DispatchItem => ({
   payment: null,
 });
 
-function rule(definition: FlagRuleDefinition, chain: Chain = 'base'): FlagRuleVersion {
+function rule(
+  definition: FlagRuleDefinition,
+  chain: Chain = 'base',
+  senderAddress: SenderAddress | null = null,
+): FlagRuleVersion {
   return {
     ruleId: `rule-${definition.kind}`,
     version: 1,
     name: definition.kind,
     chain,
+    senderAddress,
     enabled: true,
     definition,
     createdAt: new Date(0),
   };
 }
 
-const noFacts: FlagRuleFacts = { confirmedRecipients: new Set(), acceptedVolume: new Map() };
+const noFacts: FlagRuleFacts = {
+  confirmedRecipients: new Set(),
+  acceptedVolume: new Map(),
+  senderVolume: new Map(),
+};
+
+const onBase = (
+  items: DispatchItem[],
+  senderAddress: SenderAddress | null = PAYOUTS,
+): HoldCandidate => ({
+  chain: 'base',
+  senderAddress,
+  items,
+});
 
 /** 5000 USDC, 6 decimals. */
 const usdc5000 = { asset: 'USDC', limit: '5000', limitUnits: 5_000_000_000n };
@@ -47,7 +69,7 @@ function matchedItems(
   items: DispatchItem[],
   facts = noFacts,
 ): number[] {
-  return matchFlagRules('base', items, [rule(definition)], facts).flatMap((m) => m.items);
+  return matchFlagRules(onBase(items), [rule(definition)], facts).flatMap((m) => m.items);
 }
 
 describe('matchFlagRules (ADR-0058)', () => {
@@ -120,7 +142,8 @@ describe('matchFlagRules (ADR-0058)', () => {
           payment: { recipient: key, asset: 'SOL', amount: '1' },
         },
       ];
-      const matches = matchFlagRules('solana', items, [rule(firstTime, 'solana')], {
+      const candidate = { chain: 'solana' as const, senderAddress: null, items };
+      const matches = matchFlagRules(candidate, [rule(firstTime, 'solana')], {
         ...noFacts,
         confirmedRecipients: new Set([key.toLowerCase()]),
       });
@@ -153,7 +176,7 @@ describe('matchFlagRules (ADR-0058)', () => {
     const items = [pay('6000000000'), pay('1', 'USDC', BOB), call(ALICE)];
 
     expect(
-      matchFlagRules('base', items, rules, noFacts).map((m) => [m.rule.ruleId, m.items]),
+      matchFlagRules(onBase(items), rules, noFacts).map((m) => [m.rule.ruleId, m.items]),
     ).toEqual([
       ['rule-item_over', [0]],
       ['rule-recipient_not_allowlisted', [1]],
@@ -165,16 +188,77 @@ describe('factsNeeded', () => {
   it('asks only for what the rules read', () => {
     const items = [pay('1', 'USDC', ALICE), pay('1', 'USDC', ALICE.toLowerCase()), call(BOB)];
 
-    expect(factsNeeded('base', items, [rule({ kind: 'item_over', ...usdc5000 })])).toEqual({
+    expect(factsNeeded(onBase(items), [rule({ kind: 'item_over', ...usdc5000 })])).toEqual({
       recipients: [],
-      assets: [],
+      chainAssets: [],
+      senderAssets: [],
     });
     expect(
-      factsNeeded('base', items, [
+      factsNeeded(onBase(items), [
         rule({ kind: 'first_time_recipient' }),
         rule({ kind: 'daily_volume_over', ...usdc5000 }),
         rule({ kind: 'daily_volume_over', ...eth1_5 }),
       ]),
-    ).toEqual({ recipients: [ALICE.toLowerCase()], assets: ['USDC'] });
+    ).toEqual({ recipients: [ALICE.toLowerCase()], chainAssets: ['USDC'], senderAssets: [] });
+  });
+
+  it("asks for a scoped rule's volume by its Sender, and nothing for another Sender's rule", () => {
+    const items = [pay('1')];
+    const rules = [
+      rule({ kind: 'daily_volume_over', ...usdc5000 }, 'base', PAYOUTS),
+      rule({ kind: 'first_time_recipient' }, 'base', TREASURY),
+    ];
+
+    expect(factsNeeded(onBase(items, PAYOUTS), rules)).toEqual({
+      recipients: [],
+      chainAssets: [],
+      senderAssets: ['USDC'],
+    });
+    expect(factsNeeded(onBase(items, TREASURY), rules)).toEqual({
+      recipients: [ALICE.toLowerCase()],
+      chainAssets: [],
+      senderAssets: [],
+    });
+  });
+});
+
+describe('Sender scope (#149)', () => {
+  const itemOver = { kind: 'item_over', ...usdc5000 } as const;
+  const big = [pay('6000000000')];
+  const matchedRules = (rules: FlagRuleVersion[], candidate: HoldCandidate, facts = noFacts) =>
+    matchFlagRules(candidate, rules, facts).map((m) => m.rule.ruleId);
+
+  it('applies a rule scoped to one Sender only to that Sender, and an unscoped one to both', () => {
+    const scoped = { ...rule(itemOver, 'base', TREASURY), ruleId: 'treasury-only' };
+    const everyone = { ...rule(itemOver), ruleId: 'every-sender' };
+
+    expect(matchedRules([scoped, everyone], onBase(big, TREASURY))).toEqual([
+      'treasury-only',
+      'every-sender',
+    ]);
+    expect(matchedRules([scoped, everyone], onBase(big, PAYOUTS))).toEqual(['every-sender']);
+  });
+
+  it('never applies a scoped rule to a Dispatch stored with no Sender', () => {
+    expect(matchedRules([rule(itemOver, 'base', TREASURY)], onBase(big, null))).toEqual([]);
+  });
+
+  it("counts a scoped daily volume rule against its own Sender's volume, not the chain's", () => {
+    const dailyOver = { kind: 'daily_volume_over', ...usdc5000 } as const;
+    const facts: FlagRuleFacts = {
+      ...noFacts,
+      acceptedVolume: new Map([['USDC', 9_000_000_000n]]),
+      senderVolume: new Map([['USDC', 1_000_000_000n]]),
+    };
+    const payment = [pay('1000000000')];
+
+    expect(matchedRules([rule(dailyOver, 'base', PAYOUTS)], onBase(payment), facts)).toEqual([]);
+    expect(matchedRules([rule(dailyOver)], onBase(payment), facts)).toEqual([
+      'rule-daily_volume_over',
+    ]);
+    const nearLimit = { ...facts, senderVolume: new Map([['USDC', 4_000_000_001n]]) };
+    expect(matchedRules([rule(dailyOver, 'base', PAYOUTS)], onBase(payment), nearLimit)).toEqual([
+      'rule-daily_volume_over',
+    ]);
   });
 });

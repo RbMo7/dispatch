@@ -910,7 +910,7 @@ paths:
         whole history. Either token can read.
 
         Every Managed Dispatch is checked against the current version of each enabled rule on its
-        chain when it is submitted, after every other check passes. The check reads only the
+        chain that applies to its Sender when it is submitted, after every other check passes. The check reads only the
         engine's own database, never a chain. If any rule matches, the whole Dispatch is stored
         `held`. Editing or deleting a rule never re-checks or releases a Dispatch already held.
       security:
@@ -938,6 +938,7 @@ paths:
                         version: 1
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -949,6 +950,7 @@ paths:
                           - version: 1
                             name: Large USDC payment
                             chain: base
+                            sender: null
                             enabled: true
                             kind: item_over
                             asset: USDC
@@ -969,6 +971,11 @@ paths:
         decimal places than the asset has. `asset` must be one the engine knows on that chain, and
         each of `addresses` must be valid on it. Base addresses are stored checksummed and compared
         without regard to case. Any field that is not the rule kind's own is a `400`.
+
+        `sender` scopes the rule to one named Sender on its chain, so it checks only the Dispatches
+        that Sender pays. Without it, the rule checks every Sender on the chain. The rule stores the
+        Sender's address, so renaming the Sender keeps the scope. A scoped `daily_volume_over` counts
+        only that Sender's Dispatches.
       security:
         - operatorToken: []
       requestBody:
@@ -981,6 +988,12 @@ paths:
               itemOverUsdc:
                 summary: Hold any USDC payment over 5,000
                 value: { name: Large USDC payment, chain: base, kind: item_over, asset: USDC, limit: '5000', reason: finance asked for a second look over 5k }
+              treasuryEth:
+                summary: Hold the treasury Sender's ETH payments over 0.75
+                value: { name: Large treasury ETH, chain: base, sender: treasury, kind: item_over, asset: ETH, limit: '0.75' }
+              unknownSender:
+                summary: A Sender the chain does not have
+                value: { name: Large USDC payment, chain: base, sender: ops, kind: item_over, asset: USDC, limit: '5000' }
               tooPrecise:
                 summary: A limit with more decimals than the asset
                 value: { name: Large USDC payment, chain: base, kind: item_over, asset: USDC, limit: '1.0000001' }
@@ -1008,6 +1021,7 @@ paths:
                     version: 1
                     name: Large USDC payment
                     chain: base
+                    sender: null
                     enabled: true
                     kind: item_over
                     asset: USDC
@@ -1019,11 +1033,37 @@ paths:
                       - version: 1
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
                         limit: '5000'
                         createdAt: '2026-11-01T02:13:50.118Z'
+                treasuryEth:
+                  summary: A rule scoped to one Sender
+                  value:
+                    ruleId: 0c5e7b41-93d2-4f8a-b6e0-71a2d4c9f358
+                    version: 1
+                    name: Large treasury ETH
+                    chain: base
+                    sender: { name: treasury, address: '0x5afe000000000000000000000000000000005afe' }
+                    enabled: true
+                    kind: item_over
+                    asset: ETH
+                    limit: '0.75'
+                    createdAt: '2026-11-01T02:14:07.562Z'
+                    updatedAt: '2026-11-01T02:14:07.562Z'
+                    deletedAt: null
+                    versions:
+                      - version: 1
+                        name: Large treasury ETH
+                        chain: base
+                        sender: { name: treasury, address: '0x5afe000000000000000000000000000000005afe' }
+                        enabled: true
+                        kind: item_over
+                        asset: ETH
+                        limit: '0.75'
+                        createdAt: '2026-11-01T02:14:07.562Z'
         '400':
           description: The rule is invalid. `error` names the field at fault.
           content:
@@ -1031,6 +1071,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainError'
               examples:
+                unknownSender:
+                  summary: A Sender the chain does not have
+                  value: { error: 'sender: base has no Sender named "ops" (payouts, treasury)' }
                 tooPrecise:
                   summary: A limit with more decimals than the asset
                   value: { error: 'limit: USDC has 6 decimal places, so "1.0000001" is too precise' }
@@ -1049,7 +1092,8 @@ paths:
       summary: Preview a Flag Rule
       description: |
         Says how many of the last 30 days' Managed Dispatches on the rule's chain a rule would have
-        held, before you switch it on. Nothing is saved and nothing is written to the activity
+        held, before you switch it on. A rule with a `sender` looks only at that Sender's
+        Dispatches. Nothing is saved and nothing is written to the activity
         record. The body is a rule as for Create a Flag Rule; `name`, `enabled` and `reason` are
         optional and ignored.
 
@@ -1073,6 +1117,9 @@ paths:
               dispatchTotalEth:
                 summary: A Dispatch paying more than 1.5 ETH in all
                 value: { chain: base, kind: dispatch_total_over, asset: ETH, limit: '1.5' }
+              treasuryAnyEth:
+                summary: Any ETH payment from the treasury Sender over 0.0001
+                value: { chain: base, sender: treasury, kind: item_over, asset: ETH, limit: '0.0001' }
               firstTimeRecipient:
                 summary: A recipient never paid before
                 value: { chain: solana, kind: first_time_recipient }
@@ -1099,6 +1146,16 @@ paths:
                 dispatchTotalEth:
                   summary: Nothing over the limit
                   value: { from: '2026-10-02T02:20:11.402Z', to: '2026-11-01T02:20:11.402Z', scanned: 4, capped: false, wouldHold: 0, examples: [] }
+                treasuryAnyEth:
+                  summary: The treasury's one Dispatch paid more
+                  value:
+                    from: '2026-10-02T02:20:11.402Z'
+                    to: '2026-11-01T02:20:11.402Z'
+                    scanned: 1
+                    capped: false
+                    wouldHold: 1
+                    examples:
+                      - { dispatchId: 3e9f1a72-c45b-4d08-8e6a-0b7d2f5c1a94, createdAt: '2026-11-01T02:12:48.931Z', items: [0] }
                 firstTimeRecipient:
                   summary: Every Dispatch paid someone new
                   value:
@@ -1167,6 +1224,7 @@ paths:
                     version: 1
                     name: Large USDC payment
                     chain: base
+                    sender: null
                     enabled: true
                     kind: item_over
                     asset: USDC
@@ -1178,6 +1236,7 @@ paths:
                       - version: 1
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -1233,6 +1292,7 @@ paths:
                     version: 2
                     name: Large USDC payment
                     chain: base
+                    sender: null
                     enabled: true
                     kind: item_over
                     asset: USDC
@@ -1244,6 +1304,7 @@ paths:
                       - version: 1
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -1252,6 +1313,7 @@ paths:
                       - version: 2
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -1322,6 +1384,7 @@ paths:
                     version: 2
                     name: Large USDC payment
                     chain: base
+                    sender: null
                     enabled: true
                     kind: item_over
                     asset: USDC
@@ -1333,6 +1396,7 @@ paths:
                       - version: 1
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -1341,6 +1405,7 @@ paths:
                       - version: 2
                         name: Large USDC payment
                         chain: base
+                        sender: null
                         enabled: true
                         kind: item_over
                         asset: USDC
@@ -2398,6 +2463,26 @@ components:
         - $ref: '#/components/schemas/FirstTimeRecipientDefinition'
         - $ref: '#/components/schemas/AllowlistDefinition'
 
+    FlagRuleSenderName:
+      type: [string, 'null']
+      description: |
+        The name of one Sender on the rule's chain, to check only the Dispatches it pays. Omitted or
+        `null`, the rule checks every Sender on the chain.
+
+    FlagRuleScope:
+      description: |
+        The one Sender the rule checks, or `null` for every Sender on its chain. The rule keeps the
+        Sender's address, so `name` follows a rename, and is `null` when no configured Sender has
+        the address any more.
+      oneOf:
+        - type: 'null'
+        - type: object
+          additionalProperties: false
+          required: [name, address]
+          properties:
+            name: { type: [string, 'null'] }
+            address: { type: string }
+
     FlagRuleCheck:
       type: object
       required: [chain, kind]
@@ -2405,6 +2490,7 @@ components:
         - $ref: '#/components/schemas/FlagRuleDefinition'
       properties:
         chain: { $ref: '#/components/schemas/Chain' }
+        sender: { $ref: '#/components/schemas/FlagRuleSenderName' }
         name: { type: string }
         enabled: { type: boolean }
         reason: { type: string }
@@ -2418,19 +2504,21 @@ components:
       properties:
         name: { type: string, minLength: 1, description: A name for people. The console and the `hold` block show it. }
         chain: { $ref: '#/components/schemas/Chain' }
+        sender: { $ref: '#/components/schemas/FlagRuleSenderName' }
         enabled: { type: boolean, default: true, description: A disabled rule is kept but matches nothing. }
         reason: { type: string, minLength: 1, description: Why, kept in the activity record. }
       unevaluatedProperties: false
 
     FlagRuleVersion:
       type: object
-      required: [version, name, chain, enabled, kind, createdAt]
+      required: [version, name, chain, sender, enabled, kind, createdAt]
       allOf:
         - $ref: '#/components/schemas/FlagRuleDefinition'
       properties:
         version: { type: integer, minimum: 1 }
         name: { type: string }
         chain: { $ref: '#/components/schemas/Chain' }
+        sender: { $ref: '#/components/schemas/FlagRuleScope' }
         enabled: { type: boolean }
         createdAt: { type: string, format: date-time, description: When this version was written. }
       unevaluatedProperties: false
@@ -2438,7 +2526,7 @@ components:
     FlagRule:
       type: object
       description: The current version at the top level, and every version, oldest first, in `versions`.
-      required: [ruleId, version, name, chain, enabled, kind, createdAt, updatedAt, deletedAt, versions]
+      required: [ruleId, version, name, chain, sender, enabled, kind, createdAt, updatedAt, deletedAt, versions]
       allOf:
         - $ref: '#/components/schemas/FlagRuleDefinition'
       properties:
@@ -2446,6 +2534,7 @@ components:
         version: { type: integer, minimum: 1 }
         name: { type: string }
         chain: { $ref: '#/components/schemas/Chain' }
+        sender: { $ref: '#/components/schemas/FlagRuleScope' }
         enabled: { type: boolean }
         createdAt: { type: string, format: date-time, description: When version 1 was written. }
         updatedAt: { type: string, format: date-time, description: When the current version was written. }

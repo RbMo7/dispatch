@@ -174,6 +174,7 @@ function toVersionRow(ruleId: string, version: number, spec: FlagRuleSpec) {
     version,
     name: spec.name,
     chain: spec.chain,
+    senderAddress: spec.senderAddress,
     enabled: spec.enabled,
     definition: definitionToJson(spec.definition),
   };
@@ -185,6 +186,7 @@ function toFlagRuleVersion(row: typeof flagRuleVersions.$inferSelect): FlagRuleV
     version: row.version,
     name: row.name,
     chain: row.chain as Chain,
+    senderAddress: row.senderAddress as SenderAddress | null,
     enabled: row.enabled,
     definition: definitionFromJson(row.definition),
     createdAt: row.createdAt,
@@ -566,7 +568,12 @@ export class PostgresDispatchStore implements DispatchStore {
     return new Map(rows.map((r) => [r.recipient, r.first]));
   }
 
-  async acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+  async acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>> {
     if (assets.length === 0) return new Map();
     const rows = await this.db.execute<{ asset: string; total: string }>(sql`
       select item -> 'payment' ->> 'asset' as asset,
@@ -575,6 +582,7 @@ export class PostgresDispatchStore implements DispatchStore {
       where ${dispatches.chain} = ${chain}
         and ${dispatches.createdAt} >= ${since.toISOString()}::timestamptz
         and ${dispatches.status} <> 'cancelled'
+        and ${senderAddress === undefined ? sql`true` : sql`${dispatches.senderAddress} = ${senderAddress}`}
         and item -> 'payment' ->> 'asset' in (${sql.join(
           assets.map((a) => sql`${a}`),
           sql`, `,

@@ -272,7 +272,11 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
         bulkCall: bulkCallPlan?.bulkCall ?? null,
         senderAddress: sender.value.address,
-        hold: await findHoldMatches(store, chain, translated, new Date()),
+        hold: await findHoldMatches(
+          store,
+          { chain, senderAddress: sender.value.address, items: translated },
+          new Date(),
+        ),
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });
