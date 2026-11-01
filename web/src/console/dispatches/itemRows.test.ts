@@ -21,7 +21,9 @@ const shape = (rows: ReturnType<typeof itemRows>) =>
   rows.map((row) =>
     row.kind === 'bundle'
       ? `bundle ${row.hash} x${row.count}${row.expanded ? '' : ' collapsed'}`
-      : `${row.bundled ? '  ' : ''}#${row.item.index}`,
+      : row.kind === 'error'
+        ? `  why #${row.item.index}`
+        : `${row.bundled ? '  ' : ''}#${row.item.index}`,
   );
 
 describe('the Items table rows', () => {
@@ -41,6 +43,26 @@ describe('the Items table rows', () => {
     const items = Array.from({ length: 21 }, (_, i) => item(i, 'big'));
     expect(shape(itemRows(items, new Set()))).toEqual(['bundle big x21 collapsed']);
     expect(itemRows(items, new Set(['big']))).toHaveLength(22);
+  });
+
+  it('follows an item that has an error with a row saying why, bundled or not', () => {
+    const reverted = { code: 'CHAIN_REJECTED', message: 'reverted: always reverts' };
+    const items = [
+      item(0, 'a'),
+      { ...item(1, 'b', 'failed'), error: reverted },
+      { ...item(2, 'c', 'failed'), error: reverted },
+      { ...item(3, 'c', 'failed'), error: reverted },
+    ];
+    expect(shape(itemRows(items, new Set()))).toEqual([
+      '#0',
+      '#1',
+      '  why #1',
+      'bundle c x2',
+      '  #2',
+      '  why #2',
+      '  #3',
+      '  why #3',
+    ]);
   });
 
   it('counts statuses for the chips and filters by status and search together', () => {

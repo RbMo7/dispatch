@@ -155,7 +155,7 @@ export const CATALOGUE = {
     fix: ({ detail }, ctx) => (detail?.asset ? addAssetLink(detail.asset, ctx.chain) : null),
   },
   CHAIN_REJECTED: {
-    title: 'Refused by the chain',
+    title: 'Not valid on the chain',
     line: ({ detail }) => (detail?.reason ? `Reverted: ${detail.reason}` : null),
     text: (error) =>
       error.detail?.reason
