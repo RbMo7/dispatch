@@ -71,6 +71,22 @@ describe('signer keys new', () => {
     expect(second.stderr).toContain('a key named "sender" already exists');
     expect(readKeyFile(first.dir, 'sender').curve).toBe('ed25519');
   });
+
+  it('refuses a passphrase that does not open the keys already in the keystore', async () => {
+    const first = await run(['new', '--curve', 'ed25519', '--name', 'sender']);
+    const wrong = await run(['new', '--curve', 'secp256k1', '--name', 'second'], {
+      dir: first.dir,
+      env: { SIGNER_KEYSTORE_PASSPHRASE: 'another passphrase' },
+    });
+    const right = await run(['new', '--curve', 'secp256k1', '--name', 'second'], {
+      dir: first.dir,
+    });
+
+    expect(wrong).toMatchObject({ code: 1, stdout: '' });
+    expect(wrong.stderr).toContain('the passphrase does not open "sender"');
+    expect(right.code).toBe(0);
+    expect(readdirSync(first.dir).sort()).toEqual(['second.json', 'sender.json']);
+  });
 });
 
 describe('signer keys import', () => {

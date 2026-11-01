@@ -5,6 +5,7 @@ import { keystoreDir, keystorePassphrase } from './backends/local.js';
 import {
   assertKeyName,
   assertValidKey,
+  decryptKey,
   encryptKey,
   generateKey,
   KeystoreError,
@@ -72,6 +73,23 @@ function parseHexKey(text: string): Buffer {
   return Buffer.from(hex, 'hex');
 }
 
+/**
+ * The Signer opens its whole keystore with one passphrase, so a key added
+ * under another one would stop it at startup. Checked against one existing
+ * key, before anything is written.
+ */
+function assertOpensKeystore(dir: string, passphrase: string): void {
+  const [existing] = listKeys(dir);
+  if (!existing) return;
+  try {
+    decryptKey(readKeyFile(dir, existing.name), passphrase);
+  } catch {
+    throw new KeystoreError(
+      `the passphrase does not open "${existing.name}", already in this keystore; the Signer uses one passphrase for every key in it`,
+    );
+  }
+}
+
 /** Runs one `signer keys` command; resolves to the process exit code. */
 export async function runKeys(args: string[], io: KeysIo): Promise<number> {
   const [command, ...rest] = args;
@@ -83,6 +101,7 @@ export async function runKeys(args: string[], io: KeysIo): Promise<number> {
         if (!curve || !name) throw new UsageError('--curve and --name are required');
         const dir = keystoreDir(io.env);
         const passphrase = keystorePassphrase(io.env);
+        assertOpensKeystore(dir, passphrase);
         const key = command === 'new' ? generateKey(curve) : parseHexKey(await io.readStdin());
         assertValidKey(curve, key);
         const file = encryptKey(curve, key, passphrase);

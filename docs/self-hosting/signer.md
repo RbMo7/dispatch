@@ -119,7 +119,7 @@ Each key is one encrypted file in a directory. scrypt turns your passphrase into
    read -rs KEY && printf %s "$KEY" | pnpm signer keys import --curve secp256k1 --name base-sender; unset KEY
    ```
 
-   `pnpm signer keys list` shows each key's name, curve and address, and `pnpm signer keys export-public --name <name>` prints one address. Neither needs the passphrase. The CLI has no command that prints or exports a private key, and it never overwrites a key.
+   `pnpm signer keys list` shows each key's name, curve and address, and `pnpm signer keys export-public --name <name>` prints one address. Neither needs the passphrase. The CLI has no command that prints or exports a private key, and it never overwrites a key. The Signer opens every key in the directory with one passphrase, so `new` and `import` refuse a passphrase that does not open the keys already there.
 
 3. Use the address it printed in the config file, with `"backend": "local"` and the key's name as `keyRef`. See [Write the config file](#3-write-the-config-file).
 

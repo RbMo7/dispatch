@@ -111,7 +111,7 @@ For development only. It reads raw private keys from a JSON file, `{ "secp256k1"
 
 - `SIGNER_KEYFILE`: the file's path.
 
-`keys.dev.json` and `signer.config.dev.json` are the committed dev keys and their config, which Compose and `pnpm dev` use.
+`keys.dev.json` and `signer.config.dev.json` are the committed dev keys and their config. `pnpm dev` uses them, and so does Compose until `pnpm dispatch init` sets `SIGNER_CONFIG` to its own config in `signer/local/`.
 
 ### `local`
 
@@ -120,7 +120,7 @@ Keys in encrypted files, decrypted into process memory at startup (ADR-0050). Th
 - `SIGNER_KEYSTORE_DIR`: the directory of key files.
 - `SIGNER_KEYSTORE_PASSPHRASE` or `SIGNER_KEYSTORE_PASSPHRASE_FILE` (one of the two): the passphrase, or the path to a file holding it.
 
-Manage keys with `pnpm signer keys new|import|list|export-public` (`node dist/cli.js keys ...` in the image). `new` and `import` print only the address; `import` reads the private key (64 hex characters) from stdin. No command prints a private key. [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#local) has the walkthrough.
+Manage keys with `pnpm signer keys new|import|list|export-public` (`node dist/cli.js keys ...` in the image). `new` and `import` print only the address; `import` reads the private key (64 hex characters) from stdin. No command prints a private key, and `new` and `import` refuse a passphrase that does not open the keys already in the directory. [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#local) has the walkthrough.
 
 The Signer refuses to start on a wrong passphrase, a damaged file or an address that differs from the config. Losing the passphrase loses the keys.
 

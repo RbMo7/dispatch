@@ -38,6 +38,7 @@
     "viem": "^2.56.9"
   },
   "devDependencies": {
+    "@clack/prompts": "^1.8.1",
     "@eslint/js": "^9.37.0",
     "@noble/curves": "^2.4.0",
     "@types/node": "^22.15.29",
