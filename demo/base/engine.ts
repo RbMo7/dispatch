@@ -125,6 +125,7 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
     defaultRetryPolicy: false,
     assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('this demo serves no setup checks')),
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const baseUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;

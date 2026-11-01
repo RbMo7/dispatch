@@ -20,6 +20,7 @@ import {
   dispatches,
   proposals,
   relayDispatches,
+  setupChecks,
   signerKeys,
   transactions,
 } from '../db/schema.js';
@@ -34,6 +35,7 @@ import type {
   ProposalPhase,
 } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
+import type { Area } from '../setup/check.js';
 import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -52,6 +54,7 @@ import type {
   NewUnproposedInput,
   ProposalOutcome,
   ProposalPatch,
+  SetupCheckRecord,
   SignerKeyRecord,
 } from './dispatch-store.js';
 
@@ -964,6 +967,61 @@ export class PostgresDispatchStore implements DispatchStore {
       read: row.pins ? { pins: row.pins } : { error: row.error ?? 'no read recorded' },
       readAt: row.readAt,
     };
+  }
+
+  async recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void> {
+    const rows = records.map(({ id, area, title, chain, result, ranAt }) => ({
+      id,
+      area,
+      title,
+      chain: chain ?? null,
+      status: result.status,
+      finding: result.finding,
+      fix: result.status === 'pass' ? null : result.fix,
+      ranAt,
+    }));
+    await this.db.transaction(async (tx) => {
+      await tx.delete(setupChecks).where(
+        rows.length > 0
+          ? notInArray(
+              setupChecks.id,
+              rows.map((row) => row.id),
+            )
+          : undefined,
+      );
+      if (rows.length === 0) return;
+      await tx
+        .insert(setupChecks)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: setupChecks.id,
+          set: {
+            area: sql`excluded.area`,
+            title: sql`excluded.title`,
+            chain: sql`excluded.chain`,
+            status: sql`excluded.status`,
+            finding: sql`excluded.finding`,
+            fix: sql`excluded.fix`,
+            ranAt: sql`excluded.ran_at`,
+          },
+        });
+    });
+  }
+
+  async listSetupChecks(): Promise<SetupCheckRecord[]> {
+    const rows = await this.db.select().from(setupChecks).orderBy(setupChecks.id);
+    return rows.map((row) => ({
+      id: row.id,
+      area: row.area as Area,
+      title: row.title,
+      ...(row.chain ? { chain: row.chain as Chain } : {}),
+      // The table's check constraint keeps `fix` null exactly when the check passed.
+      result:
+        row.fix === null
+          ? { status: 'pass', finding: row.finding }
+          : { status: row.status as 'warn' | 'fail', finding: row.finding, fix: row.fix },
+      ranAt: row.ranAt,
+    }));
   }
 
   /** A Proposal's Calls in position order, one per Call (never a REPLACED or DROPPED version). `lock` takes row locks, inside a transaction. */

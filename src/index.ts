@@ -1,4 +1,5 @@
 import { cachedSenders } from './api/senders.js';
+import { setupReader } from './api/setup-routes.js';
 import { buildApp } from './app.js';
 import {
   assetDecimalsFromConfig,
@@ -9,6 +10,8 @@ import {
 import { config } from './config.js';
 import { db } from './db/client.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
+import { apiSetupChecks } from './setup/api-checks.js';
+import { postgresReads } from './setup/postgres-reads.js';
 
 const chainRegistry = await loadChainRegistry();
 const assetDecimals = assetDecimalsFromConfig();
@@ -24,6 +27,15 @@ const app = buildApp({
     await senderConfigsFor(chainRegistry, assetDecimals),
     senderReadsFor(chainRegistry, store),
   ),
+  readSetup: setupReader({
+    enabledChains: [...chainRegistry.handlers.keys()],
+    listRecorded: () => store.listSetupChecks(),
+    runApiChecks: apiSetupChecks(
+      process.env,
+      postgresReads(config.databaseUrl, config.rpcTimeoutMs),
+    ),
+    now: () => new Date(),
+  }),
 });
 
 app.listen({ port: config.port, host: '0.0.0.0' }).catch((err: unknown) => {

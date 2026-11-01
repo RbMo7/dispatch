@@ -134,6 +134,7 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       defaultRetryPolicy: false,
       assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
   }, 180_000);
 

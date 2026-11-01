@@ -19,6 +19,7 @@ import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type { Fix } from '../setup/check.js';
 import type { SignerPins } from '../signer/client.js';
 
 export const dispatches = pgTable(
@@ -222,5 +223,24 @@ export const signerKeys = pgTable(
   (table) => [
     primaryKey({ columns: [table.chain, table.address] }),
     check('signer_keys_pins_or_error', sql`(${table.pins} IS NULL) <> (${table.error} IS NULL)`),
+  ],
+);
+
+/** The worker's latest run of its setup checks: one row per check, and per chain for a chain check. */
+export const setupChecks = pgTable(
+  'setup_checks',
+  {
+    /** The check's id, with `:<chain>` for a chain check, as `doctor --json` names it. */
+    id: text('id').primaryKey(),
+    area: text('area').notNull(),
+    title: text('title').notNull(),
+    chain: text('chain'),
+    status: text('status').notNull(),
+    finding: text('finding').notNull(),
+    fix: jsonb('fix').$type<Fix>(),
+    ranAt: timestamp('ran_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check('setup_checks_fix_unless_pass', sql`(${table.status} = 'pass') = (${table.fix} IS NULL)`),
   ],
 );

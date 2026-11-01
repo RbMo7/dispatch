@@ -17,8 +17,12 @@ export const AREAS = [
 ] as const;
 export type Area = (typeof AREAS)[number];
 
-/** `cli` is `doctor` (and later `init`); `worker` is the worker's periodic run, recorded for the console. */
-export type Place = 'cli' | 'worker';
+/**
+ * `cli` is `doctor` (and later `init`); `worker` is the worker's periodic run,
+ * recorded for the console; `api` is the API process, on each `GET /v1/setup`,
+ * for the checks that need no Signer and no chain (ADR-0059).
+ */
+export type Place = 'cli' | 'worker' | 'api';
 
 /** What to do about a warning or a failure. A `step` is done outside this machine, such as funding an address or adding a multisig member. */
 export type Fix = { command: string } | { setting: string; value: string } | { step: string };

@@ -9,6 +9,7 @@ import {
   dispatches,
   proposals,
   relayDispatches,
+  setupChecks,
   signerKeys,
   transactions,
 } from '../db/schema.js';
@@ -19,6 +20,7 @@ import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
+import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 
@@ -37,7 +39,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${signerKeys} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${signerKeys}, ${setupChecks} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -55,6 +57,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runListConformanceSuite(() => new PostgresDispatchStore(db));
   runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
   runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
+  runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

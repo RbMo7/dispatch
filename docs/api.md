@@ -1,6 +1,6 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel` and `GET /v1/senders`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `GET /v1/senders` and `GET /v1/setup`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
 
 ## `POST /v1/dispatch`
 
@@ -201,6 +201,54 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
 - A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error is `{ "error": "<reason>", "readAt": "…" }`, saying whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
+
+## `GET /v1/setup`
+
+The engine's setup checks, the same ones `pnpm dispatch doctor` runs, as this engine last ran them. Same `Authorization` header as above. The worker runs its checks (configuration, chain, Signer, Sender and multisig) when it starts and every five minutes, and records the latest result of each. The API runs its own on every request: the database is reachable and migrated, and the console is built. The API never calls the Signer (ADR-0059), so the Signer checks are always the worker's.
+
+```json
+{
+  "worker": { "status": "ran", "ranAt": "2026-11-01T10:05:00.000Z" },
+  "summary": { "passed": 11, "warnings": 0, "problems": 1 },
+  "checks": [
+    {
+      "id": "signer.reachable",
+      "area": "signer",
+      "title": "Reachable",
+      "ranIn": "worker",
+      "ranAt": "2026-11-01T10:05:00.000Z",
+      "status": "fail",
+      "finding": "no Signer answered at SIGNER_URL (signer:8421)",
+      "fix": { "command": "docker compose up -d signer" }
+    },
+    {
+      "id": "sender.fees:solana",
+      "area": "sender",
+      "title": "Fee balance (Solana)",
+      "chain": "solana",
+      "ranIn": "worker",
+      "ranAt": "2026-11-01T10:05:00.000Z",
+      "status": "pass",
+      "finding": "2.1500 SOL covers the 0.0034 SOL paid in fees in the last 24 hours"
+    },
+    {
+      "id": "database.migrated",
+      "area": "database",
+      "title": "Migrated",
+      "ranIn": "api",
+      "ranAt": "2026-11-01T10:07:12.000Z",
+      "status": "pass",
+      "finding": "every migration is applied"
+    }
+  ]
+}
+```
+
+- `worker.status` is `ran` with the time of its latest run, `not_run_yet` on a fresh install before the worker's first run (then `checks` holds only the API's own), or `unreadable` when the database did not answer (the API's `database.reachable` check then says why).
+- `checks` are in `doctor`'s order. `area` is `configuration`, `database`, `chain`, `signer`, `sender`, `multisig` or `console`. A check that runs once per enabled chain has `chain`, and its `id` ends in `:<chain>`. A recorded check for a chain the engine no longer enables is left out.
+- `status` is `pass`, `warn` or `fail`. `finding` is one line. A `warn` or `fail` has `fix`, one of `{ "command": "<to run>" }`, `{ "setting": "<variable>", "value": "<what to set it to>" }` or `{ "step": "<what to do outside this machine>" }`, such as funding an address.
+- `ranIn` is `worker` or `api`, and `ranAt` is when that check last ran: a worker check can be up to five minutes old.
+- No finding holds a secret: a URL is cut down to its host, and a token is named, never shown.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 
