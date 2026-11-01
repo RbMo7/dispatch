@@ -123,6 +123,8 @@ For `CHAIN_REJECTED` on a Base transaction that reverted, the engine replays it 
 }
 ```
 
+For `NONCE_ALREADY_USED`, `chainDetail` is `{ "reason": "nonce_taken", "resends": 3 }`. Each time before that, the engine found the transaction's nonce used by another sender and its own hash never landed, so nothing was paid. It sent the same Calls again with a fresh nonce, and the item stayed `broadcasting`. The item's timeline shows each of those as a `dropped` entry whose `error` has the same code and `chainDetail` `{ "reason": "nonce_taken", "nonce": 3124, "resentNonce": 3127 }`, and the console's Flow tab shows it as "Nonce 3124 was taken by another sender. Sent again with nonce 3127." The worker also records the nonces another sender used, and warns about them in the [`sender.exclusive`](./self-hosting/doctor.md#used-only-by-this-engine) setup check and in `foreignActivity` on [List Senders](./openapi.yaml#list-senders). Only one engine may send from a Sender ([One engine per Sender](./self-hosting/configuration.md#one-engine-per-sender)).
+
 For `APPROVAL_TIMEOUT`, `chainDetail` is `{ "deadlineAt": "<ISO 8601>" }`. For an `APPROVAL_REJECTED` the engine found while watching a Proposal, it is `{ "status": "rejected" }`, `"cancelled"` or `"stale"`.
 
 ## Failed before or after signing

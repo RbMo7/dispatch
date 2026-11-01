@@ -80,6 +80,12 @@ The engine refuses to start, and lists every problem at once, when:
 
 A chain in the file but not in `ENABLED_CHAINS` is not read. Without `default`, every Dispatch on the chain must name its Sender, or it is refused with `SENDER_REQUIRED`. If any per-chain Sender variable, such as `SOLANA_SENDER_ADDRESS` or `BASE_SAFE_ADDRESS`, is set for a chain the file describes, the engine logs a warning that it ignores it.
 
+### One engine per Sender
+
+A Sender belongs to one engine. Run two engines with the same Base key, or send from the Sender's wallet with a wallet app or a script, and each sender uses nonces the others counted on. The engine copes, but it is not a way to run: when another sender takes a payment's nonce, the engine sends the payment again with a fresh nonce, payments can land out of order, and after 3 taken nonces the payment fails with [`NONCE_ALREADY_USED`](../errors.md#error-codes). The worker records every nonce of the wallet that it did not send. The [`sender.exclusive`](./doctor.md#used-only-by-this-engine) check warns about them in `doctor` and on the console's Setup page, and `GET /v1/senders` shows them as `foreignActivity`.
+
+To split work, give one engine several named Senders in this file, each with its own key, and name the Sender on each Dispatch ([Send from more than one Sender](../guides/multiple-senders.md)). Two engines that must both pay on Base each need a Sender of their own.
+
 ## Solana
 
 Read only when `solana` is in `ENABLED_CHAINS`.
