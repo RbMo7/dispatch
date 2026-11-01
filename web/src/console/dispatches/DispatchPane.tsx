@@ -51,6 +51,8 @@ interface DispatchPaneProps {
   explorerHref: string | null;
   /** The footer's right side: Cancel while unclaimed, or where to reject an open Proposal. */
   action?: ReactNode;
+  /** A Multisig Sender's Proposals and their Approvers, shown in Items and Details. */
+  approvals?: ReactNode;
   onClose: () => void;
 }
 
@@ -128,6 +130,7 @@ export function DispatchPane(props: DispatchPaneProps) {
               )}
               {tab === 'items' && items && (
                 <ItemsTab
+                  approvals={props.approvals}
                   items={items}
                   filter={props.itemFilter}
                   onFilter={props.onItemFilter}
@@ -137,14 +140,22 @@ export function DispatchPane(props: DispatchPaneProps) {
                 />
               )}
               {tab === 'details' && (
-                <dl className={`${styles.kv} ${styles.tabBody}`}>
-                  {props.details.map(({ label, value }) => (
-                    <div key={label} className={styles.kvRow}>
-                      <dt>{label}</dt>
-                      <dd>{value}</dd>
+                <div className={styles.tabBody}>
+                  <dl className={styles.kv}>
+                    {props.details.map(({ label, value }) => (
+                      <div key={label} className={styles.kvRow}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {props.approvals && (
+                    <div className={styles.detailsApprovals}>
+                      <h3 className={styles.detailsHeading}>Approval</h3>
+                      {props.approvals}
                     </div>
-                  ))}
-                </dl>
+                  )}
+                </div>
               )}
             </Tabs>
           )}

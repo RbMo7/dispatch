@@ -65,10 +65,24 @@ export type ChainRef =
 
 export type ApprovalState = 'awaiting' | 'approved' | 'approved_after_deadline';
 
+/** Safe has no per-owner rejection, so a Safe owner is only ever approved or pending. */
+export type ApproverDecision = 'approved' | 'rejected' | 'pending';
+
+export interface Approver {
+  address: string;
+  /** The senders file's name for this Approver, or null when it gives none. */
+  label: string | null;
+  decision: ApproverDecision;
+}
+
 export interface Approval {
   state: ApprovalState;
   approvals: number;
   threshold: number;
+  /** Approvals still needed. */
+  remaining: number;
+  /** Everyone who can approve, in the multisig's order. Empty until the engine first reads the Proposal. */
+  approvers: Approver[];
   deadline: Date;
   chainRef: ChainRef;
 }

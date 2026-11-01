@@ -169,6 +169,13 @@
       "when": 1793545923927,
       "tag": "0023_known_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793548993573,
+      "tag": "0024_proposal_approvers",
+      "breakpoints": true
     }
   ]
 }

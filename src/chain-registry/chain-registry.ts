@@ -3,6 +3,7 @@ import { CHAINS, type Chain } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { DEFAULT_SENDER_NAME, type SenderAddress, type SenderName } from '../domain/sender.js';
+import { type ApproverLabels, sameAddressKey } from '../senders-config.js';
 
 function isChain(value: string): value is Chain {
   return (CHAINS as readonly string[]).includes(value);
@@ -52,6 +53,8 @@ export type RegisteredSender = {
   handler: ChainHandler;
   /** A Multisig Sender's multisig: the Squads multisig account, or the Safe (then the same as `address`). */
   multisig?: { address: string; approvalDeadlineMs: number; approvalRewatchWindowMs: number };
+  /** A Multisig Sender's names for its Approvers, from the senders file. */
+  approverLabels?: ApproverLabels;
 };
 
 /**
@@ -165,5 +168,11 @@ export class ChainRegistry {
   /** The configured name of the Sender at `address` on `chain`, or null when no Sender there has it (any more). */
   nameOf(chain: Chain, address: string): SenderName | null {
     return this.senders.find((s) => s.chain === chain && s.address === address)?.name ?? null;
+  }
+
+  /** The senders file's label for an Approver of the Sender at `senderAddress`, or null when it gives none. */
+  approverLabel(chain: Chain, senderAddress: string, approver: string): string | null {
+    const sender = this.senders.find((s) => s.chain === chain && s.address === senderAddress);
+    return sender?.approverLabels?.[sameAddressKey(chain, approver)] ?? null;
   }
 }

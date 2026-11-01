@@ -242,6 +242,33 @@ describe('Coordinator.watchProposals: noted and open (ADR-0054)', () => {
     await coordinator.watchProposals(10);
     expect(await proposalOf(d.id)).toMatchObject({ approvals: 3, approvalState: 'approved' });
   });
+
+  it('records each Approver and their decision, and keeps the last read once the chain no longer says', async () => {
+    const { coordinator, approval, openProposal, proposalOf, advance } = setup();
+    const d = await openProposal();
+    const decided = [
+      { address: 'voter-a', decision: 'approved' },
+      { address: 'voter-b', decision: 'pending' },
+    ] as const;
+    approval.readImpl = () => Promise.resolve(ok(active({ approvers: [...decided] })));
+    await coordinator.watchProposals(10);
+    expect((await proposalOf(d.id)).approvers).toEqual(decided);
+    advance(DEFAULT_WATCH_INTERVAL_MS);
+
+    // A closed Squads proposal is executed, but its account and so its votes are gone.
+    approval.readImpl = () =>
+      Promise.resolve(
+        ok({
+          status: 'executed',
+          approvals: 2,
+          threshold: 2,
+          executedHash: 'x',
+          executable: false,
+        }),
+      );
+    await coordinator.watchProposals(10);
+    expect(await proposalOf(d.id)).toMatchObject({ phase: 'resolved', approvers: decided });
+  });
 });
 
 describe('Coordinator.watchProposals: approve, execute, confirm', () => {

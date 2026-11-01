@@ -2419,7 +2419,7 @@ components:
       type: object
       additionalProperties: false
       description: Only on an item of a Multisig Sender whose Call is in a Proposal.
-      required: [state, approvals, threshold, deadline, expected, chainRef]
+      required: [state, approvals, threshold, remaining, approvers, deadline, expected, chainRef]
       properties:
         state:
           type: string
@@ -2427,6 +2427,22 @@ components:
           description: '`awaiting` is below the threshold. `approved` has reached it. `approved_after_deadline` was approved too late, and the engine will not execute it.'
         approvals: { type: integer, description: The votes so far. }
         threshold: { type: integer, description: The votes needed. }
+        remaining: { type: integer, minimum: 0, description: 'Approvals still needed: `threshold` less `approvals`, never below 0.' }
+        approvers:
+          type: array
+          description: |
+            Every member who can approve, in the multisig's own order, as the engine last read them: the
+            Squads members with the Vote permission, or the Safe's owners. Empty until the engine first
+            reads the Proposal. On Squads, a vote to reject or to cancel reads `rejected`. A Safe has no
+            per-owner rejection, so a Safe owner is `approved` or `pending`.
+          items:
+            type: object
+            additionalProperties: false
+            required: [address, decision]
+            properties:
+              address: { type: string }
+              label: { type: string, description: 'The name the senders file gives this Approver (`approvers`). Left out when it gives none.' }
+              decision: { type: string, enum: [approved, rejected, pending] }
         deadline: { type: string, format: date-time, description: When the engine stops waiting. After it the item is `abandoned` with `APPROVAL_TIMEOUT`. }
         expected:
           type: object

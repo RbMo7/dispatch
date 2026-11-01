@@ -14,6 +14,13 @@ import { buildTimeline } from './timeline.js';
 /** ADR-0060: the configured name of the Sender at an address, or null when no Sender has it any more. */
 export type SenderNameOf = (chain: Chain, address: string) => string | null;
 
+/** The senders file's label for an Approver of a Multisig Sender, or null when it gives none. */
+export type ApproverLabelOf = (
+  chain: Chain,
+  senderAddress: string,
+  approver: string,
+) => string | null;
+
 /**
  * ADR-0060: who pays, by address (its identity) and by name. Absent only for
  * a Dispatch stored with no Sender, which its chain's default takes over.
@@ -111,11 +118,16 @@ function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf
     : { type: 'call' as const, programId: call.programId };
 }
 
-function toWireApproval(proposal: Proposal) {
+function toWireApproval(proposal: Proposal, labelOf: ApproverLabelOf | undefined) {
   return {
     state: proposal.approvalState,
     approvals: proposal.approvals,
     threshold: proposal.threshold,
+    remaining: Math.max(0, proposal.threshold - proposal.approvals),
+    approvers: proposal.approvers.map(({ address, decision }) => {
+      const label = labelOf?.(proposal.chain, proposal.senderAddress, address) ?? null;
+      return { address, ...(label === null ? {} : { label }), decision };
+    }),
     deadline: proposal.deadlineAt.toISOString(),
     expected: proposal.expected,
     chainRef: proposal.chainRef,
@@ -142,7 +154,7 @@ export async function readDispatchView(
   store: DispatchStore,
   id: string,
   decimalsOf: AssetDecimals,
-  options: { timeline?: boolean; nameOf?: SenderNameOf } = {},
+  options: { timeline?: boolean; nameOf?: SenderNameOf; approverLabelOf?: ApproverLabelOf } = {},
 ) {
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
@@ -173,7 +185,7 @@ export async function readDispatchView(
         status: toWireItemStatus(transaction.status),
         transactionHash: transaction.hash,
         error: transaction.error,
-        ...(proposal ? { approval: toWireApproval(proposal) } : {}),
+        ...(proposal ? { approval: toWireApproval(proposal, options.approverLabelOf) } : {}),
       };
     });
 

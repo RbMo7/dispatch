@@ -19,7 +19,12 @@ import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
-import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type {
+  Approver,
+  ChainProposalRef,
+  CommittedAmounts,
+  ExpectedTotals,
+} from '../domain/proposal.js';
 import type { Fix } from '../setup/check.js';
 import type { SignerPins } from '../signer/client.js';
 
@@ -128,6 +133,7 @@ export const proposals = pgTable(
     approvalState: text('approval_state').notNull().default('awaiting'),
     approvals: integer('approvals').notNull().default(0),
     threshold: integer('threshold').notNull(),
+    approvers: jsonb('approvers').notNull().default([]).$type<Approver[]>(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
     /** The multisig's time lock. */
     executeAfter: timestamp('execute_after', { withTimezone: true }),

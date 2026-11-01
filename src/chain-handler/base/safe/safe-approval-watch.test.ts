@@ -167,8 +167,33 @@ describe('readProposal', () => {
       status: 'active',
       approvals: 0,
       threshold: 2,
+      approvers: owners.map((owner) => ({ address: owner.address, decision: 'pending' })),
       executable: false,
     });
+  });
+
+  it('lists every owner in on-chain order: a valid confirmation or approveHash is approved, anything else pending', async () => {
+    const t = await setup();
+    t.node.state.approved = new Set([owners[2]!.address.toLowerCase()]);
+    t.respond(
+      serviceTransaction({
+        safeTxHash: t.hash,
+        nonce: 12,
+        confirmations: [
+          ...(await t.confirm([0])),
+          // Claimed for owner 1 but signed by an outsider: never counted as owner 1's approval.
+          {
+            owner: owners[1]!.address,
+            signature: await ecdsaSignature(`0x${'f4'.padStart(64, '0')}`, t.hash),
+          },
+        ],
+      }),
+    );
+    expect(expectOk(await t.subject.readProposal(t.ref)).approvers).toEqual([
+      { address: owners[0]!.address, decision: 'approved' },
+      { address: owners[1]!.address, decision: 'pending' },
+      { address: owners[2]!.address, decision: 'approved' },
+    ]);
   });
 
   it('is approved by ECDSA signatures alone, once the threshold is met', async () => {

@@ -925,6 +925,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         phase: 'noted',
         approvalState: 'awaiting',
         approvals: 0,
+        approvers: [],
         timedOutAt: null,
         resolvedAt: null,
         closeState: null,

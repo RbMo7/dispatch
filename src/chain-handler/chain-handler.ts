@@ -4,6 +4,7 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { NewKnownAsset } from '../domain/known-asset.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
+  Approver,
   ChainProposalRef,
   CommittedAmounts,
   ExpectedTotals,
@@ -127,6 +128,8 @@ export type ProposalSnapshot = {
   status: 'unknown' | 'active' | 'approved' | 'rejected' | 'executed' | 'cancelled' | 'stale';
   approvals: number;
   threshold: number;
+  /** Every member who can approve and how they stand. Absent when the chain no longer says, as for a closed Squads proposal: the last read stands. */
+  approvers?: Approver[];
   executeAfter?: Date;
   /** Set when the status is `executed`: the hash that executed it. */
   executedHash?: string;

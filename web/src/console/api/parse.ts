@@ -2,6 +2,7 @@ import type { Money } from '../../domain/assets';
 import { CHAINS, type Chain, type Network } from '../../domain/chains';
 import type {
   Approval,
+  Approver,
   ChainRef,
   DispatchDetail,
   DispatchError,
@@ -151,6 +152,16 @@ function chainRef(value: unknown, path: string): ChainRef {
 }
 
 const APPROVAL_STATES = ['awaiting', 'approved', 'approved_after_deadline'] as const;
+const DECISIONS = ['approved', 'rejected', 'pending'] as const;
+
+function approver(value: unknown, path: string): Approver {
+  const json = object(value, path);
+  return {
+    address: string(json.address, `${path}.address`),
+    label: json.label === undefined ? null : string(json.label, `${path}.label`),
+    decision: oneOf(json.decision, DECISIONS, `${path}.decision`),
+  };
+}
 
 function approval(value: unknown, path: string): Approval | null {
   if (value === undefined) return null;
@@ -159,6 +170,10 @@ function approval(value: unknown, path: string): Approval | null {
     state: oneOf(json.state, APPROVAL_STATES, `${path}.state`),
     approvals: integer(json.approvals, `${path}.approvals`),
     threshold: integer(json.threshold, `${path}.threshold`),
+    remaining: integer(json.remaining, `${path}.remaining`),
+    approvers: array(json.approvers, `${path}.approvers`).map((entry, index) =>
+      approver(entry, `${path}.approvers[${index}]`),
+    ),
     deadline: date(json.deadline, `${path}.deadline`),
     chainRef: chainRef(json.chainRef, `${path}.chainRef`),
   };

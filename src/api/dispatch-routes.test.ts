@@ -1117,7 +1117,17 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       calls.map((c) => c.id),
       'prop',
     );
-    await store.updateProposal(proposal.id, { phase: 'open', approvals: 1 });
+    const approvers = [
+      { address: 'voter-1', decision: 'approved' },
+      { address: 'voter-2', decision: 'pending' },
+      { address: 'voter-3', decision: 'rejected' },
+      { address: 'voter-4', decision: 'pending' },
+    ] as const;
+    await store.updateProposal(proposal.id, {
+      phase: 'open',
+      approvals: 1,
+      approvers: [...approvers],
+    });
 
     const body = await get();
 
@@ -1126,6 +1136,8 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       state: 'awaiting',
       approvals: 1,
       threshold: 3,
+      remaining: 2,
+      approvers,
       deadline: '2026-10-24T12:00:00.000Z',
       expected,
       chainRef: squadsRef,

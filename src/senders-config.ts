@@ -25,6 +25,7 @@ export type SolanaSenderSpec = {
   name: SenderName;
   address: string;
   settings: RawSolanaMultisigSettings;
+  approverLabels: ApproverLabels;
 };
 
 export type BaseSenderSpec = {
@@ -34,9 +35,15 @@ export type BaseSenderSpec = {
   /** The key the Base handler signs and owns the nonce for: the Sender in `single` mode, the executor in `safe` mode. */
   handlerAddress: string;
   settings: RawBaseSafeSettings;
+  approverLabels: ApproverLabels;
 };
 
 export type SenderSpec = SolanaSenderSpec | BaseSenderSpec;
+
+/** A Multisig Sender's names for its Approvers, keyed by `sameAddressKey`. Empty for a plain Sender. */
+export type ApproverLabels = Readonly<Record<string, string>>;
+
+const MAX_APPROVER_LABEL = 40;
 
 export type ChainSendersSpec = {
   chain: Chain;
@@ -113,6 +120,7 @@ function sendersFromVariables(
               name: DEFAULT_SENDER_NAME,
               address: solanaSenderAddress(variables.solana),
               settings: variables.solana,
+              approverLabels: {},
             }
           : {
               chain,
@@ -120,6 +128,7 @@ function sendersFromVariables(
               address: baseSenderAddress(variables.base),
               handlerAddress: baseHandlerAddress(variables.base),
               settings: variables.base,
+              approverLabels: {},
             };
       return { chain, default: DEFAULT_SENDER_NAME, senders: [sender] };
     }),
@@ -136,7 +145,7 @@ const FIELDS: Record<string, { required: readonly string[]; optional: readonly s
   single: { required: ['address'], optional: ['mode'] },
   squads: {
     required: ['mode', 'multisig', 'memberKey'],
-    optional: ['approvalDeadlineMs', 'approvalRewatchWindowMs'],
+    optional: ['approvalDeadlineMs', 'approvalRewatchWindowMs', 'approvers'],
   },
   safe: {
     required: ['mode', 'safe', 'executor'],
@@ -146,6 +155,7 @@ const FIELDS: Record<string, { required: readonly string[]; optional: readonly s
       'approvalDeadlineMs',
       'approvalRewatchWindowMs',
       'bundleLimit',
+      'approvers',
     ],
   },
 };
@@ -155,7 +165,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Chain-canonical spelling, for comparing addresses: EVM addresses are case-insensitive. */
-function sameAddressKey(chain: Chain, address: string): string {
+export function sameAddressKey(chain: Chain, address: string): string {
   return chain === 'base' ? address.toLowerCase() : address;
 }
 
@@ -277,6 +287,42 @@ function parseSenderEntry(
     }
     return getAddress(value);
   };
+  const approverLabels = (): ApproverLabels => {
+    const value = entry.approvers;
+    if (value === undefined) return {};
+    if (!isRecord(value)) {
+      fail('approvers must be an object of Approver address to label');
+      return {};
+    }
+    const labels: Record<string, string> = {};
+    for (const [address, label] of Object.entries(value)) {
+      const valid =
+        chain === 'solana'
+          ? parsePublicKey(address) !== undefined
+          : isAddress(address, { strict: true });
+      if (!valid) {
+        fail(
+          `approvers: ${address} is not a valid ${chain === 'solana' ? 'base58 Solana ' : ''}address`,
+        );
+        continue;
+      }
+      if (
+        typeof label !== 'string' ||
+        label.trim() === '' ||
+        label.trim().length > MAX_APPROVER_LABEL
+      ) {
+        fail(`approvers: the label of ${address} must be 1 to ${MAX_APPROVER_LABEL} characters`);
+        continue;
+      }
+      const key = sameAddressKey(chain, address);
+      if (Object.hasOwn(labels, key)) {
+        fail(`approvers: ${address} is listed twice`);
+        continue;
+      }
+      labels[key] = label.trim();
+    }
+    return labels;
+  };
   let spec: SenderSpec;
   if (chain === 'solana') {
     const settings: RawSolanaMultisigSettings =
@@ -297,7 +343,13 @@ function parseSenderEntry(
             approvalDeadlineMs: '',
             approvalRewatchWindowMs: '',
           };
-    spec = { chain, name, address: solanaSenderAddress(settings), settings };
+    spec = {
+      chain,
+      name,
+      address: solanaSenderAddress(settings),
+      settings,
+      approverLabels: approverLabels(),
+    };
   } else {
     const settings: RawBaseSafeSettings =
       mode === 'safe'
@@ -329,6 +381,7 @@ function parseSenderEntry(
       address: baseSenderAddress(settings),
       handlerAddress: baseHandlerAddress(settings),
       settings,
+      approverLabels: approverLabels(),
     };
   }
   return valid ? spec : undefined;

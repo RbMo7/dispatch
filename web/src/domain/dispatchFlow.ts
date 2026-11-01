@@ -1,6 +1,8 @@
+import { approvalProgress } from './approval';
 import type { Money } from './assets';
 import { type Chain, type Network, proposalApp, proposalUrl, txLink } from './chains';
 import {
+  type Approval,
   type ApprovalState,
   type ChainRef,
   type DispatchError,
@@ -144,7 +146,7 @@ function heldFlow(base: Stage[], created: Date, clock: FlowClock): Flow {
 }
 
 /** Squads shows a Proposal by its transaction index, a Safe by its nonce. */
-function proposalName(ref: ChainRef): string {
+export function proposalName(ref: ChainRef): string {
   return ref.kind === 'squads' ? `#${ref.transactionIndex}` : `nonce ${ref.nonce}`;
 }
 
@@ -164,9 +166,11 @@ interface ProposalState {
   decidedAt: Date | null;
   timedOutAt: Date | null;
   resolved: { at: Date; outcome: 'executed' | 'rejected' | 'failed' } | null;
+  /** The latest approval block its items carry: who can approve, and how many more are needed. */
+  approval: Approval | null;
 }
 
-function proposals(timeline: readonly TimelineEntry[]): ProposalState[] {
+function proposals(timeline: readonly TimelineEntry[], items: readonly Item[]): ProposalState[] {
   return of(timeline, 'proposal_created').map((created) => {
     const id = created.proposalId;
     const approval = timeline.findLast(
@@ -189,8 +193,14 @@ function proposals(timeline: readonly TimelineEntry[]): ProposalState[] {
       decidedAt: approval?.at ?? null,
       timedOutAt: timedOut?.at ?? null,
       resolved: resolved ? { at: resolved.at, outcome: resolved.outcome } : null,
+      approval: items[created.items[0] ?? -1]?.approval ?? null,
     };
   });
+}
+
+/** A Proposal's Approvers, for its stage; nothing when the engine has not read them yet. */
+function approversOf(p: ProposalState): Pick<Stage, 'approvers'> {
+  return p.approval && p.approval.approvers.length > 0 ? { approvers: p.approval.approvers } : {};
 }
 
 function approvalStages(
@@ -199,7 +209,7 @@ function approvalStages(
   clock: FlowClock,
   network: Network,
 ): { stages: Stage[]; waiting: boolean } {
-  const all = proposals(detail.timeline);
+  const all = proposals(detail.timeline, detail.items);
   const total = detail.items.length;
   const inProposal = new Set(all.flatMap((p) => p.items)).size;
   const app = all[0] ? proposalApp(all[0].chainRef) : 'the multisig app';
@@ -241,6 +251,7 @@ function approvalStages(
         stage('failed', 'Rejected', {
           at: clock.time(p.resolved!.at),
           detail: `The Approvers rejected or cancelled it in ${app}. Nothing was paid.`,
+          ...approversOf(p),
           links: openProposal(network, p.chainRef),
         }),
       );
@@ -249,6 +260,7 @@ function approvalStages(
         stage('failed', 'Approved after the deadline', {
           ...(p.timedOutAt && { at: clock.time(p.timedOutAt) }),
           detail: `The engine will not execute it. Execute or reject it in ${app} yourself.`,
+          ...approversOf(p),
           links: openProposal(network, p.chainRef),
         }),
       );
@@ -257,24 +269,33 @@ function approvalStages(
         stage('failed', 'Timed out', {
           at: clock.time(p.timedOutAt!),
           detail: `Nobody decided by the deadline, so the engine will not execute it. It may still be approved and executed in ${app}: check there before sending it again.`,
+          ...approversOf(p),
           links: openProposal(network, p.chainRef),
         }),
       );
     } else if (awaiting.length > 0) {
-      const deadline = detail.items.find((i) => i.approval)?.approval?.deadline;
+      const deadline = p.approval?.deadline;
       stages.push(
-        stage('current', `Approvals, ${p.approvals} of ${p.threshold}`, {
-          at: 'now',
-          detail: deadline
-            ? `Deadline ${clock.time(deadline)}, in ${duration(deadline.getTime() - clock.now.getTime())}. The engine never approves.`
-            : 'The engine never approves.',
-          links: openProposal(network, p.chainRef),
-        }),
+        stage(
+          'current',
+          approvalProgress(
+            p.approval ?? { ...p, remaining: Math.max(0, p.threshold - p.approvals) },
+          ),
+          {
+            at: 'now',
+            detail: deadline
+              ? `Deadline ${clock.time(deadline)}, in ${duration(deadline.getTime() - clock.now.getTime())}. The engine never approves.`
+              : 'The engine never approves.',
+            ...approversOf(p),
+            links: openProposal(network, p.chainRef),
+          },
+        ),
       );
     } else {
       stages.push(
         stage('done', `Approved, ${p.approvals} of ${p.threshold}`, {
           ...(p.decidedAt && { at: clock.time(p.decidedAt) }),
+          ...approversOf(p),
           links: openProposal(network, p.chainRef),
         }),
       );
@@ -294,7 +315,10 @@ function approvalStages(
         detail:
           ended > 0
             ? `${n(ended)} ended without approval: ${n(timedOut.length)} timed out, ${n(rejected.length)} rejected, ${n(late.length)} approved too late.`
-            : 'The engine never approves.',
+            : next?.approval
+              ? `Next, ${proposalName(next.chainRef)}: ${approvalProgress(next.approval)}. The engine never approves.`
+              : 'The engine never approves.',
+        ...(next && approversOf(next)),
         ...(next && { links: openProposal(network, next.chainRef) }),
       },
     ),

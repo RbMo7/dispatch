@@ -11,6 +11,7 @@ import {
   type Text,
 } from '../domain/flow';
 import { Amount } from './Amount';
+import { ApproverList } from './ApproverList';
 import styles from './FlowGraph.module.css';
 import { MonoValue } from './MonoValue';
 import { StackedBar } from './StackedBar';
@@ -107,6 +108,7 @@ function StageNode({
             <TextView text={stage.detail} />
           </div>
         )}
+        {stage.approvers && <ApproverList approvers={stage.approvers} />}
         {stage.links && stage.links.length > 0 && (
           <div className={styles.links}>
             {stage.links.map((link) => (

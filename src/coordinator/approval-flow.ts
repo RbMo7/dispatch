@@ -534,6 +534,7 @@ export class ApprovalFlow {
     const current = await this.store.updateProposal(proposal.id, {
       approvals: snapshot.approvals,
       threshold: snapshot.threshold,
+      ...(snapshot.approvers && { approvers: snapshot.approvers }),
       approvalState: snapshot.status === 'approved' ? 'approved' : 'awaiting',
       executeAfter: snapshot.executeAfter ?? proposal.executeAfter,
       checkFailures: 0,
@@ -634,6 +635,10 @@ export class ApprovalFlow {
       return;
     }
     const snapshot = read.value;
+    // Recorded before any outcome, so a rejection after the deadline still shows who rejected.
+    if (snapshot.approvers) {
+      await this.store.updateProposal(proposal.id, { approvers: snapshot.approvers });
+    }
 
     if (snapshot.status === 'executed') {
       log.warn(

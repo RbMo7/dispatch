@@ -143,6 +143,7 @@ function toProposal(row: ProposalRow): Proposal {
     approvalState: row.approvalState as ApprovalState,
     approvals: row.approvals,
     threshold: row.threshold,
+    approvers: row.approvers,
     deadlineAt: row.deadlineAt,
     executeAfter: row.executeAfter,
     timedOutAt: row.timedOutAt,

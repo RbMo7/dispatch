@@ -370,6 +370,12 @@ The caller can read the proposal's state from [Get a Dispatch](../openapi.yaml#g
   "state": "awaiting",
   "approvals": 1,
   "threshold": 2,
+  "remaining": 1,
+  "approvers": [
+    { "address": "<member 1>", "label": "Priya, finance", "decision": "approved" },
+    { "address": "<member 2>", "decision": "pending" },
+    { "address": "<member 3>", "decision": "pending" }
+  ],
   "deadline": "2026-10-25T09:00:00.000Z",
   "expected": { "recipients": 120, "totals": [{ "asset": "USDC", "amount": "125000000" }] },
   "chainRef": { "kind": "squads", "multisig": "<multisig>", "proposal": "<proposal>", "transactionIndex": 42 }
@@ -377,7 +383,8 @@ The caller can read the proposal's state from [Get a Dispatch](../openapi.yaml#g
 ```
 
 - `state` is `awaiting` (not yet at the threshold), `approved` (at the threshold, waiting for any time lock, or being executed) or `approved_after_deadline` (the proposal was approved after its deadline, so the engine will not execute it: execute or reject it in the app).
-- `approvals` and `threshold` are the votes so far and the votes needed.
+- `approvals` and `threshold` are the votes so far and the votes needed. `remaining` is how many more approvals it needs.
+- `approvers` is everyone who can vote, as the engine last read the chain: on Squads the members with the Vote permission, and on Safe the owners. Each has a `decision`: `approved`, `rejected` or `pending`. On Squads a vote to reject, or to cancel an approved proposal, reads `rejected`. A Safe owner cannot reject one proposal, only replace it at the same nonce, so on Safe it is `approved` or `pending`. The list is empty until the engine first reads the proposal, and a Squads proposal that has been executed and closed keeps the list from the last read. `label` comes from the Sender's `approvers` in the senders file ([configuration](./configuration.md#the-senders-file)).
 - `deadline` is when the engine stops waiting. Vote before it. After it the engine never executes the proposal, even if it is approved ([after a timeout](#what-the-engine-does-and-does-not-do-after-a-timeout)).
 - `chainRef` is what to open in the app. On Base it is `{ "kind": "safe", "safe", "safeTxHash", "nonce" }`.
 - `expected` is the number of distinct recipients and the total per asset, in the smallest unit, that the engine says the proposal pays. Several proposals for one Dispatch each carry their own share, so your own total will be larger than any one `expected`.
