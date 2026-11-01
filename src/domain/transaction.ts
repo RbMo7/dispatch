@@ -35,7 +35,7 @@ export type Transaction = {
   /** Position of the Call within its Dispatch's items this Transaction executes. */
   callIndex: number;
   chain: Chain;
-  /** Null exactly when the Call never reached a broadcast (e.g. failed validateCall/prepare/sign) — docs/api.md's own failed-item example shows `transactionHash: null` for this case. */
+  /** Null exactly when the Call never reached a broadcast (e.g. failed validateCall/prepare/sign) — docs/openapi.yaml's own failed-item example shows `transactionHash: null` for this case. */
   hash: string | null;
   signedBytes: string | null;
   status: TransactionStatus;

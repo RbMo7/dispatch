@@ -5,7 +5,7 @@ import { idempotentCreateAtaInstruction, isTokenProgram } from './account-resolu
 
 /**
  * Translates between the engine-core-opaque `SolanaCall` shape
- * (`{programId, accounts, data}`, ADR-0018/docs/api.md) and a real
+ * (`{programId, accounts, data}`, ADR-0018/docs/openapi.yaml) and a real
  * `@solana/web3.js` `TransactionInstruction` — the one place this
  * conversion happens, so `prepare()` never repeats it inline.
  */

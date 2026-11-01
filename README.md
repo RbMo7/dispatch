@@ -4,14 +4,12 @@ An open-source, self-hosted execution engine for blockchain transactions. You ha
 
 The documentation is in [`docs/`](./docs/), and the API process serves it as a site at `/docs`:
 
-- [`docs/concept.md`](./docs/concept.md): what this is, and what it is not
-- [`docs/quickstart.md`](./docs/quickstart.md): from a clone to a confirmed payment on Base Sepolia or Solana devnet
-- [`docs/concepts/`](./docs/concepts/): Managed and Relay Dispatch, Senders and the Signer, statuses, the Funding Check, Retry Policy, multisig
-- [`docs/api.md`](./docs/api.md) and [`docs/api/`](./docs/api/): the HTTP API, every route, request, response and error code
-- [`docs/signer.md`](./docs/signer.md), [`docs/multisig.md`](./docs/multisig.md) and [`docs/guides/`](./docs/guides/): the Signer, a Treasury or a Multisig Sender (Squads on Solana, Safe on Base), Relay Dispatch, Bulk Call, the console
-- [`docs/operations/`](./docs/operations/): every environment variable, troubleshooting by symptom, and the mainnet checklist
+- [`docs/about.md`](./docs/about.md) and the rest of Get started: what this is, the [Quickstart](./docs/quickstart.md) to a confirmed payment on Base Sepolia or Solana devnet, authentication, requests, errors, the Dispatch lifecycle, pagination and polling
+- [`docs/guides/`](./docs/guides/): task walk-throughs, from a batch of payments to Relay, Bulk Call, a multisig, cancelling and tracking
+- [`docs/openapi.yaml`](./docs/openapi.yaml): the HTTP API, every route, parameter, status and body, with real examples. The site's reference pages are built from it, and `src/api/openapi.contract.test.ts` holds the routes to it
+- [`docs/self-hosting/`](./docs/self-hosting/): install, every environment variable, the Signer, a multisig Sender, the console, troubleshooting and the mainnet checklist
 - [`CONTEXT.md`](./CONTEXT.md): vocabulary (Managed vs Relay Dispatch, Sender, Signer, Call, Retry Policy, and the rest)
-- [`docs/adr/`](./docs/adr/): every architectural decision and why it was made
+- [`docs/adr/`](./docs/adr/): every architectural decision and why it was made. These stay in the repo and are not part of the site
 - [`AGENTS.md`](./AGENTS.md): how this repo's specs, tickets and conventions fit together
 
 ## Status
@@ -34,7 +32,7 @@ Across both, every transaction is written down before it is sent, so a crash, a 
 
 Not built yet: webhooks (callers poll today, ADR-0023), Ethereum L1 as its own chain (ADR-0035), a Sender Pool of several sending wallets (ADR-0016), and Solana durable nonces (ADR-0007, #44).
 
-**Before mainnet:** follow [`docs/signer.md`](./docs/signer.md), the Signer runbook, and clear [`docs/operations/mainnet-checklist.md`](./docs/operations/mainnet-checklist.md). The Signer, `signer/`, picks a key backend per address from its config (`SIGNER_CONFIG`), enforces a per-address policy, and audits every request as a JSON line on stdout. Its production backends are `privy` (Privy server wallets) and `aws-kms`, for both chains; `keyfile` reads raw keys from a file and is for development only ([`signer/README.md`](./signer/README.md)). Compose runs it with the dev keys (`signer/signer.config.dev.json`) and a dev bearer token shared with the engine (`SIGNER_AUTH_TOKEN`); replace the keys, the config and the token in any real deployment. The KMS backend has not yet been run against real KMS (#61), and neither chain has been run on mainnet yet.
+**Before mainnet:** follow [`docs/self-hosting/signer.md`](./docs/self-hosting/signer.md), the Signer runbook, and clear [`docs/self-hosting/mainnet.md`](./docs/self-hosting/mainnet.md). The Signer, `signer/`, picks a key backend per address from its config (`SIGNER_CONFIG`), enforces a per-address policy, and audits every request as a JSON line on stdout. Its production backends are `privy` (Privy server wallets) and `aws-kms`, for both chains; `keyfile` reads raw keys from a file and is for development only ([`signer/README.md`](./signer/README.md)). Compose runs it with the dev keys (`signer/signer.config.dev.json`) and a dev bearer token shared with the engine (`SIGNER_AUTH_TOKEN`); replace the keys, the config and the token in any real deployment. The KMS backend has not yet been run against real KMS (#61), and neither chain has been run on mainnet yet.
 
 ## Running it
 
@@ -62,7 +60,7 @@ pnpm dev:api        # in one terminal
 pnpm dev:worker     # in another
 ```
 
-Configuration is environment variables, documented in [`docs/operations/configuration.md`](./docs/operations/configuration.md) and [`.env.example`](./.env.example). A local `.env` is loaded automatically, and real environment variables win. Chains are switched on by `ENABLED_CHAINS` (ADR-0019); `BASE_TRACE_RPC_URL` (a tracing-capable RPC) is only needed for Bulk Call's `allowFailure: true`. On Solana mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`.
+Configuration is environment variables, documented in [`docs/self-hosting/configuration.md`](./docs/self-hosting/configuration.md) and [`.env.example`](./.env.example). A local `.env` is loaded automatically, and real environment variables win. Chains are switched on by `ENABLED_CHAINS` (ADR-0019); `BASE_TRACE_RPC_URL` (a tracing-capable RPC) is only needed for Bulk Call's `allowFailure: true`. On Solana mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`.
 
 ## Console
 

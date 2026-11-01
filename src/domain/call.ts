@@ -21,7 +21,7 @@ export type SolanaCall = {
 /**
  * The primitive a Chain Handler's prepare() consumes (ADR-0018) — opaque,
  * caller-encoded data plus the destination shape that chain family expects,
- * exactly as pinned in docs/api.md: {to,data,value} on evm, {programId,
+ * exactly as pinned in docs/openapi.yaml: {to,data,value} on evm, {programId,
  * accounts,data} on solana, with no chain tag of its own (a Dispatch's own
  * `chain` already says which shape its items are). A Payment is translated
  * into a Call at the API layer; a Chain Handler never sees Payment.

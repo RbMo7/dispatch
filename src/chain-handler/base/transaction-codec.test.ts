@@ -57,7 +57,7 @@ describe('signedTransactionHex (#13)', () => {
     expect(signedTransactionHex('0x02f86a')).toBe('0x02f86a');
   });
 
-  it("decodes base64 raw bytes (docs/api.md's Relay Dispatch wire format) to 0x-hex", () => {
+  it("decodes base64 raw bytes (docs/openapi.yaml's Relay Dispatch wire format) to 0x-hex", () => {
     expect(signedTransactionHex(Buffer.from([0x02, 0xf8, 0x6a]).toString('base64'))).toBe(
       '0x02f86a',
     );

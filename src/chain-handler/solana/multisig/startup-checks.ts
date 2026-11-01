@@ -163,7 +163,7 @@ export async function runMultisigStartupChecks(
   } else if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the member',
-      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/signer.md), pinned to the multisig by policy`,
+      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/self-hosting/signer.md), pinned to the multisig by policy`,
     );
   } else if (signer.kind === 'unreachable') {
     fail(
@@ -175,7 +175,7 @@ export async function runMultisigStartupChecks(
   } else if (signer.pins.allowedMultisig !== config.multisigAddress) {
     fail(
       'signer pins the multisig',
-      `the Signer's policy for ${config.memberAddress} pins ${signer.pins.allowedMultisig ?? 'no multisig'}, but SOLANA_MULTISIG_ADDRESS is ${config.multisigAddress}: set policy.allowedMultisig for this key in the Signer's config (docs/signer.md)`,
+      `the Signer's policy for ${config.memberAddress} pins ${signer.pins.allowedMultisig ?? 'no multisig'}, but SOLANA_MULTISIG_ADDRESS is ${config.multisigAddress}: set policy.allowedMultisig for this key in the Signer's config (docs/self-hosting/signer.md)`,
     );
   }
 

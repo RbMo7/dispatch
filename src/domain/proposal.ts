@@ -23,7 +23,7 @@ export type ProposalPhase = 'noted' | 'open' | 'executing' | 'timed_out' | 'reso
  */
 export type CloseState = 'pending' | 'closed' | 'abandoned';
 
-/** What the Approvers have done so far (docs/api.md's `approval.state`). `approved_after_deadline` is only ever seen on a `timed_out` Proposal (ADR-0053). */
+/** What the Approvers have done so far (docs/openapi.yaml's `approval.state`). `approved_after_deadline` is only ever seen on a `timed_out` Proposal (ADR-0053). */
 export type ApprovalState = 'awaiting' | 'approved' | 'approved_after_deadline';
 
 /** The chain's own handle for a Proposal — what an operator opens in the multisig's app. */
