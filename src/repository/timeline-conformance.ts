@@ -82,6 +82,7 @@ export function runTimelineConformanceSuite(makeStore: () => DispatchStore): voi
         { kind: 'created' },
         { kind: 'claimed' },
         { kind: 'written', hash: 'h1', items: [0], replaces: null },
+        { kind: 'sent', hash: 'h1', items: [0] },
         {
           kind: 'attempt',
           hash: 'h1',
@@ -326,6 +327,72 @@ export function runTimelineConformanceSuite(makeStore: () => DispatchStore): voi
         { kind: 'written', hash: 'relay-hash', items: [0], replaces: null },
         { kind: 'sent', hash: 'relay-hash', items: [0] },
         { kind: 'confirmed', hash: 'relay-hash', items: [0] },
+      ]);
+    });
+
+    it('puts a Solana send before its confirmation when the poll confirms it while the send still waits (#169)', async () => {
+      const store = makeStore();
+      const dispatch = await store.createDispatch({
+        chain: 'solana',
+        idempotencyKey: randomUUID(),
+        items: [solanaItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(CHAINS, 10);
+      await tick();
+      const [row] = await store.createTransactions([
+        { dispatchId: dispatch.id, callIndex: 0, chain: 'solana', signedBytes: 's', hash: 'sig' },
+      ]);
+      await tick();
+      const acceptedAt = new Date();
+      await tick();
+      await store.markConfirmed(row!.id);
+      await tick();
+      await store.recordSent(row!.id, 'sig', acceptedAt);
+
+      expect(story(await timelineOf(store, dispatch.id)).slice(2)).toEqual([
+        { kind: 'written', hash: 'sig', items: [0], replaces: null },
+        { kind: 'sent', hash: 'sig', items: [0] },
+        { kind: 'confirmed', hash: 'sig', items: [0] },
+      ]);
+    });
+
+    it('keeps the claim at the moment it happened, however often the claim is renewed (#169)', async () => {
+      const store = makeStore();
+      const dispatch = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID(),
+        items: [baseItem, baseItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(CHAINS, 10);
+      await tick();
+      const first = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 0,
+        chain: 'base',
+        signedBytes: 'b1',
+        hash: 'h1',
+      });
+      await store.recordSent(first.id, 'h1');
+      await tick();
+      await store.touchClaims([dispatch.id]);
+      const second = await store.createTransaction({
+        dispatchId: dispatch.id,
+        callIndex: 1,
+        chain: 'base',
+        signedBytes: 'b2',
+        hash: 'h2',
+      });
+      await store.recordSent(second.id, 'h2');
+
+      expect(story(await timelineOf(store, dispatch.id)).map((e) => e.kind)).toEqual([
+        'created',
+        'claimed',
+        'written',
+        'sent',
+        'written',
+        'sent',
       ]);
     });
 

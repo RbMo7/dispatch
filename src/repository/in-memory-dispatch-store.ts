@@ -94,6 +94,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       bulkCall: input.bulkCall ?? null,
       createdAt: this.now(),
       claimedAt: null,
+      firstClaimedAt: null,
       cancelledAt: null,
       senderAddress: input.senderAddress ?? null,
     };
@@ -137,7 +138,13 @@ export class InMemoryDispatchStore implements DispatchStore {
       if (claimed.length >= limit) break;
       if (dispatch.status !== 'queued' || !chains.includes(dispatch.chain)) continue;
 
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      const now = this.now();
+      const broadcasting: Dispatch = {
+        ...dispatch,
+        status: 'broadcasting',
+        claimedAt: now,
+        firstClaimedAt: now,
+      };
       this.dispatches.set(dispatch.id, broadcasting);
       claimed.push(broadcasting);
     }
@@ -156,7 +163,13 @@ export class InMemoryDispatchStore implements DispatchStore {
       ) {
         continue;
       }
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      const now = this.now();
+      const broadcasting: Dispatch = {
+        ...dispatch,
+        status: 'broadcasting',
+        claimedAt: now,
+        firstClaimedAt: now,
+      };
       this.dispatches.set(dispatch.id, broadcasting);
       claimed.push(broadcasting);
     }
@@ -413,6 +426,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: this.now(),
+      sentAt: null,
       replacesTransactionId: null,
       feeBumpAttempts: 0,
       proposalId: null,
@@ -462,6 +476,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: this.now(),
       lastCheckedAt: null,
       lastBroadcastAt: null,
+      sentAt: null,
       replacesTransactionId: null,
       feeBumpAttempts: 0,
       proposalId: null,
@@ -571,6 +586,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: now,
+      sentAt: null,
       replacesTransactionId: predecessor.id,
       feeBumpAttempts: predecessor.feeBumpAttempts + 1,
     };
@@ -591,10 +607,15 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
-  recordSent(transactionId: string, hash: string): Promise<void> {
+  recordSent(transactionId: string, hash: string, sentAt = this.now()): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, hash, lastBroadcastAt: this.now() });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        hash,
+        lastBroadcastAt: sentAt,
+        sentAt: transaction.sentAt ?? sentAt,
+      });
     });
   }
 
@@ -746,6 +767,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       transactionId: null,
       createdAt: this.now(),
       claimedAt: null,
+      firstClaimedAt: null,
       cancelledAt: null,
     };
     this.relayDispatches.set(relayDispatch.id, relayDispatch);
@@ -809,6 +831,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         ...relayDispatch,
         status: 'broadcasting',
         claimedAt: this.now(),
+        firstClaimedAt: this.now(),
       };
       this.relayDispatches.set(relayDispatch.id, broadcasting);
       claimed.push(broadcasting);
@@ -852,6 +875,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         failedAt: null,
         lastCheckedAt: null,
         lastBroadcastAt: null,
+        sentAt: null,
         replacesTransactionId: null,
         feeBumpAttempts: 0,
         proposalId: null,
@@ -1040,6 +1064,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           signedBytes,
           broadcastAt: now,
           lastBroadcastAt: now,
+          sentAt: null,
         };
         this.transactions.set(call.id, executing);
         return executing;
@@ -1068,6 +1093,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
+          sentAt: null,
         };
         this.transactions.set(call.id, reopened);
         return reopened;

@@ -41,6 +41,8 @@ export const dispatches = pgTable(
     bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
     /** #20 (ADR-0041): when a worker last claimed this row — a claim still `broadcasting` long after is reclaimed. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** #169: when a worker first claimed this row; `claimed_at` is re-stamped as a heartbeat. */
+    firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }),
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -93,6 +95,8 @@ export const transactions = pgTable(
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
     /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
     lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+    /** #169: when a node first accepted these bytes; a Solana send returns only once it confirms, so this is not when the row was marked sent. */
+    sentAt: timestamp('sent_at', { withTimezone: true }),
     /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
     replacesTransactionId: uuid('replaces_transaction_id'),
     /** #9: fee-bump attempts made for this Call so far, failed ones included. */
@@ -215,6 +219,8 @@ export const relayDispatches = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /** #20: when a worker last claimed this row. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** #169: when a worker first claimed this row. */
+    firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }),
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   },

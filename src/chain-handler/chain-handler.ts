@@ -55,6 +55,8 @@ export type BundleSlotStatus = { status: ChainStatus; detail?: unknown };
 
 export type BroadcastResult = {
   hash: string;
+  /** #169: when the node accepted the bytes, for a broadcast that waits on past that (Solana waits for confirmation). Absent: just now. */
+  sentAt?: Date;
 };
 
 /**

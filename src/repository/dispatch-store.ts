@@ -315,7 +315,7 @@ export interface DispatchStore {
   /** #9: records a failed (or exhausted) fee-bump attempt against the cap without creating a replacement. */
   setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void>;
   /** #20 (ADR-0041): a Transaction written down before sending was actually sent — stamps lastBroadcastAt, and takes the hash the chain reported if it differs (Solana re-signing with a fresh blockhash). */
-  recordSent(transactionId: string, hash: string): Promise<void>;
+  recordSent(transactionId: string, hash: string, sentAt?: Date): Promise<void>;
   /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
   undoReplacement(replacementId: string): Promise<void>;
   /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` (or was never stamped) and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */

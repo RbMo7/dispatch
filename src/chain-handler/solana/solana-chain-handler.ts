@@ -770,8 +770,10 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       });
     }
 
+    let sentAt = new Date();
     try {
       await this.send(raw);
+      sentAt = new Date();
       this.logger.debug({ hash }, 'sendRawTransaction accepted');
     } catch (cause) {
       if (!record || !isBlockhashExpiryMessage(extractMessage(cause))) {
@@ -781,12 +783,12 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       this.logger.warn({ hash }, 'blockhash not found at send — waiting on its validity window');
     }
     // A durable-nonce transaction never expires: polling, not this wait, resolves it.
-    if (!record) return ok({ hash });
+    if (!record) return ok({ hash, sentAt });
 
     const outcome = await this.waitUntilConfirmedOrExpired(hash, record, raw);
     if (outcome.type === 'confirmed') {
       this.logger.info({ hash }, 'transaction confirmed');
-      return ok({ hash });
+      return ok({ hash, sentAt });
     }
     if (outcome.type === 'failed') {
       this.logger.warn({ hash, chainDetail: outcome.chainDetail }, 'transaction reported failed');
@@ -804,7 +806,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       return err(outcome.error);
     }
     this.logger.warn({ hash }, 'blockhash expired before confirmation — handing off to getStatus');
-    return ok({ hash });
+    return ok({ hash, sentAt });
   }
 
   private send(raw: Buffer): Promise<string> {

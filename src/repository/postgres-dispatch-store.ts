@@ -101,6 +101,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     bulkCall: row.bulkCall ?? null,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
     senderAddress: row.senderAddress as SenderAddress | null,
   };
@@ -122,6 +123,7 @@ function toTransaction(row: TransactionRow): Transaction {
     failedAt: row.failedAt,
     lastCheckedAt: row.lastCheckedAt,
     lastBroadcastAt: row.lastBroadcastAt,
+    sentAt: row.sentAt,
     replacesTransactionId: row.replacesTransactionId,
     feeBumpAttempts: row.feeBumpAttempts,
     proposalId: row.proposalId,
@@ -173,6 +175,7 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
     transactionId: row.transactionId,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
   };
 }
@@ -391,9 +394,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(dispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             dispatches.id,
@@ -885,10 +889,14 @@ export class PostgresDispatchStore implements DispatchStore {
       .where(eq(transactions.id, transactionId));
   }
 
-  async recordSent(transactionId: string, hash: string): Promise<void> {
+  async recordSent(transactionId: string, hash: string, sentAt = new Date()): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ hash, lastBroadcastAt: new Date() })
+      .set({
+        hash,
+        lastBroadcastAt: sentAt,
+        sentAt: sql`coalesce(${transactions.sentAt}, ${sentAt.toISOString()}::timestamptz)`,
+      })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -1314,7 +1322,14 @@ export class PostgresDispatchStore implements DispatchStore {
       await tx.update(proposals).set({ phase: 'executing' }).where(eq(proposals.id, proposalId));
       const rows = await tx
         .update(transactions)
-        .set({ status: 'PENDING', hash, signedBytes, broadcastAt: now, lastBroadcastAt: now })
+        .set({
+          status: 'PENDING',
+          hash,
+          signedBytes,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+          sentAt: null,
+        })
         .where(
           inArray(
             transactions.id,
@@ -1349,6 +1364,7 @@ export class PostgresDispatchStore implements DispatchStore {
           failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
+          sentAt: null,
         })
         .where(
           inArray(
@@ -1674,9 +1690,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(relayDispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             relayDispatches.id,

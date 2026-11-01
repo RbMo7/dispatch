@@ -134,15 +134,15 @@ The first version was resent once (`attempt`), replaced by a higher-fee version 
 
 ## Every kind of entry
 
-Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of the items an entry is about, several when one transaction carries a bundle. A Relay Dispatch's one transaction is item `0`. `hash` names one version of a transaction. The timeline is rebuilt from times the engine already stores, oldest first.
+Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of the items an entry is about, several when one transaction carries a bundle. A Relay Dispatch's one transaction is item `0`. `hash` names one version of a transaction. The timeline is rebuilt from times the engine stores as each step happens, oldest first.
 
 | `kind` | When | Extra fields |
 | --- | --- | --- |
 | `created` | `POST /v1/dispatch` stored it. | |
-| `claimed` | The worker last claimed it. A large Dispatch re-stamps this as it sends, so it can come after its first transactions. | |
+| `claimed` | The worker first claimed it. | |
 | `cancelled` | It was [cancelled](./cancel.md). | |
 | `written` | A transaction version was signed and written down, before it was sent. | `hash`, `items`, `replaces`: the hash it replaced, or `null` |
-| `sent` | The node accepted it. Shown only while the version has no `attempt`, because a resend overwrites this moment. | `hash`, `items` |
+| `sent` | The node first accepted it. Later resends are `attempt` entries. | `hash`, `items` |
 | `attempt` | The same bytes were sent again. `error` is the node's answer if it refused. | `hash`, `items`, `error` |
 | `replaced` | A newer version took its place: a fee bump. It may still be the one that lands. | `hash`, `items`, `by` |
 | `dropped` | It can never land: a newer version replaced it after expiry, or another version settled the item. | `hash`, `items`, `by` or `null` |

@@ -483,7 +483,9 @@ export class Coordinator {
     }
 
     log.info({ hash: broadcastResult.value.hash }, 'call(s) broadcast succeeded');
-    for (const row of noted) await this.store.recordSent(row.id, broadcastResult.value.hash);
+    for (const row of noted) {
+      await this.store.recordSent(row.id, broadcastResult.value.hash, broadcastResult.value.sentAt);
+    }
   }
 
   /**
@@ -869,7 +871,11 @@ export class Coordinator {
 
     if (broadcastResult?.ok === true) {
       log.info({ hash: broadcastResult.value.hash }, 'relay dispatch broadcast succeeded');
-      await this.store.recordSent(transaction.id, broadcastResult.value.hash);
+      await this.store.recordSent(
+        transaction.id,
+        broadcastResult.value.hash,
+        broadcastResult.value.sentAt,
+      );
       return;
     }
     const error = broadcastResult?.error ?? {
@@ -1160,7 +1166,7 @@ export class Coordinator {
         'fee-bump: replacement broadcast at the same nonce',
       );
       for (const replacement of replacements)
-        await this.store.recordSent(replacement.id, broadcast.value.hash);
+        await this.store.recordSent(replacement.id, broadcast.value.hash, broadcast.value.sentAt);
       return 'bumped';
     }
     if (isAmbiguousBroadcastFailure(broadcast.error)) {
@@ -1277,7 +1283,7 @@ export class Coordinator {
       if (broadcast.ok) {
         log.info({ resubmittedHash: broadcast.value.hash }, 'expired transaction resubmitted');
         for (const replacement of replacements)
-          await this.store.recordSent(replacement.id, broadcast.value.hash);
+          await this.store.recordSent(replacement.id, broadcast.value.hash, broadcast.value.sentAt);
       } else if (isAmbiguousBroadcastFailure(broadcast.error)) {
         log.warn({ error: broadcast.error }, 'resubmission broadcast ambiguous — left PENDING');
       } else {
