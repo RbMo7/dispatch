@@ -102,7 +102,6 @@ const INVALID_RECIPIENT = {
 export interface GalleryDispatch extends DispatchSummary {
   label: string;
   when: string;
-  sender: string;
   retryPolicy: string;
   bulkCall: string;
   claimedAt: Date | null;
@@ -161,7 +160,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Today, 14:02',
     itemCount: 37,
     totals: [money('12480.00', 'USDC')],
-    sender: SENDER_BASE,
+    sender: { name: 'payouts', address: SENDER_BASE },
     retryPolicy: 'On, up to 5 fee bumps',
     bulkCall: 'Yes, through the aggregator',
     claimedAt: at(0, '14:02:12'),
@@ -217,7 +216,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Today, 13:20',
     itemCount: 1000,
     totals: [money('184326.71', 'USDC')],
-    sender: SENDER_BASE,
+    sender: { name: 'payouts', address: SENDER_BASE },
     retryPolicy: 'On, up to 5 fee bumps',
     bulkCall: 'No, one transaction per payment',
     claimedAt: at(0, '13:20:05'),
@@ -275,7 +274,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Today, 11:47',
     itemCount: 6,
     totals: [money('48000.00', 'USDC')],
-    sender: VAULT,
+    sender: { name: 'treasury', address: VAULT },
     retryPolicy: 'Off',
     bulkCall: 'Not applicable',
     claimedAt: at(0, '11:47:04'),
@@ -323,7 +322,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Today, 09:15',
     itemCount: 128,
     totals: [money('3215.50', 'USDC')],
-    sender: SENDER_SOL,
+    sender: { name: 'payouts', address: SENDER_SOL },
     retryPolicy: 'Off',
     bulkCall: 'Not applicable',
     claimedAt: null,
@@ -365,7 +364,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Today, 08:30',
     itemCount: 1,
     totals: [money('0.2500', 'ETH')],
-    sender: SENDER_BASE,
+    sender: { name: 'payouts', address: SENDER_BASE },
     retryPolicy: 'Off',
     bulkCall: 'No',
     claimedAt: at(0, '08:30:42'),
@@ -403,7 +402,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Yesterday, 17:58',
     itemCount: 14,
     totals: [money('6904.12', 'USDC')],
-    sender: SENDER_BASE,
+    sender: { name: 'payouts', address: SENDER_BASE },
     retryPolicy: 'Off',
     bulkCall: 'No, one transaction per payment',
     claimedAt: at(1, '17:58:10'),
@@ -453,7 +452,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Yesterday, 12:20',
     itemCount: 1,
     totals: [money('0.0814', 'SOL')],
-    sender: 'Relay, signed by the user',
+    sender: null,
     retryPolicy: 'Not applicable',
     bulkCall: 'Not applicable',
     claimedAt: at(1, '12:20:02'),
@@ -506,7 +505,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     when: 'Yesterday, 10:04',
     itemCount: 9,
     totals: [money('1120.00', 'USDC')],
-    sender: SENDER_BASE,
+    sender: { name: 'payouts', address: SENDER_BASE },
     retryPolicy: 'Off',
     bulkCall: 'Yes, through the aggregator',
     claimedAt: null,

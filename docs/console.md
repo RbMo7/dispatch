@@ -11,8 +11,10 @@ There is no separate console password. Anyone holding `AUTH_TOKEN` can submit Di
 ## Pages
 
 - **Overview**: Dispatches in flight, Dispatches created over the last hour, day or week against the period before, each Sender's balance with what is committed, and what needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, and abandoned items, which may still land.
-- **Dispatches**: every Dispatch, newest first, by day. Filter by date range, chain, status and mode; type an id or the start of one and press Enter to open it. Selecting a row opens its Flow (what happened, stage by stage, down to fee bumps and Solana resubmissions), its Items and its Details. The URL holds the selection, tab and filters, so a link opens the same view.
-- **Senders & Keys**: each enabled chain's Sender, its balances and what is committed, the multisig and its threshold, and what the Signer reports about the engine's key, including whether it is pinned to the multisig (ADR-0055).
+- **Dispatches**: every Dispatch, newest first, by day. Filter by date range, chain, status and mode, and by Sender when a chain has more than one (ADR-0060); type an id or the start of one and press Enter to open it. On a chain with more than one Sender, each row names its Sender. Selecting a row opens its Flow (what happened, stage by stage, down to fee bumps and Solana resubmissions), its Items and its Details, which give the Sender's name and address. The URL holds the selection, tab and filters, so a link opens the same view.
+- **Senders & Keys**: every Sender, grouped by enabled chain, with the chain's default marked: its balances and what is committed, the multisig and its threshold, and what the Signer reports about the engine's key, including whether it is pinned to the multisig (ADR-0055).
+
+The sidebar has one card per Sender, titled with its name, with its chain and signing mode.
 
 A field the engine could not read, such as a balance while the RPC is down, shows its error in place; the rest of the page still loads.
 

@@ -46,6 +46,8 @@ export function describeFailure(failure: ApiFailure): string {
 
 export interface ListFilters {
   chain?: Chain | undefined;
+  /** A Sender's name; the engine matches it on every chain that has one so named. */
+  sender?: string | undefined;
   mode?: Mode | undefined;
   status?: Status | undefined;
   from?: Date | undefined;
@@ -112,6 +114,7 @@ export function createApiClient(
       const query = new URLSearchParams({ limit: String(page.limit ?? PAGE_LIMIT) });
       if (page.cursor) query.set('cursor', page.cursor);
       if (filters.chain) query.set('chain', filters.chain);
+      if (filters.sender) query.set('sender', filters.sender);
       if (filters.mode) query.set('mode', filters.mode);
       if (filters.status) query.set('status', filters.status);
       if (filters.from) query.set('from', filters.from.toISOString());

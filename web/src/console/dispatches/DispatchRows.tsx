@@ -29,6 +29,8 @@ interface DispatchRowsProps<Row extends DispatchSummary> {
   today: Date;
   /** The engine keeps no label; the gallery's recorded data has one. */
   nameOf?: (row: Row) => string;
+  /** The Sender's name, given only where the row's chain has more than one Sender. */
+  senderOf?: (row: Row) => string | null;
   /** Row checkboxes, where the screen has something to do with a selection. */
   checked?: ReadonlySet<string>;
   onCheck?: (ids: string[], on: boolean) => void;
@@ -44,6 +46,7 @@ export function DispatchRows<Row extends DispatchSummary>({
   onSelect,
   today,
   nameOf = dispatchName,
+  senderOf,
   checked,
   onCheck,
   empty,
@@ -99,7 +102,10 @@ export function DispatchRows<Row extends DispatchSummary>({
                 <span className={styles.rowSub}>
                   <span className={styles.mono}>{shortId(row.id)}</span>
                 </span>
-                <span className={styles.rowSub}>{CHAINS[row.chain].label}</span>
+                <span className={styles.rowSub}>
+                  {CHAINS[row.chain].label}
+                  {senderOf?.(row) && `, ${senderOf(row)}`}
+                </span>
                 <span className={styles.spacer} />
                 <StatusPill status={row.status} />
                 <span className={styles.rowAmount}>

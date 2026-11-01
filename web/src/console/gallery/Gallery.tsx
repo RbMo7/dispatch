@@ -10,7 +10,7 @@ import { dispatchesFileName, download, exportFile, itemsFileName } from '../../e
 import { Modal } from '../../motion/Overlay';
 import { CHAINS, txLink } from '../../domain/chains';
 import { MonoValue } from '../../components/MonoValue';
-import { DispatchPane, type PaneTab } from '../dispatches/DispatchPane';
+import { DispatchPane, type PaneTab, SenderDetail } from '../dispatches/DispatchPane';
 import { BOARD_NETWORK, DISPATCHES, FIXTURE_TODAY, type GalleryDispatch } from '../fixtures';
 import { type ChainFilter, DispatchList } from './DispatchList';
 import styles from './Gallery.module.css';
@@ -86,7 +86,7 @@ function Screen() {
         (!needle ||
           d.id.includes(needle) ||
           (d.label ?? '').toLowerCase().includes(needle) ||
-          d.sender.toLowerCase().includes(needle) ||
+          (d.sender?.address.toLowerCase().includes(needle) ?? false) ||
           d.items.some((item) => itemTarget(item).toLowerCase().includes(needle))),
     );
   }, [dispatches, range, chain, search]);
@@ -193,11 +193,12 @@ function Screen() {
               { label: 'Chain', value: CHAINS[dispatch.chain].label },
               {
                 label: 'Sender',
-                value: dispatch.sender.includes(' ') ? (
-                  dispatch.sender
-                ) : (
-                  <MonoValue value={dispatch.sender} />
-                ),
+                value:
+                  dispatch.mode === 'relay' ? (
+                    'Signed by the caller'
+                  ) : (
+                    <SenderDetail sender={dispatch.sender} />
+                  ),
               },
               { label: 'Items', value: count.format(dispatch.itemCount) },
               { label: 'Retry policy', value: dispatch.retryPolicy },

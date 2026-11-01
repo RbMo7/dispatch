@@ -16,11 +16,12 @@ const payment = (asset: string, amount: string, decimals?: number) => ({
 });
 
 describe('a Dispatch row from its detail alone', () => {
-  it('takes chain and creation time from the detail and sums each asset its payments carry', () => {
+  it('takes chain, Sender and creation time from the detail and sums each asset its payments carry', () => {
     const detail = parseDetail({
       dispatchId: ID,
       mode: 'managed',
       chain: 'solana',
+      sender: { name: 'refunds', address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv' },
       createdAt: '2026-10-31T10:00:00.000Z',
       status: 'queued',
       items: [
@@ -42,6 +43,7 @@ describe('a Dispatch row from its detail alone', () => {
       id: ID,
       mode: 'managed',
       chain: 'solana',
+      sender: { name: 'refunds', address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv' },
       status: 'queued',
       createdAt: new Date('2026-10-31T10:00:00.000Z'),
       itemCount: 5,
@@ -63,6 +65,11 @@ describe('a Dispatch row from its detail alone', () => {
       error: null,
     });
 
-    expect(summaryOf(detail)).toMatchObject({ chain: 'base', itemCount: 1, totals: [] });
+    expect(summaryOf(detail)).toMatchObject({
+      chain: 'base',
+      sender: null,
+      itemCount: 1,
+      totals: [],
+    });
   });
 });

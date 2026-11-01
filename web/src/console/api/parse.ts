@@ -8,6 +8,7 @@ import type {
   DispatchSummary,
   Item,
   ItemStatus,
+  SenderRef,
   TimelineEntry,
 } from '../../domain/dispatch';
 import type { AssetBalance, Holding, Read, Sender, SignerKey } from '../../domain/sender';
@@ -46,6 +47,10 @@ function string(value: unknown, path: string): string {
 
 function nullableString(value: unknown, path: string): string | null {
   return value === null || value === undefined ? null : string(value, path);
+}
+
+function boolean(value: unknown, path: string): boolean {
+  return typeof value === 'boolean' ? value : fail(path, 'true or false');
 }
 
 function integer(value: unknown, path: string): number {
@@ -101,6 +106,16 @@ function dispatchError(value: unknown, path: string): DispatchError | null {
     }
   }
   return error;
+}
+
+/** Absent on a Relay Dispatch, and on one the engine has not yet given to a Sender. */
+function senderRef(value: unknown, path: string): SenderRef | null {
+  if (value === undefined || value === null) return null;
+  const json = object(value, path);
+  return {
+    name: nullableString(json.name, `${path}.name`),
+    address: string(json.address, `${path}.address`),
+  };
 }
 
 function chainRef(value: unknown, path: string): ChainRef {
@@ -283,6 +298,7 @@ export function parseDetail(value: unknown): DispatchDetail {
     mode: 'managed',
     id,
     chain,
+    sender: senderRef(json.sender, 'sender'),
     createdAt,
     status: oneOf(json.status, STATUS_NAMES, 'status'),
     items: array(json.items, 'items').map((value, index) => item(value, `items[${index}]`, index)),
@@ -296,6 +312,7 @@ function summary(value: unknown, path: string): DispatchSummary {
     id: string(json.dispatchId, `${path}.dispatchId`),
     mode: oneOf(json.mode, ['managed', 'relay'] as const, `${path}.mode`),
     chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    sender: senderRef(json.sender, `${path}.sender`),
     status: oneOf(json.status, STATUS_NAMES, `${path}.status`),
     createdAt: date(json.createdAt, `${path}.createdAt`),
     itemCount: integer(json.itemCount, `${path}.itemCount`),
@@ -399,6 +416,8 @@ function sender(value: unknown, path: string): Sender {
   const multisig = json.multisig === null ? null : object(json.multisig, `${path}.multisig`);
   return {
     chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    name: string(json.name, `${path}.name`),
+    isDefault: boolean(json.default, `${path}.default`),
     network: network(json.network, `${path}.network`),
     mode: oneOf(json.mode, ['single', 'squads', 'safe'] as const, `${path}.mode`),
     address: string(json.address, `${path}.address`),

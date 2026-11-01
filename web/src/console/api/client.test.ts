@@ -32,6 +32,7 @@ describe('the API client', () => {
               dispatchId: ID,
               mode: 'managed',
               chain: 'solana',
+              sender: { name: 'payouts', address: '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a' },
               status: 'failed',
               createdAt: '2026-10-31T19:06:29.598Z',
               itemCount: 1,
@@ -43,17 +44,21 @@ describe('the API client', () => {
       },
     });
     const api = createApiClient('t0ken', () => {}, fetcher);
-    const page = await api.listDispatches({ chain: 'solana', status: 'failed' }, { limit: 5 });
+    const page = await api.listDispatches(
+      { chain: 'solana', sender: 'payouts', status: 'failed' },
+      { limit: 5 },
+    );
     expect(page.dispatches[0]).toEqual({
       id: ID,
       mode: 'managed',
       chain: 'solana',
+      sender: { name: 'payouts', address: '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a' },
       status: 'failed',
       createdAt: new Date('2026-10-31T19:06:29.598Z'),
       itemCount: 1,
       totals: [{ asset: 'SOL', decimals: 9, raw: '1000000' }],
     });
-    expect(calls[0]!.url).toBe('/v1/dispatches?limit=5&chain=solana&status=failed');
+    expect(calls[0]!.url).toBe('/v1/dispatches?limit=5&chain=solana&sender=payouts&status=failed');
     expect(new Headers(calls[0]!.init.headers).get('Authorization')).toBe('Bearer t0ken');
   });
 
@@ -112,6 +117,8 @@ describe('the API client', () => {
           senders: [
             {
               chain: 'solana',
+              name: 'treasury',
+              default: false,
               mode: 'squads',
               address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv',
               multisig: {
@@ -152,6 +159,8 @@ describe('the API client', () => {
   it('reads a Signer key the worker has not read yet, and one it has', async () => {
     const base = {
       chain: 'base',
+      name: 'default',
+      default: true,
       network: 'base-sepolia',
       mode: 'single',
       address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
@@ -182,6 +191,107 @@ describe('the API client', () => {
       ok: true,
       value: { curve: 'secp256k1', readAt: '2026-11-01T09:14:02.511Z' },
     });
+  });
+
+  it('reads each Sender by name with which one is the default', async () => {
+    const plain = {
+      chain: 'solana',
+      network: 'devnet',
+      mode: 'single',
+      multisig: null,
+      balances: [],
+      signerKey: { status: 'not_read_yet' },
+    };
+    const { fetcher } = engine({
+      '/v1/senders': {
+        status: 200,
+        body: {
+          senders: [
+            {
+              ...plain,
+              name: 'payouts',
+              default: true,
+              address: '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a',
+            },
+            {
+              ...plain,
+              name: 'refunds',
+              default: false,
+              address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv',
+            },
+          ],
+        },
+      },
+    });
+    const senders = await createApiClient('t', () => {}, fetcher).listSenders();
+    expect(senders.map((s) => [s.chain, s.name, s.isDefault])).toEqual([
+      ['solana', 'payouts', true],
+      ['solana', 'refunds', false],
+    ]);
+  });
+
+  it('refuses a Sender without a name as malformed', async () => {
+    const { fetcher } = engine({
+      '/v1/senders': {
+        status: 200,
+        body: {
+          senders: [
+            {
+              chain: 'base',
+              default: true,
+              network: 'base-sepolia',
+              mode: 'single',
+              address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
+              multisig: null,
+              balances: [],
+              signerKey: { status: 'not_read_yet' },
+            },
+          ],
+        },
+      },
+    });
+    expect(await failure(createApiClient('t', () => {}, fetcher).listSenders())).toEqual({
+      kind: 'malformed',
+      message: 'senders[0].name is not a string',
+    });
+  });
+
+  it("reads a Managed Dispatch's Sender, one no longer configured, and none on a Relay", async () => {
+    const managed = {
+      mode: 'managed',
+      chain: 'solana',
+      status: 'confirmed',
+      createdAt: '2026-10-31T19:06:29.598Z',
+      itemCount: 1,
+      totals: [],
+    };
+    const { fetcher } = engine({
+      '/v1/dispatches': {
+        status: 200,
+        body: {
+          dispatches: [
+            {
+              ...managed,
+              dispatchId: ID,
+              sender: { name: 'refunds', address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv' },
+            },
+            {
+              ...managed,
+              dispatchId: ID,
+              sender: { name: null, address: '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a' },
+            },
+            { ...managed, dispatchId: ID, mode: 'relay', transactionHash: null, error: null },
+          ],
+          nextCursor: null,
+        },
+      },
+    });
+    const page = await createApiClient('t', () => {}, fetcher).listDispatches({}, {});
+    expect(page.dispatches.map((d) => d.sender)).toEqual([
+      { name: 'refunds', address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv' },
+      { name: null, address: '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a' },
+      null,
+    ]);
   });
 
   it("reads a Dispatch's chain and creation time from its own detail, in one request", async () => {
@@ -221,6 +331,8 @@ describe('the API client', () => {
           senders: [
             {
               chain: 'solana',
+              name: 'payouts',
+              default: true,
               network,
               mode: 'single',
               address: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv',
