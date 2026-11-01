@@ -20,7 +20,7 @@ The file has one row per Dispatch, with these columns: Id, Mode, Chain, Status, 
 
 Select a Dispatch to open its detail pane, then open the **Items** tab. Narrow the table with the strip of status counts or the search box if you want, then click **Export** on the tab and choose a format.
 
-The file holds the items the table shows, with these columns: Index, Type, Recipient or target, Asset, Amount, Status, Transaction hash, Error code and Error message. Its name carries the Dispatch: `dispatch-7f3a91c2-items.xlsx`.
+The file holds the items the table shows, with these columns: Index, Type, Recipient or target, Asset, Asset name, Amount, Status, Transaction hash, Error code and Error message. Asset name is the asset's name from the Known Assets, such as `USD Coin`. Its name carries the Dispatch: `dispatch-7f3a91c2-items.xlsx`.
 
 ## What is in the files
 
