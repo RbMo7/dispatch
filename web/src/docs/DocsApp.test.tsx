@@ -30,7 +30,7 @@ describe('the docs site', () => {
     const sections = sideNav()
       .getAllByRole('heading', { level: 2 })
       .map((heading) => heading.textContent);
-    expect(sections).toEqual(['Concepts', 'API reference', 'Guides', 'Decisions']);
+    expect(sections).toEqual(['Concepts', 'API reference', 'Guides', 'Operations', 'Decisions']);
   });
 
   it('renders a page with its method badges in the rail and an edit link to its source', () => {

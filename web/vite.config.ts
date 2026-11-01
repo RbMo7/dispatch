@@ -51,6 +51,8 @@ export default defineConfig(({ mode }) => {
   return {
     appType: 'mpa',
     plugins: [react(), spaFallback(build), themeBoot, docsPlugin(resolve('..'))],
+    // The console calls the engine on its own origin; in `pnpm dev` that is this proxy.
+    server: { proxy: { '/v1': process.env.ENGINE_URL ?? 'http://localhost:8420' } },
     build: {
       outDir: `dist/${mode}`,
       emptyOutDir: true,

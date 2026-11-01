@@ -1,6 +1,6 @@
 import { formatAmount, type Money } from '../domain/assets';
-import { CHAINS, type Chain } from '../domain/chains';
-import type { DispatchDetail, Item, ItemStatus } from '../domain/dispatch';
+import { type Chain, type Network, txLink } from '../domain/chains';
+import type { DispatchSummary, Item, ItemStatus } from '../domain/dispatch';
 import type { Flow, Stage } from '../domain/flow';
 
 export const FIXTURE_TODAY = new Date(2026, 9, 31);
@@ -76,7 +76,9 @@ function makeItems(plan: ItemPlan): Item[] {
       index,
       type: 'payment',
       recipient: address(rand, plan.chain),
+      asset: plan.total.asset,
       amount: amounts[index]!,
+      approval: null,
       status,
       transactionHash: sent ? (plan.sharedHash ?? txHash(rand, plan.chain)) : null,
       error: status === 'failed' ? (plan.failures?.[index] ?? null) : null,
@@ -96,17 +98,23 @@ const INVALID_RECIPIENT = {
   message: 'The address has no code and the token refuses it. Nothing was spent.',
 };
 
-export type ShowItems = (filter?: ItemStatus) => void;
-
-export interface GalleryDispatch extends Omit<DispatchDetail, 'flow'> {
+/** A Dispatch as the board recorded it: the list row, its items and flow, plus a label. */
+export interface GalleryDispatch extends DispatchSummary {
+  label: string;
   when: string;
-  flowFor: (showItems: ShowItems) => Flow;
+  sender: string;
+  retryPolicy: string;
+  bulkCall: string;
+  claimedAt: Date | null;
+  idempotencyKey: string;
+  items: Item[];
+  flow: Flow;
 }
 
-const explorer = (chain: Chain, hash: string) => ({
-  label: `View on ${CHAINS[chain].explorer}`,
-  href: CHAINS[chain].txUrl(hash),
-});
+/** The board shows each chain's mainnet. */
+export const BOARD_NETWORK: Record<Chain, Network> = { solana: 'mainnet-beta', base: 'base' };
+
+const explorer = (chain: Chain, hash: string) => txLink(BOARD_NETWORK[chain], hash)!;
 
 function stage(
   kind: Stage['kind'],
@@ -165,7 +173,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       runs: [['broadcasting', 37]],
       sharedHash: H1,
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Stage 5 of 6, waiting for a block',
       elapsed: '1 min 41 s so far',
       stages: [
@@ -197,7 +205,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           `Shown here once a version lands. Until then the latest is ${H1.slice(0, 10)}…`,
         ),
       ],
-    }),
+    },
   },
   {
     id: 'a40d6e93',
@@ -215,7 +223,7 @@ export const DISPATCHES: GalleryDispatch[] = [
     claimedAt: at(0, '13:20:05'),
     idempotencyKey: 'creator-payouts-2026-w44',
     items: LARGE_ITEMS,
-    flowFor: (showItems) => ({
+    flow: {
       summary: 'Stage 4 of 5, 612 of 1,000 confirmed',
       elapsed: '43 min 48 s so far',
       stages: [
@@ -241,7 +249,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           '13:41:27',
           'Two recipients refused and one transfer reverted. The rest carry on.',
           {
-            links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
+            links: [{ label: 'Show in Items', items: 'failed' }],
           },
         ),
         stage('current', 'Confirmed', 'now', 'Each payment counts once its block is final', {
@@ -251,11 +259,11 @@ export const DISPATCHES: GalleryDispatch[] = [
           hash: LARGE_ITEMS[0]!.transactionHash!,
           links: [
             explorer('base', LARGE_ITEMS[0]!.transactionHash!),
-            { label: 'Show all in Items', onSelect: () => showItems() },
+            { label: 'Show all in Items', items: 'all' },
           ],
         }),
       ],
-    }),
+    },
   },
   {
     id: 'c09e5d17',
@@ -278,7 +286,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       total: money('48000.00', 'USDC'),
       runs: [['awaiting_approval', 6]],
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Stage 4 of 7, waiting on Approvers',
       elapsed: '2 h 31 min so far',
       stages: [
@@ -303,7 +311,7 @@ export const DISPATCHES: GalleryDispatch[] = [
         stage('todo', 'Confirmed', ''),
         stage('end-todo', 'Transaction hash', '', 'Appears after execution'),
       ],
-    }),
+    },
   },
   {
     id: '2b6f0a88',
@@ -326,7 +334,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       total: money('3215.50', 'USDC'),
       runs: [['queued', 128]],
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Stage 2 of 6, held for review',
       elapsed: 'Held for 4 h 58 min',
       stages: [
@@ -345,7 +353,7 @@ export const DISPATCHES: GalleryDispatch[] = [
         stage('todo', 'Confirmed', ''),
         stage('end-todo', 'Transaction hash', ''),
       ],
-    }),
+    },
   },
   {
     id: 'e41c7b90',
@@ -369,7 +377,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       runs: [['confirmed', 1]],
       sharedHash: H4,
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Done in 8 s',
       elapsed: 'Confirmed at 08:30:49',
       stages: [
@@ -383,7 +391,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           links: [explorer('base', H4)],
         }),
       ],
-    }),
+    },
   },
   {
     id: '91d4e2a6',
@@ -411,7 +419,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       ],
       failures: { 8: INVALID_RECIPIENT },
     }),
-    flowFor: (showItems) => ({
+    flow: {
       summary: '13 of 14 confirmed',
       elapsed: 'Finished at 17:59:31',
       stages: [
@@ -424,7 +432,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           '17:58:12',
           'INVALID_RECIPIENT: the address has no code and the token refuses it. Nothing was spent.',
           {
-            links: [{ label: 'Show in Items', onSelect: () => showItems('failed') }],
+            links: [{ label: 'Show in Items', items: 'failed' }],
           },
         ),
         stage('done', 'Confirmed', '17:59:31', '13 transactions, blocks 21,571,902 to 21,571,911'),
@@ -433,7 +441,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           links: [explorer('base', H5)],
         }),
       ],
-    }),
+    },
   },
   {
     id: '5ac83f1e',
@@ -462,7 +470,7 @@ export const DISPATCHES: GalleryDispatch[] = [
         },
       },
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Failed at stage 3 of 4',
       elapsed: 'Ended at 12:21:33',
       stages: [
@@ -486,7 +494,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           'Ask the wallet that signed it for a fresh transaction.',
         ),
       ],
-    }),
+    },
   },
   {
     id: 'd7730c45',
@@ -509,7 +517,7 @@ export const DISPATCHES: GalleryDispatch[] = [
       total: money('1120.00', 'USDC'),
       runs: [['cancelled', 9]],
     }),
-    flowFor: () => ({
+    flow: {
       summary: 'Cancelled before it was claimed',
       elapsed: 'Ended at 10:06:10',
       stages: [
@@ -521,7 +529,7 @@ export const DISPATCHES: GalleryDispatch[] = [
           'Withdrawn by an operator. Nothing was signed or sent.',
         ),
       ],
-    }),
+    },
   },
 ];
 

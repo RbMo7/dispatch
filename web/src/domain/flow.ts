@@ -1,3 +1,6 @@
+import type { Money } from './assets';
+import type { ItemFilter } from './dispatch';
+
 export type StageKind =
   | 'done'
   | 'current'
@@ -35,18 +38,18 @@ export const STAGE_LOOK = {
   'end-cancelled': { dot: 'muted', box: 'end', segment: 'cancelled', reached: true, branch: false },
 } as const satisfies Record<StageKind, StageLook>;
 
-export interface StageLink {
-  label: string;
-  href?: string;
-  onSelect?: () => void;
-}
+/** Out to an explorer or a multisig app, or to this Dispatch's Items tab with a filter. */
+export type StageLink = { label: string; href: string } | { label: string; items: ItemFilter };
+
+/** Stage prose. Amounts stay `Money` so hidden balances mask them like every other amount. */
+export type Text = string | readonly (string | Money)[];
 
 export interface Stage {
   kind: StageKind;
   title: string;
   /** Clock time, or "now" for the current stage. */
   at?: string;
-  detail?: string;
+  detail?: Text;
   /** For a large Dispatch: how many items have reached this stage. */
   count?: { reached: number; of: number };
   hash?: string;

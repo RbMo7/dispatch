@@ -1,5 +1,6 @@
 import { Check, X } from '@phosphor-icons/react';
 
+import type { ItemFilter } from '../domain/dispatch';
 import {
   type Dot,
   type Flow,
@@ -7,7 +8,9 @@ import {
   STAGE_LOOK,
   type StageLink,
   stageSegments,
+  type Text,
 } from '../domain/flow';
+import { Amount } from './Amount';
 import styles from './FlowGraph.module.css';
 import { MonoValue } from './MonoValue';
 import { StackedBar } from './StackedBar';
@@ -22,7 +25,13 @@ const SPOKEN: Record<Dot, string> = {
 
 const count = new Intl.NumberFormat('en-US');
 
-export function FlowGraph({ flow }: { flow: Flow }) {
+interface FlowGraphProps {
+  flow: Flow;
+  /** Opens this Dispatch's Items tab with a filter, for a stage's "Show in Items" link. */
+  onShowItems?: (filter: ItemFilter) => void;
+}
+
+export function FlowGraph({ flow, onShowItems }: FlowGraphProps) {
   return (
     <div>
       <div className={styles.summary}>
@@ -36,14 +45,27 @@ export function FlowGraph({ flow }: { flow: Flow }) {
       </div>
       <ol className={styles.graph}>
         {flow.stages.map((stage, index) => (
-          <StageNode key={index} stage={stage} next={flow.stages[index + 1]} />
+          <StageNode
+            key={index}
+            stage={stage}
+            next={flow.stages[index + 1]}
+            onShowItems={onShowItems}
+          />
         ))}
       </ol>
     </div>
   );
 }
 
-function StageNode({ stage, next }: { stage: Stage; next: Stage | undefined }) {
+function StageNode({
+  stage,
+  next,
+  onShowItems,
+}: {
+  stage: Stage;
+  next: Stage | undefined;
+  onShowItems: ((filter: ItemFilter) => void) | undefined;
+}) {
   const look = STAGE_LOOK[stage.kind];
   const line = next === undefined ? undefined : STAGE_LOOK[next.kind].reached ? 'solid' : 'dashed';
 
@@ -80,11 +102,15 @@ function StageNode({ stage, next }: { stage: Stage; next: Stage | undefined }) {
             <MonoValue value={stage.hash} full />
           </div>
         )}
-        {stage.detail && <div className={styles.detail}>{stage.detail}</div>}
+        {stage.detail && (
+          <div className={styles.detail}>
+            <TextView text={stage.detail} />
+          </div>
+        )}
         {stage.links && stage.links.length > 0 && (
           <div className={styles.links}>
             {stage.links.map((link) => (
-              <StageLinkView key={link.label} link={link} />
+              <StageLinkView key={link.label} link={link} onShowItems={onShowItems} />
             ))}
           </div>
         )}
@@ -93,8 +119,21 @@ function StageNode({ stage, next }: { stage: Stage; next: Stage | undefined }) {
   );
 }
 
-function StageLinkView({ link }: { link: StageLink }) {
-  if (link.href !== undefined) {
+function TextView({ text }: { text: Text }) {
+  if (typeof text === 'string') return text;
+  return text.map((part, index) =>
+    typeof part === 'string' ? part : <Amount key={index} {...part} variant="plain" unit />,
+  );
+}
+
+function StageLinkView({
+  link,
+  onShowItems,
+}: {
+  link: StageLink;
+  onShowItems: ((filter: ItemFilter) => void) | undefined;
+}) {
+  if ('href' in link) {
     return (
       <a className={styles.link} href={link.href} target="_blank" rel="noreferrer">
         {link.label} ›
@@ -102,7 +141,7 @@ function StageLinkView({ link }: { link: StageLink }) {
     );
   }
   return (
-    <button type="button" className={styles.link} onClick={link.onSelect}>
+    <button type="button" className={styles.link} onClick={() => onShowItems?.(link.items)}>
       {link.label} ›
     </button>
   );

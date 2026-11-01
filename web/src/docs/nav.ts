@@ -27,7 +27,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/multisig.md', label: 'Treasury and Multisig Sender' },
     ],
   },
-  { title: 'Operations', pages: [] },
+  { title: 'Operations', pages: [{ source: 'docs/console.md', label: 'Web console' }] },
   { title: 'Decisions', pages: { adrDirectory: 'docs/adr' } },
 ];
 
