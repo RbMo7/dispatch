@@ -54,6 +54,9 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
   "dispatchId": "<id>",
   "mode": "managed",
   "status": "queued | held | broadcasting | confirmed | failed | partial | cancelled",
+  "chain": "base",
+  "createdAt": "2026-10-31T10:00:00.000Z",
+  "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "decimals": 6, "amount": "10", "status": "confirmed", "transactionHash": "<hash>", "error": null },
     { "type": "call", "programId": "<program id>", "status": "failed", "transactionHash": null, "error": { "code": "INSUFFICIENT_FUNDS", "message": "...", "chainDetail": { "asset": "USDC", "short": "40" } } }
@@ -73,7 +76,7 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 
 An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
-Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted.
+Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted. Both also carry `chain` (`base` or `solana`, as submitted) and `createdAt` (ISO 8601, when the engine accepted the Dispatch), the same values its `GET /v1/dispatches` row shows.
 
 ### `?include=timeline`
 
@@ -154,7 +157,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
 }
 ```
 
-Each row is the `GET /v1/dispatch/:id` body without `items`, plus `chain`, `createdAt`, `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit, each with the asset's `decimals` as on a `payment` item (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
+Each row is the `GET /v1/dispatch/:id` body without `items`, plus `itemCount` and `totals`: the sum per asset of the `payment` items, in the asset's smallest unit, each with the asset's `decimals` as on a `payment` item (`call` items carry no amount, and a Relay Dispatch has none). Pages are cut on `(createdAt, id)`, so a Dispatch created while you page appears on no later page and none is skipped or repeated. `nextCursor` is `null` on the last page, and only there. A `status` filter is applied after the engine reads each row, so one request reads at most 500 Dispatches looking for matches; when it stops there, it returns what it found with a `nextCursor`, so a page can be short, or even empty, and still not be the last. Keep paging until `nextCursor` is `null`.
 
 ## `POST /v1/dispatch/:id/cancel`
 
@@ -168,13 +171,14 @@ Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056),
 
 ## `GET /v1/senders`
 
-One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain and the Signer itself, so a browser never talks to either, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC and Signer reads per 15 seconds.
+One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain itself, so a browser never talks to it, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC reads per 15 seconds. The API never calls the Signer (ADR-0059): `signerKey` is what the worker last read, so it can be up to five minutes behind a change to the Signer's policy.
 
 ```json
 {
   "senders": [
     {
       "chain": "solana",
+      "network": "devnet",
       "mode": "squads",
       "address": "<vault>",
       "multisig": { "address": "<multisig>", "threshold": 2, "engineKey": "<member key>" },
@@ -193,16 +197,22 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
           "assets": [{ "asset": "SOL", "decimals": 9, "balance": "3000000", "committed": "2039280" }]
         }
       ],
-      "signerKey": { "address": "<member key>", "curve": "ed25519", "allowedMultisig": "<multisig>" }
+      "signerKey": {
+        "address": "<member key>",
+        "curve": "ed25519",
+        "allowedMultisig": "<multisig>",
+        "readAt": "2026-11-01T10:00:00.000Z"
+      }
     }
   ]
 }
 ```
 
+- `network` is the network the engine talks to for that chain, so a reader can link to the right explorer. On `base` it comes from `BASE_CHAIN_ID`: `"base"` for 8453, `"base-sepolia"` for 84532, and `{ "chainId": <n> }` for any other. On `solana` it comes from the RPC's genesis hash, read once at startup: `"mainnet-beta"`, `"devnet"`, `"testnet"`, or `"unknown"` for any other hash. A failed read also gives `"unknown"` and a line in the engine's log; the engine still starts.
 - `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
-- `signerKey` is what the Signer answers on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`).
-- A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error says whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
+- `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
+- A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error is `{ "error": "<reason>", "readAt": "…" }`, saying whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
 
 ## `GET /v1/activity`
 
@@ -434,6 +444,8 @@ Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "st
 {
   "dispatchId": "<id>",
   "mode": "relay",
+  "chain": "base",
+  "createdAt": "2026-10-31T10:00:00.000Z",
   "status": "queued | broadcasting | confirmed | failed | abandoned | cancelled",
   "transactionHash": "<hash>",
   "error": null

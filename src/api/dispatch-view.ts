@@ -163,6 +163,8 @@ export async function readDispatchView(
     return {
       dispatchId: dispatch.id,
       mode: 'managed',
+      chain: dispatch.chain,
+      createdAt: dispatch.createdAt,
       status: deriveDispatchStatus(dispatch, transactions),
       items,
       ...(hold ? { hold: toWireHold(hold) } : {}),
@@ -190,6 +192,8 @@ export async function readDispatchView(
     return {
       dispatchId: relayDispatch.id,
       mode: 'relay',
+      chain: relayDispatch.chain,
+      createdAt: relayDispatch.createdAt,
       status: deriveRelayStatus(relayDispatch, relayTransactions),
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,

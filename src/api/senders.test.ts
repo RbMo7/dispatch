@@ -5,22 +5,30 @@ import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { Chain } from '../domain/chain.js';
 import { err, ok } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
-import type { PolicyRead } from '../signer/client.js';
+import type { SignerKeyRecord } from '../repository/dispatch-store.js';
+import type { SignerPins } from '../signer/client.js';
 import { cachedSenders, type SenderConfig, type SenderReads } from './senders.js';
 
 const SECRET = 'rpc-key-0123456789';
+const READ_AT = new Date('2026-11-01T10:00:00.000Z');
+
+function pinned(chain: Chain, pins: SignerPins): SignerKeyRecord {
+  return { chain, address: pins.address, read: { pins }, readAt: READ_AT };
+}
 
 const assetDecimals: SenderConfig['assetDecimals'] = (_chain, asset) =>
   ({ ETH: 18, USDC: 6 })[asset as 'ETH' | 'USDC'];
 
 const plain: SenderConfig = {
   chain: 'base',
+  network: 'base-sepolia',
   address: '0xSender',
   assets: ['ETH', 'USDC'],
   assetDecimals,
 };
 const squads: SenderConfig = {
   chain: 'solana',
+  network: 'devnet',
   address: 'Vault111',
   assets: ['SOL', 'USDC'],
   assetDecimals,
@@ -34,6 +42,7 @@ const squads: SenderConfig = {
 };
 const safe: SenderConfig = {
   chain: 'base',
+  network: { chainId: 31337 },
   address: '0xSafe',
   assets: ['ETH'],
   assetDecimals,
@@ -48,12 +57,12 @@ const safe: SenderConfig = {
 
 function fakeReads(options: {
   balances?: Record<string, string>;
-  pins?: Record<string, PolicyRead>;
+  signerKeys?: Record<string, SignerKeyRecord>;
   threshold?: Partial<Record<Chain, number>>;
   committed?: Record<string, { asset: string; amount: string }[]>;
   clock?: { now: number };
 }) {
-  const calls = { getBalance: 0, readPins: 0 };
+  const calls = { getBalance: 0, getSignerKey: 0 };
   const reads: SenderReads = {
     getBalance: (_chain, address, asset) => {
       calls.getBalance++;
@@ -64,14 +73,9 @@ function fakeReads(options: {
           : ok({ asset, amount }),
       );
     },
-    readPins: (address) => {
-      calls.readPins++;
-      return Promise.resolve(
-        options.pins?.[address] ?? {
-          kind: 'unreachable',
-          message: `failed to reach signer at http://user:${SECRET}@signer`,
-        },
-      );
+    getSignerKey: (_chain, address) => {
+      calls.getSignerKey++;
+      return Promise.resolve(options.signerKeys?.[address] ?? null);
     },
     readThreshold: (chain) => {
       const threshold = options.threshold?.[chain];
@@ -114,11 +118,8 @@ describe('GET /v1/senders (#111)', () => {
   it('reports a plain Sender: its balances, nothing committed, and its key as the Signer pins it', async () => {
     const { reads } = fakeReads({
       balances: { '0xSender:ETH': '100', '0xSender:USDC': '50' },
-      pins: {
-        '0xSender': {
-          kind: 'pins',
-          pins: { address: '0xsender', curve: 'secp256k1', chainIds: [84532] },
-        },
+      signerKeys: {
+        '0xSender': pinned('base', { address: '0xsender', curve: 'secp256k1', chainIds: [84532] }),
       },
     });
 
@@ -129,6 +130,7 @@ describe('GET /v1/senders (#111)', () => {
       senders: [
         {
           chain: 'base',
+          network: 'base-sepolia',
           mode: 'single',
           address: '0xSender',
           multisig: null,
@@ -142,7 +144,12 @@ describe('GET /v1/senders (#111)', () => {
               ],
             },
           ],
-          signerKey: { address: '0xsender', curve: 'secp256k1', chainIds: [84532] },
+          signerKey: {
+            address: '0xsender',
+            curve: 'secp256k1',
+            chainIds: [84532],
+            readAt: '2026-11-01T10:00:00.000Z',
+          },
         },
       ],
     });
@@ -151,11 +158,12 @@ describe('GET /v1/senders (#111)', () => {
   it("reports a Squads Sender's vault and member key, each with what open Proposals hold back", async () => {
     const { reads } = fakeReads({
       balances: { 'Vault111:SOL': '9', 'Vault111:USDC': '500', 'Member111:SOL': '3' },
-      pins: {
-        Member111: {
-          kind: 'pins',
-          pins: { address: 'Member111', curve: 'ed25519', allowedMultisig: 'Multisig111' },
-        },
+      signerKeys: {
+        Member111: pinned('solana', {
+          address: 'Member111',
+          curve: 'ed25519',
+          allowedMultisig: 'Multisig111',
+        }),
       },
       threshold: { solana: 2 },
       committed: {
@@ -170,6 +178,7 @@ describe('GET /v1/senders (#111)', () => {
       senders: [
         {
           chain: 'solana',
+          network: 'devnet',
           mode: 'squads',
           address: 'Vault111',
           multisig: { address: 'Multisig111', threshold: 2, engineKey: 'Member111' },
@@ -188,7 +197,12 @@ describe('GET /v1/senders (#111)', () => {
               assets: [{ asset: 'SOL', balance: '3', committed: '2' }],
             },
           ],
-          signerKey: { address: 'Member111', curve: 'ed25519', allowedMultisig: 'Multisig111' },
+          signerKey: {
+            address: 'Member111',
+            curve: 'ed25519',
+            allowedMultisig: 'Multisig111',
+            readAt: '2026-11-01T10:00:00.000Z',
+          },
         },
       ],
     });
@@ -197,10 +211,10 @@ describe('GET /v1/senders (#111)', () => {
   it("reports a Safe Sender's Safe and executor", async () => {
     const { reads } = fakeReads({
       balances: { '0xSafe:ETH': '7', '0xExecutor:ETH': '1' },
-      pins: {
+      signerKeys: {
         '0xExecutor': {
-          kind: 'pins',
-          pins: { address: '0xexecutor', curve: 'secp256k1', allowedSafe: '0xsafe' },
+          ...pinned('base', { address: '0xexecutor', curve: 'secp256k1', allowedSafe: '0xsafe' }),
+          address: '0xExecutor',
         },
       },
       threshold: { base: 3 },
@@ -211,6 +225,7 @@ describe('GET /v1/senders (#111)', () => {
     expect(response.json()).toMatchObject({
       senders: [
         {
+          network: { chainId: 31337 },
           mode: 'safe',
           multisig: { address: '0xSafe', threshold: 3, engineKey: '0xExecutor' },
           balances: [
@@ -243,14 +258,14 @@ describe('GET /v1/senders (#111)', () => {
             },
             { holder: 'memberKey', assets: [{ balance: { error: 'RPC_UNAVAILABLE' } }] },
           ],
-          signerKey: { error: 'the Signer could not be reached' },
+          signerKey: { status: 'not_read_yet' },
         },
       ],
     });
     expect(response.body).not.toContain(SECRET);
   });
 
-  it('reads the chain and the Signer once per 15 seconds, however often it is asked', async () => {
+  it('reads the chain and the recorded Signer key once per 15 seconds, however often it is asked', async () => {
     const clock = { now: 0 };
     const { reads, calls } = fakeReads({ balances: { '0xSender:ETH': '1' }, clock });
     const listSenders = cachedSenders([plain], reads);
@@ -262,7 +277,7 @@ describe('GET /v1/senders (#111)', () => {
     clock.now = 15_000;
     await listSenders();
 
-    expect(withinWindow).toEqual({ getBalance: 2, readPins: 1 });
-    expect(calls).toEqual({ getBalance: 4, readPins: 2 });
+    expect(withinWindow).toEqual({ getBalance: 2, getSignerKey: 1 });
+    expect(calls).toEqual({ getBalance: 4, getSignerKey: 2 });
   });
 });

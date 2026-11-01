@@ -22,7 +22,7 @@ const app = buildApp({
   defaultRetryPolicy: config.defaultRetryPolicy,
   assetDecimals,
   listSenders: cachedSenders(
-    senderConfigsFor(chainRegistry, assetDecimals),
+    await senderConfigsFor(chainRegistry, assetDecimals),
     senderReadsFor(chainRegistry, store),
   ),
 });

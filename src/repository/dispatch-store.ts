@@ -14,6 +14,7 @@ import type { OperatorAction, OperatorActor } from '../domain/operator-action.js
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
+import type { SignerPins } from '../signer/client.js';
 
 /** ADR-0054: a multisig Call claimed, validated and funded, to be written down as `UNPROPOSED`. */
 export type NewUnproposedInput = {
@@ -156,6 +157,14 @@ export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCurs
  * ENABLED_CHAINS keeps its rows exactly as they are until it is enabled again.
  */
 export type ChainScope = readonly Chain[];
+
+/** ADR-0059: what the worker last read from the Signer about one Sender key. `error` is a fixed message, never what the Signer said. */
+export type SignerKeyRecord = {
+  chain: Chain;
+  address: string;
+  read: { pins: SignerPins } | { error: string };
+  readAt: Date;
+};
 
 /**
  * The Coordinator's — and the API's — only way to touch persistence
@@ -371,4 +380,7 @@ export interface DispatchStore {
   claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]>;
   /** Records which Transaction a RelayDispatch's single broadcast attempt produced — success or failure alike (recordCallFailure and createTransaction both already produce a Transaction id). */
   setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void>;
+  /** ADR-0059: replaces whatever was recorded for the record's chain and address. */
+  recordSignerKey(record: SignerKeyRecord): Promise<void>;
+  getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
 }

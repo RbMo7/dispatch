@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -19,6 +20,7 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
 import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type { SignerPins } from '../signer/client.js';
 
 export const dispatches = pgTable(
   'dispatches',
@@ -262,3 +264,18 @@ export const dispatchHolds = pgTable('dispatch_holds', {
   releasedAt: timestamp('released_at', { withTimezone: true }),
   releaseReason: text('release_reason'),
 });
+/** ADR-0059: what the worker last read from the Signer about each Sender key, so the API never calls the Signer. */
+export const signerKeys = pgTable(
+  'signer_keys',
+  {
+    chain: text('chain').notNull(),
+    address: text('address').notNull(),
+    pins: jsonb('pins').$type<SignerPins>(),
+    error: text('error'),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chain, table.address] }),
+    check('signer_keys_pins_or_error', sql`(${table.pins} IS NULL) <> (${table.error} IS NULL)`),
+  ],
+);
