@@ -31,7 +31,7 @@ const safeAccount: Entry = {
 const keyMissing: Entry = {
   home: 'signer',
   fix: (m) => ({
-    step: `Add ${engineKey(m)} to the Signer's config, pinned to ${multisigAddress(m)} (docs/signer.md)`,
+    step: `Add ${engineKey(m)} to the Signer's config, pinned to ${multisigAddress(m)} (docs/self-hosting/signer.md)`,
   }),
 };
 
@@ -64,7 +64,7 @@ const STARTUP_CHECKS: Record<string, Entry> = {
   'signer pins the multisig': {
     home: 'pinned',
     fix: (m) => ({
-      step: `In the Signer's config, set policy.allowedMultisig to ${multisigAddress(m)} for ${engineKey(m)}, then restart the Signer (docs/signer.md)`,
+      step: `In the Signer's config, set policy.allowedMultisig to ${multisigAddress(m)} for ${engineKey(m)}, then restart the Signer (docs/self-hosting/signer.md)`,
     }),
   },
   'service reachable': {
@@ -88,19 +88,22 @@ const STARTUP_CHECKS: Record<string, Entry> = {
   'executor is a registered delegate': {
     home: 'member',
     fix: (m) => ({
-      step: `Have a Safe owner register ${engineKey(m)} as a delegate of ${multisigAddress(m)} (docs/multisig.md)`,
+      step: `Have a Safe owner register ${engineKey(m)} as a delegate of ${multisigAddress(m)} (docs/self-hosting/multisig.md)`,
     }),
   },
   'signer can sign for the executor': keyMissing,
   'signer pins the Safe': {
     home: 'pinned',
     fix: (m, config) => ({
-      step: `In the Signer's config, set policy.allowedSafe to ${multisigAddress(m)} and policy.chainIds to include ${config.base.chainId} for ${engineKey(m)}, then restart the Signer (docs/signer.md)`,
+      step: `In the Signer's config, set policy.allowedSafe to ${multisigAddress(m)} and policy.chainIds to include ${config.base.chainId} for ${engineKey(m)}, then restart the Signer (docs/self-hosting/signer.md)`,
     }),
   },
 };
 
-const UNKNOWN: Entry = { home: 'account', fix: () => ({ step: 'See docs/multisig.md' }) };
+const UNKNOWN: Entry = {
+  home: 'account',
+  fix: () => ({ step: 'See docs/self-hosting/multisig.md' }),
+};
 
 function entryFor(check: string): Entry {
   return STARTUP_CHECKS[check] ?? UNKNOWN;
@@ -147,7 +150,7 @@ export const multisigAccount: Check = {
     }
     if (startup.warnings.length > 0) {
       return warn(redactUrls(startup.warnings.join('; ')), {
-        step: 'Review the multisig settings named above (docs/multisig.md)',
+        step: 'Review the multisig settings named above (docs/self-hosting/multisig.md)',
       });
     }
     return pass(

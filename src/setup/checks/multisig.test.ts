@@ -139,7 +139,7 @@ describe('Multisig checks on a Squads Sender', () => {
     expect(await result(context, 'signer.pinned:solana')).toMatchObject({
       status: 'fail',
       fix: {
-        step: `In the Signer's config, set policy.allowedMultisig to ${fixture.multisig} for ${fixture.member}, then restart the Signer (docs/signer.md)`,
+        step: `In the Signer's config, set policy.allowedMultisig to ${fixture.multisig} for ${fixture.member}, then restart the Signer (docs/self-hosting/signer.md)`,
       },
     });
   });
@@ -267,7 +267,7 @@ describe('Multisig checks on a Safe Sender', () => {
     expect(await result(safe({ delegated: false }), 'multisig.member:base')).toMatchObject({
       status: 'fail',
       fix: {
-        step: `Have a Safe owner register ${EXECUTOR} as a delegate of ${SAFE} (docs/multisig.md)`,
+        step: `Have a Safe owner register ${EXECUTOR} as a delegate of ${SAFE} (docs/self-hosting/multisig.md)`,
       },
     });
   });

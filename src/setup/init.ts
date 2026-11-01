@@ -614,20 +614,20 @@ function nextSteps(
 ): string[] {
   const lines = [
     'Each key has a default policy (its chain and, for a multisig, its pin). Tighten it:',
-    '  docs/signer.md#4-write-a-policy-for-every-address',
+    '  docs/self-hosting/signer.md#4-write-a-policy-for-every-address',
   ];
   choices.forEach((choice, i) => {
     const key = held[i]!.address;
     if (choice.sender.kind === 'squads') {
       lines.push(
         `Add ${key} to the Squads multisig with Initiate and Execute only (mask 5), and make it the rent collector:`,
-        '  docs/multisig.md#3-runbook-solana-with-squads',
+        '  docs/self-hosting/multisig.md#squads-on-solana',
       );
     }
     if (choice.sender.kind === 'safe') {
       lines.push(
         `An owner of the Safe registers ${key} as a delegate:`,
-        '  docs/multisig.md#4-register-the-executor-as-a-delegate',
+        '  docs/self-hosting/multisig.md#register-the-executor-as-a-delegate',
       );
     }
   });
@@ -638,7 +638,7 @@ function nextSteps(
   }
   if (backends.has('aws-kms')) {
     lines.push(
-      'Export AWS_REGION and AWS credentials where you run docker compose (docs/signer.md#aws-kms).',
+      'Export AWS_REGION and AWS credentials where you run docker compose (docs/self-hosting/signer.md#aws-kms).',
     );
   }
   if (backends.has('keyfile')) {

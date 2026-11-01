@@ -76,7 +76,7 @@ export const signerKeyHeld: Check = {
         return pass(`the Signer holds the ${read.pins.curve} key for ${key}`);
       case 'no-key':
         return fail(`the Signer has no key for ${key}`, {
-          step: `Add ${key} to the Signer's config (SIGNER_CONFIG) with its key backend, then restart the Signer (docs/signer.md)`,
+          step: `Add ${key} to the Signer's config (SIGNER_CONFIG) with its key backend, then restart the Signer (docs/self-hosting/signer.md)`,
         });
       case 'old-signer':
         return warn('the Signer is too old to say which keys it holds (ADR-0055)', {
