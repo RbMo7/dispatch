@@ -1,0 +1,107 @@
+.scroll {
+  overflow-x: auto;
+  margin-top: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: var(--text-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  height: 40px;
+  padding: 0 var(--space-4);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table thead th {
+  height: 36px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--text-12);
+  font-weight: 500;
+}
+
+.table tbody tr + tr {
+  border-top: 1px solid var(--border);
+}
+
+.table tbody tr[data-disabled] {
+  color: var(--muted);
+}
+
+.name {
+  font-weight: 500;
+}
+
+.symbol {
+  font-weight: 600;
+}
+
+.table .number {
+  text-align: right;
+}
+
+.enabled {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.readOnly {
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: var(--text-12-5);
+  line-height: 1.5;
+}
+
+.previewList {
+  grid-template-columns: 84px minmax(0, 1fr);
+  row-gap: var(--space-2);
+  align-items: baseline;
+}
+
+.note {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--text-12);
+}
+
+.figure {
+  font-variant-numeric: tabular-nums;
+}
+
+.refusal {
+  padding: 12px 14px;
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-tile);
+  background: var(--danger-soft);
+}
+
+.refusalText {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-13);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.refusalDetail {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-12);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.modalRefusal {
+  margin-top: var(--space-4);
+}

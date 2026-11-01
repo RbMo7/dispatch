@@ -40,7 +40,7 @@ import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
 import { ProposalApprovals } from './ProposalApprovals';
 import { useDispatch, useDispatchList } from './data';
-import { DispatchPane, type PaneHead, SenderDetail } from './DispatchPane';
+import { DispatchPane, type PaneHead, SenderDetail, TotalsDetail } from './DispatchPane';
 import { dayHeading, DispatchRows } from './DispatchRows';
 import { collectDispatches, matchesSearch } from './exportList';
 import {
@@ -513,6 +513,9 @@ function Pane({
             ),
         },
         { label: 'Items', value: count.format(loaded.summary.itemCount) },
+        ...(loaded.summary.totals.length > 0
+          ? [{ label: 'Total', value: <TotalsDetail totals={loaded.summary.totals} /> }]
+          : []),
         { label: 'Created', value: full.format(loaded.summary.createdAt) },
         { label: 'Claimed', value: claimed ? full.format(claimed.at) : 'Not yet' },
         { label: 'Id', value: <MonoValue value={id} head={13} tail={6} /> },

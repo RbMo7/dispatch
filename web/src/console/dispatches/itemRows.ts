@@ -1,3 +1,4 @@
+import { assetLabel } from '../../domain/assets';
 import { type Item, type ItemFilter, type ItemStatus, itemTarget } from '../../domain/dispatch';
 import { ALL_STATUSES } from '../../domain/status';
 
@@ -16,6 +17,18 @@ export function statusCounts(items: readonly Item[]): { status: ItemStatus; n: n
     const n = tally.get(status as ItemStatus);
     return n ? [{ status: status as ItemStatus, n }] : [];
   });
+}
+
+/** "USD Coin (USDC) and Ether (ETH)": every asset the payments carry, by name and symbol; null for calls only. */
+export function paidIn(items: readonly Item[]): string | null {
+  const labels = new Map<string, string>();
+  for (const item of items) {
+    if (item.type !== 'payment' || labels.has(item.asset)) continue;
+    labels.set(item.asset, item.amount ? assetLabel(item.amount) : item.asset);
+  }
+  const all = [...labels.values()];
+  if (all.length === 0) return null;
+  return all.length === 1 ? all[0]! : `${all.slice(0, -1).join(', ')} and ${all.at(-1)!}`;
 }
 
 export function filterItems(items: readonly Item[], filter: ItemFilter, search: string): Item[] {

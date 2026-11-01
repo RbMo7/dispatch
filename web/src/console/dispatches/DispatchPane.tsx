@@ -165,6 +165,20 @@ export function DispatchPane(props: DispatchPaneProps) {
   );
 }
 
+/** The Details tab's totals: each asset's amount with its symbol, then its name. */
+export function TotalsDetail({ totals }: { totals: readonly Money[] }) {
+  return (
+    <span className={styles.totalsDetail}>
+      {totals.map((total) => (
+        <span key={total.asset}>
+          <Amount {...total} variant="plain" unit tip={false} />
+          {total.name !== total.asset && <span className={styles.muted}> {total.name}</span>}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** The Details tab's Sender: its name, then its address. */
 export function SenderDetail({ sender }: { sender: SenderRef | null }) {
   if (!sender) return 'Not given to a Sender yet';

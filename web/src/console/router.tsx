@@ -6,6 +6,7 @@ export const PAGES = {
   held: '/console/held',
   rules: '/console/rules',
   senders: '/console/senders',
+  assets: '/console/assets',
   activity: '/console/activity',
   setup: '/console/setup',
 } as const;

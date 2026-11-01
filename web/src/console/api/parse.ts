@@ -1,4 +1,11 @@
-import type { Money } from '../../domain/assets';
+import {
+  ASSET_KINDS,
+  type AssetKind,
+  type AssetNames,
+  type AssetPreview,
+  type KnownAsset,
+  type Money,
+} from '../../domain/assets';
 import { CHAINS, type Chain, type Network } from '../../domain/chains';
 import type {
   Approval,
@@ -90,6 +97,9 @@ function list<T>(value: unknown, path: string, each: (item: unknown, path: strin
 }
 
 const CHAIN_NAMES = Object.keys(CHAINS) as Chain[];
+
+/** Names every asset by its symbol: what a reader without the registry, such as a test, gets. */
+const bySymbol: AssetNames = (_chain, symbol) => symbol;
 const STATUS_NAMES = Object.keys(STATUSES) as Status[];
 const ITEM_STATUSES: readonly ItemStatus[] = [
   'queued',
@@ -102,8 +112,14 @@ const ITEM_STATUSES: readonly ItemStatus[] = [
   'cancelled',
 ];
 
-function money(asset: string, raw: string, decimals: unknown, path: string): Money | null {
-  return decimals === undefined ? null : { asset, raw, decimals: integer(decimals, path) };
+function money(
+  name: string,
+  asset: string,
+  raw: string,
+  decimals: unknown,
+  path: string,
+): Money | null {
+  return decimals === undefined ? null : { asset, name, raw, decimals: integer(decimals, path) };
 }
 
 function dispatchError(value: unknown, path: string): DispatchError | null {
@@ -179,7 +195,7 @@ function approval(value: unknown, path: string): Approval | null {
   };
 }
 
-function item(value: unknown, path: string, index: number): Item {
+function item(value: unknown, path: string, index: number, name: (asset: string) => string): Item {
   const json = object(value, path);
   const base = {
     index,
@@ -196,6 +212,7 @@ function item(value: unknown, path: string, index: number): Item {
       recipient: string(json.recipient, `${path}.recipient`),
       asset,
       amount: money(
+        name(asset),
         asset,
         rawAmount(json.amount, `${path}.amount`),
         json.decimals,
@@ -304,7 +321,7 @@ function entry(value: unknown, path: string): TimelineEntry {
 }
 
 /** `GET /v1/dispatch/:id?include=timeline`. */
-export function parseDetail(value: unknown): DispatchDetail {
+export function parseDetail(value: unknown, names: AssetNames = bySymbol): DispatchDetail {
   const json = object(value, 'body');
   const id = string(json.dispatchId, 'dispatchId');
   const chain = oneOf(json.chain, CHAIN_NAMES, 'chain');
@@ -330,7 +347,9 @@ export function parseDetail(value: unknown): DispatchDetail {
     sender: senderRef(json.sender, 'sender'),
     createdAt,
     status: oneOf(json.status, STATUS_NAMES, 'status'),
-    items: array(json.items, 'items').map((value, index) => item(value, `items[${index}]`, index)),
+    items: array(json.items, 'items').map((value, index) =>
+      item(value, `items[${index}]`, index, (asset) => names(chain, asset)),
+    ),
     timeline,
     hold: json.hold === undefined ? null : hold(json.hold, 'hold'),
   };
@@ -376,12 +395,13 @@ function hold(value: unknown, path: string): Hold {
   };
 }
 
-function summary(value: unknown, path: string): DispatchSummary {
+function summary(value: unknown, path: string, names: AssetNames): DispatchSummary {
   const json = object(value, path);
+  const chain = oneOf(json.chain, CHAIN_NAMES, `${path}.chain`);
   return {
     id: string(json.dispatchId, `${path}.dispatchId`),
     mode: oneOf(json.mode, ['managed', 'relay'] as const, `${path}.mode`),
-    chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    chain,
     sender: senderRef(json.sender, `${path}.sender`),
     status: oneOf(json.status, STATUS_NAMES, `${path}.status`),
     createdAt: date(json.createdAt, `${path}.createdAt`),
@@ -390,7 +410,13 @@ function summary(value: unknown, path: string): DispatchSummary {
     totals: list(json.totals, `${path}.totals`, (total, at) => {
       const t = object(total, at);
       const asset = string(t.asset, `${at}.asset`);
-      return money(asset, rawAmount(t.amount, `${at}.amount`), t.decimals, `${at}.decimals`);
+      return money(
+        names(chain, asset),
+        asset,
+        rawAmount(t.amount, `${at}.amount`),
+        t.decimals,
+        `${at}.decimals`,
+      );
     }).filter((total): total is Money => total !== null),
   };
 }
@@ -401,10 +427,10 @@ export interface DispatchPage {
 }
 
 /** `GET /v1/dispatches`. */
-export function parsePage(value: unknown): DispatchPage {
+export function parsePage(value: unknown, names: AssetNames = bySymbol): DispatchPage {
   const json = object(value, 'body');
   return {
-    dispatches: list(json.dispatches, 'dispatches', summary),
+    dispatches: list(json.dispatches, 'dispatches', (row, at) => summary(row, at, names)),
     nextCursor: nullableString(json.nextCursor, 'nextCursor'),
   };
 }
@@ -442,18 +468,23 @@ function network(value: unknown, path: string): Network {
   return (NETWORK_NAMES as readonly unknown[]).includes(value) ? (value as Network) : 'unknown';
 }
 
-function holding(value: unknown, path: string): Holding {
+function holding(value: unknown, path: string, name: (asset: string) => string): Holding {
   const json = object(value, path);
   return {
     holder: oneOf(json.holder, HOLDERS, `${path}.holder`),
     address: string(json.address, `${path}.address`),
     assets: list(json.assets, `${path}.assets`, (asset, at): AssetBalance => {
       const a = object(asset, at);
-      const name = string(a.asset, `${at}.asset`);
+      const symbol = string(a.asset, `${at}.asset`);
       const decimals = a.decimals === undefined ? 0 : integer(a.decimals, `${at}.decimals`);
-      const toMoney = (raw: string): Money => ({ asset: name, raw, decimals });
+      const toMoney = (raw: string): Money => ({
+        asset: symbol,
+        name: name(symbol),
+        raw,
+        decimals,
+      });
       return {
-        asset: name,
+        asset: symbol,
         decimals: a.decimals === undefined ? null : decimals,
         balance: read(a.balance, `${at}.balance`, (v, p) => toMoney(rawAmount(v, p))),
         committed: toMoney(rawAmount(a.committed, `${at}.committed`)),
@@ -481,11 +512,12 @@ function signerKeyRead(value: unknown, path: string): Read<SignerKey> {
   return read(value, path, signerKey);
 }
 
-function sender(value: unknown, path: string): Sender {
+function sender(value: unknown, path: string, names: AssetNames): Sender {
   const json = object(value, path);
   const multisig = json.multisig === null ? null : object(json.multisig, `${path}.multisig`);
+  const chain = oneOf(json.chain, CHAIN_NAMES, `${path}.chain`);
   return {
-    chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    chain,
     name: string(json.name, `${path}.name`),
     isDefault: boolean(json.default, `${path}.default`),
     network: network(json.network, `${path}.network`),
@@ -496,14 +528,62 @@ function sender(value: unknown, path: string): Sender {
       threshold: read(multisig.threshold, `${path}.multisig.threshold`, integer),
       engineKey: string(multisig.engineKey, `${path}.multisig.engineKey`),
     },
-    balances: list(json.balances, `${path}.balances`, holding),
+    balances: list(json.balances, `${path}.balances`, (h, at) =>
+      holding(h, at, (asset) => names(chain, asset)),
+    ),
     signerKey: signerKeyRead(json.signerKey, `${path}.signerKey`),
   };
 }
 
 /** `GET /v1/senders`. */
-export function parseSenders(value: unknown): Sender[] {
-  return list(object(value, 'body').senders, 'senders', sender);
+export function parseSenders(value: unknown, names: AssetNames = bySymbol): Sender[] {
+  return list(object(value, 'body').senders, 'senders', (s, at) => sender(s, at, names));
+}
+
+const ASSET_KIND_NAMES = Object.keys(ASSET_KINDS) as AssetKind[];
+
+export function parseKnownAsset(value: unknown, path = 'body'): KnownAsset {
+  const json = object(value, path);
+  return {
+    id: string(json.id, `${path}.id`),
+    chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    address: string(json.address, `${path}.address`),
+    symbol: string(json.symbol, `${path}.symbol`),
+    name: string(json.name, `${path}.name`),
+    decimals: integer(json.decimals, `${path}.decimals`),
+    kind: oneOf(json.kind, ASSET_KIND_NAMES, `${path}.kind`),
+    source: oneOf(json.source, ['config', 'console'] as const, `${path}.source`),
+    enabled: boolean(json.enabled, `${path}.enabled`),
+    addedBy:
+      json.addedBy === null
+        ? null
+        : oneOf(json.addedBy, ['auth', 'operator'] as const, `${path}.addedBy`),
+    addedAt: date(json.addedAt, `${path}.addedAt`),
+  };
+}
+
+/** `GET /v1/assets`. */
+export function parseAssets(value: unknown): KnownAsset[] {
+  return list(object(value, 'body').assets, 'assets', parseKnownAsset);
+}
+
+/** `POST /v1/assets/preview`. */
+export function parseAssetPreview(value: unknown): AssetPreview {
+  const json = object(value, 'body');
+  const onChain = object(json.onChain, 'onChain');
+  return {
+    chain: oneOf(json.chain, CHAIN_NAMES, 'chain'),
+    kind: oneOf(json.kind, ['spl', 'token-2022', 'erc20'] as const, 'kind'),
+    address: string(json.address, 'address'),
+    decimals: integer(json.decimals, 'decimals'),
+    symbol: string(json.symbol, 'symbol'),
+    name: string(json.name, 'name'),
+    onChain: {
+      symbol: string(onChain.symbol, 'onChain.symbol'),
+      name: string(onChain.name, 'onChain.name'),
+    },
+    supply: rawAmount(json.supply, 'supply'),
+  };
 }
 
 function fix(value: unknown, path: string): Fix {

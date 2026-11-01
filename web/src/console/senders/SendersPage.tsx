@@ -145,7 +145,12 @@ function BalanceTable({ holding }: { holding: Holding }) {
             const short = asset.balance.ok && isShort(asset.balance.value, asset.committed);
             return (
               <tr key={asset.asset} data-short={short || undefined}>
-                <th scope="row">{asset.asset}</th>
+                <th scope="row">
+                  {asset.asset}
+                  {asset.committed.name !== asset.asset && (
+                    <span className={styles.assetName}> {asset.committed.name}</span>
+                  )}
+                </th>
                 <td>
                   {asset.balance.ok ? (
                     <Amount {...asset.balance.value} variant="plain" />

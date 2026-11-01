@@ -1,6 +1,7 @@
 import {
   ArrowClockwise,
   ClockCounterClockwise,
+  Coins,
   FileText,
   Flag,
   HandPalm,
@@ -24,6 +25,7 @@ const NAV = [
   { page: 'held', label: 'Held', Icon: HandPalm },
   { page: 'rules', label: 'Flag Rules', Icon: Flag },
   { page: 'senders', label: 'Senders & Keys', Icon: Key },
+  { page: 'assets', label: 'Assets', Icon: Coins },
   { page: 'activity', label: 'Activity', Icon: ClockCounterClockwise },
   { page: 'setup', label: 'Setup', Icon: ListChecks },
 ] as const satisfies readonly { page: Page; label: string; Icon: unknown }[];

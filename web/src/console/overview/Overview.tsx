@@ -16,6 +16,7 @@ import { duration } from '../../domain/dispatchFlow';
 import { free, headlineAsset, isShort, payer, senderKey } from '../../domain/sender';
 import { AREA_LABEL, type Setup } from '../../domain/setup';
 import { describeFailure } from '../api/client';
+import { RowTotals } from '../dispatches/DispatchRows';
 import styles from '../console.module.css';
 import { useHeld } from '../held/heldData';
 import { nextDelay, SENDERS_MS, usePoll } from '../live';
@@ -417,21 +418,15 @@ function AttentionCard({
 
 function RecentRow({ row }: { row: DispatchSummary }) {
   return (
-    <li>
-      <Link page="dispatches" params={dispatchLink(row.id)} className={styles.recentRow}>
+    <li className={styles.recentRow}>
+      <Link page="dispatches" params={dispatchLink(row.id)} className={styles.recentLink}>
         <span className={styles.rowName}>{dispatchName(row)}</span>
         <span className={styles.mono}>{shortId(row.id)}</span>
         <span className={styles.rowSub}>{CHAINS[row.chain].label}</span>
         <span className={styles.spacer} />
         <StatusPill status={row.status} />
-        <span className={styles.rowAmount}>
-          {row.totals[0] ? (
-            <Amount {...row.totals[0]} />
-          ) : (
-            <span className={styles.rowSub}>{row.mode === 'relay' ? 'Relay' : 'Calls'}</span>
-          )}
-        </span>
       </Link>
+      <RowTotals row={row} />
     </li>
   );
 }

@@ -210,7 +210,7 @@
   flex: 1;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-4) 0 0;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -243,8 +243,13 @@
 }
 
 .rowAmount {
+  display: flex;
   min-width: 130px;
-  text-align: right;
+  flex: none;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-right: var(--space-4);
+  font-size: var(--text-13);
 }
 
 .noRows {
@@ -312,6 +317,13 @@
 .kv dd {
   min-width: 0;
   margin: 0;
+}
+
+.paidIn {
+  margin: 0;
+  padding: var(--space-2) var(--space-4) 0;
+  color: var(--muted);
+  font-size: var(--text-12-5);
 }
 
 .items {
@@ -557,6 +569,11 @@
   display: contents;
 }
 
+.totalsDetail {
+  display: grid;
+  gap: var(--space-1);
+}
+
 .senderDetail {
   display: inline-flex;
   align-items: baseline;
@@ -683,7 +700,21 @@
   border-radius: var(--radius-control);
   color: var(--ink);
   font-size: var(--text-13);
+}
+
+.recentLink {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-3);
+  color: inherit;
   text-decoration: none;
+}
+
+.recentRow .rowAmount {
+  padding-right: 0;
 }
 
 .recentRow:hover {
@@ -761,6 +792,11 @@
 
 .balanceTable tbody th {
   font-weight: 500;
+}
+
+.assetName {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .short {

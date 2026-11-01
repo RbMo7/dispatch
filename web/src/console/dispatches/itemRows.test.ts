@@ -9,7 +9,7 @@ function item(index: number, hash: string | null, status: Item['status'] = 'conf
     type: 'payment',
     recipient: `9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6m${String(index).padStart(3, '0')}`,
     asset: 'USDC',
-    amount: { raw: '1500000', decimals: 6, asset: 'USDC' },
+    amount: { raw: '1500000', decimals: 6, asset: 'USDC', name: 'USD Coin' },
     status,
     transactionHash: hash,
     error: null,
