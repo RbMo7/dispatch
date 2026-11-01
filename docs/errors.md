@@ -51,8 +51,9 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `400` | The request is invalid. Nothing was stored, and the `Idempotency-Key` is not used up. |
 | `401` | The `Authorization` header is missing, or its token is neither the engine's `AUTH_TOKEN` nor its `OPERATOR_TOKEN`. |
 | `403` | The route needs the [operator token](./authentication.md#the-operator-token), and the request sent `AUTH_TOKEN`, or the engine has no `OPERATOR_TOKEN`. |
-| `404` | No Dispatch or Flag Rule has this id. An id that is not a UUID gets the same answer. |
-| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). |
+| `404` | No Dispatch, Flag Rule or Known Asset has this id. An id that is not a UUID gets the same answer. |
+| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). For a Known Asset: the address or the symbol is taken (`ASSET_EXISTS`, `SYMBOL_TAKEN`), or the asset comes from the configuration (`CONFIG_ASSET`). |
+| `503` | Adding or previewing a Known Asset: the chain could not be read (`RPC_UNAVAILABLE`). |
 | `413` | The body is over 1 MiB. |
 
 ## Error codes
@@ -61,7 +62,7 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | --- | --- | --- | --- |
 | `INSUFFICIENT_FUNDS` | An item, `failed` | The payer cannot cover it. The [Funding Check](./lifecycle.md#the-funding-check) caught it before signing, or the chain refused it. On Solana the check counts the SOL for fees and for new token accounts too. | Top up the payer by at least `chainDetail.short`, then send the failed payments again in a new Dispatch with a new key. |
 | `INVALID_RECIPIENT` | `400` | A malformed or unusable address: a recipient, or a Bulk Call aggregator with no contract code. | Fix the address. |
-| `UNKNOWN_ASSET` | `400` | A `payment` names an asset this chain has no configured encoding for. | Use `ETH`, `SOL`, or a token the operator listed in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`. |
+| `UNKNOWN_ASSET` | `400` | A `payment` names an asset that is not an enabled Known Asset on its chain. | Use `ETH`, `SOL`, or a symbol `GET /v1/assets` lists as enabled. The operator can add a token with `POST /v1/assets`. |
 | `CHAIN_REJECTED` | `400`, or an item, `failed` | At submission: malformed calldata, relay bytes that are not a valid transaction, a Bulk Call the engine cannot send, or a call a Multisig Sender cannot propose. On an item: the chain definitely refused or reverted it. For a Multisig Sender also a refusal from the Safe Transaction Service (`401` for a bad API key, `422` for an unregistered delegate) or a Safe execute whose simulation fails (`GS013`). | Read `message` and `chainDetail`, fix the cause, and send it in a new Dispatch. Sending the same thing again fails the same way. |
 | `RPC_UNAVAILABLE` | An item, `failed` | The chain's RPC could not be reached or did not answer: a timeout, a rate limit or a `5xx`. If the engine cannot read a balance for the Funding Check, it fails the items rather than send them unchecked. | Send them again later with a new key. Operators should use their own RPC provider for real traffic. |
 | `SIGNER_UNREACHABLE` | An item, `failed` | The worker could not reach the Signer, or got back an unusable signature. Nothing was sent. | The operator checks the Signer ([troubleshooting](./self-hosting/signer.md#10-troubleshoot-from-the-engines-side)). Then send again with a new key. |
@@ -75,6 +76,12 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `ALREADY_CLAIMED` | `409` | You tried to cancel a Dispatch the worker already claimed. | Nothing. The Dispatch is being sent. |
 | `NOT_HELD` | `409` | You tried to release a Dispatch that is not `held`: already released, cancelled, never held, or a Relay Dispatch. | Nothing. Read the Dispatch to see where it is. |
 | `RULE_DELETED` | `409` | You tried to edit a deleted Flag Rule. | Create a new rule. |
+| `NOT_A_TOKEN` | `400` | Adding a Known Asset: the address is not a token. On Base it has no contract, or does not answer `decimals()` and `totalSupply()`. On Solana it is not a mint. | Check the address and the chain. |
+| `NOT_PAYABLE` | `400` | Adding a Known Asset: a Solana mint the engine can't pay out correctly, one with a transfer fee, a transfer hook, no transfers, or new accounts frozen. | Pay in another token. |
+| `SYMBOL_REQUIRED` | `400` | Adding a Known Asset: the token publishes no usable symbol. | Send `symbol`. |
+| `SYMBOL_TAKEN` | `409` | Adding or enabling a Known Asset: another enabled asset on the chain has the symbol, ignoring case. | Send another `symbol`, or disable the other asset first. |
+| `ASSET_EXISTS` | `409` | Adding a Known Asset that is already one, enabled or not. | Enable it with `PATCH /v1/assets/{id}`. |
+| `CONFIG_ASSET` | `409` | Enabling or disabling an asset that comes from `*_KNOWN_TOKENS` or is a native coin. | Change the variable and restart. |
 
 The engine has one more code, `ALREADY_KNOWN`, which it never reports. It means the node already had the exact bytes, so the item stays `broadcasting` until it resolves.
 

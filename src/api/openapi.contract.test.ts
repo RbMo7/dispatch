@@ -15,7 +15,9 @@ import { err, ok } from '../domain/result.js';
 import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
-import { registryFromConfig } from '../asset-registry/configured-assets.js';
+import { AssetRegistry } from '../asset-registry/asset-registry.js';
+import { configuredAssets, registryFromConfig } from '../asset-registry/configured-assets.js';
+import type { ReadToken, TokenRead } from '../chain-handler/chain-handler.js';
 import { readSender, type SenderConfig, type SenderReads } from './senders.js';
 import { setupReader } from './setup-routes.js';
 
@@ -277,14 +279,65 @@ const readSetup = setupReader({
   now: () => new Date('2026-11-01T10:07:12.000Z'),
 });
 
+/** The chain's answers for the addresses the Assets examples name, as a live engine read them. */
+const onChain: Record<string, TokenRead> = {
+  '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027': {
+    chain: 'base',
+    kind: 'erc20',
+    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027',
+    symbol: 'LUSD',
+    name: 'Live Dollar',
+    decimals: 6,
+    supply: '1000000000000',
+  },
+  '4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ': {
+    chain: 'solana',
+    kind: 'token-2022',
+    address: '4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ',
+    symbol: 'LEUR',
+    name: 'Live Euro',
+    decimals: 6,
+    supply: '1000000000',
+  },
+  DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4: {
+    chain: 'solana',
+    kind: 'spl',
+    address: 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4',
+    symbol: '',
+    name: '',
+    decimals: 6,
+    supply: '1000000000',
+  },
+  '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU': {
+    chain: 'solana',
+    kind: 'spl',
+    address: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    symbol: '',
+    name: '',
+    decimals: 6,
+    supply: '1000000000',
+  },
+};
+const readToken: ReadToken = (address) =>
+  Promise.resolve(
+    onChain[address]
+      ? ok(onChain[address])
+      : err({ code: 'NOT_A_TOKEN', message: `${address} has no contract code on this chain` }),
+  );
+
 async function buildContractApp() {
   const store = new InMemoryDispatchStore();
+  await store.seedConfigAssets(
+    configuredAssets({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6', solana: '' }),
+  );
+  const known = new AssetRegistry(() => store.listKnownAssets());
+  await known.refresh();
   const baseHandler = (senderAddress: string) =>
     BaseChainHandler.create({
       rpcUrl: 'http://base.invalid',
       chainId: 84532,
       senderAddress,
-      assets: assets.forChain('base'),
+      assets: known.forChain('base'),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
       bulkCallMaxBatchSize: 50,
       fetch: fakeBaseRpc,
@@ -310,7 +363,7 @@ async function buildContractApp() {
       handler: new SolanaChainHandler({
         connection: new Connection('http://solana.invalid'),
         senderAddress: '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf',
-        assets: assets.forChain('solana'),
+        assets: known.forChain('solana'),
       }),
     },
   ]);
@@ -321,8 +374,8 @@ async function buildContractApp() {
     authToken: TOKEN,
     operatorToken: OPERATOR_TOKEN,
     defaultRetryPolicy: false,
-    assets,
-    readToken: {},
+    assets: known,
+    readToken: { base: readToken, solana: readToken },
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
     readSetup,
   });
@@ -455,7 +508,7 @@ describe('docs/openapi.yaml against the real routes', () => {
   it('answers every example with its documented status and a body that matches the schema', async () => {
     // Creates first, so the reads and cancels below find the Dispatches the examples name. Flag
     // Rules before Dispatches, so the held example has a rule to match.
-    const creates = ['createFlagRule', 'createDispatch'].flatMap((id) =>
+    const creates = ['createFlagRule', 'addAsset', 'createDispatch'].flatMap((id) =>
       all.filter((s) => s.operationId === id),
     );
     // A 409 needs a claimed Dispatch or a deleted rule, so it runs last, after everything else is claimed.
@@ -472,13 +525,22 @@ describe('docs/openapi.yaml against the real routes', () => {
           `${s.operationId} ${s.name}: ${response.statusCode} (documented ${s.status}) ${problems.join('; ')} ${response.body}`,
         );
       }
-      type Ids = { dispatchId?: string; ruleId?: string } | undefined;
+      type Ids =
+        { dispatchId?: string; ruleId?: string; id?: string; assets?: AssetIds[] } | undefined;
+      type AssetIds = { id: string; chain: string; address: string };
       const example = s.responseExample as Ids;
       const real = body as Ids;
-      for (const key of ['dispatchId', 'ruleId'] as const) {
+      for (const key of ['dispatchId', 'ruleId', 'id'] as const) {
         const exampleId = example?.[key];
         const realId = real?.[key];
         if (exampleId && realId) ids.set(exampleId, realId);
+      }
+      // A listed asset maps by what it is, since the test engine gave it its own id.
+      for (const listed of example?.assets ?? []) {
+        const same = real?.assets?.find(
+          (a) => a.chain === listed.chain && a.address === listed.address,
+        );
+        if (same) ids.set(listed.id, same.id);
       }
     };
 
