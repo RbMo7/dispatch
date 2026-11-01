@@ -27,7 +27,5 @@ export function useLocation(): [Location, (href: string) => void] {
 }
 
 export function isPlainClick(event: MouseEvent): boolean {
-  return (
-    event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
-  );
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 }

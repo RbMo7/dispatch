@@ -39,13 +39,14 @@ function txHash(rand: () => number, chain: Chain): string {
 }
 
 const DECIMALS = { USDC: 6, SOL: 9, ETH: 18 } as const;
+const NAMES = { USDC: 'USD Coin', SOL: 'Solana', ETH: 'Ether' } as const;
 type FixtureAsset = keyof typeof DECIMALS;
 
 function money(decimal: string, asset: FixtureAsset): Money {
   const decimals = DECIMALS[asset];
   const [whole, fraction = ''] = decimal.split('.');
   const raw = BigInt(`${whole}${fraction.padEnd(decimals, '0')}`).toString();
-  return { raw, decimals, asset };
+  return { raw, decimals, asset, name: NAMES[asset] };
 }
 
 function split(rand: () => number, total: Money, count: number): Money[] {

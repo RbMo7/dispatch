@@ -1,6 +1,7 @@
 import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
 import { ActivityPage } from './activity/ActivityPage';
+import { AssetsPage } from './assets/AssetsPage';
 import { DispatchesPage } from './dispatches/DispatchesPage';
 import { HeldProvider } from './held/heldData';
 import { HeldPage } from './held/HeldPage';
@@ -52,6 +53,8 @@ function CurrentPage() {
       return <RulesPage />;
     case 'senders':
       return <SendersPage />;
+    case 'assets':
+      return <AssetsPage />;
     case 'activity':
       return <ActivityPage />;
     case 'setup':

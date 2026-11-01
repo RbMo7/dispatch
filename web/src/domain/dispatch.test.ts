@@ -48,8 +48,8 @@ describe('a Dispatch row from its detail alone', () => {
       createdAt: new Date('2026-10-31T10:00:00.000Z'),
       itemCount: 5,
       totals: [
-        { asset: 'USDC', raw: '10000000', decimals: 6 },
-        { asset: 'SOL', raw: '1000', decimals: 9 },
+        { asset: 'USDC', name: 'USDC', raw: '10000000', decimals: 6 },
+        { asset: 'SOL', name: 'SOL', raw: '1000', decimals: 9 },
       ],
     });
   });

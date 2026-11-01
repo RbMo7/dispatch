@@ -116,26 +116,37 @@ export interface Preview {
 }
 
 export type ActionKind =
-  'cancel' | 'release' | 'flag_rule_create' | 'flag_rule_update' | 'flag_rule_delete';
+  | 'cancel'
+  | 'release'
+  | 'flag_rule_create'
+  | 'flag_rule_update'
+  | 'flag_rule_delete'
+  | 'asset_add'
+  | 'asset_disable'
+  | 'asset_enable';
 
 /** One entry of the activity record (ADR-0057). */
 export interface OperatorAction {
   id: string;
   at: Date;
   action: ActionKind;
-  /** The Dispatch or Flag Rule acted on. */
+  /** The Dispatch, Flag Rule or Known Asset acted on. */
   targetId: string;
   tokenKind: TokenKind;
   reason: string | null;
 }
 
-export const ACTIONS: Record<ActionKind, { label: string; target: 'dispatch' | 'rule' }> = {
-  cancel: { label: 'Cancelled', target: 'dispatch' },
-  release: { label: 'Released', target: 'dispatch' },
-  flag_rule_create: { label: 'Rule created', target: 'rule' },
-  flag_rule_update: { label: 'Rule edited', target: 'rule' },
-  flag_rule_delete: { label: 'Rule deleted', target: 'rule' },
-};
+export const ACTIONS: Record<ActionKind, { label: string; target: 'dispatch' | 'rule' | 'asset' }> =
+  {
+    cancel: { label: 'Cancelled', target: 'dispatch' },
+    release: { label: 'Released', target: 'dispatch' },
+    flag_rule_create: { label: 'Rule created', target: 'rule' },
+    flag_rule_update: { label: 'Rule edited', target: 'rule' },
+    flag_rule_delete: { label: 'Rule deleted', target: 'rule' },
+    asset_add: { label: 'Asset added', target: 'asset' },
+    asset_disable: { label: 'Asset disabled', target: 'asset' },
+    asset_enable: { label: 'Asset enabled', target: 'asset' },
+  };
 
 /** The editor's fields, as typed: what the operator sees, before it is a request body. */
 export interface RuleDraft {

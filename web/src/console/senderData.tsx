@@ -12,6 +12,7 @@ import {
   sharedChains,
   signingLine,
 } from '../domain/sender';
+import type { KnownAsset } from '../domain/assets';
 import type { Chain } from '../domain/chains';
 import { describeFailure } from './api/client';
 import styles from './console.module.css';
@@ -20,19 +21,43 @@ import { PAGES } from './router';
 import { useApi } from './session';
 
 const SendersContext = createContext<Polled<Sender[]> | null>(null);
+const AssetsContext = createContext<Polled<KnownAsset[]> | null>(null);
 
-/** `GET /v1/senders` every 15 s, shared by the sidebar, the Overview and Senders & Keys. */
+/**
+ * `GET /v1/assets` then `GET /v1/senders`, every 15 s, shared by the sidebar,
+ * the Overview, Senders & Keys and Assets. Reading the assets first also
+ * refreshes the names every amount is shown by.
+ */
 export function SendersProvider({ children }: { children: ReactNode }) {
   const api = useApi();
-  const load = useCallback((signal: AbortSignal) => api.listSenders(signal), [api]);
-  const polled = usePoll({ key: 'senders', load, delay: () => SENDERS_MS });
-  return <SendersContext.Provider value={polled}>{children}</SendersContext.Provider>;
+  const load = useCallback(
+    async (signal: AbortSignal) => {
+      const assets = await api.listAssets(signal);
+      return { assets, senders: await api.listSenders(signal) };
+    },
+    [api],
+  );
+  const { data, error, reload } = usePoll({ key: 'senders', load, delay: () => SENDERS_MS });
+  const senders = useMemo(() => ({ data: data?.senders, error, reload }), [data, error, reload]);
+  const assets = useMemo(() => ({ data: data?.assets, error, reload }), [data, error, reload]);
+  return (
+    <SendersContext.Provider value={senders}>
+      <AssetsContext.Provider value={assets}>{children}</AssetsContext.Provider>
+    </SendersContext.Provider>
+  );
 }
 
 export function useSenders(): Polled<Sender[]> {
   const senders = useContext(SendersContext);
   if (!senders) throw new Error('useSenders outside SendersProvider');
   return senders;
+}
+
+/** Every Known Asset, enabled or not, on every chain. */
+export function useAssets(): Polled<KnownAsset[]> {
+  const assets = useContext(AssetsContext);
+  if (!assets) throw new Error('useAssets outside SendersProvider');
+  return assets;
 }
 
 /** The chains this engine has enabled: every one has at least one Sender, so they are exactly the Senders' chains. */

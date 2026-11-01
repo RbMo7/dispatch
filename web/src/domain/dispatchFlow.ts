@@ -623,11 +623,11 @@ function managedFlow(
 function fundingShortfall(unfunded: readonly Item[], items: readonly Item[]): Text {
   const short = unfunded[0]?.error?.short;
   const like = items.find((i) => i.type === 'payment' && i.amount && i.asset === short?.asset);
-  const decimals = like?.type === 'payment' ? like.amount?.decimals : undefined;
-  return short && decimals !== undefined
+  const amount = like?.type === 'payment' ? like.amount : null;
+  return short && amount
     ? [
         'The Funding Check found the Sender short by ',
-        { asset: short.asset, raw: short.raw, decimals },
+        { ...amount, raw: short.raw },
         '. Nothing was signed.',
       ]
     : 'The Funding Check found the Sender could not cover it. Nothing was signed.';

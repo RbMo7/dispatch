@@ -53,7 +53,11 @@ export function SenderCard({
       <div className={styles.footer}>
         <span>{footer.label}</span>
         <span className={styles.footerValue}>
-          {'fee' in footer ? <Amount {...footer.fee} variant="plain" unit /> : footer.text}
+          {'fee' in footer ? (
+            <Amount {...footer.fee} variant="plain" unit tip={false} />
+          ) : (
+            footer.text
+          )}
         </span>
       </div>
     </a>
@@ -74,7 +78,7 @@ function Funds({
   return (
     <>
       <div className={styles.balance}>
-        <Amount {...balance} variant="raised" />
+        <Amount {...balance} variant="raised" tip={false} />
       </div>
       <div className={styles.bar}>
         <StackedBar committed={share(committed, balance)} low={low} />

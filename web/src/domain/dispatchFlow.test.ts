@@ -102,7 +102,7 @@ describe('the flow of one Dispatch', () => {
     expect(flow.stages[0]!.detail).toEqual([
       '1 payment',
       ', ',
-      { asset: 'USDC', decimals: 6, raw: '25000000' },
+      { asset: 'USDC', name: 'USDC', decimals: 6, raw: '25000000' },
     ]);
   });
 
@@ -684,7 +684,7 @@ describe('the flow of one Dispatch', () => {
     expect(branches(flow)).toEqual([]);
     expect(titled(flow, 'Failed').detail).toEqual([
       'The Funding Check found the Sender short by ',
-      { asset: 'SOL', raw: '11115845377', decimals: 9 },
+      { asset: 'SOL', name: 'SOL', raw: '11115845377', decimals: 9 },
       '. Nothing was signed.',
     ]);
   });

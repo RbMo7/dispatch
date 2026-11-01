@@ -40,7 +40,13 @@ export function Search({ open, initialQuery, onClose, onNavigate }: SearchProps)
   );
 }
 
-function SearchBody({ initialQuery, onPick }: { initialQuery: string; onPick: (hit: Hit) => void }) {
+function SearchBody({
+  initialQuery,
+  onPick,
+}: {
+  initialQuery: string;
+  onPick: (hit: Hit) => void;
+}) {
   const [query, setQuery] = useState(initialQuery);
   const [search, setSearch] = useState<MiniSearch<SearchEntry>>();
   const [active, setActive] = useState(0);

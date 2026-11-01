@@ -2,6 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
+import type { KnownAsset } from '../../domain/assets';
+import { CHAINS } from '../../domain/chains';
 import { dayKey } from '../../domain/dateRange';
 import { shortId } from '../../domain/dispatch';
 import { ACTIONS, type FlagRule, type OperatorAction } from '../../domain/flagRules';
@@ -12,6 +14,7 @@ import { dayHeading } from '../dispatches/DispatchRows';
 import { SENDERS_MS, usePoll } from '../live';
 import ops from '../operator.module.css';
 import { Link } from '../router';
+import { useAssets } from '../senderData';
 import { useApi } from '../session';
 import { PageBar } from '../Shell';
 
@@ -27,7 +30,7 @@ interface Loaded {
   rules: Map<string, string>;
 }
 
-/** The activity record (ADR-0057): every cancel, release and rule change, newest first, by day. */
+/** The activity record (ADR-0057): every cancel, release, rule and asset change, newest first, by day. */
 export function ActivityPage() {
   const api = useApi();
   const load = useCallback(
@@ -41,6 +44,11 @@ export function ActivityPage() {
     [api],
   );
   const polled = usePoll({ key: 'activity', load, delay: () => SENDERS_MS });
+  const assetList = useAssets().data;
+  const assets = useMemo(
+    () => new Map((assetList ?? []).map((asset) => [asset.id, asset])),
+    [assetList],
+  );
   const [older, setOlder] = useState<{ after: string; pages: Page[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
@@ -87,13 +95,18 @@ export function ActivityPage() {
             {polled.error ? describeFailure(polled.error.failure) : 'Loading the activity record'}
           </p>
         ) : actions.length === 0 ? (
-          <EmptyState caption="No activity yet. Every cancel, release and Flag Rule change is recorded here." />
+          <EmptyState caption="No activity yet. Every cancel, release, Flag Rule and asset change is recorded here." />
         ) : (
           [...days].map(([key, rows]) => (
             <section key={key} aria-label={dayHeading(rows[0]!.at, today)}>
               <div className={styles.dayHead}>{dayHeading(rows[0]!.at, today)}</div>
               {rows.map((action) => (
-                <ActivityRow key={action.id} action={action} rules={polled.data!.rules} />
+                <ActivityRow
+                  key={action.id}
+                  action={action}
+                  rules={polled.data!.rules}
+                  assets={assets}
+                />
               ))}
             </section>
           ))
@@ -111,9 +124,18 @@ export function ActivityPage() {
   );
 }
 
-function ActivityRow({ action, rules }: { action: OperatorAction; rules: Map<string, string> }) {
+function ActivityRow({
+  action,
+  rules,
+  assets,
+}: {
+  action: OperatorAction;
+  rules: Map<string, string>;
+  assets: Map<string, KnownAsset>;
+}) {
   const { label, target } = ACTIONS[action.action];
   const ruleName = rules.get(action.targetId);
+  const asset = assets.get(action.targetId);
   return (
     <div className={ops.activityRow}>
       <span className={ops.activityTime}>{time.format(action.at)}</span>
@@ -127,6 +149,14 @@ function ActivityRow({ action, rules }: { action: OperatorAction; rules: Map<str
           >
             {shortId(action.targetId)}
           </Link>
+        ) : target === 'asset' ? (
+          asset ? (
+            <Link page="assets" params={new URLSearchParams({ chain: asset.chain })}>
+              {asset.symbol} on {CHAINS[asset.chain].label}
+            </Link>
+          ) : (
+            <span className={styles.mono}>{shortId(action.targetId)}</span>
+          )
         ) : ruleName ? (
           <Link page="rules" params={new URLSearchParams({ rule: action.targetId })}>
             {ruleName}

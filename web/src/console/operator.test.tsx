@@ -12,6 +12,8 @@ const PAYOUTS = '9wFd3kQe7RzXbN2pLmV8cTyH5sJaG4uWnE1oKiD6mT3a';
 const TREASURY = 'Gx7kP2sV9qWmR4tY8uZ3aB6cD1eF5gH7jK9mN2pQ2rv';
 const ALICE = '3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe';
 const HELD_AT = '2026-11-01T09:12:44.318Z';
+const LEUR_ID = '4dc99cb4-a219-4b81-9580-45146942c0a1';
+const FLOW_MINT = 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4';
 
 const operatorPaths = ['/v1/activity', '/v1/flag-rules', '/release'];
 
@@ -77,9 +79,46 @@ const rule = {
   ],
 };
 
+const knownAsset = <T extends Record<string, unknown>>(fields: T) => ({
+  chain: 'solana',
+  kind: 'spl',
+  source: 'config',
+  enabled: true,
+  addedBy: null,
+  addedAt: '2026-10-28T14:02:11.040Z',
+  ...fields,
+});
+
 /** A fake engine: the routes the console reads, each request recorded with its token. */
 function engine() {
   let held = true;
+  let assets = [
+    knownAsset({
+      id: '90f91669-f845-45bf-b44a-d571ac098032',
+      address: 'native',
+      symbol: 'SOL',
+      name: 'Solana',
+      decimals: 9,
+      kind: 'native',
+    }),
+    knownAsset({
+      id: 'f1c40b26-3c95-44a8-a06b-5bc06b5272dd',
+      address: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+      symbol: 'USDC',
+      name: 'USD Coin',
+      decimals: 6,
+    }),
+    knownAsset({
+      id: LEUR_ID,
+      address: '4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ',
+      symbol: 'LEUR',
+      name: 'Live Euro',
+      decimals: 6,
+      kind: 'token-2022',
+      source: 'console',
+      addedBy: 'operator',
+    }),
+  ];
   const requests: { method: string; path: string; token: string; body: unknown }[] = [];
   const payment = (amount: string) => ({
     type: 'payment',
@@ -134,7 +173,11 @@ function engine() {
       Promise.resolve(new Response(JSON.stringify(json), { status }));
     const kind = { [AUTH]: 'auth', [OPERATOR]: 'operator' }[token];
     if (!kind) return answer(401, { error: 'unauthorized' });
-    if (kind !== 'operator' && operatorPaths.some((p) => url.pathname.includes(p))) {
+    const assetWrite = url.pathname.startsWith('/v1/assets') && method !== 'GET';
+    if (
+      kind !== 'operator' &&
+      (assetWrite || operatorPaths.some((p) => url.pathname.includes(p)))
+    ) {
       return answer(403, { error: 'this route needs OPERATOR_TOKEN, not AUTH_TOKEN' });
     }
     switch (`${method} ${url.pathname}`) {
@@ -144,6 +187,48 @@ function engine() {
         return answer(200, {
           senders: [sender('payouts', PAYOUTS, true), sender('treasury', TREASURY, false)],
         });
+      case 'GET /v1/assets':
+        return answer(200, { assets });
+      case 'POST /v1/assets/preview':
+      case 'POST /v1/assets': {
+        const { address, symbol } = body as { address: string; symbol?: string };
+        if (!symbol) {
+          return answer(400, {
+            code: 'SYMBOL_REQUIRED',
+            message: `${address} publishes no symbol on chain: give one in symbol`,
+          });
+        }
+        const added = {
+          chain: 'solana',
+          kind: 'spl',
+          address,
+          decimals: 6,
+          symbol,
+          name: symbol,
+          onChain: { symbol: '', name: '' },
+          supply: '1000000000000',
+        };
+        if (url.pathname.endsWith('/preview')) return answer(200, added);
+        const row = knownAsset({
+          id: 'c2b7a1d4-0f3e-4a5b-8c6d-9e0f1a2b3c4d',
+          address,
+          symbol,
+          name: symbol,
+          decimals: 6,
+          source: 'console',
+          addedBy: 'operator',
+        });
+        assets = [...assets, row];
+        return answer(201, row);
+      }
+      case `PATCH /v1/assets/${LEUR_ID}`: {
+        const { enabled } = body as { enabled: boolean };
+        assets = assets.map((a) => (a.id === LEUR_ID ? { ...a, enabled } : a));
+        return answer(
+          200,
+          assets.find((a) => a.id === LEUR_ID),
+        );
+      }
       case 'GET /v1/setup':
         return answer(200, { worker: { status: 'not_run_yet' }, checks: [] });
       case 'GET /v1/dispatches': {
@@ -221,7 +306,7 @@ describe('signing in with AUTH_TOKEN (ADR-0057)', () => {
   it('hides Held, Flag Rules and Activity, and never calls an operator-only route', async () => {
     const { requests, user } = await signIn(AUTH, '/console/held');
 
-    expect(navNames()).toEqual(['Overview', 'Dispatches', 'Senders & Keys', 'Setup']);
+    expect(navNames()).toEqual(['Overview', 'Dispatches', 'Senders & Keys', 'Assets', 'Setup']);
     expect(await screen.findByText('Oldest hold')).toBeTruthy();
     await user.click(screen.getAllByRole('link', { name: /Dispatches/ })[0]!);
     await user.click(await screen.findByRole('button', { name: /2 payments/ }));
@@ -243,6 +328,7 @@ describe('signing in with OPERATOR_TOKEN', () => {
         'Held1',
         'Flag Rules',
         'Senders & Keys',
+        'Assets',
         'Activity',
         'Setup',
       ]),
@@ -320,5 +406,108 @@ describe('signing in with OPERATOR_TOKEN', () => {
     expect(await screen.findByText('Released')).toBeTruthy();
     expect(screen.getByText('checked with finance')).toBeTruthy();
     expect(screen.getByText('Operator token')).toBeTruthy();
+  });
+});
+
+describe('the Assets page', () => {
+  const assetRows = () =>
+    screen
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => [...row.children].map((cell) => cell.textContent));
+
+  it('lists each asset of the chain, read-only for an AUTH_TOKEN session', async () => {
+    const { requests } = await signIn(AUTH, '/console/assets');
+
+    await screen.findByRole('tab', { name: 'Solana', selected: true });
+    await waitFor(() =>
+      expect(assetRows()).toEqual([
+        ['Solana', 'SOL', 'Native coin', '9', 'Native', 'Configuration', 'Enabled'],
+        ['USD Coin', 'USDC', '4zMMC9…ncDU', '6', 'SPL', 'Configuration', 'Enabled'],
+        ['Live Euro', 'LEUR', '4Z2yz3…MCdJ', '6', 'Token-2022', 'Console', 'Enabled'],
+      ]),
+    );
+    expect(screen.queryByRole('button', { name: 'Add asset' })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(requests.some((r) => r.path.startsWith('/v1/assets') && r.method !== 'GET')).toBe(false);
+  });
+
+  it('previews what the chain says, explains a refusal in plain words, then adds', async () => {
+    const { requests, user } = await signIn(OPERATOR, '/console/assets');
+
+    await user.click(await screen.findByRole('button', { name: 'Add asset' }));
+    const pane = await screen.findByRole('region', { name: 'Add an asset on Solana' });
+    await user.type(within(pane).getByLabelText('Mint address'), FLOW_MINT);
+    await user.click(within(pane).getByRole('button', { name: 'Preview' }));
+    expect((await within(pane).findByRole('alert')).textContent).toBe(
+      'This token publishes no symbol. Give it one under Symbol, then preview again.',
+    );
+    const add = () => within(pane).getByRole<HTMLButtonElement>('button', { name: /^Add/ });
+    expect(add().disabled).toBe(true);
+
+    await user.type(within(pane).getByLabelText('Symbol'), 'FLOW');
+    await user.click(within(pane).getByRole('button', { name: 'Preview' }));
+    const preview = await within(pane).findByRole('region', { name: 'What the chain says' });
+    expect(within(preview).getByText('1,000,000 FLOW')).toBeTruthy();
+    expect(add().textContent).toBe('Add FLOW');
+    await user.click(add());
+
+    await waitFor(() =>
+      expect(requests.filter((r) => r.method === 'POST' && r.path === '/v1/assets')).toEqual([
+        {
+          method: 'POST',
+          path: '/v1/assets',
+          token: OPERATOR,
+          body: { chain: 'solana', address: FLOW_MINT, symbol: 'FLOW' },
+        },
+      ]),
+    );
+    await waitFor(() => expect(assetRows().map((row) => row[1])).toContain('FLOW'));
+    expect(screen.queryByRole('region', { name: 'Add an asset on Solana' })).toBeNull();
+  });
+
+  it('opens Add with an address filled in from a link', async () => {
+    await signIn(OPERATOR, `/console/assets?chain=solana&add=${FLOW_MINT}`);
+    const pane = await screen.findByRole('region', { name: 'Add an asset on Solana' });
+    expect(within(pane).getByLabelText<HTMLInputElement>('Mint address').value).toBe(FLOW_MINT);
+  });
+
+  it('disables an asset added from the console only after a confirmation', async () => {
+    const { requests, user } = await signIn(OPERATOR, '/console/assets');
+
+    const switches = await screen.findAllByRole('switch');
+    expect(switches.map((s) => s.getAttribute('aria-label'))).toEqual(['LEUR enabled']);
+    await user.click(switches[0]!);
+    const dialog = await screen.findByRole('dialog', { name: 'Disable asset' });
+    expect(requests.some((r) => r.method === 'PATCH')).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Disable LEUR' }));
+
+    await waitFor(() =>
+      expect(requests.filter((r) => r.method === 'PATCH')).toEqual([
+        {
+          method: 'PATCH',
+          path: `/v1/assets/${LEUR_ID}`,
+          token: OPERATOR,
+          body: { enabled: false },
+        },
+      ]),
+    );
+    await waitFor(() => expect(assetRows()[2]!.at(-1)).toBe('Disabled'));
+  });
+});
+
+describe('asset names', () => {
+  it('shows a row symbol with its registry name in a tooltip, and both in Details', async () => {
+    const { user } = await signIn(AUTH, `/console/dispatches?dispatch=${HELD_ID}&tab=details`);
+
+    const pane = await screen.findByRole('region', { name: 'Dispatch detail' });
+    expect((await within(pane).findByText('Total')).nextSibling!.textContent).toBe(
+      '8,537.90 USDC USD Coin',
+    );
+    const [unit] = screen
+      .getAllByText('USDC')
+      .filter((el) => el.getAttribute('tabindex') === '0' && !pane.contains(el));
+    await user.hover(unit!);
+    expect(screen.getByText('USD Coin', { selector: '[aria-hidden]' })).toBeTruthy();
   });
 });

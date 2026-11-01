@@ -11,7 +11,7 @@ import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
-import { filterItems, type ItemRow, itemRows, statusCounts } from './itemRows';
+import { filterItems, type ItemRow, itemRows, paidIn, statusCounts } from './itemRows';
 
 const count = new Intl.NumberFormat('en-US');
 
@@ -91,6 +91,7 @@ export function ItemsTab({
   const counts = useMemo(() => statusCounts(items), [items]);
   const shown = useMemo(() => filterItems(items, filter, search), [items, filter, search]);
   const rows = useMemo(() => itemRows(shown, toggled), [shown, toggled]);
+  const assets = useMemo(() => paidIn(items), [items]);
 
   const chips: { id: ItemFilter; label: string; n: number }[] = [
     { id: 'all', label: 'All', n: items.length },
@@ -121,6 +122,7 @@ export function ItemsTab({
           </button>
         ))}
       </div>
+      {assets && <p className={styles.paidIn}>Paid in {assets}</p>}
       <div className={styles.itemsBar}>
         <SearchField
           label="Search items"
