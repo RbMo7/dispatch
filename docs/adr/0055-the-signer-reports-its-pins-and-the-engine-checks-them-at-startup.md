@@ -2,6 +2,8 @@
 
 Accepted 2026-10-22. Amends ADR-0046's wire contract.
 
+Amended by ADR-0059 (the worker reads every Sender's pins and records them for the API, which never calls the Signer).
+
 ADR-0051 and ADR-0049 say a Multisig Sender's key is pinned in the Signer's policy to its one multisig (`allowedMultisig`) or Safe (`allowedSafe`). Both specs promise the engine checks that pin at startup. It doesn't: the Signer cannot say what a key's policy is, so the engine only probes whether the Signer holds a key for the address. A key with no pin, or pinned to the wrong multisig, starts fine and fails later with `SIGNER_REFUSED`, or runs unpinned and lets a compromised engine have the key sign for any account the key can reach. Issue #95.
 
 ## Decision

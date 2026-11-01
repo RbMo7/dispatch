@@ -1,5 +1,7 @@
 # A Safe Sender is proposed by a delegate and executed by an ordinary key
 
+Amended by ADR-0054 (a proposal never mixes Dispatches, which replaces the accumulation wording below).
+
 ADR-0049 settled the roles for a Multisig Sender on Squads: the engine proposes and executes, never approves, and gets that from Squads' separate Initiate, Vote and Execute permissions. Safe has no such permissions. Its owners approve, and everyone else is outside the multisig. The same principle needs a different shape on Base.
 
 ## Decision

@@ -1,5 +1,7 @@
 # Call, not Payment, is the primitive a Chain Handler consumes
 
+Amended by ADR-0028 (Payment to Call translation is a Chain Handler method). Related: ADR-0063 (the worker records and decodes what a confirmed call changed; sending stays opaque).
+
 Managed Dispatch was scoped around "payments" (recipient/asset/amount), but a real use case surfaced immediately: an application with its own smart contract (e.g. a token-assignment call to a beneficiary) needs the engine to submit an arbitrary, already-application-encoded contract call — not a plain transfer. Rather than bolt contract calls on as a special case later, the underlying primitive is `Call` (EVM: `{to, data, value}`; Solana: `{programId, accounts, data}`) — opaque to the engine, encoded entirely by the caller's own application, which already owns the ABI/IDL. `Payment` becomes a convenience shape the API layer translates into a `Call` (a native transfer or a known token-transfer encoding) before anything reaches a Chain Handler. Every Payment is a Call; not every Call is a Payment.
 
 ## Consequences
