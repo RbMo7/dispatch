@@ -243,6 +243,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         {
           name: 'Everything',
           chain: 'solana',
+          senderAddress: null,
           enabled: true,
           definition: { kind: 'call_target_not_allowlisted', addresses: [] },
         },
@@ -283,6 +284,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
         {
           name: 'Everything',
           chain: 'solana',
+          senderAddress: null,
           enabled: true,
           definition: { kind: 'call_target_not_allowlisted', addresses: [] },
         },

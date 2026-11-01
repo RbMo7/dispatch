@@ -31,6 +31,8 @@ interface DispatchRowsProps<Row extends DispatchSummary> {
   nameOf?: (row: Row) => string;
   /** The Sender's name, given only where the row's chain has more than one Sender. */
   senderOf?: (row: Row) => string | null;
+  /** In place of the status pill, where every row has the same status, such as how long it has been held. */
+  statusOf?: (row: Row) => ReactNode;
   /** Row checkboxes, where the screen has something to do with a selection. */
   checked?: ReadonlySet<string>;
   onCheck?: (ids: string[], on: boolean) => void;
@@ -47,6 +49,7 @@ export function DispatchRows<Row extends DispatchSummary>({
   today,
   nameOf = dispatchName,
   senderOf,
+  statusOf,
   checked,
   onCheck,
   empty,
@@ -107,7 +110,7 @@ export function DispatchRows<Row extends DispatchSummary>({
                   {senderOf?.(row) && `, ${senderOf(row)}`}
                 </span>
                 <span className={styles.spacer} />
-                <StatusPill status={row.status} />
+                {statusOf ? statusOf(row) : <StatusPill status={row.status} />}
                 <span className={styles.rowAmount}>
                   {row.totals[0] ? (
                     <Amount {...row.totals[0]} />

@@ -34,7 +34,7 @@ import { describeFailure, isUuid } from '../api/client';
 import styles from '../console.module.css';
 import { useRouter } from '../router';
 import { useEnabledChains, useSenders, useSharedChains } from '../senderData';
-import { useApi } from '../session';
+import { useApi, useOperator } from '../session';
 import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
 import { useDispatch, useDispatchList } from './data';
@@ -448,6 +448,8 @@ function Pane({
 }) {
   const toast = useToast();
   const senders = useSenders();
+  const operator = useOperator();
+  const { navigate } = useRouter();
   const [itemSearch, setItemSearch] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [now, setNow] = useState(() => new Date());
@@ -483,7 +485,10 @@ function Pane({
   const detail = loaded?.detail;
   const items = detail?.mode === 'managed' ? detail.items : null;
   const claimed = detail?.timeline.findLast((e): e is EntryOf<'claimed'> => e.kind === 'claimed');
-  const cancellable = detail !== undefined && !claimed && detail.status === 'queued';
+  // ADR-0056: a held Dispatch was never claimed, so either token can cancel it.
+  const cancellable =
+    detail !== undefined && !claimed && (detail.status === 'queued' || detail.status === 'held');
+  const reviewHold = operator && detail?.status === 'held';
   const openProposal = items?.find((i) => i.status === 'awaiting_approval' && i.approval)?.approval;
   const hashes = items
     ? items.map((i) => i.transactionHash)
@@ -539,7 +544,14 @@ function Pane({
         onExportItems={(format, shown) => void exportItems(format, shown)}
         explorerHref={(firstHash && txLink(network, firstHash)?.href) ?? null}
         action={
-          cancellable ? (
+          reviewHold ? (
+            <Button
+              variant="quiet"
+              onClick={() => navigate('held', new URLSearchParams({ dispatch: id }))}
+            >
+              Review in Held ›
+            </Button>
+          ) : cancellable ? (
             <Button variant="danger" onClick={() => setConfirming(true)}>
               Cancel Dispatch
             </Button>
@@ -572,7 +584,7 @@ function Pane({
 }
 
 /** "Today, 14:02", "Yesterday, 17:58" or "Oct 4, 2026, 09:15". */
-function whenText(at: Date): string {
+export function whenText(at: Date): string {
   const day = dayHeading(at, new Date());
   return `${day === 'Today' || day === 'Yesterday' ? day : date.format(at)}, ${minute.format(at)}`;
 }

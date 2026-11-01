@@ -6,13 +6,17 @@ import type { DispatchItem } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import type { FlagRuleSpec, RuleMatch } from '../domain/flag-rule.js';
 import type { OperatorActor } from '../domain/operator-action.js';
+import type { SenderAddress } from '../domain/sender.js';
 import type { DispatchStore } from './dispatch-store.js';
 
 const operator: OperatorActor = { tokenKind: 'operator', reason: null };
+const PAYOUTS = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' as SenderAddress;
+const TREASURY = '0x5afE000000000000000000000000000000005AFE' as SenderAddress;
 
 const bigUsdc: FlagRuleSpec = {
   name: 'Big USDC',
   chain: 'base',
+  senderAddress: null,
   enabled: true,
   definition: { kind: 'item_over', asset: 'USDC', limit: '5000', limitUnits: 5_000_000_000n },
 };
@@ -56,6 +60,17 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
         [2, raised.definition, true],
         [3, raised.definition, false],
       ]);
+    });
+
+    it("keeps each version's Sender scope, so narrowing a rule leaves the earlier version whole (#149)", async () => {
+      const store = makeStore();
+      const rule = await store.createFlagRule(bigUsdc, operator);
+
+      await store.updateFlagRule(rule.id, { ...bigUsdc, senderAddress: TREASURY }, operator);
+
+      const read = await store.getFlagRule(rule.id);
+      expect(read?.versions.map((v) => v.senderAddress)).toEqual([null, TREASURY]);
+      expect(await store.listEnabledFlagRules('base')).toEqual([read?.current]);
     });
 
     it('a delete hides the rule from the list but keeps it and its history, and refuses edits', async () => {
@@ -119,13 +134,19 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
       call: { to: '0xtoken', data: '0x', value: '0' },
       payment: { recipient, asset, amount },
     });
-    const submit = (store: DispatchStore, items: DispatchItem<'base'>[], hold?: RuleMatch[]) =>
+    const submit = (
+      store: DispatchStore,
+      items: DispatchItem<'base'>[],
+      hold?: RuleMatch[],
+      senderAddress?: SenderAddress,
+    ) =>
       store.createDispatch({
         chain: 'base',
         idempotencyKey: randomUUID(),
         items,
         retryPolicy: false,
         ...(hold ? { hold } : {}),
+        ...(senderAddress ? { senderAddress } : {}),
       });
 
     it('stores a Dispatch with matches as held, keeps why, and never claims it', async () => {
@@ -246,6 +267,19 @@ export function runFlagRuleConformanceSuite(makeStore: () => DispatchStore): voi
       expect(totals).toEqual(new Map([['USDC', 120n]]));
       expect(await store.acceptedVolume('base', ['USDC'], new Date(Date.now() + 60_000))).toEqual(
         new Map(),
+      );
+    });
+
+    it("sums only one Sender's payments when given its address (#149)", async () => {
+      const store = makeStore();
+      await submit(store, [payTo('0xa', '100')], undefined, PAYOUTS);
+      await submit(store, [payTo('0xa', '7')], undefined, TREASURY);
+
+      expect(await store.acceptedVolume('base', ['USDC'], new Date(0), TREASURY)).toEqual(
+        new Map([['USDC', 7n]]),
+      );
+      expect(await store.acceptedVolume('base', ['USDC'], new Date(0))).toEqual(
+        new Map([['USDC', 107n]]),
       );
     });
   });

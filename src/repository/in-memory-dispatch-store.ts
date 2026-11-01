@@ -17,7 +17,7 @@ import type {
 } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
-import type { SenderRef } from '../domain/sender.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -276,10 +276,16 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(first);
   }
 
-  acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+  acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>> {
     const totals = new Map<string, bigint>();
     for (const dispatch of this.dispatches.values()) {
       if (dispatch.chain !== chain || dispatch.createdAt < since) continue;
+      if (senderAddress !== undefined && dispatch.senderAddress !== senderAddress) continue;
       if (dispatch.status === 'cancelled') continue;
       for (const { payment } of dispatch.items) {
         if (!payment || !assets.includes(payment.asset)) continue;

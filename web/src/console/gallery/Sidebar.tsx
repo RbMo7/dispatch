@@ -7,6 +7,7 @@ export function GallerySidebar() {
   return (
     <Sidebar
       current="dispatches"
+      operator={false}
       instance="dispatch-eu-1"
       connection="live"
       senders={

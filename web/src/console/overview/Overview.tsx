@@ -17,10 +17,11 @@ import { free, headlineAsset, isShort, payer, senderKey } from '../../domain/sen
 import { AREA_LABEL, type Setup } from '../../domain/setup';
 import { describeFailure } from '../api/client';
 import styles from '../console.module.css';
+import { useHeld } from '../held/heldData';
 import { nextDelay, SENDERS_MS, usePoll } from '../live';
 import { Link, type Page, PAGES } from '../router';
 import { useSenders } from '../senderData';
-import { useApi } from '../session';
+import { useApi, useOperator } from '../session';
 import { useSetup } from '../setup/setupData';
 import { PageBar } from '../Shell';
 import {
@@ -331,6 +332,9 @@ function AttentionCard({
   setup: Setup | undefined;
 }) {
   const oldest = pulse?.queued.complete ? pulse.queued.rows.at(-1) : undefined;
+  const held = useHeld().data;
+  const oldestHold = held?.complete ? held.rows[0] : undefined;
+  const operator = useOperator();
   const now = Date.now();
   const entries: AttentionEntry[] = [];
   for (const check of setup?.checks ?? []) {
@@ -351,6 +355,19 @@ function AttentionCard({
         oldest,
       ),
     );
+  }
+  if (oldestHold) {
+    const others = (held?.rows.length ?? 1) - 1;
+    entries.push({
+      ...dispatchEntry(
+        `held-${oldestHold.id}`,
+        'Oldest hold',
+        `${dispatchName(oldestHold)}, held ${duration(now - oldestHold.createdAt.getTime())}${others > 0 ? `, ${count.format(others)} more held` : ''}`,
+        oldestHold,
+      ),
+      // ADR-0057: only the operator token can release, so only its session opens the queue.
+      ...(operator ? { page: 'held' as const } : {}),
+    });
   }
   for (const { summary, items } of attention?.awaiting ?? []) {
     entries.push(

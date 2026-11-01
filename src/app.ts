@@ -6,6 +6,7 @@ import { registerFlagRuleRoutes } from './api/flag-rule-routes.js';
 import { parseApiTokens } from './api/operator-auth.js';
 import { registerSenderRoutes, type SenderRouteDeps } from './api/sender-routes.js';
 import { registerSetupRoutes, type SetupRouteDeps } from './api/setup-routes.js';
+import { registerTokenRoutes } from './api/token-routes.js';
 import { logger } from './logger.js';
 import { webStatic } from './web-static.js';
 
@@ -28,10 +29,12 @@ export function buildApp({ authToken, operatorToken, ...deps }: AppDeps) {
   app.register(registerSenderRoutes, { tokens, listSenders: deps.listSenders });
   app.register(registerSetupRoutes, { tokens, readSetup: deps.readSetup });
   app.register(registerActivityRoutes, { tokens, store: deps.store });
+  app.register(registerTokenRoutes, { tokens });
   app.register(registerFlagRuleRoutes, {
     tokens,
     store: deps.store,
     assetDecimals: deps.assetDecimals,
+    senders: deps.chainRegistry,
   });
   app.register(webStatic);
 

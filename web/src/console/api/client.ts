@@ -1,16 +1,23 @@
 import type { Chain } from '../../domain/chains';
 import type { DispatchDetail, Mode } from '../../domain/dispatch';
+import type { FlagRule, Preview, TokenKind } from '../../domain/flagRules';
 import type { Sender } from '../../domain/sender';
 import type { Setup } from '../../domain/setup';
 import type { Status } from '../../domain/status';
 import {
+  type ActivityPage,
   type DispatchPage,
   MalformedResponse,
+  parseActivity,
   parseDetail,
+  parseFlagRule,
+  parseFlagRules,
   parsePage,
+  parsePreview,
   parseRefusal,
   parseSenders,
   parseSetup,
+  parseTokenKind,
 } from './parse';
 
 /**
@@ -66,6 +73,14 @@ export interface ApiClient {
   listSenders(signal?: AbortSignal): Promise<Sender[]>;
   getSetup(signal?: AbortSignal): Promise<Setup>;
   cancelDispatch(id: string): Promise<DispatchDetail>;
+  getTokenKind(): Promise<TokenKind>;
+  /** The routes below are the operator token's (ADR-0057): an AUTH_TOKEN session never calls them. */
+  releaseDispatch(id: string, reason: string): Promise<DispatchDetail>;
+  listFlagRules(signal?: AbortSignal): Promise<FlagRule[]>;
+  createFlagRule(body: Record<string, unknown>): Promise<FlagRule>;
+  updateFlagRule(id: string, body: Record<string, unknown>): Promise<FlagRule>;
+  previewFlagRule(body: Record<string, unknown>, signal?: AbortSignal): Promise<Preview>;
+  listActivity(cursor: string | null, signal?: AbortSignal): Promise<ActivityPage>;
 }
 
 export const PAGE_LIMIT = 100;
@@ -85,7 +100,11 @@ export function createApiClient(
     try {
       response = await fetcher(path, {
         ...init,
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
       });
     } catch (error) {
       if (init.signal?.aborted) throw error;
@@ -139,6 +158,42 @@ export function createApiClient(
       return request(`/v1/dispatch/${encodeURIComponent(id)}/cancel`, parseDetail, {
         method: 'POST',
       });
+    },
+    getTokenKind() {
+      return request('/v1/token', parseTokenKind);
+    },
+    releaseDispatch(id, reason) {
+      return request(`/v1/dispatch/${encodeURIComponent(id)}/release`, parseDetail, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+    },
+    listFlagRules(signal) {
+      return request('/v1/flag-rules', parseFlagRules, { signal: signal ?? null });
+    },
+    createFlagRule(body) {
+      return request('/v1/flag-rules', parseFlagRule, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    updateFlagRule(id, body) {
+      return request(`/v1/flag-rules/${encodeURIComponent(id)}`, parseFlagRule, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+    },
+    previewFlagRule(body, signal) {
+      return request('/v1/flag-rules/preview', parsePreview, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        signal: signal ?? null,
+      });
+    },
+    listActivity(cursor, signal) {
+      const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+      if (cursor) query.set('cursor', cursor);
+      return request(`/v1/activity?${query}`, parseActivity, { signal: signal ?? null });
     },
   };
 }

@@ -1,15 +1,17 @@
-import type { DispatchItem } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import {
+  appliesTo,
   DAILY_VOLUME_WINDOW_MS,
   factsNeeded,
   type FlagRuleDefinition,
   type FlagRuleFacts,
   type FlagRuleVersion,
+  type HoldCandidate,
   matchFlagRules,
   type RuleMatch,
 } from '../domain/flag-rule.js';
+import type { SenderAddress } from '../domain/sender.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
 
 /**
@@ -19,20 +21,25 @@ import type { DispatchStore } from '../repository/dispatch-store.js';
  */
 export async function findHoldMatches(
   store: DispatchStore,
-  chain: Chain,
-  items: readonly DispatchItem[],
+  candidate: HoldCandidate,
   now: Date,
 ): Promise<RuleMatch[]> {
+  const { chain, senderAddress } = candidate;
   const rules = await store.listEnabledFlagRules(chain);
-  if (rules.length === 0) return [];
-  const { recipients, assets } = factsNeeded(chain, items, rules);
-  const [confirmed, acceptedVolume] = await Promise.all([
+  if (!rules.some((rule) => appliesTo(rule, candidate))) return [];
+  const { recipients, chainAssets, senderAssets } = factsNeeded(candidate, rules);
+  const since = new Date(now.getTime() - DAILY_VOLUME_WINDOW_MS);
+  const [confirmed, acceptedVolume, senderVolume] = await Promise.all([
     store.firstConfirmedPayments(chain, recipients),
-    store.acceptedVolume(chain, assets, new Date(now.getTime() - DAILY_VOLUME_WINDOW_MS)),
+    store.acceptedVolume(chain, chainAssets, since),
+    senderAddress === null
+      ? new Map<string, bigint>()
+      : store.acceptedVolume(chain, senderAssets, since, senderAddress),
   ]);
-  return matchFlagRules(chain, items, rules, {
+  return matchFlagRules(candidate, rules, {
     confirmedRecipients: new Set(confirmed.keys()),
     acceptedVolume,
+    senderVolume,
   });
 }
 
@@ -55,40 +62,44 @@ function factsAt(
   firstConfirmed: ReadonlyMap<string, Date>,
 ): FlagRuleFacts {
   const at = dispatch.createdAt;
-  const { recipients, assets } = factsNeeded(dispatch.chain, dispatch.items, [rule]);
-  const acceptedVolume = new Map<string, bigint>();
-  for (const earlier of history) {
-    const inWindow =
-      earlier.createdAt < at &&
-      at.getTime() - earlier.createdAt.getTime() <= DAILY_VOLUME_WINDOW_MS;
-    if (!inWindow || (earlier.cancelledAt && earlier.cancelledAt <= at)) continue;
-    for (const { payment } of earlier.items) {
-      if (!payment || !assets.includes(payment.asset)) continue;
-      acceptedVolume.set(
-        payment.asset,
-        (acceptedVolume.get(payment.asset) ?? 0n) + BigInt(payment.amount),
-      );
+  const { recipients, chainAssets, senderAssets } = factsNeeded(dispatch, [rule]);
+  const volumeOf = (assets: string[], senderAddress?: SenderAddress) => {
+    const volume = new Map<string, bigint>();
+    for (const earlier of history) {
+      const inWindow =
+        earlier.createdAt < at &&
+        at.getTime() - earlier.createdAt.getTime() <= DAILY_VOLUME_WINDOW_MS;
+      if (!inWindow || (earlier.cancelledAt && earlier.cancelledAt <= at)) continue;
+      if (senderAddress !== undefined && earlier.senderAddress !== senderAddress) continue;
+      for (const { payment } of earlier.items) {
+        if (!payment || !assets.includes(payment.asset)) continue;
+        volume.set(payment.asset, (volume.get(payment.asset) ?? 0n) + BigInt(payment.amount));
+      }
     }
-  }
+    return volume;
+  };
   return {
     confirmedRecipients: new Set(
       recipients.filter((key) => (firstConfirmed.get(key)?.getTime() ?? Infinity) < at.getTime()),
     ),
-    acceptedVolume,
+    acceptedVolume: volumeOf(chainAssets),
+    senderVolume:
+      dispatch.senderAddress === null ? new Map() : volumeOf(senderAssets, dispatch.senderAddress),
   };
 }
 
 /**
- * #119: how many of the last 30 days' Managed Dispatches on `chain` an unsaved
- * rule would have held, run through the same matcher as `findHoldMatches`
- * against each Dispatch as it was submitted.
+ * #119: how many of the last 30 days' Managed Dispatches on `chain` (only
+ * `senderAddress`'s, when the rule is scoped to it: #149) an unsaved rule
+ * would have held, run through the same matcher as `findHoldMatches` against
+ * each Dispatch as it was submitted.
  */
 export async function previewFlagRule(
   store: DispatchStore,
-  chain: Chain,
-  definition: FlagRuleDefinition,
+  check: { chain: Chain; senderAddress: SenderAddress | null; definition: FlagRuleDefinition },
   now: Date,
 ) {
+  const { chain } = check;
   const from = new Date(now.getTime() - PREVIEW_WINDOW_MS);
   const rows = await store.listManagedDispatchesSince(
     chain,
@@ -97,19 +108,16 @@ export async function previewFlagRule(
   );
   const history = rows.slice(0, PREVIEW_ROW_CAP);
   const rule: FlagRuleVersion = {
+    ...check,
     ruleId: 'preview',
     version: 0,
     name: 'preview',
-    chain,
     enabled: true,
-    definition,
     createdAt: now,
   };
-  const candidates = history.filter((d) => d.createdAt >= from);
+  const candidates = history.filter((d) => d.createdAt >= from && appliesTo(rule, d));
 
-  const recipients = [
-    ...new Set(candidates.flatMap((d) => factsNeeded(chain, d.items, [rule]).recipients)),
-  ];
+  const recipients = [...new Set(candidates.flatMap((d) => factsNeeded(d, [rule]).recipients))];
   const firstConfirmed = new Map<string, Date>();
   for (let i = 0; i < recipients.length; i += RECIPIENT_BATCH) {
     const batch = recipients.slice(i, i + RECIPIENT_BATCH);
@@ -120,7 +128,7 @@ export async function previewFlagRule(
 
   const held = candidates.flatMap((dispatch) => {
     const facts = factsAt(dispatch, rule, history, firstConfirmed);
-    const [match] = matchFlagRules(chain, dispatch.items, [rule], facts);
+    const [match] = matchFlagRules(dispatch, [rule], facts);
     return match ? [{ dispatch, items: match.items }] : [];
   });
   return {
