@@ -20,6 +20,7 @@ On Solana several items, even from different Dispatches, can share one transacti
 | Status | What happened | Final | What your code does |
 | --- | --- | --- | --- |
 | `queued` | Stored, not yet in a transaction. For a Multisig Sender: claimed, but not yet in a Proposal, or waiting for an earlier Proposal on the same Safe. | No | Wait. |
+| `held` | The Dispatch matched a Flag Rule. Nothing is signed or sent until the operator releases it. | No | Wait, or cancel it. |
 | `awaiting_approval` | In a multisig Proposal that the Approvers have not decided yet. Only for a Multisig Sender. | No | Wait. The `approval` block shows the votes and the deadline. |
 | `broadcasting` | Signed and written down, and sent or about to be sent. Includes a send whose outcome is not known yet. | No | Wait. Do not send it again. The transaction may land. |
 | `confirmed` | Landed on the chain and succeeded. | Yes | Record `transactionHash`. |
@@ -33,7 +34,8 @@ The top-level `status` of a Managed Dispatch is one of these:
 
 | Status | Means |
 | --- | --- |
-| `queued` | Stored and not claimed yet. The only time it can be cancelled. |
+| `queued` | Stored and not claimed yet. It can be cancelled. |
+| `held` | Stored, and waiting for the operator to release it because it matched a [Flag Rule](./guides/flag-rules.md). It can be cancelled. |
 | `broadcasting` | Claimed, and at least one item is still in progress: `queued`, `awaiting_approval` or `broadcasting`. |
 | `confirmed` | Every item is `confirmed`. |
 | `partial` | Every item is final, and some but not all are `confirmed`. |
@@ -42,7 +44,7 @@ The top-level `status` of a Managed Dispatch is one of these:
 
 `abandoned` counts as not confirmed, so a Dispatch whose items are all `abandoned` reads `failed`. Check the items, where the difference shows. `awaiting_approval` counts as in progress, so a Dispatch waiting on Approvers reads `broadcasting`.
 
-The engine stores only `queued`, `broadcasting` and `cancelled`. It works out `confirmed`, `partial` and `failed` from the items each time you read.
+The engine stores only `queued`, `held`, `broadcasting` and `cancelled`. It works out `confirmed`, `partial` and `failed` from the items each time you read.
 
 A Relay Dispatch's one status can be any item status except `awaiting_approval`, so a Relay Dispatch can read `abandoned` at the top level.
 

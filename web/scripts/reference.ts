@@ -113,11 +113,15 @@ function subheading(op: ApiOperation, title: string): Element {
 function authentication(op: ApiOperation, spec: ApiSpec, render: Renderers): ElementContent[] {
   return [
     subheading(op, 'Authentication'),
-    ...(op.secured
-      ? render.markdown(
-          `Send the API token as a bearer token: \`Authorization: Bearer <AUTH_TOKEN>\`. ${spec.security}`,
-        )
-      : render.markdown('None. This route needs no token.')),
+    ...(!op.secured
+      ? render.markdown('None. This route needs no token.')
+      : op.operatorOnly
+        ? render.markdown(
+            `Send the operator token as a bearer token: \`Authorization: Bearer <OPERATOR_TOKEN>\`. ${spec.operatorSecurity}`,
+          )
+        : render.markdown(
+            `Send the API token as a bearer token: \`Authorization: Bearer <AUTH_TOKEN>\`. ${spec.security}`,
+          )),
   ];
 }
 

@@ -45,12 +45,14 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 
 | Status | Means |
 | --- | --- |
-| `200` | Read, or cancelled. |
+| `200` | Read, cancelled, released, or a Flag Rule edited or deleted. |
+| `201` | A Flag Rule is created. |
 | `202` | The Dispatch is stored, or an existing one is returned for its `Idempotency-Key`. |
 | `400` | The request is invalid. Nothing was stored, and the `Idempotency-Key` is not used up. |
-| `401` | The `Authorization` header is missing, or its token is not the engine's `AUTH_TOKEN`. |
-| `404` | No Dispatch has this id. An id that is not a UUID gets the same answer. |
-| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). |
+| `401` | The `Authorization` header is missing, or its token is neither the engine's `AUTH_TOKEN` nor its `OPERATOR_TOKEN`. |
+| `403` | The route needs the [operator token](./authentication.md#the-operator-token), and the request sent `AUTH_TOKEN`, or the engine has no `OPERATOR_TOKEN`. |
+| `404` | No Dispatch or Flag Rule has this id. An id that is not a UUID gets the same answer. |
+| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). |
 | `413` | The body is over 1 MiB. |
 
 ## Error codes
@@ -69,6 +71,8 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `APPROVAL_REJECTED` | An item, `failed` | Multisig only. The Approvers rejected or cancelled the Proposal before its deadline, or it went stale. A Safe whose nonce was taken by a different transaction counts as rejected. It is definite: `transactionHash` is `null` and nothing was paid. | Send it again only if the Approvers want it. |
 | `APPROVAL_TIMEOUT` | An item, `abandoned` | Multisig only. Nobody decided on the Proposal by its deadline. The Proposal may still be approved and executed by someone else. | Check the multisig before you send the payment again, or it may happen twice. |
 | `ALREADY_CLAIMED` | `409` | You tried to cancel a Dispatch the worker already claimed. | Nothing. The Dispatch is being sent. |
+| `NOT_HELD` | `409` | You tried to release a Dispatch that is not `held`: already released, cancelled, never held, or a Relay Dispatch. | Nothing. Read the Dispatch to see where it is. |
+| `RULE_DELETED` | `409` | You tried to edit a deleted Flag Rule. | Create a new rule. |
 
 The engine has one more code, `ALREADY_KNOWN`, which it never reports. It means the node already had the exact bytes, so the item stays `broadcasting` until it resolves.
 

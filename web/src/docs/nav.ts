@@ -35,6 +35,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
       { source: 'docs/guides/multisig.md', slug: 'guides/multisig' },
       { source: 'docs/guides/cancel.md', slug: 'guides/cancel' },
+      { source: 'docs/guides/flag-rules.md', slug: 'guides/flag-rules' },
       { source: 'docs/guides/track.md', slug: 'guides/track' },
       { source: 'docs/guides/sender-balances.md', slug: 'guides/sender-balances' },
       { source: 'docs/guides/console-export.md', slug: 'guides/console-export' },
@@ -44,7 +45,9 @@ export const NAV: readonly NavSection[] = [
     title: 'REST API reference',
     pages: [
       { source: 'docs/openapi.yaml', tag: 'Dispatches', slug: 'rest/dispatches' },
+      { source: 'docs/openapi.yaml', tag: 'Flag Rules', slug: 'rest/flag-rules' },
       { source: 'docs/openapi.yaml', tag: 'Senders', slug: 'rest/senders' },
+      { source: 'docs/openapi.yaml', tag: 'Activity', slug: 'rest/activity' },
       { source: 'docs/openapi.yaml', tag: 'Health', slug: 'rest/health' },
     ],
   },

@@ -1,6 +1,6 @@
 # Cancel a Dispatch
 
-You can withdraw a Managed or Relay Dispatch until the engine claims it. Nothing is then signed, proposed or sent, and every item reads `cancelled`. Once the worker claims it, the Dispatch is on its way and cannot be cancelled.
+You can withdraw a Managed or Relay Dispatch until the engine claims it, including one a [Flag Rule](./flag-rules.md) is holding. Nothing is then signed, proposed or sent, and every item reads `cancelled`. Once the worker claims it, the Dispatch is on its way and cannot be cancelled.
 
 A running worker claims a queued Dispatch within a few seconds, so in practice you cancel what is still waiting: the worker is stopped, busy, or does not serve the chain. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
 
@@ -11,15 +11,17 @@ export DISPATCH_ID=ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2
 curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISPATCH_TOKEN"
 ```
 
-Only a Dispatch whose top-level `status` is `queued` can be cancelled. You do not have to check first, because a cancel that comes too late is refused without harm, but it tells you what to expect.
+Only a Dispatch whose top-level `status` is `queued` or `held` can be cancelled. You do not have to check first, because a cancel that comes too late is refused without harm, but it tells you what to expect.
 
 ## 2. Cancel it
 
-The request takes no body:
+Either token can cancel. The body is optional: a `reason` is kept with the cancel in the activity record, which the operator reads with [List operator actions](../openapi.yaml#list-operator-actions).
 
 ```sh
 curl -s -X POST "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID/cancel" \
-  -H "Authorization: Bearer $DISPATCH_TOKEN"
+  -H "Authorization: Bearer $DISPATCH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"duplicate of refund 7730"}'
 ```
 
 ```json
@@ -44,7 +46,7 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID/cancel" \
 }
 ```
 
-`200` returns the Dispatch, as [Get a Dispatch](../openapi.yaml#get-a-dispatch) does, now `cancelled` at the top level and on every item, with `transactionHash` and `error` both `null`. Cancelling a Dispatch that is already cancelled also answers `200`, with its current state.
+`200` returns the Dispatch, as [Get a Dispatch](../openapi.yaml#get-a-dispatch) does, now `cancelled` at the top level and on every item, with `transactionHash` and `error` both `null`. Cancelling a Dispatch that is already cancelled also answers `200`, with its current state, and records nothing new. A `reason` that is not a non-empty string is a `400`.
 
 ## 3. If it was too late
 

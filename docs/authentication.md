@@ -26,6 +26,24 @@ curl -s "$DISPATCH_URL/v1/senders" -H "Authorization: Bearer wrong-token"
 
 The header must be exactly `Bearer `, one space, then the token.
 
+## The operator token
+
+The operator can set a second token, `OPERATOR_TOKEN`. It does everything `AUTH_TOKEN` does, and it is the only token the operator-only routes accept:
+
+- [Release a held Dispatch](./openapi.yaml#release-a-held-dispatch).
+- Create, edit, delete and preview [Flag Rules](./guides/flag-rules.md).
+- [List operator actions](./openapi.yaml#list-operator-actions), the activity record.
+
+`AUTH_TOKEN` gets `403` on those routes, so a client that holds only the API token cannot release its own Dispatch:
+
+```json
+{ "error": "this route needs OPERATOR_TOKEN, not AUTH_TOKEN" }
+```
+
+When `OPERATOR_TOKEN` is unset, the operator-only routes answer `403` to everyone, and everything else works as before. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
+
+Both tokens are shared secrets, not identities. The activity record says which token acted, never which person. Give the operator token only to the people who approve held payments and set the rules.
+
 ## Choose and rotate the token
 
 The engine starts with `AUTH_TOKEN=dev-secret` if you set nothing. Always set your own. Generate a long random one:

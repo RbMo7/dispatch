@@ -7,7 +7,8 @@ import { parse } from 'yaml';
  * docs/openapi.yaml, read into the shape the reference pages and the sample runner need. One name
  * links a request to its answer: the request example `payBase` (body, parameters and headers)
  * produces the response example `payBase`, under the status it sits in. `unauthorized` is sent with
- * a wrong token. src/api/openapi.contract.test.ts holds the engine to the same convention.
+ * a wrong token, and `notOperator` with the API token to an operator-only route.
+ * src/api/openapi.contract.test.ts holds the engine to the same convention.
  */
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -53,6 +54,8 @@ export interface ApiOperation {
   summary: string;
   description: string;
   secured: boolean;
+  /** Only the operator token is accepted: the route lists `operatorToken` as its one scheme. */
+  operatorOnly: boolean;
   parameters: ApiParameter[];
   body: Schema | undefined;
   responses: ApiResponse[];
@@ -68,6 +71,7 @@ export interface ApiTag {
 export interface ApiSpec {
   source: string;
   security: string;
+  operatorSecurity: string;
   tags: ApiTag[];
 }
 
@@ -134,6 +138,10 @@ export function loadOpenApi(root: string, source: string): ApiSpec {
         },
       );
       const secured = !(Array.isArray(op.security) && op.security.length === 0);
+      const operatorOnly =
+        Array.isArray(op.security) &&
+        op.security.length > 0 &&
+        op.security.every((scheme) => 'operatorToken' in (scheme as Schema));
       const requestExamples = (requestMedia?.examples ?? {}) as Record<string, Schema>;
       const scenarios = responses.flatMap((response) =>
         Object.entries(response.examples).map(([name, example]): Scenario => {
@@ -168,6 +176,7 @@ export function loadOpenApi(root: string, source: string): ApiSpec {
         summary,
         description: asText(op.description),
         secured,
+        operatorOnly,
         parameters,
         body: requestMedia?.schema as Schema | undefined,
         responses,
@@ -180,12 +189,11 @@ export function loadOpenApi(root: string, source: string): ApiSpec {
     }
   }
 
-  const scheme = Object.values(
-    ((spec.components as Schema).securitySchemes ?? {}) as Record<string, Schema>,
-  )[0];
+  const schemes = ((spec.components as Schema).securitySchemes ?? {}) as Record<string, Schema>;
   return {
     source,
-    security: asText(scheme?.description),
+    security: asText(schemes.apiToken?.description),
+    operatorSecurity: asText(schemes.operatorToken?.description),
     tags: ((spec.tags ?? []) as Schema[]).map((tag) => ({
       name: asText(tag.name),
       description: asText(tag.description),

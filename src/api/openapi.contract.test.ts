@@ -27,7 +27,8 @@ import { readSender, type SenderConfig, type SenderReads } from './senders.js';
  *
  * One name links a request to its answer: the request example `payBase` (its body, parameters and
  * headers) must produce the response example `payBase`, under the status that example sits in.
- * `unauthorized` is sent with a wrong token.
+ * `unauthorized` is sent with a wrong token, and `notOperator` with the API token to a route that
+ * only the operator token may use.
  */
 
 type Json = Record<string, unknown>;
@@ -41,7 +42,7 @@ type Parameter = {
 };
 type Operation = {
   operationId: string;
-  security?: unknown[];
+  security?: Record<string, unknown>[];
   parameters?: (Parameter | { $ref: string })[];
   requestBody?: { content: { 'application/json': MediaType } };
   responses: Record<string, { content?: { 'application/json': MediaType } } | { $ref: string }>;
@@ -51,6 +52,7 @@ const SPEC = parse(
   readFileSync(new URL('../../docs/openapi.yaml', import.meta.url), 'utf8'),
 ) as Json;
 const TOKEN = 'contract-test-token';
+const OPERATOR_TOKEN = 'contract-test-operator-token';
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
 const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
 
@@ -78,9 +80,17 @@ type Scenario = {
   query: Record<string, string>;
   headers: Record<string, string>;
   body: unknown;
-  authenticated: boolean;
+  token: 'api' | 'operator' | 'wrong' | 'none';
   responseExample: unknown;
 };
+
+/** Operator-only routes list the operator token as their one security scheme. */
+function tokenFor(op: Operation, name: string): Scenario['token'] {
+  if (op.security?.length === 0) return 'none';
+  if (name === 'unauthorized') return 'wrong';
+  const operatorOnly = op.security?.every((scheme) => 'operatorToken' in scheme) ?? false;
+  return operatorOnly && name !== 'notOperator' ? 'operator' : 'api';
+}
 
 function scenarios(): Scenario[] {
   const out: Scenario[] = [];
@@ -123,7 +133,7 @@ function scenarios(): Scenario[] {
             query: valueOf('query'),
             headers: valueOf('header'),
             body: op.requestBody?.content['application/json'].examples?.[name]?.value,
-            authenticated: op.security?.length !== 0 && name !== 'unauthorized',
+            token: tokenFor(op, name),
             responseExample: example.value,
           });
         }
@@ -250,6 +260,7 @@ async function buildContractApp() {
     store,
     chainRegistry,
     authToken: TOKEN,
+    operatorToken: OPERATOR_TOKEN,
     defaultRetryPolicy: false,
     assetDecimals,
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
@@ -281,7 +292,7 @@ describe('docs/openapi.yaml against the real routes', () => {
   let app: Awaited<ReturnType<typeof buildContractApp>>['app'];
   let store: InMemoryDispatchStore;
   let servedV1Routes: string[];
-  /** The spec's example ids are real ones from a live engine; each maps to the id the test engine gave the same request. */
+  /** The spec's example Dispatch and Flag Rule ids are real ones from a live engine; each maps to the id the test engine gave the same request. */
   const ids = new Map<string, string>();
 
   async function send(scenario: Scenario) {
@@ -295,9 +306,11 @@ describe('docs/openapi.yaml against the real routes', () => {
       url: query ? `${path}?${query}` : path,
       headers: {
         ...scenario.headers,
-        ...(scenario.operationId === 'getHealth'
+        ...(scenario.token === 'none'
           ? {}
-          : { authorization: `Bearer ${scenario.authenticated ? TOKEN : 'wrong-token'}` }),
+          : {
+              authorization: `Bearer ${{ api: TOKEN, operator: OPERATOR_TOKEN, wrong: 'wrong-token' }[scenario.token]}`,
+            }),
       },
       ...(scenario.status === '413'
         ? { payload: oversizedBody() }
@@ -379,9 +392,12 @@ describe('docs/openapi.yaml against the real routes', () => {
   });
 
   it('answers every example with its documented status and a body that matches the schema', async () => {
-    // Creates first, so the reads and cancels below find the Dispatches the examples name.
-    const creates = all.filter((s) => s.operationId === 'createDispatch');
-    // A 409 needs a claimed Dispatch, so it runs last, after everything else is claimed.
+    // Creates first, so the reads and cancels below find the Dispatches the examples name. Flag
+    // Rules before Dispatches, so the held example has a rule to match.
+    const creates = ['createFlagRule', 'createDispatch'].flatMap((id) =>
+      all.filter((s) => s.operationId === id),
+    );
+    // A 409 needs a claimed Dispatch or a deleted rule, so it runs last, after everything else is claimed.
     const tooLate = all.filter((s) => s.status === '409');
     const rest = all.filter((s) => !creates.includes(s) && !tooLate.includes(s));
 
@@ -395,9 +411,14 @@ describe('docs/openapi.yaml against the real routes', () => {
           `${s.operationId} ${s.name}: ${response.statusCode} (documented ${s.status}) ${problems.join('; ')} ${response.body}`,
         );
       }
-      const exampleId = (s.responseExample as { dispatchId?: string } | undefined)?.dispatchId;
-      const realId = (body as { dispatchId?: string }).dispatchId;
-      if (exampleId && realId) ids.set(exampleId, realId);
+      type Ids = { dispatchId?: string; ruleId?: string } | undefined;
+      const example = s.responseExample as Ids;
+      const real = body as Ids;
+      for (const key of ['dispatchId', 'ruleId'] as const) {
+        const exampleId = example?.[key];
+        const realId = real?.[key];
+        if (exampleId && realId) ids.set(exampleId, realId);
+      }
     };
 
     for (const s of creates) await check(s);
