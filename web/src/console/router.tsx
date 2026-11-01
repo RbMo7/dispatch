@@ -3,11 +3,17 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useS
 export const PAGES = {
   overview: '/console',
   dispatches: '/console/dispatches',
+  held: '/console/held',
+  rules: '/console/rules',
   senders: '/console/senders',
+  activity: '/console/activity',
   setup: '/console/setup',
 } as const;
 
 export type Page = keyof typeof PAGES;
+
+/** ADR-0057: shown, and their routes called, only in an OPERATOR_TOKEN session. */
+export const OPERATOR_PAGES: ReadonlySet<Page> = new Set<Page>(['held', 'rules', 'activity']);
 
 interface Location {
   page: Page;

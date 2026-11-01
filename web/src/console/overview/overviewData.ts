@@ -20,7 +20,11 @@ export interface Walk {
   complete: boolean;
 }
 
-async function walk(api: ApiClient, filters: ListFilters, signal: AbortSignal): Promise<Walk> {
+export async function walk(
+  api: ApiClient,
+  filters: ListFilters,
+  signal: AbortSignal,
+): Promise<Walk> {
   const rows: DispatchSummary[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_PAGES; page++) {

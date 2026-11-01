@@ -105,7 +105,7 @@ describe('the API client', () => {
     expect(await failure(api.getDispatch(ID))).toEqual({
       kind: 'malformed',
       message:
-        'items[0].status is not one of queued, awaiting_approval, broadcasting, confirmed, failed, abandoned, cancelled',
+        'items[0].status is not one of queued, held, awaiting_approval, broadcasting, confirmed, failed, abandoned, cancelled',
     });
   });
 

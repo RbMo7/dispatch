@@ -1,5 +1,6 @@
 import type { Money } from './assets';
 import type { Chain } from './chains';
+import type { Hold } from './flagRules';
 import type { Status } from './status';
 
 export type Mode = 'managed' | 'relay';
@@ -31,6 +32,7 @@ export interface DispatchSummary {
 export type ItemStatus = Extract<
   Status,
   | 'queued'
+  | 'held'
   | 'awaiting_approval'
   | 'broadcasting'
   | 'confirmed'
@@ -155,6 +157,8 @@ export interface ManagedDetail {
   status: Status;
   items: Item[];
   timeline: TimelineEntry[];
+  /** Why it was held, on a Dispatch that ever was: it stays after a release or a cancel. */
+  hold: Hold | null;
 }
 
 export interface RelayDetail {

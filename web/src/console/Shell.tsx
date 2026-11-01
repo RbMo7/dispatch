@@ -4,6 +4,7 @@ import { createContext, type ReactNode, useContext, useState } from 'react';
 import { Button } from '../components/Button';
 import { Sheet } from '../motion/Overlay';
 import styles from './console.module.css';
+import { useHeld } from './held/heldData';
 import { useLive } from './live';
 import { useRouter } from './router';
 import { SidebarSenders } from './senderData';
@@ -16,12 +17,15 @@ const MenuContext = createContext<() => void>(() => {});
 export function Shell({ children }: { children: ReactNode }) {
   const { page, navigate } = useRouter();
   const { connection, refresh } = useLive();
-  const { signOut } = useSession();
+  const { signOut, operator } = useSession();
+  const held = useHeld();
   const [menu, setMenu] = useState(false);
 
   const sidebar = (
     <Sidebar
       current={page}
+      operator={operator}
+      held={held.data?.rows.length}
       instance={window.location.host}
       connection={connection}
       onRefresh={refresh}

@@ -1,6 +1,9 @@
 import {
   ArrowClockwise,
+  ClockCounterClockwise,
   FileText,
+  Flag,
+  HandPalm,
   Key,
   ListChecks,
   Rows,
@@ -13,18 +16,26 @@ import { Button } from '../components/Button';
 import { EyeToggle } from '../components/EyeToggle';
 import styles from './console.module.css';
 import type { Connection } from './live';
-import { type Page, PAGES } from './router';
+import { OPERATOR_PAGES, type Page, PAGES } from './router';
 
-// Held and Activity join this list with `flag-rules`.
 const NAV = [
   { page: 'overview', label: 'Overview', Icon: SquaresFour },
   { page: 'dispatches', label: 'Dispatches', Icon: Rows },
+  { page: 'held', label: 'Held', Icon: HandPalm },
+  { page: 'rules', label: 'Flag Rules', Icon: Flag },
   { page: 'senders', label: 'Senders & Keys', Icon: Key },
+  { page: 'activity', label: 'Activity', Icon: ClockCounterClockwise },
   { page: 'setup', label: 'Setup', Icon: ListChecks },
 ] as const satisfies readonly { page: Page; label: string; Icon: unknown }[];
 
+const count = new Intl.NumberFormat('en-US');
+
 interface SidebarProps {
   current: Page | null;
+  /** Whether the session holds OPERATOR_TOKEN: without it, the operator pages are left out. */
+  operator: boolean;
+  /** How many Dispatches are held, beside Held; null until read. */
+  held?: number | null | undefined;
   /** The Sender cards, or their loading or error state. */
   senders: ReactNode;
   instance: string;
@@ -37,6 +48,8 @@ interface SidebarProps {
 
 export function Sidebar({
   current,
+  operator,
+  held = null,
   senders,
   instance,
   connection,
@@ -59,7 +72,7 @@ export function Sidebar({
         </Button>
       </div>
       <nav className={styles.nav} aria-label="Console">
-        {NAV.map((item) => (
+        {NAV.filter((item) => operator || !OPERATOR_PAGES.has(item.page)).map((item) => (
           <a
             key={item.page}
             className={styles.navItem}
@@ -69,6 +82,9 @@ export function Sidebar({
           >
             <item.Icon size={16} aria-hidden="true" />
             {item.label}
+            {item.page === 'held' && held !== null && held > 0 && (
+              <span className={styles.navCount}>{count.format(held)}</span>
+            )}
           </a>
         ))}
       </nav>

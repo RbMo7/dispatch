@@ -24,6 +24,8 @@ interface VirtualTableProps<Row> {
   empty?: ReactNode;
   /** A row drawn across every column instead of cell by cell, such as a group heading. */
   span?: (row: Row) => ReactNode | null;
+  /** Rows to tint, such as the items a Flag Rule matched. */
+  marked?: (row: Row) => boolean;
 }
 
 export function VirtualTable<Row>({
@@ -34,6 +36,7 @@ export function VirtualTable<Row>({
   height,
   empty,
   span,
+  marked,
 }: VirtualTableProps<Row>) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -98,6 +101,7 @@ export function VirtualTable<Row>({
                   role="row"
                   aria-rowindex={virtual.index + 2}
                   className={styles.row}
+                  data-marked={marked?.(row) || undefined}
                   style={{
                     gridTemplateColumns: template,
                     transform: `translateY(${virtual.start}px)`,

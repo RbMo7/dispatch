@@ -1,13 +1,17 @@
 import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
+import { ActivityPage } from './activity/ActivityPage';
 import { DispatchesPage } from './dispatches/DispatchesPage';
+import { HeldProvider } from './held/heldData';
+import { HeldPage } from './held/HeldPage';
 import { LiveProvider } from './live';
 import { Overview } from './overview/Overview';
-import { RouterProvider, useRouter } from './router';
+import { OPERATOR_PAGES, RouterProvider, useRouter } from './router';
+import { RulesPage } from './rules/RulesPage';
 import { SendersPage } from './senders/SendersPage';
 import { SendersProvider } from './senderData';
 import { SetupPage } from './setup/SetupPage';
-import { SessionProvider } from './session';
+import { SessionProvider, useOperator } from './session';
 import { Shell } from './Shell';
 import { SignIn } from './SignIn';
 
@@ -19,9 +23,11 @@ export function Console() {
           <LiveProvider>
             <RouterProvider>
               <SendersProvider>
-                <Shell>
-                  <CurrentPage />
-                </Shell>
+                <HeldProvider>
+                  <Shell>
+                    <CurrentPage />
+                  </Shell>
+                </HeldProvider>
               </SendersProvider>
             </RouterProvider>
           </LiveProvider>
@@ -33,13 +39,21 @@ export function Console() {
 
 function CurrentPage() {
   const { page } = useRouter();
-  switch (page) {
+  const operator = useOperator();
+  // ADR-0057: an AUTH_TOKEN session that opens an operator page's URL gets the Overview.
+  switch (operator || !OPERATOR_PAGES.has(page) ? page : 'overview') {
     case 'overview':
       return <Overview />;
     case 'dispatches':
       return <DispatchesPage />;
+    case 'held':
+      return <HeldPage />;
+    case 'rules':
+      return <RulesPage />;
     case 'senders':
       return <SendersPage />;
+    case 'activity':
+      return <ActivityPage />;
     case 'setup':
       return <SetupPage />;
   }

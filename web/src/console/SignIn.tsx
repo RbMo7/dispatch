@@ -3,14 +3,18 @@ import { type FormEvent, useState } from 'react';
 import { Button } from '../components/Button';
 import { TextField } from '../components/TextField';
 import { ApiError, createApiClient, describeFailure } from './api/client';
+import type { Credentials } from './session';
 import styles from './SignIn.module.css';
 
-/** A centred card: one token field, checked against the engine before it is kept. */
+/**
+ * A centred card: one token field, checked against the engine before it is
+ * kept. Either token signs in; the engine says which one it is.
+ */
 export function SignIn({
   onSignIn,
   notice,
 }: {
-  onSignIn: (token: string) => void;
+  onSignIn: (credentials: Credentials) => void;
   notice: string | null;
 }) {
   const [token, setToken] = useState('');
@@ -21,19 +25,19 @@ export function SignIn({
     event.preventDefault();
     const candidate = token.trim();
     if (!candidate) {
-      setError('Paste the AUTH_TOKEN this engine was started with.');
+      setError('Paste the OPERATOR_TOKEN or AUTH_TOKEN this engine was started with.');
       return;
     }
     setChecking(true);
     setError(null);
     try {
-      await createApiClient(candidate, () => {}).listDispatches({}, { limit: 1 });
-      onSignIn(candidate);
+      const kind = await createApiClient(candidate, () => {}).getTokenKind();
+      onSignIn({ token: candidate, kind });
     } catch (failure) {
       if (!(failure instanceof ApiError)) throw failure;
       setError(
         failure.failure.kind === 'unauthorized'
-          ? 'The engine refused that token. Check AUTH_TOKEN in its environment.'
+          ? 'The engine refused that token. Check OPERATOR_TOKEN and AUTH_TOKEN in its environment.'
           : describeFailure(failure.failure),
       );
       setChecking(false);
@@ -47,14 +51,14 @@ export function SignIn({
         <div className={styles.instance}>{window.location.host}</div>
         {notice && !error && <p className={styles.notice}>{notice}</p>}
         <TextField
-          label="API token"
+          label="Token"
           type="password"
           autoComplete="current-password"
           autoFocus
           value={token}
           onChange={(event) => setToken(event.target.value)}
           aria-invalid={error ? true : undefined}
-          help="Kept in this tab only. Closing it signs you out."
+          help="OPERATOR_TOKEN reviews holds and edits Flag Rules; AUTH_TOKEN reads and cancels. Kept in this tab only."
         />
         {error && (
           <p className={styles.error} role="alert">

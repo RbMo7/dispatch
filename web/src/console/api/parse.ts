@@ -11,6 +11,18 @@ import type {
   SenderRef,
   TimelineEntry,
 } from '../../domain/dispatch';
+import {
+  ACTIONS,
+  type ActionKind,
+  type FlagRule,
+  type Hold,
+  type OperatorAction,
+  type Preview,
+  RULE_KIND_NAMES,
+  type RuleCheck,
+  type RuleVersion,
+  type TokenKind,
+} from '../../domain/flagRules';
 import type { AssetBalance, Holding, Read, Sender, SignerKey } from '../../domain/sender';
 import { AREAS, type Fix, type Setup, type SetupCheck, type WorkerRun } from '../../domain/setup';
 import { type Status, STATUSES } from '../../domain/status';
@@ -80,6 +92,7 @@ const CHAIN_NAMES = Object.keys(CHAINS) as Chain[];
 const STATUS_NAMES = Object.keys(STATUSES) as Status[];
 const ITEM_STATUSES: readonly ItemStatus[] = [
   'queued',
+  'held',
   'awaiting_approval',
   'broadcasting',
   'confirmed',
@@ -304,6 +317,47 @@ export function parseDetail(value: unknown): DispatchDetail {
     status: oneOf(json.status, STATUS_NAMES, 'status'),
     items: array(json.items, 'items').map((value, index) => item(value, `items[${index}]`, index)),
     timeline,
+    hold: json.hold === undefined ? null : hold(json.hold, 'hold'),
+  };
+}
+
+/** A rule's kind and its own parameters, from a body that may carry other fields beside them. */
+function ruleCheck(json: Json, path: string): RuleCheck {
+  const kind = oneOf(json.kind, RULE_KIND_NAMES, `${path}.kind`);
+  switch (kind) {
+    case 'item_over':
+    case 'dispatch_total_over':
+    case 'daily_volume_over':
+      return {
+        kind,
+        asset: string(json.asset, `${path}.asset`),
+        limit: string(json.limit, `${path}.limit`),
+      };
+    case 'first_time_recipient':
+      return { kind };
+    case 'recipient_not_allowlisted':
+    case 'call_target_not_allowlisted':
+      return { kind, addresses: list(json.addresses, `${path}.addresses`, string) };
+  }
+}
+
+function hold(value: unknown, path: string): Hold {
+  const json = object(value, path);
+  return {
+    matched: list(json.matched, `${path}.matched`, (match, at) => {
+      const m = object(match, at);
+      const rule = object(m.rule, `${at}.rule`);
+      return {
+        ruleId: string(m.ruleId, `${at}.ruleId`),
+        ruleVersion: integer(m.ruleVersion, `${at}.ruleVersion`),
+        name: string(rule.name, `${at}.rule.name`),
+        check: ruleCheck(rule, `${at}.rule`),
+        items: indexes(m.items, `${at}.items`),
+      };
+    }),
+    heldAt: date(json.heldAt, `${path}.heldAt`),
+    releasedAt: json.releasedAt === undefined ? null : date(json.releasedAt, `${path}.releasedAt`),
+    reason: nullableString(json.reason, `${path}.reason`),
   };
 }
 
@@ -484,9 +538,96 @@ export function parseSetup(value: unknown): Setup {
   };
 }
 
-/** A refusal with an error code, such as `409 ALREADY_CLAIMED`. */
+/**
+ * A refusal: one with an error code, such as `409 ALREADY_CLAIMED`, or a
+ * plain `{ error }` naming the field at fault, such as a Flag Rule's `400`.
+ */
 export function parseRefusal(value: unknown): { code: string; message: string } | null {
   if (typeof value !== 'object' || value === null) return null;
-  const { code, message } = value as Json;
-  return typeof code === 'string' && typeof message === 'string' ? { code, message } : null;
+  const { code, message, error } = value as Json;
+  if (typeof code === 'string' && typeof message === 'string') return { code, message };
+  return typeof error === 'string' ? { code: 'INVALID', message: error } : null;
+}
+
+/** `GET /v1/token`. */
+export function parseTokenKind(value: unknown): TokenKind {
+  return oneOf(object(value, 'body').kind, ['auth', 'operator'] as const, 'kind');
+}
+
+function ruleVersion(json: Json, path: string): RuleVersion {
+  const chain = oneOf(json.chain, CHAIN_NAMES, `${path}.chain`);
+  return {
+    version: integer(json.version, `${path}.version`),
+    name: string(json.name, `${path}.name`),
+    chain,
+    sender: senderRef(json.sender, `${path}.sender`),
+    enabled: boolean(json.enabled, `${path}.enabled`),
+    check: ruleCheck(json, path),
+    createdAt: date(json.createdAt, `${path}.createdAt`),
+  };
+}
+
+/** One rule: `POST`, `PUT` and `GET /v1/flag-rules/:id`. */
+export function parseFlagRule(value: unknown, path = 'body'): FlagRule {
+  const json = object(value, path);
+  const versions = list(json.versions, `${path}.versions`, (v, at) =>
+    ruleVersion(object(v, at), at),
+  );
+  return {
+    id: string(json.ruleId, `${path}.ruleId`),
+    current: { ...ruleVersion(json, path), createdAt: date(json.updatedAt, `${path}.updatedAt`) },
+    createdAt: date(json.createdAt, `${path}.createdAt`),
+    versions,
+  };
+}
+
+/** `GET /v1/flag-rules`. */
+export function parseFlagRules(value: unknown): FlagRule[] {
+  return list(object(value, 'body').rules, 'rules', parseFlagRule);
+}
+
+/** `POST /v1/flag-rules/preview`. */
+export function parsePreview(value: unknown): Preview {
+  const json = object(value, 'body');
+  return {
+    from: date(json.from, 'from'),
+    to: date(json.to, 'to'),
+    scanned: integer(json.scanned, 'scanned'),
+    capped: boolean(json.capped, 'capped'),
+    wouldHold: integer(json.wouldHold, 'wouldHold'),
+    examples: list(json.examples, 'examples', (example, at) => {
+      const e = object(example, at);
+      return {
+        dispatchId: string(e.dispatchId, `${at}.dispatchId`),
+        createdAt: date(e.createdAt, `${at}.createdAt`),
+        items: indexes(e.items, `${at}.items`),
+      };
+    }),
+  };
+}
+
+const ACTION_NAMES = Object.keys(ACTIONS) as ActionKind[];
+
+export interface ActivityPage {
+  actions: OperatorAction[];
+  nextCursor: string | null;
+}
+
+/** `GET /v1/activity`. */
+export function parseActivity(value: unknown): ActivityPage {
+  const json = object(value, 'body');
+  return {
+    actions: list(json.actions, 'actions', (action, at) => {
+      const a = object(action, at);
+      return {
+        id: string(a.id, `${at}.id`),
+        at: date(a.at, `${at}.at`),
+        action: oneOf(a.action, ACTION_NAMES, `${at}.action`),
+        targetId: string(a.targetId, `${at}.targetId`),
+        tokenKind: oneOf(a.tokenKind, ['auth', 'operator'] as const, `${at}.tokenKind`),
+        reason: nullableString(a.reason, `${at}.reason`),
+      };
+    }),
+    nextCursor: nullableString(json.nextCursor, 'nextCursor'),
+  };
 }
