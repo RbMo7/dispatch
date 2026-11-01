@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { err, ok } from '../../domain/result.js';
+import type { ForeignActivity } from '../../domain/sender.js';
 import type { ChainReads, CheckContext, RecentTransactions } from '../check.js';
 import {
   BASE_SENDER,
@@ -170,5 +171,74 @@ describe('Sender: Token balances', () => {
       finding: `${SOLANA_SENDER} holds no USDC, so a payment in it fails its Funding Check`,
       fix: { step: `Send USDC to ${SOLANA_SENDER}` },
     });
+  });
+});
+
+describe('Sender: Used only by this engine (ADR-0064)', () => {
+  function recorded(activity: ForeignActivity | null, env = goodEnv()) {
+    const base = fakeContext(env);
+    const asked: { address: string; since: Date }[] = [];
+    const context = fakeContext(env, {
+      database: {
+        ...base.database,
+        foreignActivity: (_chain, address, since) => {
+          asked.push({ address, since });
+          return Promise.resolve(activity);
+        },
+      },
+    });
+    return { context, asked };
+  }
+
+  it('passes when the worker recorded no other sender in the last 24 hours', async () => {
+    const { context, asked } = recorded(null);
+
+    expect(await result(context, 'sender.exclusive:base')).toEqual({
+      status: 'pass',
+      finding: `nothing but this engine sent from ${BASE_SENDER} in the last 24 hours`,
+    });
+    expect(asked).toEqual([{ address: BASE_SENDER, since: new Date('2026-10-31T12:00:00Z') }]);
+  });
+
+  it('warns, with the fix, when another sender used the wallet', async () => {
+    const { context } = recorded({
+      lastSeenAt: new Date('2026-11-01T11:58:00Z'),
+      nonces: [3124, 3126],
+      count: 3,
+    });
+
+    expect(await result(context, 'sender.exclusive:base')).toEqual({
+      status: 'warn',
+      finding: `something other than this engine sent from ${BASE_SENDER} in the last 24 hours (3 nonces, 3124 to 3126, the latest seen 2026-11-01T11:58:00.000Z); a payment whose nonce it took is sent again, but only one engine may send from a Sender`,
+      fix: {
+        step: `Stop whatever else sends from ${BASE_SENDER} (another engine, a wallet app or a script), or give this engine a Sender of its own`,
+      },
+    });
+  });
+
+  it('warns that it could not check when the database read fails', async () => {
+    const base = fakeContext();
+    const context = fakeContext(goodEnv(), {
+      database: {
+        ...base.database,
+        foreignActivity: () => Promise.reject(new Error('connection refused')),
+      },
+    });
+
+    expect(await result(context, 'sender.exclusive:base')).toMatchObject({
+      status: 'warn',
+      finding: 'not checked: the nonces the worker recorded could not be read: connection refused',
+    });
+  });
+
+  it('runs only for a plain Base Sender: Solana has no account nonce, a Safe is not watched', async () => {
+    await expect(result(fakeContext(), 'sender.exclusive:solana')).rejects.toThrow(/no outcome/);
+    const safe = goodEnv({
+      BASE_SENDER_MODE: 'safe',
+      BASE_SENDER_ADDRESS: '',
+      BASE_SAFE_ADDRESS: '0x84Ac281B68de095f6227050F56C74d93d294e609',
+      BASE_SAFE_EXECUTOR_ADDRESS: BASE_SENDER,
+    });
+    await expect(result(fakeContext(safe), 'sender.exclusive:base')).rejects.toThrow(/no outcome/);
   });
 });

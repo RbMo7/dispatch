@@ -200,6 +200,7 @@ describe('GET /v1/senders with named Senders (ADR-0060)', () => {
       getSignerKey: () => Promise.resolve(null),
       readThreshold: () => Promise.resolve({ ok: true, value: 1 }),
       listCommitted: () => Promise.resolve([]),
+      foreignActivity: () => Promise.resolve(null),
       now: () => new Date(0),
     };
     const config = (name: string, address: string, isDefault: boolean): SenderConfig => ({

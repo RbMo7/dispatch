@@ -228,6 +228,21 @@ export const nonceHistory = pgTable(
   ],
 );
 
+/** ADR-0064 (#172): a nonce of a Sender's wallet the chain shows used by something other than this engine, and when the worker first saw it. */
+export const senderForeignNonces = pgTable(
+  'sender_foreign_nonces',
+  {
+    chain: text('chain').notNull(),
+    senderAddress: text('sender_address').notNull(),
+    nonce: integer('nonce').notNull(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chain, table.senderAddress, table.nonce] }),
+    index('sender_foreign_nonces_seen_idx').on(table.chain, table.senderAddress, table.firstSeenAt),
+  ],
+);
+
 /** ADR-0031: Relay Dispatch's own table — never squeezed into `dispatches`, which has no meaningful `items`/`retryPolicy` for this shape. */
 export const relayDispatches = pgTable(
   'relay_dispatches',

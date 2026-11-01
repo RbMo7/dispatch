@@ -236,6 +236,7 @@ const senderReads: SenderReads = {
   readThreshold: (chain) =>
     Promise.resolve(chain === 'solana' ? ok(2) : err({ code: 'RPC_UNAVAILABLE', message: 'down' })),
   listCommitted: () => Promise.resolve([{ asset: 'SOL', amount: '2039280' }]),
+  foreignActivity: () => Promise.resolve(null),
   now: () => new Date('2026-11-01T02:09:20.649Z'),
 };
 

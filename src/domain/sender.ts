@@ -26,3 +26,15 @@ export function parseSenderName(raw: string): SenderName | undefined {
 export function senderKey(ref: SenderRef): string {
   return `${ref.chain}\u0000${ref.address}`;
 }
+
+/** ADR-0064: nonces of a Sender's wallet that something other than this engine used, over a window. */
+export type ForeignActivity = {
+  /** When the most recent of them was first seen. */
+  lastSeenAt: Date;
+  /** The lowest and highest. */
+  nonces: [first: number, last: number];
+  count: number;
+};
+
+/** ADR-0064: how far back `doctor`, the Setup page and `GET /v1/senders` look for another sender. */
+export const FOREIGN_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;

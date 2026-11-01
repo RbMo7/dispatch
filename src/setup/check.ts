@@ -3,6 +3,7 @@ import type { Chain } from '../domain/chain.js';
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { KnownAsset } from '../domain/known-asset.js';
+import type { ForeignActivity } from '../domain/sender.js';
 import type { Result } from '../domain/result.js';
 import type { PolicyRead } from '../signer/client.js';
 import type { SenderSetup, Settings } from './settings.js';
@@ -64,6 +65,12 @@ export type DatabaseReads = {
   recentTransactions: (chain: Chain, since: Date) => Promise<RecentTransactions>;
   /** Every stored Known Asset row (ADR-0061). */
   knownAssets: () => Promise<KnownAsset[]>;
+  /** ADR-0064: the nonces of a Sender's wallet the worker found another sender used since `since`. */
+  foreignActivity: (
+    chain: Chain,
+    senderAddress: string,
+    since: Date,
+  ) => Promise<ForeignActivity | null>;
 };
 
 /**

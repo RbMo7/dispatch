@@ -63,6 +63,7 @@ async function engine({ workerSignerUrl }: { workerSignerUrl?: string } = {}) {
     pendingMigrations: () => Promise.resolve([]),
     recentTransactions: () => Promise.resolve({ count: 0, latestHashes: [] }),
     knownAssets: () => Promise.resolve([]),
+    foreignActivity: () => Promise.resolve(null),
   };
   const app = buildApp({
     store,

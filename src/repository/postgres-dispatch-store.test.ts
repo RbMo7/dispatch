@@ -32,6 +32,7 @@ import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runEffectsConformanceSuite } from './effects-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
+import { runForeignNonceConformanceSuite } from './foreign-nonce-conformance.js';
 import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
 import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
@@ -74,6 +75,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
   runKnownAssetConformanceSuite(() => new PostgresDispatchStore(db));
   runRejectedRequestConformanceSuite(() => new PostgresDispatchStore(db));
+  runForeignNonceConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

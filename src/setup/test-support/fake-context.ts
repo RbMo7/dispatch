@@ -71,6 +71,7 @@ export function fakeContext(
       pendingMigrations: () => Promise.resolve([]),
       recentTransactions: () => Promise.resolve({ count: 0, latestHashes: [] }),
       knownAssets: () => Promise.resolve([]),
+      foreignActivity: () => Promise.resolve(null),
     },
     chain: healthyChain,
     signer: {
@@ -127,6 +128,7 @@ export function leakyContext(): { context: CheckContext; secrets: string[] } {
       pendingMigrations: leak(env.DATABASE_URL!),
       recentTransactions: leak(env.DATABASE_URL!),
       knownAssets: leak(env.DATABASE_URL!),
+      foreignActivity: leak(env.DATABASE_URL!),
     },
     chain: (chain) => ({
       ...healthyChain(chain),

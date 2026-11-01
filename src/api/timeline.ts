@@ -16,7 +16,15 @@ export type TimelineEntry =
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
   | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
-  | { kind: 'dropped'; at: Date; hash: string; items: number[]; by: string | null }
+  | {
+      kind: 'dropped';
+      at: Date;
+      hash: string;
+      items: number[];
+      by: string | null;
+      /** ADR-0064: why, when nothing else settled the Call (another sender took its nonce). */
+      error?: DispatchError;
+    }
   | { kind: 'confirmed'; at: Date; hash: string | null; items: number[] }
   | { kind: 'failed'; at: Date; hash: string | null; items: number[]; error: DispatchError | null }
   | {
@@ -156,7 +164,14 @@ export function buildTimeline({
             row.lastBroadcastAt ??
             row.broadcastAt;
           if (hash !== null && droppedAt) {
-            add({ kind: 'dropped', at: droppedAt, hash, items: item, by: successor?.hash ?? null });
+            add({
+              kind: 'dropped',
+              at: droppedAt,
+              hash,
+              items: item,
+              by: successor?.hash ?? null,
+              ...(row.error ? { error: row.error } : {}),
+            });
           }
           break;
         }

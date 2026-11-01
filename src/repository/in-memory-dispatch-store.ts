@@ -28,7 +28,12 @@ import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import { ok, type Result } from '../domain/result.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import {
+  senderKey,
+  type ForeignActivity,
+  type SenderAddress,
+  type SenderRef,
+} from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -756,10 +761,14 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(counts);
   }
 
-  markDropped(transactionId: string): Promise<void> {
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'DROPPED' });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'DROPPED',
+        ...(reason ? { error: reason } : {}),
+      });
     });
   }
 
@@ -1245,6 +1254,34 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   listSetupChecks(): Promise<SetupCheckRecord[]> {
     return Promise.resolve(structuredClone(this.setupChecks));
+  }
+
+  private readonly foreignNonces = new Map<string, Map<number, Date>>();
+
+  recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]> {
+    const key = senderKey(sender);
+    const seen = this.foreignNonces.get(key) ?? new Map<number, Date>();
+    this.foreignNonces.set(key, seen);
+    const added = [...new Set(nonces)].filter((nonce) => !seen.has(nonce)).sort((a, b) => a - b);
+    for (const nonce of added) seen.set(nonce, seenAt);
+    return Promise.resolve(added);
+  }
+
+  foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null> {
+    const recent = [...(this.foreignNonces.get(senderKey(sender)) ?? [])].filter(
+      ([, seenAt]) => seenAt >= since,
+    );
+    if (recent.length === 0) return Promise.resolve(null);
+    const nonces = recent.map(([nonce]) => nonce);
+    return Promise.resolve({
+      lastSeenAt: new Date(Math.max(...recent.map(([, seenAt]) => seenAt.getTime()))),
+      nonces: [Math.min(...nonces), Math.max(...nonces)],
+      count: recent.length,
+    });
   }
 
   /** Test-only inspection — not part of DispatchStore. */

@@ -1,5 +1,7 @@
 import type { Chain } from '../domain/chain.js';
 
+export type NonceRange = { from: number; to: number };
+
 export type NonceHistoryRecord = {
   chain: Chain;
   senderAddress: string;
@@ -13,14 +15,20 @@ export type NonceHistoryRecord = {
  * any Relay Dispatch signer's, recovered from its bytes (#13) — kept separate from DispatchStore
  * since it's Chain-Handler-internal bookkeeping, not Dispatch/Transaction
  * orchestration state the Coordinator itself needs. Populated by
- * BaseChainHandler.broadcast (issue 03) on every successful broadcast —
+ * BaseChainHandler.broadcast (issue 03) on every broadcast that may have reached the node —
  * including a fee-bump replacement, which reuses the same nonce (CONTEXT.md's
  * Attempt-vs-Transaction split), so `recordNonce` for an already-recorded
- * (chain, senderAddress, nonce) is a no-op, not an error. Consumed by no
- * logic yet — groundwork for the deferred EVM analogue of ADR-0030.
+ * (chain, senderAddress, nonce) is a no-op, not an error. A send that may
+ * have reached the node is recorded too (#172), so every nonce this engine
+ * may have used is here: ADR-0064's detection reads the rest as another
+ * sender's.
  */
 export interface NonceHistoryStore {
   recordNonce(record: NonceHistoryRecord): Promise<void>;
-  /** Ascending by nonce — the shape a future higher-nonce-confirmed proof would scan. */
-  listNonceHistory(chain: Chain, senderAddress: string): Promise<NonceHistoryRecord[]>;
+  /** Ascending by nonce. With `range`, only nonces in [from, to): what #172 compares with the chain (ADR-0064). */
+  listNonceHistory(
+    chain: Chain,
+    senderAddress: string,
+    range?: NonceRange,
+  ): Promise<NonceHistoryRecord[]>;
 }

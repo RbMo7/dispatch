@@ -142,6 +142,45 @@ export function runTimelineConformanceSuite(makeStore: () => DispatchStore): voi
       ]);
     });
 
+    it('shows a Base Call sent again after another sender took its nonce, with the reason', async () => {
+      const store = makeStore();
+      const dispatch = await store.createDispatch({
+        chain: 'base',
+        idempotencyKey: randomUUID(),
+        items: [baseItem],
+        retryPolicy: false,
+      });
+      await store.claimQueued(CHAINS, 10);
+      await tick();
+      const [original] = await store.createTransactions([
+        { dispatchId: dispatch.id, callIndex: 0, chain: 'base', signedBytes: 'b1', hash: 'h1' },
+      ]);
+      await tick();
+      const resent = await store.createReplacementTransaction(original!.id, {
+        signedBytes: 'b2',
+        hash: 'h2',
+      });
+      const reason = {
+        code: 'NONCE_ALREADY_USED' as const,
+        message: 'Nonce 3124 was taken by another sender. Sent again with nonce 3127.',
+        chainDetail: { reason: 'nonce_taken', nonce: 3124, resentNonce: 3127 },
+      };
+      await store.markDropped(original!.id, reason);
+      await tick();
+      await store.recordSent(resent.id, 'h2');
+      await tick();
+      await store.markConfirmed(resent.id);
+
+      const entries = story(await timelineOf(store, dispatch.id)).slice(2);
+      expect(entries).toEqual([
+        { kind: 'written', hash: 'h1', items: [0], replaces: null },
+        { kind: 'written', hash: 'h2', items: [0], replaces: 'h1' },
+        { kind: 'dropped', hash: 'h1', items: [0], by: 'h2', error: reason },
+        { kind: 'sent', hash: 'h2', items: [0] },
+        { kind: 'confirmed', hash: 'h2', items: [0] },
+      ]);
+    });
+
     it("shows a Multisig Sender's Proposal created, approved, executed and resolved", async () => {
       const store = makeStore();
       const dispatch = await store.createDispatch({

@@ -55,7 +55,7 @@ Read `error.code`. Nothing that failed before signing was sent, so after you fix
 - **`SIGNER_UNREACHABLE`.** The worker could not get a usable signature. The message names the cause: [Troubleshoot from the engine's side](./signer.md#10-troubleshoot-from-the-engines-side) maps each one.
 - **`CHAIN_REJECTED`.** The chain refused or reverted it. `message` has the node's words, and `chainDetail` the raw detail, such as revert data.
 - **`RPC_UNAVAILABLE`.** The RPC timed out, rate-limited or returned a 5xx. Public endpoints rate-limit, so use your own RPC provider for real traffic.
-- **`NONCE_ALREADY_USED`.** The nonce was already used on Base, usually because something else sent from the Sender. Only the engine may send from a Sender.
+- **`NONCE_ALREADY_USED`.** Something else keeps sending from the Base Sender: a second engine, a wallet app or a script. The engine sends a payment whose nonce was taken again at a fresh nonce, up to 3 times, and fails it only after that. Only one engine may send from a Sender. To split work, give one engine several [named Senders](./configuration.md#the-senders-file).
 
 ## An item stays `broadcasting`
 
