@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Reveal } from '../motion/Reveal';
 import styles from './FirstDispatch.module.css';
 
-// The request and response shapes are docs/api.md's POST /v1/dispatch. 0.01 SOL is 10000000 lamports.
+// The request and response shapes are Create a Dispatch in docs/openapi.yaml. 0.01 SOL is 10000000 lamports.
 const REQUEST = `curl -X POST http://localhost:8420/v1/dispatch \\
   -H "Authorization: Bearer $AUTH_TOKEN" \\
   -H "Idempotency-Key: first-dispatch-1" \\
