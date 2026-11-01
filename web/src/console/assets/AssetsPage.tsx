@@ -21,7 +21,8 @@ import { EnableModal } from './EnableModal';
 /**
  * Known Assets per enabled chain (ADR-0061). An operator adds a token from its
  * address, read from the chain, and disables or enables one added here.
- * `?chain=base&add=<address>` opens Add with the address filled in.
+ * `?chain=base&add=<address>` opens Add with the address filled in, and `&symbol=<symbol>` the
+ * symbol; a symbol alone opens Add too, waiting for the address (the Rejected page links so).
  */
 export function AssetsPage() {
   const operator = useOperator();
@@ -33,18 +34,21 @@ export function AssetsPage() {
 
   const asked = params.get('chain');
   const chain = chains.find((c) => c === asked) ?? chains[0] ?? null;
-  const adding = operator && params.has('add') && chain !== null;
+  const adding = operator && (params.has('add') || params.has('symbol')) && chain !== null;
   const rows = useMemo(
     () => (assets.data ?? []).filter((asset) => asset.chain === chain),
     [assets.data, chain],
   );
 
+  /** `add: null` closes the form, dropping the address and symbol it was opened with. */
   const go = (next: { chain?: Chain | null; add?: string | null }) => {
     const query = new URLSearchParams();
     const c = next.chain === undefined ? chain : next.chain;
     if (c) query.set('chain', c);
     const add = next.add === undefined ? params.get('add') : next.add;
     if (add !== null) query.set('add', add);
+    const symbol = params.get('symbol');
+    if (next.add === undefined && symbol !== null) query.set('symbol', symbol);
     replaceParams(query);
   };
 
@@ -86,6 +90,7 @@ export function AssetsPage() {
           key={chain}
           chain={chain}
           address={params.get('add') ?? ''}
+          symbol={params.get('symbol') ?? ''}
           onClose={() => go({ add: null })}
           onAdded={(asset) => {
             assets.reload();

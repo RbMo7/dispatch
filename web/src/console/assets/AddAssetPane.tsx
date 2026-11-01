@@ -4,42 +4,42 @@ import { Button } from '../../components/Button';
 import { DockedPane } from '../../components/DockedPane';
 import { MonoValue } from '../../components/MonoValue';
 import { TextField } from '../../components/TextField';
-import {
-  ASSET_KINDS,
-  type AssetPreview,
-  type AssetRefusal,
-  explainAssetRefusal,
-  formatAmount,
-  type KnownAsset,
-} from '../../domain/assets';
+import { ASSET_KINDS, type AssetPreview, formatAmount, type KnownAsset } from '../../domain/assets';
 import { CHAINS, type Chain } from '../../domain/chains';
-import { ApiError, type AssetRequest, describeFailure } from '../api/client';
+import type { AssetRequest } from '../api/client';
 import styles from '../console.module.css';
 import ops from '../operator.module.css';
 import { useApi } from '../session';
 import css from './assets.module.css';
-import { RefusalNote } from './RefusalNote';
+import { assetRefusal, type Refusal, RefusalNote } from './RefusalNote';
 
 /** Where the form is: a preview is only good for the address and symbol it was read for. */
 type Step =
   | { kind: 'editing' }
   | { kind: 'reading' }
-  | { kind: 'refused'; refusal: AssetRefusal }
+  | { kind: 'refused'; refusal: Refusal }
   | { kind: 'previewed'; preview: AssetPreview; adding: boolean };
 
 interface AddAssetPaneProps {
   chain: Chain;
   /** Filled in from the link that opened the pane, such as a refused payment's asset. */
   address: string;
+  symbol: string;
   onClose: () => void;
   onAdded: (asset: KnownAsset) => void;
 }
 
 /** Paste an address, see what the chain says it is, then add it (ADR-0061). */
-export function AddAssetPane({ chain, address: initial, onClose, onAdded }: AddAssetPaneProps) {
+export function AddAssetPane({
+  chain,
+  address: initial,
+  symbol: named,
+  onClose,
+  onAdded,
+}: AddAssetPaneProps) {
   const api = useApi();
   const [address, setAddress] = useState(initial);
-  const [symbol, setSymbol] = useState('');
+  const [symbol, setSymbol] = useState(named);
   const [step, setStep] = useState<Step>({ kind: 'editing' });
   const label = CHAINS[chain].label;
   const request: AssetRequest = {
@@ -48,12 +48,8 @@ export function AddAssetPane({ chain, address: initial, onClose, onAdded }: AddA
     ...(symbol.trim() ? { symbol: symbol.trim() } : {}),
   };
 
-  const refusalOf = (failure: unknown): AssetRefusal => {
-    if (!(failure instanceof ApiError)) throw failure;
-    return failure.failure.kind === 'refused'
-      ? explainAssetRefusal(failure.failure, { chain, symbol: request.symbol, change: 'add' })
-      : { text: describeFailure(failure.failure), detail: null };
-  };
+  const refusalOf = (failure: unknown): Refusal =>
+    assetRefusal(failure, { chain, asset: { change: 'add', symbol: request.symbol } });
 
   async function preview(event: FormEvent) {
     event.preventDefault();

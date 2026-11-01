@@ -33,6 +33,8 @@ export interface ErrorContext {
   sender?: SenderRef | null;
   /** An amount in the asset, when the console has one, so a shortfall reads as a named amount. */
   amountIn?: (asset: string) => Money | undefined;
+  /** On the Assets page: the refused change, and the symbol the operator typed, if any. */
+  asset?: { change: 'add' | 'enable' | 'disable'; symbol?: string | undefined };
 }
 
 /** A Dispatch's errors happened on its chain, for its Sender, in amounts whose decimals and names its own items carry. */
@@ -65,6 +67,8 @@ export interface Explanation {
   /** What to do about it. */
   next: string;
   fix: Fix | null;
+  /** The engine's own message, where it names a fact the plain words leave out. */
+  quote: string | null;
 }
 
 interface Entry {
@@ -73,6 +77,7 @@ interface Entry {
   text?: Text | ((error: ReadError, ctx: ErrorContext) => Text);
   next: string | ((error: ReadError, ctx: ErrorContext) => string);
   fix?: (error: ReadError, ctx: ErrorContext) => Fix | null;
+  quote?: true;
 }
 
 const short = (address: string) =>
@@ -104,12 +109,15 @@ const SENDERS: Fix = { label: 'Open Senders & Keys', href: '/console/senders' };
 const SETUP: Fix = { label: 'Open Setup', href: '/console/setup' };
 const docs = (label: string, page: string): Fix => ({ label, href: `/docs/${page}` });
 
-/** A symbol goes in as `symbol`; anything shaped like a mint or contract goes in as `address`. */
+/**
+ * The Assets page's Add form, filled in: anything shaped like a mint or contract goes in as `add`,
+ * a symbol as `symbol` (AssetsPage reads both).
+ */
 function addAssetLink(asset: string, chain: Chain | null): Fix {
   const params = new URLSearchParams();
   if (chain) params.set('chain', chain);
   params.set(
-    /^0x[0-9a-fA-F]{40}$|^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(asset) ? 'address' : 'symbol',
+    /^0x[0-9a-fA-F]{40}$|^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(asset) ? 'add' : 'symbol',
     asset,
   );
   return { label: 'Add it under Assets', href: `/console/assets?${params}` };
@@ -167,7 +175,10 @@ export const CATALOGUE = {
     title: 'Chain RPC unavailable',
     text: ({ detail }, ctx) =>
       `The ${chainName(ctx)} RPC could not be reached or did not answer${detail?.httpStatus ? ` (HTTP ${detail.httpStatus})` : ''}.`,
-    next: 'Send it again later with a new key. Use your own RPC provider for real traffic.',
+    next: (_, ctx) =>
+      ctx.asset
+        ? 'Try again in a moment.'
+        : 'Send it again later with a new key. Use your own RPC provider for real traffic.',
     fix: () => SETUP,
   },
   SIGNER_UNREACHABLE: {
@@ -241,28 +252,47 @@ export const CATALOGUE = {
   },
   NOT_A_TOKEN: {
     title: 'Not a token',
-    next: 'Check the address and the chain.',
+    text: (_, ctx) => `This address is not a token on ${chainName(ctx)}.`,
+    next: (_, ctx) =>
+      ctx.chain === 'solana'
+        ? "Paste the token's mint address, not a wallet."
+        : "Paste the token's contract address, not a wallet.",
   },
   NOT_PAYABLE: {
     title: 'Token cannot be paid out',
+    text: 'The engine cannot pay out this token correctly, so it cannot be added.',
     next: 'Pay in another token.',
+    quote: true,
   },
   SYMBOL_REQUIRED: {
     title: 'Symbol required',
-    text: 'The token publishes no usable symbol.',
-    next: 'Give it a symbol.',
+    text: 'This token publishes no symbol.',
+    next: 'Give it one under Symbol, then preview again.',
   },
   SYMBOL_TAKEN: {
     title: 'Symbol taken',
-    next: 'Use another symbol, or disable the other asset first.',
+    text: (_, ctx) =>
+      ctx.asset?.change === 'enable'
+        ? `Another enabled asset on ${chainName(ctx)} uses this symbol.`
+        : ctx.asset?.symbol
+          ? `${ctx.asset.symbol} is already used on ${chainName(ctx)}.`
+          : `The token's own symbol is already used on ${chainName(ctx)}.`,
+    next: (_, ctx) =>
+      ctx.asset?.change === 'enable'
+        ? 'Disable that one first.'
+        : ctx.asset?.symbol
+          ? 'Choose another symbol, then preview again.'
+          : 'Give it another under Symbol, then preview again.',
   },
   ASSET_EXISTS: {
     title: 'Already a known asset',
-    next: 'Enable it under Assets instead.',
+    text: (_, ctx) => `This token is already a known asset on ${chainName(ctx)}.`,
+    next: 'Nothing to add. If it is disabled, enable it instead.',
+    quote: true,
   },
   CONFIG_ASSET: {
     title: 'Set in the configuration',
-    text: 'This asset comes from the engine configuration, so the console cannot change it.',
+    text: "This asset comes from the engine's configuration, so the console cannot change it.",
     next: 'Change the *_KNOWN_TOKENS setting and restart the engine.',
   },
   FST_ERR_VALIDATION: {
@@ -306,5 +336,6 @@ export function explainError(error: ReadError, ctx: ErrorContext): Explanation {
     text,
     next: typeof entry.next === 'function' ? entry.next(error, ctx) : entry.next,
     fix: entry.fix?.(error, ctx) ?? null,
+    quote: entry.quote ? error.message : null,
   };
 }

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Console } from './Console';
+import { explainError } from '../domain/errors';
 
 const AUTH = 'auth-token-4e1c';
 const OPERATOR = 'operator-token-9b72';
@@ -523,6 +524,19 @@ describe('the Assets page', () => {
     await signIn(OPERATOR, `/console/assets?chain=solana&add=${FLOW_MINT}`);
     const pane = await screen.findByRole('region', { name: 'Add an asset on Solana' });
     expect(within(pane).getByLabelText<HTMLInputElement>('Mint address').value).toBe(FLOW_MINT);
+  });
+
+  it("opens Add from a refused payment's fix link, symbol filled, waiting on the address", async () => {
+    const { fix } = explainError(
+      { code: 'UNKNOWN_ASSET', message: '', detail: { asset: 'USDT' } },
+      { chain: 'solana' },
+    );
+    await signIn(OPERATOR, fix!.href);
+    const pane = await screen.findByRole('region', { name: 'Add an asset on Solana' });
+    const address = within(pane).getByLabelText<HTMLInputElement>('Mint address');
+    expect(address.value).toBe('');
+    expect(document.activeElement).toBe(address);
+    expect(within(pane).getByLabelText<HTMLInputElement>('Symbol').value).toBe('USDT');
   });
 
   it('disables an asset added from the console only after a confirmation', async () => {

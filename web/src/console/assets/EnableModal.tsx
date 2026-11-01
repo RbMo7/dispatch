@@ -3,15 +3,14 @@ import { type FormEvent, useEffect, useState } from 'react';
 import { Button } from '../../components/Button';
 import { TextArea } from '../../components/Field';
 import { MonoValue } from '../../components/MonoValue';
-import { type AssetRefusal, explainAssetRefusal, type KnownAsset } from '../../domain/assets';
+import type { KnownAsset } from '../../domain/assets';
 import { CHAINS } from '../../domain/chains';
 import { Modal } from '../../motion/Overlay';
-import { ApiError, describeFailure } from '../api/client';
 import styles from '../console.module.css';
 import ops from '../operator.module.css';
 import { useApi } from '../session';
 import css from './assets.module.css';
-import { RefusalNote } from './RefusalNote';
+import { assetRefusal, type Refusal, RefusalNote } from './RefusalNote';
 
 interface EnableModalProps {
   /** The asset to flip, or null while closed. */
@@ -25,7 +24,7 @@ export function EnableModal({ asset, onClose, onChanged }: EnableModalProps) {
   const api = useApi();
   const [reason, setReason] = useState('');
   const [sending, setSending] = useState(false);
-  const [refusal, setRefusal] = useState<AssetRefusal | null>(null);
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
   // Kept while the modal closes, so its content does not vanish mid-animation.
   const [shown, setShown] = useState<KnownAsset | null>(asset);
 
@@ -49,14 +48,11 @@ export function EnableModal({ asset, onClose, onChanged }: EnableModalProps) {
     try {
       onChanged(await api.setAssetEnabled(shown.id, enable, reason.trim() || undefined));
     } catch (failure) {
-      if (!(failure instanceof ApiError)) throw failure;
       setRefusal(
-        failure.failure.kind === 'refused'
-          ? explainAssetRefusal(failure.failure, {
-              chain: shown.chain,
-              change: enable ? 'enable' : 'disable',
-            })
-          : { text: describeFailure(failure.failure), detail: null },
+        assetRefusal(failure, {
+          chain: shown.chain,
+          asset: { change: enable ? 'enable' : 'disable' },
+        }),
       );
       setSending(false);
     }

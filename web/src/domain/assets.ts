@@ -1,4 +1,4 @@
-import { CHAINS, type Chain } from './chains';
+import type { Chain } from './chains';
 import type { TokenKind } from './flagRules';
 
 /** An amount in an asset's smallest unit, with what it takes to show it. */
@@ -162,66 +162,4 @@ export function share(part: Quantity, whole: Quantity): number {
   const w = BigInt(whole.raw);
   if (w <= 0n) return 0;
   return Number((BigInt(part.raw) * 10_000n) / w) / 10_000;
-}
-
-/** What a refused asset change means, in plain words, and the engine's own words where they add a fact. */
-export interface AssetRefusal {
-  text: string;
-  detail: string | null;
-}
-
-/**
- * The words for a refused Preview, Add, enable or disable (docs/openapi.yaml,
- * Assets). `symbol` is the one the operator typed, if any.
- */
-export function explainAssetRefusal(
-  refusal: { code: string; message: string },
-  context: { chain: Chain; symbol?: string | undefined; change: 'add' | 'enable' | 'disable' },
-): AssetRefusal {
-  const chain = CHAINS[context.chain].label;
-  const address = context.chain === 'solana' ? 'mint' : 'contract';
-  switch (refusal.code) {
-    case 'NOT_A_TOKEN':
-      return {
-        text: `This address is not a token on ${chain}. Paste the token's ${address} address, not a wallet.`,
-        detail: null,
-      };
-    case 'NOT_PAYABLE':
-      return {
-        text: 'The engine cannot pay out this token correctly, so it cannot be added.',
-        detail: refusal.message,
-      };
-    case 'SYMBOL_REQUIRED':
-      return {
-        text: 'This token publishes no symbol. Give it one under Symbol, then preview again.',
-        detail: null,
-      };
-    case 'SYMBOL_TAKEN':
-      if (context.change === 'enable') {
-        return {
-          text: `Another enabled asset on ${chain} uses this symbol. Disable that one first.`,
-          detail: null,
-        };
-      }
-      return {
-        text: context.symbol
-          ? `${context.symbol} is already used on ${chain}. Choose another symbol, then preview again.`
-          : `The token's own symbol is already used on ${chain}. Give it another under Symbol, then preview again.`,
-        detail: null,
-      };
-    case 'ASSET_EXISTS':
-      return { text: `This token is already a known asset on ${chain}.`, detail: refusal.message };
-    case 'CONFIG_ASSET':
-      return {
-        text: "This asset comes from the engine's configuration. Change it there and restart.",
-        detail: null,
-      };
-    case 'RPC_UNAVAILABLE':
-      return {
-        text: `The engine could not read ${chain} just now. Try again in a moment.`,
-        detail: null,
-      };
-    default:
-      return { text: `The engine refused it: ${refusal.message}`, detail: null };
-  }
 }

@@ -44,7 +44,44 @@ describe('the error catalogue', () => {
       { code: 'UNKNOWN_ASSET', message: '', detail: { asset: mint } },
       { chain: 'solana' },
     );
-    expect(fix?.href).toBe(`/console/assets?chain=solana&address=${mint}`);
+    expect(fix?.href).toBe(`/console/assets?chain=solana&add=${mint}`);
+  });
+
+  it('explains a refused asset change by what was refused and the symbol typed', () => {
+    const refused = (
+      code: string,
+      asset: NonNullable<Parameters<typeof explainError>[1]['asset']>,
+    ) => {
+      const { text, next } = explainError({ code, message: '' }, { chain: 'solana', asset });
+      return typeof text === 'string' ? `${text} ${next}` : text;
+    };
+
+    expect(refused('SYMBOL_REQUIRED', { change: 'add' })).toBe(
+      'This token publishes no symbol. Give it one under Symbol, then preview again.',
+    );
+    expect(refused('SYMBOL_TAKEN', { change: 'add', symbol: 'FLOW' })).toBe(
+      'FLOW is already used on Solana. Choose another symbol, then preview again.',
+    );
+    expect(refused('SYMBOL_TAKEN', { change: 'add' })).toBe(
+      "The token's own symbol is already used on Solana. Give it another under Symbol, then preview again.",
+    );
+    expect(refused('SYMBOL_TAKEN', { change: 'enable' })).toBe(
+      'Another enabled asset on Solana uses this symbol. Disable that one first.',
+    );
+    expect(refused('NOT_A_TOKEN', { change: 'add' })).toBe(
+      "This address is not a token on Solana. Paste the token's mint address, not a wallet.",
+    );
+    expect(refused('RPC_UNAVAILABLE', { change: 'disable' })).toBe(
+      'The Solana RPC could not be reached or did not answer. Try again in a moment.',
+    );
+  });
+
+  it("quotes the engine's own words only where they add a fact", () => {
+    const message = "Fq2… can't be paid out: the mint has a transfer fee";
+    expect(explainError({ code: 'NOT_PAYABLE', message }, { chain: 'solana' }).quote).toBe(message);
+    expect(
+      explainError({ code: 'SYMBOL_REQUIRED', message }, { chain: 'solana' }).quote,
+    ).toBeNull();
   });
 
   it('says which Sender is short, by how much, and which address to fund', () => {
