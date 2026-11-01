@@ -18,6 +18,7 @@ import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import type { AssetDecimals } from './asset-decimals.js';
 import { readSender, type SenderConfig, type SenderReads } from './senders.js';
+import { setupReader } from './setup-routes.js';
 
 /**
  * docs/openapi.yaml is the API's contract and the source of the reference pages. This drives the
@@ -231,6 +232,47 @@ const senderReads: SenderReads = {
   now: () => new Date('2026-11-01T02:09:20.649Z'),
 };
 
+/** The worker's last run found the Signer down; the API's own check passed on this request. */
+const WORKER_RAN_AT = new Date('2026-11-01T10:05:00.000Z');
+const readSetup = setupReader({
+  enabledChains: ['base', 'solana'],
+  listRecorded: () =>
+    Promise.resolve([
+      {
+        id: 'signer.reachable',
+        area: 'signer',
+        title: 'Reachable',
+        result: {
+          status: 'fail',
+          finding: 'no Signer answered at SIGNER_URL (signer:8421)',
+          fix: { command: 'docker compose up -d signer' },
+        },
+        ranAt: WORKER_RAN_AT,
+      },
+      {
+        id: 'sender.fees:solana',
+        area: 'sender',
+        title: 'Fee balance (Solana)',
+        chain: 'solana',
+        result: {
+          status: 'pass',
+          finding: '2.1500 SOL covers the 0.0034 SOL paid in fees in the last 24 hours',
+        },
+        ranAt: WORKER_RAN_AT,
+      },
+    ]),
+  runApiChecks: () =>
+    Promise.resolve([
+      {
+        id: 'database.migrated',
+        area: 'database',
+        title: 'Migrated',
+        result: { status: 'pass', finding: 'every migration is applied' },
+      },
+    ]),
+  now: () => new Date('2026-11-01T10:07:12.000Z'),
+});
+
 async function buildContractApp() {
   const store = new InMemoryDispatchStore();
   const chainRegistry = await ChainRegistry.load(['base', 'solana'], {
@@ -264,7 +306,7 @@ async function buildContractApp() {
     defaultRetryPolicy: false,
     assetDecimals,
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
-    readSetup: () => Promise.reject(new Error('not read in this test')),
+    readSetup,
   });
   app.addHook('onRoute', ({ method, url }) => {
     for (const m of [method].flat()) {

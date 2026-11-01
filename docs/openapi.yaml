@@ -37,6 +37,10 @@ tags:
   - name: Senders
     description: |
       The Sender is the wallet each chain pays from. One Sender per enabled chain.
+  - name: Setup
+    description: |
+      The engine's setup checks, the same ones `pnpm dispatch doctor` runs, as this engine last ran
+      them. The console's Setup page reads them.
   - name: Activity
     description: |
       The operator action record: every cancel that landed, every release, and every Flag Rule
@@ -1269,6 +1273,62 @@ paths:
         '404':
           $ref: '#/components/responses/RuleNotFound'
 
+  /v1/setup:
+    get:
+      tags: [Setup]
+      operationId: getSetup
+      summary: Get the setup checks
+      description: |
+        Returns the engine's setup checks, the same ones `pnpm dispatch doctor` runs, as this engine
+        last ran them. The worker runs its checks (configuration, chain, Signer, Sender and
+        multisig) when it starts and every five minutes, and records the latest result of each. The
+        API runs its own on every request: the database is reachable and migrated, and the console
+        is built. The API never calls the Signer, so the Signer checks are always the worker's.
+
+        `checks` are in `doctor`'s order. A check that runs once per enabled chain has `chain`, and
+        its `id` ends in `:<chain>`. A recorded check for a chain the engine no longer enables is
+        left out. No finding holds a secret: a URL is cut down to its host, and a token is named,
+        never shown.
+      responses:
+        '200':
+          description: The checks, and how many passed, warned and failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetupReport'
+              examples:
+                signerDown:
+                  summary: The worker cannot reach the Signer
+                  value:
+                    worker: { status: ran, ranAt: '2026-11-01T10:05:00.000Z' }
+                    summary: { passed: 2, warnings: 0, problems: 1 }
+                    checks:
+                      - id: database.migrated
+                        area: database
+                        title: Migrated
+                        ranIn: api
+                        ranAt: '2026-11-01T10:07:12.000Z'
+                        status: pass
+                        finding: every migration is applied
+                      - id: signer.reachable
+                        area: signer
+                        title: Reachable
+                        ranIn: worker
+                        ranAt: '2026-11-01T10:05:00.000Z'
+                        status: fail
+                        finding: 'no Signer answered at SIGNER_URL (signer:8421)'
+                        fix: { command: docker compose up -d signer }
+                      - id: 'sender.fees:solana'
+                        area: sender
+                        title: Fee balance (Solana)
+                        chain: solana
+                        ranIn: worker
+                        ranAt: '2026-11-01T10:05:00.000Z'
+                        status: pass
+                        finding: 2.1500 SOL covers the 0.0034 SOL paid in fees in the last 24 hours
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /v1/activity:
     get:
       tags: [Activity]
@@ -2373,3 +2433,76 @@ components:
         nextCursor:
           type: [string, 'null']
           description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+
+    SetupCheck:
+      type: object
+      required: [id, area, title, ranIn, ranAt, status, finding]
+      properties:
+        id: { type: string, description: 'The check, such as `signer.reachable`. A per-chain check ends in `:<chain>`.' }
+        area:
+          type: string
+          enum: [configuration, database, chain, signer, sender, multisig, console]
+        title: { type: string }
+        chain: { $ref: '#/components/schemas/Chain' }
+        ranIn:
+          type: string
+          enum: [worker, api]
+          description: '`worker` checks are as the worker last recorded them, up to five minutes old. `api` checks ran on this request.'
+        ranAt: { type: string, format: date-time }
+        status: { type: string, enum: [pass, warn, fail] }
+        finding: { type: string, description: What the check found, in one line. }
+        fix:
+          description: 'On a `warn` or a `fail`: a command to run, a setting to change, or a step to take outside this machine, such as funding an address.'
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [command]
+              properties: { command: { type: string } }
+            - type: object
+              additionalProperties: false
+              required: [setting, value]
+              properties: { setting: { type: string }, value: { type: string } }
+            - type: object
+              additionalProperties: false
+              required: [step]
+              properties: { step: { type: string } }
+      oneOf:
+        - properties: { status: { const: pass } }
+          not: { required: [fix] }
+        - properties: { status: { enum: [warn, fail] } }
+          required: [fix]
+      unevaluatedProperties: false
+
+    SetupReport:
+      type: object
+      additionalProperties: false
+      required: [worker, summary, checks]
+      properties:
+        worker:
+          description: |
+            `ran`, with the time of the worker's latest run. `not_run_yet` on a fresh install before
+            the worker's first run, when `checks` holds only the API's own. `unreadable` when the
+            database did not answer, and the API's `database.reachable` check then says why.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [status, ranAt]
+              properties:
+                status: { const: ran }
+                ranAt: { type: string, format: date-time }
+            - type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { enum: [not_run_yet, unreadable] }
+        summary:
+          type: object
+          additionalProperties: false
+          required: [passed, warnings, problems]
+          properties:
+            passed: { type: integer }
+            warnings: { type: integer }
+            problems: { type: integer }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/SetupCheck' }

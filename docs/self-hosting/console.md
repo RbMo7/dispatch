@@ -21,7 +21,7 @@ There is no separate console password and there are no user accounts. Anyone hol
 
 ## The pages
 
-**Overview.** Dispatches in flight, with a breakdown, and Dispatches created over the last hour, day or week against the period before. Each Sender's balance, with how much is committed. What needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, and abandoned items, which may still land. The most recent Dispatches.
+**Overview.** Dispatches in flight, with a breakdown, and Dispatches created over the last hour, day or week against the period before. Each Sender's balance, with how much is committed. What needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, abandoned items, which may still land, and any failing setup check. The most recent Dispatches.
 
 **Dispatches.** Every Dispatch, newest first, grouped by day. Filter by date range (today, 7 days, 30 days, or a custom range), chain, status and mode. Type an id, or the start of one, and press Enter to open it. Each row shows the item count, the status and the total per asset. The URL holds the selection, the tab and the filters, so a link opens the same view.
 
@@ -32,6 +32,8 @@ Selecting a row opens its detail pane, with three tabs:
 - **Details** lists the chain, the mode, the Sender, the item count, when the Dispatch was created and claimed, and its id.
 
 **Senders & Keys.** One card per enabled chain: the Sender's address and mode, the multisig and its threshold, the engine's own key, a table of balances with committed and free amounts, and what the Signer reports about the key: its curve, its pins and its chain IDs, and when the worker last read them. A line says plainly whether the key is pinned to this Safe or multisig. The Signer's backend is never shown, because the Signer does not report it.
+
+**Setup.** The same checks as `pnpm dispatch doctor`, from [Get the setup checks](../openapi.yaml#get-the-setup-checks). A summary says "All good" or how many things need you, then one card per area lists each check with its status, what it found, how to fix it, and when it last ran. The worker runs its checks at start and every five minutes. The database and console checks run when the page loads. A failing check also shows in the Overview's Needs attention. The page is read-only: configuration lives in files on the server.
 
 A field the engine could not read, such as a balance while the RPC is down, shows its error in place, and the rest of the page still loads.
 

@@ -47,6 +47,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/openapi.yaml', tag: 'Dispatches', slug: 'rest/dispatches' },
       { source: 'docs/openapi.yaml', tag: 'Flag Rules', slug: 'rest/flag-rules' },
       { source: 'docs/openapi.yaml', tag: 'Senders', slug: 'rest/senders' },
+      { source: 'docs/openapi.yaml', tag: 'Setup', slug: 'rest/setup' },
       { source: 'docs/openapi.yaml', tag: 'Activity', slug: 'rest/activity' },
       { source: 'docs/openapi.yaml', tag: 'Health', slug: 'rest/health' },
     ],
