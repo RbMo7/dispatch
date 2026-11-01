@@ -8,9 +8,9 @@ Read `CONTEXT.md` and `docs/adr/` at the repo root — every naming/architecture
 
 Specs stay local, tickets live on GitHub. Each feature is `.scratch/<feature-slug>/spec.md` (the feature-level design record — problem, solution, user stories, decisions); its execution tickets are **GitHub Issues** on `RbMo7/dispatch`, the source of truth for ticket state. See `docs/agents/issue-tracker.md`. (The older `.scratch/*/issues/NN-*.md` files are stale snapshots — don't read ticket state from them.)
 
-### Triage labels
+### Issue status labels
 
-Default five canonical roles, unchanged. See `docs/agents/triage-labels.md`.
+Every open issue carries exactly one status label in plain words: `needs-triage`, `ready-to-go`, `blocked`, `in-progress`, `in-review`, `waiting`, `wont-do`. Swap it whenever the issue's state changes. Never use `ready-for-agent` or `ready-for-human`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
