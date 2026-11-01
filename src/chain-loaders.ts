@@ -6,10 +6,6 @@ import {
   BASE_REORG_RECHECK_WINDOW_MS,
   BaseChainHandler,
 } from './chain-handler/base/base-chain-handler.js';
-import {
-  NATIVE_ASSET_SYMBOL as BASE_NATIVE_ASSET,
-  parseBaseKnownTokens,
-} from './chain-handler/base/known-tokens.js';
 import { SafeApproval } from './chain-handler/base/safe/safe-approval.js';
 import {
   resolveBaseSafeConfig,
@@ -26,10 +22,6 @@ import {
 import { SquadsApproval } from './chain-handler/solana/multisig/squads-approval.js';
 import { runMultisigStartupChecks } from './chain-handler/solana/multisig/startup-checks.js';
 import {
-  NATIVE_ASSET_SYMBOL as SOLANA_NATIVE_ASSET,
-  parseSolanaKnownTokens,
-} from './chain-handler/solana/known-tokens.js';
-import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
   SolanaChainHandler,
 } from './chain-handler/solana/solana-chain-handler.js';
@@ -43,11 +35,16 @@ import type { CoordinatorSender, StuckHandlingConfig } from './coordinator/coord
 import type { Chain } from './domain/chain.js';
 import type { SenderAddress } from './domain/sender.js';
 import { PostgresNonceHistoryStore } from './repository/postgres-nonce-history-store.js';
-import { db } from './db/client.js';
+import { db, queryClient } from './db/client.js';
 import { logger } from './logger.js';
 import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
-import type { AssetDecimals } from './api/asset-decimals.js';
+import { AssetRegistry } from './asset-registry/asset-registry.js';
+import { configuredAssets } from './asset-registry/configured-assets.js';
+import { KNOWN_ASSETS_CHANNEL, watchKnownAssets } from './asset-registry/watch.js';
+import type { ReadToken } from './chain-handler/chain-handler.js';
+import { readBaseToken } from './chain-handler/base/token-reads.js';
+import { readSolanaToken } from './chain-handler/solana/token-reads.js';
 import { baseNetwork, solanaNetwork, type Network } from './api/network.js';
 import type { SenderConfig, SenderReads } from './api/senders.js';
 import type { DispatchError } from './domain/errors.js';
@@ -91,6 +88,7 @@ export function loadSendersConfig(): SendersConfig {
 
 type ChainSendersLoader = (
   chain: ChainSendersSpec,
+  assets: AssetRegistry,
   signer: SignerClient | undefined,
   named: <T>(name: string, build: () => Promise<T>) => Promise<T>,
 ) => Promise<RegisteredSender[]>;
@@ -110,14 +108,14 @@ function noSenderAddress(chain: Chain): Error {
  * after its own startup checks (ADR-0049, ADR-0051, ADR-0055).
  */
 const chainLoaders: Record<Chain, ChainSendersLoader> = {
-  solana: async ({ chain, default: defaultName, senders }, signer, named) => {
+  solana: async ({ chain, default: defaultName, senders }, assets, signer, named) => {
     const connection = new Connection(config.solana.rpcUrl, {
       commitment: 'confirmed',
       // issue 15: every RPC call this Connection makes is aborted, not
       // just abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
       fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
     });
-    const knownTokens = parseSolanaKnownTokens(config.solana.knownTokens);
+    const solanaAssets = assets.forChain('solana');
     const registered: RegisteredSender[] = [];
     for (const spec of senders as SolanaSenderSpec[]) {
       registered.push(
@@ -129,7 +127,7 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
             connection,
             ...(signer ? { signerClient: signer } : {}),
             senderAddress: spec.address,
-            knownTokens,
+            assets: solanaAssets,
             // #74 (ADR-0054): a Multisig Sender proposes through Squads; `single` has no approval capability at all.
             ...(multisig
               ? {
@@ -137,7 +135,7 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
                     connection,
                     signerClient: signer ?? noSigner,
                     multisig,
-                    knownTokens,
+                    assets: solanaAssets,
                     // An 'auto' price is not applied to a Proposal: it is not time-critical, and Approvers take hours.
                     ...(typeof config.solana.computeUnitPriceMicroLamports === 'number'
                       ? {
@@ -175,7 +173,7 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
     }
     return registered;
   },
-  base: async ({ chain, default: defaultName, senders }, signer, named) => {
+  base: async ({ chain, default: defaultName, senders }, assets, signer, named) => {
     const fetchFn = fetchWithTimeout(fetch, config.rpcTimeoutMs);
     // issue 15: every RPC call this client makes is aborted, not just
     // abandoned, past config.rpcTimeoutMs — see rpc-timeout.ts.
@@ -186,14 +184,14 @@ const chainLoaders: Record<Chain, ChainSendersLoader> = {
       registered.push(
         await named(spec.name, async () => {
           // #82 (ADR-0051): `single` is a no-op; `safe` refuses to start before anything is sent.
-          const safe = await verifySafeSender(signer, spec, client);
+          const safe = await verifySafeSender(signer, spec, client, assets);
           const handler = await BaseChainHandler.create({
             rpcUrl: config.base.rpcUrl,
             client,
             chainId: config.base.chainId,
             senderAddress: spec.handlerAddress,
             ...(signer ? { signerClient: signer } : {}),
-            knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+            assets: assets.forChain('base'),
             nonceHistoryStore,
             feeBumpPercent: config.base.feeBumpPercent,
             bulkCallMaxBatchSize: config.base.bulkCallMaxBatchSize,
@@ -260,6 +258,7 @@ async function verifySafeSender(
   signer: SignerClient | undefined,
   spec: BaseSenderSpec,
   readClient: PublicClient,
+  assets: AssetRegistry,
 ): Promise<
   | {
       config: BaseSafeConfig;
@@ -297,7 +296,7 @@ async function verifySafeSender(
       client: readClient,
       signer: signer ?? noSigner,
       service,
-      knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+      assets: assets.forChain('base'),
       prepare: (items, sender) => {
         if (!handler) throw new Error('the Base handler is not ready to prepare a Safe execute');
         return handler.prepare(items, sender);
@@ -355,8 +354,50 @@ const stuckHandlingByChain: Partial<Record<Chain, StuckHandlingConfig>> = {
   base: { stuckAfterMs: config.base.stuckAfterMs, maxFeeBumps: config.base.maxFeeBumps },
 };
 
+/**
+ * ADR-0061: seeds the config rows, reads the registry, and keeps it in step
+ * with every later change. The API and the worker each call it once.
+ */
+export async function loadAssetRegistry(store: DispatchStore): Promise<AssetRegistry> {
+  const seeded = await store.seedConfigAssets(
+    configuredAssets({ solana: config.solana.knownTokens, base: config.base.knownTokens }),
+  );
+  if (!seeded.ok) throw new Error(seeded.error);
+  const registry = new AssetRegistry(() => store.listKnownAssets());
+  await registry.refresh();
+  await watchKnownAssets(registry, {
+    listen: (onChange) => queryClient.listen(KNOWN_ASSETS_CHANNEL, onChange, onChange),
+    logger,
+  });
+  return registry;
+}
+
+/** ADR-0061: each enabled chain's own token reads, for adding a Known Asset. */
+export function tokenReadersFor(registry: ChainRegistry): Partial<Record<Chain, ReadToken>> {
+  const fetchFn = fetchWithTimeout(fetch, config.rpcTimeoutMs);
+  const readers: Record<Chain, () => ReadToken> = {
+    solana: () => {
+      const connection = new Connection(config.solana.rpcUrl, {
+        commitment: 'confirmed',
+        fetch: fetchFn,
+      });
+      return (address) => readSolanaToken(connection, address);
+    },
+    base: () => {
+      const client = createPublicClient({ transport: http(config.base.rpcUrl, { fetchFn }) });
+      return (address) => readBaseToken(client, address);
+    },
+  };
+  return Object.fromEntries(
+    [...registry.handlers.keys()].map((chain) => [chain, readers[chain]()]),
+  );
+}
+
 /** `signer` is the worker's; the API passes none (ADR-0059), so its Multisig startup checks skip the Signer. */
-export async function loadChainRegistry(signer?: SignerClient): Promise<ChainRegistry> {
+export async function loadChainRegistry(
+  assets: AssetRegistry,
+  signer?: SignerClient,
+): Promise<ChainRegistry> {
   const senders = loadSendersConfig();
   const registered: RegisteredSender[] = [];
   for (const chain of senders.chains) {
@@ -370,7 +411,7 @@ export async function loadChainRegistry(signer?: SignerClient): Promise<ChainReg
         throw new Error(`${chain.chain} sender "${name}": ${message}`, { cause });
       }
     };
-    registered.push(...(await chainLoaders[chain.chain](chain, signer, named)));
+    registered.push(...(await chainLoaders[chain.chain](chain, assets, signer, named)));
   }
   return ChainRegistry.fromSenders(registered);
 }
@@ -470,28 +511,6 @@ export function coordinatorConfigFor(registry: ChainRegistry): {
   };
 }
 
-const assetsByChain: Record<Chain, () => string[]> = {
-  solana: () => [
-    SOLANA_NATIVE_ASSET,
-    ...Object.keys(parseSolanaKnownTokens(config.solana.knownTokens)),
-  ],
-  base: () => [BASE_NATIVE_ASSET, ...Object.keys(parseBaseKnownTokens(config.base.knownTokens))],
-};
-
-export function assetDecimalsFromConfig(): AssetDecimals {
-  const decimals: Record<Chain, Record<string, number>> = {
-    solana: { [SOLANA_NATIVE_ASSET]: 9 },
-    base: { [BASE_NATIVE_ASSET]: 18 },
-  };
-  for (const [symbol, token] of Object.entries(parseSolanaKnownTokens(config.solana.knownTokens))) {
-    decimals.solana[symbol] = token.decimals;
-  }
-  for (const [symbol, token] of Object.entries(parseBaseKnownTokens(config.base.knownTokens))) {
-    decimals.base[symbol] = token.decimals;
-  }
-  return (chain, asset) => decimals[chain][asset];
-}
-
 async function readSolanaNetwork(): Promise<Network> {
   const connection = new Connection(config.solana.rpcUrl, {
     fetch: fetchWithTimeout(fetch, config.rpcTimeoutMs),
@@ -506,7 +525,7 @@ async function readSolanaNetwork(): Promise<Network> {
 
 export async function senderConfigsFor(
   registry: ChainRegistry,
-  assetDecimals: AssetDecimals,
+  assets: AssetRegistry,
 ): Promise<SenderConfig[]> {
   const { senders } = coordinatorConfigFor(registry);
   const readNetwork: Record<Chain, () => Promise<Network>> = {
@@ -536,8 +555,7 @@ export async function senderConfigsFor(
       isDefault: sender.isDefault,
       network: networks.get(chain) ?? 'unknown',
       address,
-      assets: assetsByChain[chain](),
-      assetDecimals,
+      assets,
       ...(approval
         ? {
             approval: {

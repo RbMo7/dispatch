@@ -17,6 +17,7 @@ import {
   type TestSignerHandle,
   type TestTokenInfo,
 } from './test-support/base-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,7 +65,9 @@ describe('BaseChainHandler ERC-20 token transfer (real Base Sepolia)', () => {
       senderAddress: sender.address,
       signerClient: new SignerClient(testSigner.url, testSigner.token),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
-      knownTokens: { TEST: { contractAddress: token.address, decimals: token.decimals } },
+      assets: registryFromConfig({ base: `TEST:${token.address}:${token.decimals}` }).forChain(
+        'base',
+      ),
     });
   }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);
 

@@ -20,6 +20,7 @@ import {
 } from 'viem';
 import type { Logger } from 'pino';
 
+import { AssetRegistry, type AssetLookup } from '../../asset-registry/asset-registry.js';
 import type { CallForChain, DispatchItem, EvmCall, Payment } from '../../domain/call.js';
 import type { BulkCall } from '../../domain/dispatch.js';
 import type { DispatchError } from '../../domain/errors.js';
@@ -57,7 +58,7 @@ import {
   mapBaseFailure,
 } from './error-mapping.js';
 import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
-import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
+import { NATIVE_ASSET_SYMBOL } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
 import { NonceCounter } from './nonce-authority.js';
 import {
@@ -86,8 +87,8 @@ export type BaseChainHandlerDeps = {
    * can omit this, mirroring SolanaChainHandlerDeps.
    */
   signerClient?: SignerClient;
-  /** Operator-configured symbol -> {contractAddress, decimals} for ERC-20 transfers (known-tokens.ts) — empty by default. */
-  knownTokens?: BaseTokenRegistry;
+  /** ADR-0061: the Known Assets a payment may name; without it, only ETH. */
+  assets?: AssetLookup<'base'>;
   /** issue 02: persisted per-Sender nonce->hash history — populated once broadcast exists (issue 03), consumed by no logic yet. */
   nonceHistoryStore: NonceHistoryStore;
   /** issue 09: minimum percentage both fee fields must be bumped by on a Retry Policy fee-bump replacement. */
@@ -181,7 +182,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   private readonly chainId: number;
   private readonly senderAddress: Address;
   private readonly signerClient: SignerClient | undefined;
-  private readonly knownTokens: BaseTokenRegistry;
+  private readonly assets: AssetLookup<'base'>;
   private readonly nonceHistoryStore: NonceHistoryStore;
   private readonly feeBumpPercent: number;
   private readonly bulkCallMaxBatchSize: number;
@@ -207,7 +208,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     this.chainId = deps.chainId;
     this.senderAddress = deps.senderAddress;
     this.signerClient = deps.signerClient;
-    this.knownTokens = deps.knownTokens ?? {};
+    this.assets = deps.assets ?? AssetRegistry.of([]).forChain('base');
     if (deps.approval) this.approval = deps.approval;
     this.nonceHistoryStore = deps.nonceHistoryStore;
     this.feeBumpPercent = deps.feeBumpPercent ?? 15;
@@ -297,8 +298,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return Promise.resolve(buildNativeTransferCall(payment.recipient, payment.amount));
     }
 
-    const token = resolveKnownToken(this.knownTokens, payment.asset);
-    if (!token) {
+    const token = this.assets.payable(payment.asset);
+    if (!token || token.kind === 'native') {
       return Promise.resolve(
         err({
           code: 'UNKNOWN_ASSET',
@@ -309,7 +310,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
 
     return Promise.resolve(
-      buildErc20TransferCall(token.contractAddress, payment.recipient, BigInt(payment.amount)),
+      buildErc20TransferCall(token.address, payment.recipient, BigInt(payment.amount)),
     );
   }
 
@@ -994,8 +995,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         return ok({ asset, amount: wei.toString() });
       }
 
-      const token = resolveKnownToken(this.knownTokens, asset);
-      if (!token) {
+      const token = this.assets.bySymbol(asset);
+      if (!token || token.kind === 'native') {
         return err({
           code: 'UNKNOWN_ASSET',
           message: `no known token configured for asset "${asset}"`,
@@ -1004,7 +1005,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       }
 
       const balance = await this.client.readContract({
-        address: requireAddress(token.contractAddress),
+        address: requireAddress(token.address),
         abi: ERC20_ABI,
         functionName: 'balanceOf',
         args: [owner.value],

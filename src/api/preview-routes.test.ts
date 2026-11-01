@@ -8,6 +8,7 @@ import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import { CHAINS } from '../domain/chain.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { PREVIEW_ROW_CAP } from './hold-check.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const CLIENT = { authorization: 'Bearer client-token' };
 const OPERATOR = { authorization: 'Bearer operator-token' };
@@ -28,8 +29,8 @@ async function buildTestApp() {
     authToken: 'client-token',
     operatorToken: 'operator-token',
     defaultRetryPolicy: false,
-    assetDecimals: (chain, asset) =>
-      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    assets: registryFromConfig({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6' }),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });

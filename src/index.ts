@@ -2,10 +2,11 @@ import { cachedSenders } from './api/senders.js';
 import { setupReader } from './api/setup-routes.js';
 import { buildApp } from './app.js';
 import {
-  assetDecimalsFromConfig,
+  loadAssetRegistry,
   loadChainRegistry,
   senderConfigsFor,
   senderReadsFor,
+  tokenReadersFor,
 } from './chain-loaders.js';
 import { config } from './config.js';
 import { db } from './db/client.js';
@@ -13,9 +14,9 @@ import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
 import { apiSetupChecks } from './setup/api-checks.js';
 import { postgresReads } from './setup/postgres-reads.js';
 
-const chainRegistry = await loadChainRegistry();
-const assetDecimals = assetDecimalsFromConfig();
 const store = new PostgresDispatchStore(db);
+const assets = await loadAssetRegistry(store);
+const chainRegistry = await loadChainRegistry(assets);
 
 // ADR-0060: Dispatches from before named Senders read as their chain's default Sender's.
 for (const sender of chainRegistry.senders) {
@@ -30,9 +31,10 @@ const app = buildApp({
   authToken: config.authToken,
   operatorToken: config.operatorToken,
   defaultRetryPolicy: config.defaultRetryPolicy,
-  assetDecimals,
+  assets,
+  readToken: tokenReadersFor(chainRegistry),
   listSenders: cachedSenders(
-    await senderConfigsFor(chainRegistry, assetDecimals),
+    await senderConfigsFor(chainRegistry, assets),
     senderReadsFor(chainRegistry, store),
   ),
   readSetup: setupReader({

@@ -41,7 +41,7 @@ const AMOUNT = 25_000_000n; // 25 DEMO each (6 decimals)
 run(async () => {
   const token = await deploy('DemoToken', DEMO_TOKEN_SOURCE, [1_000_000_000_000n]);
   const recipients = Array.from({ length: 5 }, () => privateKeyToAddress(generatePrivateKey()));
-  const engine = await startEngine({ DEMO: { contractAddress: token.address, decimals: 6 } });
+  const engine = await startEngine(`DEMO:${token.address}:6`);
 
   const result = await engine.dispatch(
     recipients.map((recipient) => ({

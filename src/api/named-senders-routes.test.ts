@@ -6,6 +6,7 @@ import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { cachedSenders, type SenderConfig, type SenderReads } from './senders.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const AUTH = { authorization: 'Bearer test-token' };
 const PAYOUTS = '0xpayouts' as SenderAddress;
@@ -33,7 +34,8 @@ function setup() {
     chainRegistry: ChainRegistry.fromSenders(senders),
     authToken: 'test-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });
@@ -206,8 +208,7 @@ describe('GET /v1/senders with named Senders (ADR-0060)', () => {
       isDefault,
       network: 'base-sepolia',
       address,
-      assets: ['ETH'],
-      assetDecimals: () => 18,
+      assets: registryFromConfig(),
     });
 
     const views = await cachedSenders(

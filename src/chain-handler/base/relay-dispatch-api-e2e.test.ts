@@ -23,6 +23,7 @@ import {
   getDevSenderAccount,
 } from './test-support/base-fixtures.js';
 import { CHAINS } from '../../domain/chain.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 const AUTH_TOKEN = 'test-token';
 
@@ -178,7 +179,8 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });
@@ -214,7 +216,8 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

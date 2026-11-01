@@ -1,6 +1,7 @@
 import type { CallForChain, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
+import type { NewKnownAsset } from '../domain/known-asset.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
   ChainProposalRef,
@@ -54,6 +55,24 @@ export type BundleSlotStatus = { status: ChainStatus; detail?: unknown };
 export type BroadcastResult = {
   hash: string;
 };
+
+/**
+ * ADR-0061: what the chain says about a token address an operator wants to
+ * add. `symbol` and `name` are empty when the token publishes none.
+ * `supply` is in the token's smallest unit.
+ */
+export type TokenRead<C extends Chain = Chain> = NewKnownAsset<C> & { supply: string };
+
+/** Why an address can't be a Known Asset: it isn't a token, the engine can't pay it out, or the chain could not be read. */
+export type TokenReadError = {
+  code: 'NOT_A_TOKEN' | 'NOT_PAYABLE' | 'RPC_UNAVAILABLE';
+  message: string;
+};
+
+/** Reads one token's decimals, name, symbol and supply from the chain. */
+export type ReadToken<C extends Chain = Chain> = (
+  address: string,
+) => Promise<Result<TokenRead<C>, TokenReadError>>;
 
 export type Balance = {
   asset: string;

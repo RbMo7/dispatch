@@ -140,7 +140,8 @@ export const tokenBalances: Check = {
   scope: 'sender',
   appliesTo: (setup) => setup.accounts !== undefined,
   run: async (context, { chain, accounts }) => {
-    const { address, tokens } = accounts!;
+    const { address } = accounts!;
+    const tokens = await context.chain(chain).tokens();
     if (tokens.length === 0) return pass('no known tokens are configured');
     const reads = await Promise.all(
       tokens.map(async (token) => ({

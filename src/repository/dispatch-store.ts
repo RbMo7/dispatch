@@ -10,9 +10,11 @@ import type {
   Hold,
   RuleMatch,
 } from '../domain/flag-rule.js';
+import type { ConfigAsset, KnownAsset, NewKnownAsset } from '../domain/known-asset.js';
 import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import type { Result } from '../domain/result.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type { CheckOutcome } from '../setup/run.js';
@@ -229,6 +231,31 @@ export interface DispatchStore {
   listFlagRules(): Promise<FlagRule[]>;
   /** The current version of every rule on `chain` that is enabled and not deleted. */
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]>;
+  // --- Known Assets (ADR-0061). A console write records its operator action in the same write (ADR-0057). ---
+
+  /** Every row of every chain, enabled or not. */
+  listKnownAssets(): Promise<KnownAsset[]>;
+  /**
+   * Makes the config rows match `configured` (`planConfigSeed`). Idempotent,
+   * and safe for the API and the worker to run at the same time. An error
+   * names a symbol the configuration and a console row both claim.
+   */
+  seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>>;
+  /** Adds an enabled console row, unless its address is already a row or its symbol is an enabled one's. */
+  addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'>;
+  /**
+   * Enables or disables a console row. A config row is refused. Setting what
+   * it already is records nothing (`changed: false`). Enabling is refused
+   * while another enabled row has its symbol.
+   */
+  setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'>;
   /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
   firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
   /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches (only `senderAddress`'s, when given: #149) created since `since` and not cancelled. */

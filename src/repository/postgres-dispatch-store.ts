@@ -22,6 +22,7 @@ import {
   dispatchHolds,
   flagRules,
   flagRuleVersions,
+  knownAssets,
   operatorActions,
   proposals,
   relayDispatches,
@@ -40,7 +41,16 @@ import {
   type FlagRuleVersion,
   type Hold,
 } from '../domain/flag-rule.js';
+import {
+  planConfigSeed,
+  symbolKey,
+  type AssetSource,
+  type ConfigAsset,
+  type KnownAsset,
+  type NewKnownAsset,
+} from '../domain/known-asset.js';
 import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
+import { ok, type Result } from '../domain/result.js';
 import type {
   ApprovalState,
   AssetAmount,
@@ -167,6 +177,35 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
 }
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+function toKnownAsset(row: typeof knownAssets.$inferSelect): KnownAsset {
+  return {
+    ...row,
+    chain: row.chain as Chain,
+    kind: row.kind,
+    source: row.source as AssetSource,
+    addedBy: row.addedBy as TokenKind | null,
+  } as KnownAsset;
+}
+
+/** Every Known Asset write takes this lock, so two writers never both pass the same check (ADR-0061). */
+async function lockKnownAssets(tx: Tx): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('known_assets'))`);
+}
+
+async function symbolHeld(tx: Tx, chain: string, symbol: string): Promise<boolean> {
+  const [held] = await tx
+    .select({ id: knownAssets.id })
+    .from(knownAssets)
+    .where(
+      and(
+        eq(knownAssets.chain, chain),
+        eq(knownAssets.enabled, true),
+        eq(sql`upper(${knownAssets.symbol})`, symbolKey(symbol)),
+      ),
+    );
+  return held !== undefined;
+}
 
 function toVersionRow(ruleId: string, version: number, spec: FlagRuleSpec) {
   return {
@@ -519,6 +558,79 @@ export class PostgresDispatchStore implements DispatchStore {
     const rows = await this.db.select().from(flagRules).where(eq(flagRules.id, id));
     const [rule] = await withVersions(this.db, rows);
     return rule ?? null;
+  }
+
+  async listKnownAssets(): Promise<KnownAsset[]> {
+    return (await this.db.select().from(knownAssets)).map(toKnownAsset);
+  }
+
+  async seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const existing = (await tx.select().from(knownAssets)).map(toKnownAsset);
+      const plan = planConfigSeed(existing, configured);
+      if (!plan.ok) return plan;
+      for (const write of plan.value) {
+        if (write.op === 'disable') {
+          await tx.update(knownAssets).set({ enabled: false }).where(eq(knownAssets.id, write.id));
+        } else {
+          const values = { ...write.asset, source: 'config', addedBy: null, enabled: true };
+          if (write.op === 'insert') await tx.insert(knownAssets).values(values);
+          else await tx.update(knownAssets).set(values).where(eq(knownAssets.id, write.id));
+        }
+      }
+      return ok(undefined);
+    });
+  }
+
+  async addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const [atAddress] = await tx
+        .select({ id: knownAssets.id })
+        .from(knownAssets)
+        .where(and(eq(knownAssets.chain, asset.chain), eq(knownAssets.address, asset.address)));
+      if (atAddress) return 'address_taken';
+      if (await symbolHeld(tx, asset.chain, asset.symbol)) return 'symbol_taken';
+      const [row] = await tx
+        .insert(knownAssets)
+        .values({ ...asset, source: 'console', addedBy: actor.tokenKind, enabled: true })
+        .returning();
+      if (!row) throw new Error('Failed to add a Known Asset');
+      await tx.insert(operatorActions).values({ ...actor, action: 'asset_add', targetId: row.id });
+      return toKnownAsset(row);
+    });
+  }
+
+  async setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<
+    { asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'
+  > {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const [row] = await tx.select().from(knownAssets).where(eq(knownAssets.id, id));
+      if (!row) return 'not_found';
+      if (row.source === 'config') return 'config_row';
+      if (row.enabled === enabled) return { asset: toKnownAsset(row), changed: false };
+      if (enabled && (await symbolHeld(tx, row.chain, row.symbol))) return 'symbol_taken';
+      const [updated] = await tx
+        .update(knownAssets)
+        .set({ enabled })
+        .where(eq(knownAssets.id, id))
+        .returning();
+      await tx.insert(operatorActions).values({
+        ...actor,
+        action: enabled ? 'asset_enable' : 'asset_disable',
+        targetId: id,
+      });
+      return { asset: toKnownAsset(updated!), changed: true };
+    });
   }
 
   async listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {

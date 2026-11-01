@@ -5,6 +5,7 @@ import { err } from '../../../domain/result.js';
 import { BASE_SEPOLIA_CHAIN_ID, BASE_SEPOLIA_RPC_URL } from '../test-support/base-fixtures.js';
 import { SafeApproval } from './safe-approval.js';
 import { SafeTxServiceClient } from './tx-service-client.js';
+import { registryFromConfig } from '../../../asset-registry/configured-assets.js';
 
 /**
  * Live, read-only (ADR-0013, #84): `readProposal` against the real Base Sepolia
@@ -36,7 +37,7 @@ function liveApproval() {
         Promise.resolve(err({ code: 'SIGNER_REFUSED', message: 'read only' })),
     },
     service,
-    knownTokens: {},
+    assets: registryFromConfig().forChain('base'),
     prepare: () => Promise.reject(new Error('read only')),
   });
 }

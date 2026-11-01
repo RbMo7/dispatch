@@ -4,8 +4,9 @@ import { and, count, desc, eq, gte, isNotNull } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
-import { dispatches, transactions } from '../db/schema.js';
+import { dispatches, knownAssets, transactions } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
+import type { KnownAsset } from '../domain/known-asset.js';
 import type { DatabaseReads } from './check.js';
 
 const JOURNAL_URL = new URL('../../drizzle/meta/_journal.json', import.meta.url);
@@ -70,6 +71,8 @@ export function postgresReads(
           latestHashes: latest.flatMap(({ hash }) => (hash === null ? [] : [hash])),
         };
       }),
+    knownAssets: () =>
+      unwrapQueryError(async () => (await db.select().from(knownAssets)) as KnownAsset[]),
     close: () => client.end({ timeout: 1 }),
   };
 }

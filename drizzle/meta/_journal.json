@@ -162,6 +162,13 @@
       "when": 1793537283495,
       "tag": "0022_flag_rule_sender",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793545923927,
+      "tag": "0023_known_assets",
+      "breakpoints": true
     }
   ]
 }

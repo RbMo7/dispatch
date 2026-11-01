@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import {
+  applyConfigSeed,
+  planConfigSeed,
+  symbolKey,
+  type ConfigAsset,
+  type KnownAsset,
+  type NewKnownAsset,
+} from '../domain/known-asset.js';
 import type { DispatchError } from '../domain/errors.js';
 import {
   addressKey,
@@ -17,6 +25,7 @@ import type {
 } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import { ok, type Result } from '../domain/result.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
@@ -59,6 +68,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly proposals = new Map<string, Proposal>();
   private readonly operatorActions: OperatorAction[] = [];
   private readonly flagRules = new Map<string, FlagRule>();
+  private readonly knownAssets = new Map<string, KnownAsset>();
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
   private setupChecks: SetupCheckRecord[] = [];
@@ -251,6 +261,74 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   listFlagRules(): Promise<FlagRule[]> {
     return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
+  }
+
+  listKnownAssets(): Promise<KnownAsset[]> {
+    return Promise.resolve([...this.knownAssets.values()]);
+  }
+
+  seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>> {
+    const existing = [...this.knownAssets.values()];
+    const plan = planConfigSeed(existing, configured);
+    if (!plan.ok) return Promise.resolve(plan);
+    const rows = applyConfigSeed(existing, plan.value, () => ({
+      id: randomUUID(),
+      addedAt: this.now(),
+    }));
+    for (const row of rows) this.knownAssets.set(row.id, row);
+    return Promise.resolve(ok(undefined));
+  }
+
+  private symbolHeld(chain: Chain, symbol: string, except?: string): boolean {
+    return [...this.knownAssets.values()].some(
+      (row) =>
+        row.chain === chain &&
+        row.enabled &&
+        row.id !== except &&
+        symbolKey(row.symbol) === symbolKey(symbol),
+    );
+  }
+
+  addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'> {
+    const rows = [...this.knownAssets.values()];
+    if (rows.some((row) => row.chain === asset.chain && row.address === asset.address)) {
+      return Promise.resolve('address_taken');
+    }
+    if (this.symbolHeld(asset.chain, asset.symbol)) return Promise.resolve('symbol_taken');
+    const row = {
+      ...asset,
+      id: randomUUID(),
+      source: 'console',
+      addedBy: actor.tokenKind,
+      addedAt: this.now(),
+      enabled: true,
+    } as KnownAsset;
+    this.knownAssets.set(row.id, row);
+    this.recordAction('asset_add', row.id, actor);
+    return Promise.resolve(row);
+  }
+
+  setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<
+    { asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'
+  > {
+    const row = this.knownAssets.get(id);
+    if (!row) return Promise.resolve('not_found');
+    if (row.source === 'config') return Promise.resolve('config_row');
+    if (row.enabled === enabled) return Promise.resolve({ asset: row, changed: false });
+    if (enabled && this.symbolHeld(row.chain, row.symbol, id)) {
+      return Promise.resolve('symbol_taken');
+    }
+    const updated = { ...row, enabled };
+    this.knownAssets.set(id, updated);
+    this.recordAction(enabled ? 'asset_enable' : 'asset_disable', id, actor);
+    return Promise.resolve({ asset: updated, changed: true });
   }
 
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {

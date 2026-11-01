@@ -599,7 +599,7 @@ describe.skipIf(!RUN)(
       delete process.env.BASE_SENDER_ADDRESS;
 
       const [
-        { loadChainRegistry, coordinatorConfigFor },
+        { loadAssetRegistry, loadChainRegistry, coordinatorConfigFor },
         { Coordinator: CoordinatorClass },
         { db },
         schema,
@@ -621,7 +621,8 @@ describe.skipIf(!RUN)(
       };
 
       // The real startup checks run here (owners, threshold, delegate registered, executor not an owner, the Signer has the key).
-      registry = await loadChainRegistry();
+      const assets = await loadAssetRegistry(store);
+      registry = await loadChainRegistry(assets);
       const handler = registry.handlers.get('base');
       if (!handler?.approval) throw new Error('the Base handler has no approval capability');
       approvalCapability = handler.approval as unknown as typeof approvalCapability;
@@ -647,7 +648,8 @@ describe.skipIf(!RUN)(
         chainRegistry: registry,
         authToken: API_TOKEN,
         defaultRetryPolicy: false,
-        assetDecimals: () => undefined,
+        assets,
+        readToken: {},
         listSenders: () => Promise.resolve([]),
         readSetup: () => Promise.reject(new Error('not read in this test')),
       });

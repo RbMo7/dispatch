@@ -19,7 +19,7 @@ import {
 } from './dispatch-list.js';
 import { readDispatchView } from './dispatch-view.js';
 import { findHoldMatches } from './hold-check.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import {
   type ApiTokens,
   authedTokenKind,

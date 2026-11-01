@@ -13,6 +13,7 @@ import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { MAX_SCANNED_ROWS } from './dispatch-list.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
 
@@ -45,8 +46,8 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
-    assetDecimals: (chain, asset) =>
-      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    assets: registryFromConfig({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6' }),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });

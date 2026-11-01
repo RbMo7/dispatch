@@ -4,6 +4,7 @@ import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const CLIENT = { authorization: 'Bearer client-token' };
 const OPERATOR = { authorization: 'Bearer operator-token' };
@@ -19,7 +20,8 @@ async function buildTestApp(operatorToken: string | null = 'operator-token') {
     authToken: 'client-token',
     ...(operatorToken === null ? {} : { operatorToken }),
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });

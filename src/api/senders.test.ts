@@ -8,6 +8,7 @@ import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js
 import type { SignerKeyRecord } from '../repository/dispatch-store.js';
 import type { SignerPins } from '../signer/client.js';
 import { cachedSenders, type SenderConfig, type SenderReads } from './senders.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const SECRET = 'rpc-key-0123456789';
 const READ_AT = new Date('2026-11-01T10:00:00.000Z');
@@ -16,22 +17,22 @@ function pinned(chain: Chain, pins: SignerPins): SignerKeyRecord {
   return { chain, address: pins.address, read: { pins }, readAt: READ_AT };
 }
 
-const assetDecimals: SenderConfig['assetDecimals'] = (_chain, asset) =>
-  ({ ETH: 18, USDC: 6 })[asset as 'ETH' | 'USDC'];
+const withUsdc = registryFromConfig({
+  base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6',
+  solana: 'USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
+});
 
 const plain: SenderConfig = {
   chain: 'base',
   network: 'base-sepolia',
   address: '0xSender',
-  assets: ['ETH', 'USDC'],
-  assetDecimals,
+  assets: withUsdc,
 };
 const squads: SenderConfig = {
   chain: 'solana',
   network: 'devnet',
   address: 'Vault111',
-  assets: ['SOL', 'USDC'],
-  assetDecimals,
+  assets: withUsdc,
   approval: {
     mode: 'squads',
     multisigAddress: 'Multisig111',
@@ -44,8 +45,7 @@ const safe: SenderConfig = {
   chain: 'base',
   network: { chainId: 31337 },
   address: '0xSafe',
-  assets: ['ETH'],
-  assetDecimals,
+  assets: registryFromConfig(),
   approval: {
     mode: 'safe',
     multisigAddress: '0xSafe',
@@ -96,7 +96,8 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: cachedSenders(configs, reads),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });
@@ -188,14 +189,14 @@ describe('GET /v1/senders (#111)', () => {
               holder: 'vault',
               address: 'Vault111',
               assets: [
-                { asset: 'SOL', balance: '9', committed: '0' },
+                { asset: 'SOL', decimals: 9, balance: '9', committed: '0' },
                 { asset: 'USDC', decimals: 6, balance: '500', committed: '120' },
               ],
             },
             {
               holder: 'memberKey',
               address: 'Member111',
-              assets: [{ asset: 'SOL', balance: '3', committed: '2' }],
+              assets: [{ asset: 'SOL', decimals: 9, balance: '3', committed: '2' }],
             },
           ],
           signerKey: {

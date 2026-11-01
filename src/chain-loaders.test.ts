@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChainRegistry } from './chain-registry/chain-registry.js';
 import { StubChainHandler } from './chain-handler/stub-chain-handler.js';
 import type { Chain } from './domain/chain.js';
+import { registryFromConfig } from './asset-registry/configured-assets.js';
 
 const saved = { ...process.env };
 let rpc: Server | undefined;
@@ -27,7 +28,7 @@ async function senderConfigsWith(env: Record<string, string>, chains: Chain[] = 
       chains.map((chain) => [chain, () => Promise.resolve(new StubChainHandler())]),
     ),
   );
-  return () => senderConfigsFor(registry, () => undefined);
+  return () => senderConfigsFor(registry, registryFromConfig());
 }
 
 async function solanaRpcAnswering(genesisHash: string): Promise<string> {

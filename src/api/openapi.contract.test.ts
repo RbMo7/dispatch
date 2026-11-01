@@ -8,8 +8,6 @@ import { parse } from 'yaml';
 
 import { buildApp } from '../app.js';
 import { BaseChainHandler } from '../chain-handler/base/base-chain-handler.js';
-import { parseBaseKnownTokens } from '../chain-handler/base/known-tokens.js';
-import { parseSolanaKnownTokens } from '../chain-handler/solana/known-tokens.js';
 import { SolanaChainHandler } from '../chain-handler/solana/solana-chain-handler.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import { CHAINS } from '../domain/chain.js';
@@ -17,7 +15,7 @@ import { err, ok } from '../domain/result.js';
 import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 import { readSender, type SenderConfig, type SenderReads } from './senders.js';
 import { setupReader } from './setup-routes.js';
 
@@ -160,8 +158,10 @@ const fakeBaseRpc: typeof fetch = (_input, init) => {
   return Promise.resolve(Response.json({ jsonrpc: '2.0', id, result: results[method] }));
 };
 
-const assetDecimals: AssetDecimals = (chain, asset) =>
-  ({ base: { ETH: 18, USDC: 6 }, solana: { SOL: 9, USDC: 6 } })[chain][asset as 'USDC'];
+const assets = registryFromConfig({
+  base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6',
+  solana: 'USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
+});
 
 const senderConfigs: SenderConfig[] = [
   {
@@ -170,8 +170,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: true,
     network: 'base-sepolia',
     address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A',
-    assets: ['ETH', 'USDC'],
-    assetDecimals,
+    assets,
   },
   {
     chain: 'solana',
@@ -179,8 +178,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: true,
     network: 'devnet',
     address: 'Vault1111111111111111111111111111111111111',
-    assets: ['SOL', 'USDC'],
-    assetDecimals,
+    assets,
     approval: {
       mode: 'squads',
       multisigAddress: 'Msig1111111111111111111111111111111111111',
@@ -195,8 +193,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: false,
     network: { chainId: 31337 },
     address: '0x5afe000000000000000000000000000000005afe',
-    assets: ['ETH'],
-    assetDecimals,
+    assets: registryFromConfig(),
     approval: {
       mode: 'safe',
       multisigAddress: '0x5afe000000000000000000000000000000005afe',
@@ -287,7 +284,7 @@ async function buildContractApp() {
       rpcUrl: 'http://base.invalid',
       chainId: 84532,
       senderAddress,
-      knownTokens: parseBaseKnownTokens('USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6'),
+      assets: assets.forChain('base'),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
       bulkCallMaxBatchSize: 50,
       fetch: fakeBaseRpc,
@@ -313,7 +310,7 @@ async function buildContractApp() {
       handler: new SolanaChainHandler({
         connection: new Connection('http://solana.invalid'),
         senderAddress: '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf',
-        knownTokens: parseSolanaKnownTokens('USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6'),
+        assets: assets.forChain('solana'),
       }),
     },
   ]);
@@ -324,7 +321,8 @@ async function buildContractApp() {
     authToken: TOKEN,
     operatorToken: OPERATOR_TOKEN,
     defaultRetryPolicy: false,
-    assetDecimals,
+    assets,
+    readToken: {},
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
     readSetup,
   });
