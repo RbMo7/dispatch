@@ -1,6 +1,15 @@
 # API
 
-The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel` and `GET /v1/senders`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+The shipped wire format for `POST /v1/dispatch`, `GET /v1/dispatch/:id`, `GET /v1/dispatches`, `POST /v1/dispatch/:id/cancel`, `POST /v1/dispatch/:id/release`, `GET /v1/senders`, `GET /v1/activity` and `/v1/flag-rules`, implemented for both `solana` and `base`. Changes to it are deliberate and recorded in an ADR.
+
+## Tokens
+
+Every `/v1` route takes `Authorization: Bearer <token>`, with one of two operator-configured tokens:
+
+- `AUTH_TOKEN` (ADR-0022): the API client's token. Submit, read and cancel.
+- `OPERATOR_TOKEN` (ADR-0057), optional: everything `AUTH_TOKEN` can do, plus the operator-only routes: `POST /v1/dispatch/:id/release`, `GET /v1/activity`, the Flag Rule writes (`POST`, `PUT`, `DELETE` on `/v1/flag-rules`) and `POST /v1/flag-rules/preview`.
+
+An operator-only route answers `403` to `AUTH_TOKEN`, and `403` to everyone when `OPERATOR_TOKEN` is unset, with an `error` saying it is not configured. Any other token is `401`. The engine refuses to start when `OPERATOR_TOKEN` is set but empty, or equal to `AUTH_TOKEN`.
 
 ## `POST /v1/dispatch`
 
@@ -36,12 +45,15 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
 { "dispatchId": "<id>", "status": "queued" }
 ```
 
+`status` is `held` instead when the Dispatch matched a Flag Rule (below): it is stored whole, and nothing is signed, proposed or sent until an operator releases it.
+
 ## `GET /v1/dispatch/:id`
 
 ```json
 {
   "dispatchId": "<id>",
   "mode": "managed",
+  "status": "queued | held | broadcasting | confirmed | failed | partial | cancelled",
   "chain": "base",
   "createdAt": "2026-10-31T10:00:00.000Z",
   "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
@@ -56,7 +68,7 @@ Each item starts with what the caller asked for, in the order the request listed
 
 `error` follows ADR-0010's structured shape exactly — never a bare string. A `failed` item's `transactionHash` is `null` when it failed before anything was signed (as above), and set when the transaction was signed and then refused: every transaction is written down, hash included, before it is sent (ADR-0041).
 
-Per-item `status` is `queued | awaiting_approval | broadcasting | confirmed | failed | abandoned | cancelled` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses — only `queued`/`broadcasting` (ADR-0009's outbox transition) and `cancelled` (below) are ever persisted directly, so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
+Per-item `status` is `queued | held | awaiting_approval | broadcasting | confirmed | failed | abandoned | cancelled` — its own vocabulary, not the top-level one (it adds `abandoned`, ADR-0004's distinct terminal state, and `awaiting_approval` for a Multisig Sender's Call, below; it never itself reports `partial`, which only describes the aggregate across items). `queued` means the Call hasn't reached a Transaction yet (`transactionHash` still `null`), or, for a Multisig Sender, that it is claimed but not yet in a Proposal; the top-level `status` is derived from the aggregate of item statuses — only `queued`/`broadcasting` (ADR-0009's outbox transition), `held` and `cancelled` (below) are ever persisted directly, so `confirmed`/`failed`/`partial` are computed at read time. An `abandoned` item counts as "not confirmed" for that aggregate, the same as `failed`. An `awaiting_approval` item counts as still in progress, so the top-level `status` stays `broadcasting` while Calls await approval: there is no top-level status for it.
 
 On Solana, an item whose transaction expired without landing is resubmitted with a fresh blockhash, up to 3 times, whatever `retryPolicy` says: the expired one was never charged, so this costs nothing extra (ADR-0042). Its `transactionHash` then changes to the resubmission's. After the third it is `failed`, as is an expired Relay Dispatch, which the engine has no key to re-sign.
 
@@ -112,7 +124,7 @@ Query parameters, all optional:
 - `cursor`: the `nextCursor` of the previous page. Opaque: pass it back as it came.
 - `chain`: `base` or `solana`.
 - `mode`: `managed` or `relay`.
-- `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch).
+- `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | held | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch, `held` only for a Managed one).
 - `from`, `to`: ISO 8601 timestamps on `createdAt`, `from` inclusive and `to` exclusive.
 
 A value outside these is a `400`; parameters not listed here are ignored.
@@ -149,7 +161,7 @@ Each row is the `GET /v1/dispatch/:id` body without `items`, plus `itemCount` an
 
 ## `POST /v1/dispatch/:id/cancel`
 
-Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056). Same `Authorization` header as above; no body. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
+Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056), `held` ones included (ADR-0058). Either token. The body is optional: `{ "reason": "<non-empty string>" }`, kept in the activity record (below); any other `reason` is a `400`. The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins. A cancel that lands writes one operator action, in the same write; a repeat cancel or a refused one writes none.
 
 - `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `cancelled` at the top level and on every item, with no `transactionHash` or `error`. Nothing was or will be signed, proposed or sent. Cancelling an already-cancelled Dispatch also answers `200` with its current state.
 - `409`: the worker already claimed it, whatever its items' state since. The body is `{ "code": "ALREADY_CLAIMED", "message": "..." }`, the structured shape of a refusal that has an error code, such as a `400` with `CHAIN_NOT_ENABLED` or `CHAIN_REJECTED`. A refusal with no error code, such as a `401` or a `404`, is `{ "error": "..." }`.
@@ -201,6 +213,152 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
 - A read that fails degrades only its own field to `{ "error": "<reason>" }`; the rest still returns, with `200`. A balance or `threshold` error is the error code (`RPC_UNAVAILABLE`, …); a `signerKey` error is `{ "error": "<reason>", "readAt": "…" }`, saying whether the Signer has no key for the address, is too old to report a policy, or could not be reached. The details go to the engine's log, never into the response, and no secret, key reference or token ever does.
+
+## `GET /v1/activity`
+
+The operator action record (ADR-0057), newest first. `OPERATOR_TOKEN` only. One entry for every cancel that landed, by either token, every release, and every Flag Rule create, edit and delete (`action`: `cancel`, `release`, `flag_rule_create`, `flag_rule_update`, `flag_rule_delete`). Each action is also written to the engine's log as an `operator action` line.
+
+Query parameters, both optional: `limit` (1 to 100, default 25) and `cursor` (the previous page's `nextCursor`, opaque). Pages are cut on `(at, id)` as `GET /v1/dispatches` cuts on `(createdAt, id)`, and `nextCursor` is `null` only on the last page.
+
+```json
+{
+  "actions": [
+    {
+      "id": "<id>",
+      "at": "2026-10-31T10:00:00.000Z",
+      "action": "cancel",
+      "targetId": "<dispatch id>",
+      "tokenKind": "auth",
+      "reason": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+`tokenKind` is `auth` or `operator`: which token made the request. The tokens are shared secrets, not identities, so an action names no person; `reason` is what the caller gave, or `null`.
+
+## Flag Rules (`/v1/flag-rules`)
+
+Operator-set conditions a Managed Dispatch is checked against at submission (ADR-0058). Reading takes either token; writing takes `OPERATOR_TOKEN` (ADR-0057).
+
+- `GET /v1/flag-rules`: `{ "rules": [<rule>, …] }`, every rule not deleted, oldest first.
+- `GET /v1/flag-rules/:id`: one rule, deleted or not. `404` for an unknown id.
+- `POST /v1/flag-rules`: creates version 1. `201` with the rule.
+- `PUT /v1/flag-rules/:id`: the whole new content, in the same body as `POST`; writes the next version. `200` with the rule. `409` (`RULE_DELETED`) for a deleted rule.
+- `DELETE /v1/flag-rules/:id`: the rule stops matching and leaves the list, but keeps its id and history. `200` with the rule; deleting it again changes nothing.
+- `POST /v1/flag-rules/preview`: what a rule would have held, without saving it (below).
+
+Rules are versioned and forward-only: an edit never changes an earlier version, so a held Dispatch always names the version it matched. Every `POST`, `PUT` and `DELETE` that changes something writes one operator action, and takes an optional `reason`, like cancel.
+
+A body is `name`, `chain` (`base` or `solana`), `enabled` (optional, default `true`), `kind`, and exactly that kind's parameters. Any other field is a `400`.
+
+| `kind` | Parameters | Matches a Dispatch when |
+|---|---|---|
+| `item_over` | `asset`, `limit` | one `payment` item of `asset` is over `limit` |
+| `dispatch_total_over` | `asset`, `limit` | its `payment` items of `asset` add up to more than `limit` |
+| `daily_volume_over` | `asset`, `limit` | the `payment` items of `asset` in Managed Dispatches accepted in the last 24 hours and not cancelled, plus this one's, add up to more than `limit` |
+| `first_time_recipient` | none | a `payment` item's recipient has never had a confirmed payment from this engine on this chain |
+| `recipient_not_allowlisted` | `addresses` | a `payment` item's recipient is not in `addresses` |
+| `call_target_not_allowlisted` | `addresses` | a `call` item's `to` (Base) or `programId` (Solana) is not in `addresses` |
+
+`limit` is a decimal string in whole units of the asset (`"5000"`, `"0.5"`), unlike a `payment` item's `amount`, which is in the smallest unit. It must be more than zero and have no more decimal places than the asset. `asset` must be one the engine knows on that chain. `addresses` must each be valid on that chain; Base addresses are stored checksummed and compared without regard to case. A `400` names the field at fault: `{ "error": "limit: USDC has 6 decimal places, so \"1.0000001\" is too precise" }`.
+
+```json
+{ "name": "Large USDC payment", "chain": "base", "kind": "item_over", "asset": "USDC", "limit": "5000" }
+{ "name": "Large ETH batch", "chain": "base", "kind": "dispatch_total_over", "asset": "ETH", "limit": "1.5" }
+{ "name": "Daily SOL", "chain": "solana", "kind": "daily_volume_over", "asset": "SOL", "limit": "100" }
+{ "name": "New payee", "chain": "solana", "kind": "first_time_recipient" }
+{ "name": "Known payees", "chain": "base", "kind": "recipient_not_allowlisted", "addresses": ["0x5290…9EE7"] }
+{ "name": "Known programs", "chain": "solana", "kind": "call_target_not_allowlisted", "addresses": ["<program id>"] }
+```
+
+A rule, as every route returns it:
+
+```json
+{
+  "ruleId": "<id>",
+  "version": 2,
+  "name": "Large USDC payment",
+  "chain": "base",
+  "enabled": true,
+  "kind": "item_over",
+  "asset": "USDC",
+  "limit": "7500",
+  "createdAt": "2026-10-31T10:00:00.000Z",
+  "updatedAt": "2026-11-01T09:00:00.000Z",
+  "deletedAt": null,
+  "versions": [
+    { "version": 1, "name": "Large USDC payment", "chain": "base", "enabled": true, "kind": "item_over", "asset": "USDC", "limit": "5000", "createdAt": "2026-10-31T10:00:00.000Z" },
+    { "version": 2, "name": "Large USDC payment", "chain": "base", "enabled": true, "kind": "item_over", "asset": "USDC", "limit": "7500", "createdAt": "2026-11-01T09:00:00.000Z" }
+  ]
+}
+```
+
+The top level is the current version; `versions` lists every version, oldest first. `updatedAt` is when the current version was written.
+
+### `POST /v1/flag-rules/preview`
+
+How many of the last 30 days' Managed Dispatches on the rule's chain a rule would have held, before you switch it on. `OPERATOR_TOKEN` only. The body is a rule as for `POST /v1/flag-rules`; `name`, `enabled` and `reason` are optional and ignored. Nothing is saved and no operator action is written. An invalid rule is a `400` naming the field.
+
+Each Dispatch is run through the same matcher as the check in `POST /v1/dispatch`, with the facts as they were when it was submitted: confirmed payments before it, and the Dispatches of the 24 hours before it that had not yet been cancelled. Every Managed Dispatch in the window counts, whatever its status now, held and cancelled ones included.
+
+```json
+{
+  "from": "2026-10-02T10:00:00.000Z",
+  "to": "2026-11-01T10:00:00.000Z",
+  "scanned": 412,
+  "capped": false,
+  "wouldHold": 3,
+  "examples": [
+    { "dispatchId": "<id>", "createdAt": "2026-10-30T08:12:00.000Z", "items": [0, 4] }
+  ]
+}
+```
+
+`scanned` is how many Dispatches in the window were checked, and `wouldHold` how many of them the rule matches. `examples` are up to 10 of those, newest first, each with the items it matched. One preview reads at most 2,000 Dispatches, the 24 hours before the window included, newest first; when there were more, `capped` is `true` and the oldest are left out, so `wouldHold` is a lower bound.
+
+## Held (`held` and the `hold` block)
+
+`POST /v1/dispatch` checks every Managed Dispatch against the current version of each enabled rule on its chain, after the request has passed every other check (ADR-0058). It reads only the engine's own database, never a chain. If any rule matches, the whole Dispatch is stored `held`, top-level and every item, and the `202` says `"status": "held"`. A held Dispatch is never claimed: nothing is signed, proposed or sent, and it has no deadline. It stays `held` until an operator releases it (below) or anyone cancels it (above).
+
+A Relay Dispatch is never checked. Neither is a resubmitted `Idempotency-Key`: it answers with the stored Dispatch, held or not, whatever the rules say now. Editing or deleting a rule never re-checks or releases a Dispatch already held.
+
+A Dispatch that was ever held carries a `hold` block on `GET /v1/dispatch/:id`, and keeps it after it is released or cancelled:
+
+```json
+"hold": {
+  "matched": [
+    {
+      "rule": { "name": "Large USDC payment", "kind": "item_over", "asset": "USDC", "limit": "5000" },
+      "ruleId": "<id>",
+      "ruleVersion": 1,
+      "items": [1, 3]
+    },
+    {
+      "rule": { "name": "Known payees", "kind": "recipient_not_allowlisted", "addresses": ["0x5290…9EE7"] },
+      "ruleId": "<id>",
+      "ruleVersion": 3,
+      "items": [2, 3]
+    }
+  ],
+  "heldAt": "2026-10-31T10:00:00.000Z",
+  "releasedAt": "2026-10-31T11:30:00.000Z",
+  "reason": "checked with finance"
+}
+```
+
+`matched` lists every rule that matched, not only the first, each with every item it matched (positions in `items`), and `rule` as that version said when it matched. Amounts are compared as integers in the asset's smallest unit. `daily_volume_over` counts Dispatches that are themselves held. `GET /v1/dispatches?status=held` lists the Dispatches still held. `releasedAt` and `reason` appear once the Dispatch is released.
+
+### `POST /v1/dispatch/:id/release`
+
+Lets a held Dispatch go ahead (ADR-0058). `OPERATOR_TOKEN` only: `AUTH_TOKEN` is `403` (ADR-0057), so a client cannot release its own Dispatch. The body `{ "reason": "<non-empty string>" }` is required; without one it is a `400`.
+
+- `200`: the Dispatch, in the same body as `GET /v1/dispatch/:id`, now `queued`. From there it runs as if it had never been held, and its `hold` block gains `releasedAt` and `reason`. The release writes one operator action.
+- `409`: `{ "code": "NOT_HELD", "message": "..." }` when it is not `held`: already released, cancelled, never held, or a Relay Dispatch.
+- `404`: no Dispatch has this id.
+
+A release and a cancel of the same held Dispatch are each one write conditional on its status, so exactly one of them takes it out of `held`, and a release never revives a cancelled Dispatch. A cancel that comes after a release still lands if the worker has not yet claimed the Dispatch, as for any `queued` one (ADR-0056). Of two releases, one answers `200` and the other `409`.
 
 ## Multisig approval (`awaiting_approval` and the `approval` block)
 

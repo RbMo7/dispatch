@@ -18,6 +18,10 @@ import type { Database } from '../db/client.js';
 import {
   attempts,
   dispatches,
+  dispatchHolds,
+  flagRules,
+  flagRuleVersions,
+  operatorActions,
   proposals,
   relayDispatches,
   signerKeys,
@@ -26,6 +30,15 @@ import {
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import {
+  definitionFromJson,
+  definitionToJson,
+  type FlagRule,
+  type FlagRuleSpec,
+  type FlagRuleVersion,
+  type Hold,
+} from '../domain/flag-rule.js';
+import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
 import type {
   ApprovalState,
   AssetAmount,
@@ -44,12 +57,14 @@ import type {
   DispatchListQuery,
   DispatchStore,
   ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
   SignerKeyRecord,
@@ -145,6 +160,70 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
   };
 }
 
+type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+function toVersionRow(ruleId: string, version: number, spec: FlagRuleSpec) {
+  return {
+    ruleId,
+    version,
+    name: spec.name,
+    chain: spec.chain,
+    enabled: spec.enabled,
+    definition: definitionToJson(spec.definition),
+  };
+}
+
+function toFlagRuleVersion(row: typeof flagRuleVersions.$inferSelect): FlagRuleVersion {
+  return {
+    ruleId: row.ruleId,
+    version: row.version,
+    name: row.name,
+    chain: row.chain as Chain,
+    enabled: row.enabled,
+    definition: definitionFromJson(row.definition),
+    createdAt: row.createdAt,
+  };
+}
+
+/** The rules `rows`, each with its versions, in the order given. */
+async function withVersions(
+  db: Database | Tx,
+  rows: (typeof flagRules.$inferSelect)[],
+): Promise<FlagRule[]> {
+  if (rows.length === 0) return [];
+  const versions = await db
+    .select()
+    .from(flagRuleVersions)
+    .where(
+      inArray(
+        flagRuleVersions.ruleId,
+        rows.map((r) => r.id),
+      ),
+    )
+    .orderBy(flagRuleVersions.version);
+  return rows.map((row) => {
+    const own = versions.filter((v) => v.ruleId === row.id).map(toFlagRuleVersion);
+    const current = own.find((v) => v.version === row.currentVersion);
+    if (!current) throw new Error(`Flag Rule ${row.id} has no version ${row.currentVersion}`);
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      deletedAt: row.deletedAt,
+      current,
+      versions: own,
+    };
+  });
+}
+
+async function withVersionsOne(
+  db: Database | Tx,
+  row: typeof flagRules.$inferSelect,
+): Promise<FlagRule> {
+  const [rule] = await withVersions(db, [row]);
+  if (!rule) throw new Error(`Flag Rule ${row.id} vanished mid-read`);
+  return rule;
+}
+
 /**
  * The real persistence behind DispatchStore (ADR-0008/ADR-0011) — plain
  * constructor injection (ADR-0014), never creates its own connection.
@@ -153,17 +232,33 @@ export class PostgresDispatchStore implements DispatchStore {
   constructor(private readonly db: Database) {}
 
   async createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>> {
-    const inserted = await this.db
-      .insert(dispatches)
-      .values({
-        chain: input.chain,
-        idempotencyKey: input.idempotencyKey,
-        items: input.items,
-        retryPolicy: input.retryPolicy,
-        bulkCall: input.bulkCall ?? null,
-      })
-      .onConflictDoNothing({ target: dispatches.idempotencyKey })
-      .returning();
+    const hold = input.hold ?? [];
+    const inserted = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(dispatches)
+        .values({
+          chain: input.chain,
+          idempotencyKey: input.idempotencyKey,
+          items: input.items,
+          retryPolicy: input.retryPolicy,
+          bulkCall: input.bulkCall ?? null,
+          status: hold.length > 0 ? 'held' : 'queued',
+        })
+        .onConflictDoNothing({ target: dispatches.idempotencyKey })
+        .returning();
+      const [row] = rows;
+      if (row && hold.length > 0) {
+        await tx.insert(dispatchHolds).values({
+          dispatchId: row.id,
+          matched: hold.map(({ rule, items }) => ({
+            ruleId: rule.ruleId,
+            ruleVersion: rule.version,
+            items,
+          })),
+        });
+      }
+      return rows;
+    });
 
     const row =
       inserted[0] ??
@@ -235,22 +330,28 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async cancelDispatch(id: string): Promise<CancelOutcome> {
-    // The `status = 'queued'` guard is the whole race: claimQueued locks the rows it takes, so
-    // this update either commits first (the claim then skips the row) or re-reads it claimed.
-    const cancelledAt = new Date();
-    const [managed] = await this.db
-      .update(dispatches)
-      .set({ status: 'cancelled', cancelledAt })
-      .where(and(eq(dispatches.id, id), eq(dispatches.status, 'queued')))
-      .returning({ id: dispatches.id });
-    if (managed) return 'cancelled';
-    const [relay] = await this.db
-      .update(relayDispatches)
-      .set({ status: 'cancelled', cancelledAt })
-      .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
-      .returning({ id: relayDispatches.id });
-    if (relay) return 'cancelled';
+  async cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
+    // The status guard is the whole race: claimQueued and releaseDispatch lock the row they change,
+    // so this update either commits first or re-reads the row as they left it.
+    const cancelled = await this.db.transaction(async (tx) => {
+      const cancelledAt = new Date();
+      const [managed] = await tx
+        .update(dispatches)
+        .set({ status: 'cancelled', cancelledAt })
+        .where(and(eq(dispatches.id, id), inArray(dispatches.status, ['queued', 'held'])))
+        .returning({ id: dispatches.id });
+      const [relay] = managed
+        ? []
+        : await tx
+            .update(relayDispatches)
+            .set({ status: 'cancelled', cancelledAt })
+            .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
+            .returning({ id: relayDispatches.id });
+      if (!managed && !relay) return false;
+      await tx.insert(operatorActions).values({ ...actor, action: 'cancel', targetId: id });
+      return true;
+    });
+    if (cancelled) return 'cancelled';
 
     const [existing] = await this.db
       .select({ status: dispatches.status })
@@ -263,7 +364,239 @@ export class PostgresDispatchStore implements DispatchStore {
           .where(eq(relayDispatches.id, id)),
       );
     if (!existing) return 'not_found';
-    return existing.status === 'cancelled' ? 'cancelled' : 'already_claimed';
+    return existing.status === 'cancelled' ? 'already_cancelled' : 'already_claimed';
+  }
+
+  async releaseDispatch(
+    id: string,
+    reason: string,
+  ): Promise<'released' | 'not_held' | 'not_found'> {
+    const released = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(dispatches)
+        .set({ status: 'queued' })
+        .where(and(eq(dispatches.id, id), eq(dispatches.status, 'held')))
+        .returning({ id: dispatches.id });
+      if (!row) return false;
+      await tx
+        .update(dispatchHolds)
+        .set({ releasedAt: new Date(), releaseReason: reason })
+        .where(eq(dispatchHolds.dispatchId, id));
+      await tx
+        .insert(operatorActions)
+        .values({ tokenKind: 'operator', reason, action: 'release', targetId: id });
+      return true;
+    });
+    if (released) return 'released';
+    const [existing] = await this.db
+      .select({ id: dispatches.id })
+      .from(dispatches)
+      .where(eq(dispatches.id, id))
+      .union(
+        this.db
+          .select({ id: relayDispatches.id })
+          .from(relayDispatches)
+          .where(eq(relayDispatches.id, id)),
+      );
+    return existing ? 'not_held' : 'not_found';
+  }
+
+  async listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    const rows = await this.db
+      .select({
+        row: operatorActions,
+        exactAt: sql<string>`to_char(${operatorActions.at} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(operatorActions)
+      .where(
+        after
+          ? sql`(${operatorActions.at}, ${operatorActions.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      )
+      .orderBy(desc(operatorActions.at), desc(operatorActions.id))
+      .limit(query.limit);
+    return rows.map(({ row, exactAt }) => ({
+      action: {
+        ...row,
+        action: row.action as OperatorActionKind,
+        tokenKind: row.tokenKind as TokenKind,
+      },
+      cursor: { createdAt: exactAt, id: row.id },
+    }));
+  }
+
+  async createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
+    return this.db.transaction(async (tx) => {
+      const [rule] = await tx.insert(flagRules).values({ currentVersion: 1 }).returning();
+      if (!rule) throw new Error('Failed to create a Flag Rule');
+      await tx.insert(flagRuleVersions).values(toVersionRow(rule.id, 1, spec));
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'flag_rule_create', targetId: rule.id });
+      return withVersionsOne(tx, rule);
+    });
+  }
+
+  async updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'> {
+    return this.db.transaction(async (tx) => {
+      // The row lock serializes concurrent edits, so each takes the next version number.
+      const [rule] = await tx.select().from(flagRules).where(eq(flagRules.id, id)).for('update');
+      if (!rule) return 'not_found';
+      if (rule.deletedAt) return 'deleted';
+      const version = rule.currentVersion + 1;
+      await tx.insert(flagRuleVersions).values(toVersionRow(id, version, spec));
+      await tx.update(flagRules).set({ currentVersion: version }).where(eq(flagRules.id, id));
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'flag_rule_update', targetId: id });
+      return withVersionsOne(tx, { ...rule, currentVersion: version });
+    });
+  }
+
+  async deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'> {
+    return this.db.transaction(async (tx) => {
+      const [deleted] = await tx
+        .update(flagRules)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(flagRules.id, id), isNull(flagRules.deletedAt)))
+        .returning();
+      if (deleted) {
+        await tx
+          .insert(operatorActions)
+          .values({ ...actor, action: 'flag_rule_delete', targetId: id });
+        return { rule: await withVersionsOne(tx, deleted), deleted: true };
+      }
+      const [existing] = await tx.select().from(flagRules).where(eq(flagRules.id, id));
+      return existing ? { rule: await withVersionsOne(tx, existing), deleted: false } : 'not_found';
+    });
+  }
+
+  async getFlagRule(id: string): Promise<FlagRule | null> {
+    const rows = await this.db.select().from(flagRules).where(eq(flagRules.id, id));
+    const [rule] = await withVersions(this.db, rows);
+    return rule ?? null;
+  }
+
+  async listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    const rows = await this.db
+      .select({ version: flagRuleVersions })
+      .from(flagRules)
+      .innerJoin(
+        flagRuleVersions,
+        and(
+          eq(flagRuleVersions.ruleId, flagRules.id),
+          eq(flagRuleVersions.version, flagRules.currentVersion),
+        ),
+      )
+      .where(
+        and(
+          isNull(flagRules.deletedAt),
+          eq(flagRuleVersions.enabled, true),
+          eq(flagRuleVersions.chain, chain),
+        ),
+      )
+      .orderBy(flagRules.createdAt, flagRules.id);
+    return rows.map(({ version }) => toFlagRuleVersion(version));
+  }
+
+  async firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    if (recipients.length === 0) return new Map();
+    const raw = sql`(${dispatches.items} -> ${transactions.callIndex} -> 'payment' ->> 'recipient')`;
+    const recipient = chain === 'base' ? sql<string>`lower(${raw})` : sql<string>`${raw}`;
+    const rows = await this.db
+      .select({
+        recipient,
+        first:
+          sql<Date>`min(coalesce(${transactions.confirmedAt}, ${transactions.broadcastAt}, ${dispatches.createdAt}))`.mapWith(
+            transactions.confirmedAt,
+          ),
+      })
+      .from(transactions)
+      .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+      .where(
+        and(
+          eq(transactions.status, 'CONFIRMED'),
+          eq(transactions.chain, chain),
+          inArray(recipient, recipients),
+        ),
+      )
+      .groupBy(recipient);
+    return new Map(rows.map((r) => [r.recipient, r.first]));
+  }
+
+  async acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+    if (assets.length === 0) return new Map();
+    const rows = await this.db.execute<{ asset: string; total: string }>(sql`
+      select item -> 'payment' ->> 'asset' as asset,
+             sum((item -> 'payment' ->> 'amount')::numeric)::text as total
+      from ${dispatches}, jsonb_array_elements(${dispatches.items}) as item
+      where ${dispatches.chain} = ${chain}
+        and ${dispatches.createdAt} >= ${since.toISOString()}::timestamptz
+        and ${dispatches.status} <> 'cancelled'
+        and item -> 'payment' ->> 'asset' in (${sql.join(
+          assets.map((a) => sql`${a}`),
+          sql`, `,
+        )})
+      group by 1`);
+    return new Map(rows.map((r) => [r.asset, BigInt(r.total)]));
+  }
+
+  async listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    const rows = await this.db
+      .select()
+      .from(dispatches)
+      .where(and(eq(dispatches.chain, chain), gte(dispatches.createdAt, since)))
+      .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
+      .limit(limit);
+    return rows.map(toDispatch);
+  }
+
+  async getHold(dispatchId: string): Promise<Hold | null> {
+    const [hold] = await this.db
+      .select()
+      .from(dispatchHolds)
+      .where(eq(dispatchHolds.dispatchId, dispatchId));
+    if (!hold) return null;
+    const versions = await this.db
+      .select()
+      .from(flagRuleVersions)
+      .where(
+        or(
+          ...hold.matched.map((m) =>
+            and(eq(flagRuleVersions.ruleId, m.ruleId), eq(flagRuleVersions.version, m.ruleVersion)),
+          ),
+        ),
+      );
+    return {
+      dispatchId,
+      heldAt: hold.heldAt,
+      release:
+        hold.releasedAt && hold.releaseReason !== null
+          ? { at: hold.releasedAt, reason: hold.releaseReason }
+          : null,
+      matched: hold.matched.map(({ ruleId, ruleVersion, items }) => {
+        const row = versions.find((v) => v.ruleId === ruleId && v.version === ruleVersion);
+        if (!row) throw new Error(`hold on ${dispatchId} names a missing rule version`);
+        return { rule: toFlagRuleVersion(row), items };
+      }),
+    };
+  }
+
+  async listFlagRules(): Promise<FlagRule[]> {
+    const rows = await this.db
+      .select()
+      .from(flagRules)
+      .where(isNull(flagRules.deletedAt))
+      .orderBy(flagRules.createdAt, flagRules.id);
+    return withVersions(this.db, rows);
   }
 
   async listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {

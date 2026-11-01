@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync } from 'fastify';
 
 import type { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type {
@@ -18,14 +18,22 @@ import {
   type RawListQuery,
 } from './dispatch-list.js';
 import { readDispatchView } from './dispatch-view.js';
+import { findHoldMatches } from './hold-check.js';
 import type { AssetDecimals } from './asset-decimals.js';
+import {
+  type ApiTokens,
+  authedTokenKind,
+  logOperatorAction,
+  readReason,
+  requireOperator,
+  requireToken,
+} from './operator-auth.js';
 import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
   store: DispatchStore;
   chainRegistry: ChainRegistry;
-  /** Operator-configured shared secret (ADR-0022). */
-  authToken: string;
+  tokens: ApiTokens;
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
   assetDecimals: AssetDecimals;
@@ -132,17 +140,9 @@ async function translateItem(
   );
 }
 
-export function checkAuth(authToken: string) {
-  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    if (request.headers.authorization !== `Bearer ${authToken}`) {
-      await reply.code(401).send({ error: 'unauthorized' });
-    }
-  };
-}
-
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
-  const { store, chainRegistry, authToken, defaultRetryPolicy, assetDecimals } = deps;
-  const auth = checkAuth(authToken);
+  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
+  const auth = requireToken(tokens);
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
@@ -256,6 +256,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         items: translated,
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
         bulkCall: bulkCallPlan?.bulkCall ?? null,
+        hold: await findHoldMatches(store, chain, translated, new Date()),
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });
@@ -290,14 +291,44 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     { onRequest: auth },
     async (request, reply) => {
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
-      const outcome = await store.cancelDispatch(request.params.id);
+      const reason = readReason(request.body);
+      if (!reason.ok) return reply.code(400).send({ error: reason.error });
+      const actor = { tokenKind: authedTokenKind(request, tokens), reason: reason.value };
+      const outcome = await store.cancelDispatch(request.params.id, actor);
       if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'cancelled') logOperatorAction(request, 'cancel', request.params.id, actor);
       if (outcome === 'already_claimed') {
         return reply.code(409).send({
           code: 'ALREADY_CLAIMED',
           message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
+      return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/dispatch/:id/release',
+    { onRequest: requireOperator(tokens) },
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
+      const reason = readReason(request.body);
+      if (!reason.ok) return reply.code(400).send({ error: reason.error });
+      if (reason.value === null) {
+        return reply.code(400).send({ error: 'reason: required, a non-empty string' });
+      }
+      const outcome = await store.releaseDispatch(request.params.id, reason.value);
+      if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'not_held') {
+        return reply.code(409).send({
+          code: 'NOT_HELD',
+          message: 'this Dispatch is not held, so there is nothing to release',
+        });
+      }
+      logOperatorAction(request, 'release', request.params.id, {
+        tokenKind: 'operator',
+        reason: reason.value,
+      });
       return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
     },
   );

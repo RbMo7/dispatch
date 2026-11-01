@@ -3,6 +3,14 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type {
+  FlagRule,
+  FlagRuleSpec,
+  FlagRuleVersion,
+  Hold,
+  RuleMatch,
+} from '../domain/flag-rule.js';
+import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
@@ -72,11 +80,11 @@ export type ProposalOutcome = {
 export type CommittedHolder = 'sender' | 'proposer';
 
 /**
- * ADR-0056: how a cancel ended. `cancelled` also when it already was (a
- * repeat cancel is not an error); `already_claimed` when the worker's claim
- * won, whatever has happened since.
+ * ADR-0056: how a cancel ended. `already_cancelled` is a repeat, not an
+ * error; `already_claimed` when the worker's claim won, whatever has
+ * happened since.
  */
-export type CancelOutcome = 'cancelled' | 'already_claimed' | 'not_found';
+export type CancelOutcome = 'cancelled' | 'already_cancelled' | 'already_claimed' | 'not_found';
 
 export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
@@ -85,6 +93,8 @@ export type NewDispatchInput<C extends Chain = Chain> = {
   retryPolicy: boolean;
   /** #11: omitted (or null) for the default one-transaction-per-item mode. */
   bulkCall?: BulkCall | null;
+  /** ADR-0058: non-empty stores the Dispatch `held`, with these matches, in the same write. */
+  hold?: RuleMatch[];
 };
 
 export type NewTransactionInput = {
@@ -127,10 +137,15 @@ export type DispatchListQuery = {
   limit: number;
   chain?: Chain;
   mode?: 'managed' | 'relay';
-  storedStatuses?: readonly ('queued' | 'broadcasting' | 'cancelled')[];
+  storedStatuses?: readonly ('queued' | 'held' | 'broadcasting' | 'cancelled')[];
   from?: Date;
   to?: Date;
 };
+
+/** ADR-0057: a page of operator actions, newest first, cut on `(at, id)` like the Dispatch listing. */
+export type OperatorActionQuery = { after: DispatchCursor | null; limit: number };
+
+export type ListedOperatorAction = { action: OperatorAction; cursor: DispatchCursor };
 
 export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (
   { mode: 'managed'; dispatch: Dispatch } | { mode: 'relay'; dispatch: RelayDispatch }
@@ -168,10 +183,49 @@ export interface DispatchStore {
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
   /**
    * ADR-0056: cancels the Managed or Relay Dispatch `id` if it is still
-   * unclaimed, in one conditional write against the claim, so a cancel and
-   * a claim can never both win.
+   * unclaimed (`queued` or `held`), in one conditional write against the claim, so a cancel and
+   * a claim can never both win. A cancel that lands records its operator
+   * action in the same write (ADR-0057); a repeat records nothing.
    */
-  cancelDispatch(id: string): Promise<CancelOutcome>;
+  cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome>;
+  listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]>;
+
+  // --- Flag Rules (ADR-0058). Each write records its operator action in the same write (ADR-0057). ---
+
+  /** Writes version 1. */
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule>;
+  /** Writes the next version; the earlier ones stay as they were. */
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'>;
+  /** Marks it deleted, keeping every version. A repeat is `deleted: false` and records nothing. */
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'>;
+  /** Deleted rules included. */
+  getFlagRule(id: string): Promise<FlagRule | null>;
+  /** Every rule not deleted, oldest first. */
+  listFlagRules(): Promise<FlagRule[]>;
+  /** The current version of every rule on `chain` that is enabled and not deleted. */
+  listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]>;
+  /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
+  firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
+  /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches created since `since` and not cancelled. */
+  acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>>;
+  /** #119: up to `limit` of `chain`'s Managed Dispatches created at or after `since`, newest first, whatever their status. */
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]>;
+  /** ADR-0058: why the Dispatch was held, or null if it never was. */
+  getHold(dispatchId: string): Promise<Hold | null>;
+  /**
+   * ADR-0058: moves a held Dispatch to `queued`, recording the release on its
+   * hold and as an operator action, in one write conditional on `held`. A
+   * cancel is conditional on the same row, so of a release and a cancel
+   * racing on a held Dispatch exactly one takes it out of `held`.
+   */
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */

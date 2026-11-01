@@ -3,6 +3,18 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import {
+  addressKey,
+  type FlagRule,
+  type FlagRuleSpec,
+  type FlagRuleVersion,
+  type Hold,
+} from '../domain/flag-rule.js';
+import type {
+  OperatorAction,
+  OperatorActionKind,
+  OperatorActor,
+} from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
@@ -16,12 +28,14 @@ import type {
   DispatchListQuery,
   DispatchStore,
   ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
   SignerKeyRecord,
@@ -41,6 +55,9 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
+  private readonly operatorActions: OperatorAction[] = [];
+  private readonly flagRules = new Map<string, FlagRule>();
+  private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
@@ -59,7 +76,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       chain: input.chain,
       idempotencyKey: input.idempotencyKey,
       items: input.items,
-      status: 'queued',
+      status: input.hold?.length ? 'held' : 'queued',
       retryPolicy: input.retryPolicy,
       bulkCall: input.bulkCall ?? null,
       createdAt: this.now(),
@@ -67,6 +84,14 @@ export class InMemoryDispatchStore implements DispatchStore {
       cancelledAt: null,
     };
     this.dispatches.set(dispatch.id, dispatch);
+    if (input.hold?.length) {
+      this.holds.set(dispatch.id, {
+        dispatchId: dispatch.id,
+        matched: input.hold,
+        heldAt: dispatch.createdAt,
+        release: null,
+      });
+    }
 
     return Promise.resolve(dispatch);
   }
@@ -106,19 +131,154 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(claimed);
   }
 
-  cancelDispatch(id: string): Promise<CancelOutcome> {
+  cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
     const dispatch = this.dispatches.get(id);
     const relayDispatch = this.relayDispatches.get(id);
     const status = dispatch?.status ?? relayDispatch?.status;
     if (status === undefined) return Promise.resolve('not_found');
-    if (status === 'cancelled') return Promise.resolve('cancelled');
-    if (status !== 'queued') return Promise.resolve('already_claimed');
+    if (status === 'cancelled') return Promise.resolve('already_cancelled');
+    if (status !== 'queued' && status !== 'held') return Promise.resolve('already_claimed');
     const cancelledAt = this.now();
     if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled', cancelledAt });
     if (relayDispatch) {
       this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled', cancelledAt });
     }
+    this.recordAction('cancel', id, actor);
     return Promise.resolve('cancelled');
+  }
+
+  private recordAction(action: OperatorActionKind, targetId: string, actor: OperatorActor): void {
+    this.operatorActions.push({ ...actor, id: randomUUID(), at: this.now(), action, targetId });
+  }
+
+  listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    return Promise.resolve(
+      this.operatorActions
+        .map((action) => ({
+          action,
+          cursor: { createdAt: action.at.toISOString(), id: action.id },
+        }))
+        .filter((l) => !after || compareNewestFirst(after, l.cursor) < 0)
+        .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+        .slice(0, query.limit),
+    );
+  }
+
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
+    const id = randomUUID();
+    const current: FlagRuleVersion = { ...spec, ruleId: id, version: 1, createdAt: this.now() };
+    const rule: FlagRule = {
+      id,
+      createdAt: current.createdAt,
+      deletedAt: null,
+      current,
+      versions: [current],
+    };
+    this.flagRules.set(id, rule);
+    this.recordAction('flag_rule_create', id, actor);
+    return Promise.resolve(rule);
+  }
+
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve('deleted');
+    const current: FlagRuleVersion = {
+      ...spec,
+      ruleId: id,
+      version: rule.current.version + 1,
+      createdAt: this.now(),
+    };
+    const updated = { ...rule, current, versions: [...rule.versions, current] };
+    this.flagRules.set(id, updated);
+    this.recordAction('flag_rule_update', id, actor);
+    return Promise.resolve(updated);
+  }
+
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve({ rule, deleted: false });
+    const deleted = { ...rule, deletedAt: this.now() };
+    this.flagRules.set(id, deleted);
+    this.recordAction('flag_rule_delete', id, actor);
+    return Promise.resolve({ rule: deleted, deleted: true });
+  }
+
+  getFlagRule(id: string): Promise<FlagRule | null> {
+    return Promise.resolve(this.flagRules.get(id) ?? null);
+  }
+
+  listFlagRules(): Promise<FlagRule[]> {
+    return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
+  }
+
+  listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    return Promise.resolve(
+      [...this.flagRules.values()]
+        .filter((r) => !r.deletedAt && r.current.enabled && r.current.chain === chain)
+        .map((r) => r.current),
+    );
+  }
+
+  firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    const wanted = new Set(recipients);
+    const first = new Map<string, Date>();
+    for (const t of this.transactions.values()) {
+      const dispatch = this.dispatches.get(t.dispatchId);
+      const payment = dispatch?.items[t.callIndex]?.payment;
+      if (t.status !== 'CONFIRMED' || t.chain !== chain || !dispatch || !payment) continue;
+      const key = addressKey(chain, payment.recipient);
+      const at = t.confirmedAt ?? t.broadcastAt ?? dispatch.createdAt;
+      const seen = first.get(key);
+      if (wanted.has(key) && (!seen || at < seen)) first.set(key, at);
+    }
+    return Promise.resolve(first);
+  }
+
+  acceptedVolume(chain: Chain, assets: string[], since: Date): Promise<Map<string, bigint>> {
+    const totals = new Map<string, bigint>();
+    for (const dispatch of this.dispatches.values()) {
+      if (dispatch.chain !== chain || dispatch.createdAt < since) continue;
+      if (dispatch.status === 'cancelled') continue;
+      for (const { payment } of dispatch.items) {
+        if (!payment || !assets.includes(payment.asset)) continue;
+        totals.set(payment.asset, (totals.get(payment.asset) ?? 0n) + BigInt(payment.amount));
+      }
+    }
+    return Promise.resolve(totals);
+  }
+
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    return Promise.resolve(
+      [...this.dispatches.values()]
+        .filter((d) => d.chain === chain && d.createdAt >= since)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit),
+    );
+  }
+
+  getHold(dispatchId: string): Promise<Hold | null> {
+    return Promise.resolve(this.holds.get(dispatchId) ?? null);
+  }
+
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'> {
+    const dispatch = this.dispatches.get(id);
+    const hold = this.holds.get(id);
+    if (!dispatch && !this.relayDispatches.has(id)) return Promise.resolve('not_found');
+    if (dispatch?.status !== 'held' || !hold) return Promise.resolve('not_held');
+    this.dispatches.set(id, { ...dispatch, status: 'queued' });
+    this.holds.set(id, { ...hold, release: { at: this.now(), reason } });
+    this.recordAction('release', id, { tokenKind: 'operator', reason });
+    return Promise.resolve('released');
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {

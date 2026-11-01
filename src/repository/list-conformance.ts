@@ -94,7 +94,7 @@ export function runListConformanceSuite(makeStore: () => DispatchStore): void {
       const solana = await newManaged(store, 'solana');
       const relay = await newRelay(store, 'base');
       const cancelled = await newManaged(store, 'base');
-      await store.cancelDispatch(cancelled.id);
+      await store.cancelDispatch(cancelled.id, { tokenKind: 'auth', reason: null });
       await tick();
       const to = new Date();
       await tick();

@@ -30,6 +30,8 @@ export const config = {
   enabledChains: process.env.ENABLED_CHAINS ?? '',
   /** Operator-configured shared secret (ADR-0022) — override in any non-dev deployment. */
   authToken: process.env.AUTH_TOKEN ?? 'dev-secret',
+  /** ADR-0057: release and Flag Rule edits. Unset leaves them off; set, it must be non-empty and differ from AUTH_TOKEN. */
+  operatorToken: process.env.OPERATOR_TOKEN,
   /** Global Retry Policy default (ADR-0003) when a Dispatch request omits its own — off unless the operator opts in. */
   defaultRetryPolicy: process.env.DEFAULT_RETRY_POLICY === 'true',
   /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */

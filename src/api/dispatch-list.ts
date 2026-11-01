@@ -11,6 +11,7 @@ import { isUuid } from './uuid.js';
 
 const LIST_STATUSES = [
   'queued',
+  'held',
   'broadcasting',
   'confirmed',
   'failed',
@@ -57,7 +58,7 @@ export function encodeCursor(cursor: DispatchCursor): string {
   return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString('base64url');
 }
 
-function decodeCursor(raw: string): DispatchCursor | null {
+export function decodeCursor(raw: string): DispatchCursor | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
     if (!Array.isArray(parsed) || parsed.length !== 2) return null;
@@ -98,6 +99,8 @@ function storedStatusesFor(status: ListStatus): NonNullable<DispatchListQuery['s
   switch (status) {
     case 'cancelled':
       return ['cancelled'];
+    case 'held':
+      return ['held'];
     // A claimed Relay Dispatch reads `queued` until its Transaction is written.
     case 'queued':
       return ['queued', 'broadcasting'];

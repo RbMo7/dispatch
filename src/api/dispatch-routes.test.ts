@@ -1716,7 +1716,7 @@ describe('GET /v1/dispatches (#110)', () => {
       items: [{ call: { to: '0xa', data: '0x', value: '0' }, payment: null }],
       retryPolicy: false,
     });
-    await store.cancelDispatch(cancelled.id);
+    await store.cancelDispatch(cancelled.id, { tokenKind: 'auth', reason: null });
     await store.createDispatch({
       chain: 'base',
       idempotencyKey: 'queued',

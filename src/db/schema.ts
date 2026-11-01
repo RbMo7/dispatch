@@ -18,6 +18,7 @@ import {
 import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
 import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
 import type { SignerPins } from '../signer/client.js';
 
@@ -209,6 +210,60 @@ export const relayDispatches = pgTable(
   ],
 );
 
+/** ADR-0057: one row per cancel, release and Flag Rule write, never updated. */
+export const operatorActions = pgTable(
+  'operator_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Not now(): that is when the transaction began, possibly before it waited on the row it changed.
+    at: timestamp('at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    action: text('action').notNull(),
+    targetId: uuid('target_id').notNull(),
+    tokenKind: text('token_kind').notNull(),
+    reason: text('reason'),
+  },
+  (table) => [index('operator_actions_at_id_idx').on(table.at, table.id)],
+);
+
+/** ADR-0058: a Flag Rule's identity. Its content lives in `flag_rule_versions`. */
+export const flagRules = pgTable('flag_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  currentVersion: integer('current_version').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});
+
+/** ADR-0058: forward-only; a row is never updated, and an edit inserts the next version. */
+export const flagRuleVersions = pgTable(
+  'flag_rule_versions',
+  {
+    ruleId: uuid('rule_id')
+      .notNull()
+      .references(() => flagRules.id),
+    version: integer('version').notNull(),
+    name: text('name').notNull(),
+    chain: text('chain').notNull(),
+    enabled: boolean('enabled').notNull(),
+    definition: jsonb('definition').notNull().$type<FlagRuleDefinitionJson>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.ruleId, table.version] })],
+);
+
+/** ADR-0058: why a Dispatch was held. Each match names an immutable rule version. */
+export const dispatchHolds = pgTable('dispatch_holds', {
+  dispatchId: uuid('dispatch_id')
+    .primaryKey()
+    .references(() => dispatches.id),
+  matched: jsonb('matched')
+    .notNull()
+    .$type<{ ruleId: string; ruleVersion: number; items: number[] }[]>(),
+  heldAt: timestamp('held_at', { withTimezone: true }).notNull().defaultNow(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
+});
 /** ADR-0059: what the worker last read from the Signer about each Sender key, so the API never calls the Signer. */
 export const signerKeys = pgTable(
   'signer_keys',

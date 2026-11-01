@@ -134,6 +134,13 @@
       "when": 1793474037860,
       "tag": "0018_signer_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793498419840,
+      "tag": "0019_flag_rules",
+      "breakpoints": true
     }
   ]
 }
