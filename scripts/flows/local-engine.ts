@@ -184,18 +184,33 @@ async function up(): Promise<EngineHandle> {
   return handle;
 }
 
+const signalGroup = (pid: number, signal: NodeJS.Signals | 0): boolean => {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The worker's graceful shutdown waits out its loops' sleeps (up to its own
+ * 30s force-exit), so SIGTERM alone can leave it running; escalate to SIGKILL.
+ */
+async function stop(pids: number[]) {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (const pid of pids) signalGroup(pid, 'SIGTERM');
+  const deadline = Date.now() + 5000;
+  while (pids.some((pid) => signalGroup(pid, 0)) && Date.now() < deadline) await sleep(200);
+  for (const pid of pids) signalGroup(pid, 'SIGKILL');
+  while (pids.some((pid) => signalGroup(pid, 0))) await sleep(100);
+}
+
 async function down() {
   if (existsSync(ENGINE_FILE)) {
-    for (const pid of readJson<EngineHandle>(ENGINE_FILE).pids) {
-      try {
-        process.kill(-pid, 'SIGTERM');
-      } catch {
-        // already gone
-      }
-    }
+    await stop(readJson<EngineHandle>(ENGINE_FILE).pids);
     rmSync(ENGINE_FILE);
   }
-  await new Promise((resolve) => setTimeout(resolve, 2000));
   await admin((sql) => sql.unsafe(`DROP DATABASE IF EXISTS ${DB_NAME} WITH (FORCE)`));
   console.log(`stopped; dropped ${DB_NAME}`);
 }
