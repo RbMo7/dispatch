@@ -231,6 +231,147 @@ describe('the flow of one Dispatch', () => {
     ]);
   });
 
+  it('branches off a resend when another sender took the nonce, and ends at the version that landed', () => {
+    const takenBy = (nonce: number, resentNonce: number) => ({
+      code: 'NONCE_ALREADY_USED',
+      message: `Nonce ${nonce} was taken by another sender. Sent again with nonce ${resentNonce}.`,
+      chainDetail: { reason: 'nonce_taken', nonce, resentNonce },
+    });
+    const flow = dispatchFlow(
+      load(
+        {
+          mode: 'managed',
+          chain: 'base',
+          status: 'confirmed',
+          createdAt: '2026-10-31T10:00:00.000Z',
+          itemCount: 1,
+          totals: [{ asset: 'USDC', decimals: 6, amount: '25000000' }],
+        },
+        {
+          mode: 'managed',
+          status: 'confirmed',
+          items: [usdc('25000000', { status: 'confirmed', transactionHash: H_BB, error: null })],
+          timeline: [
+            { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
+            { at: '2026-10-31T10:00:01.200Z', kind: 'claimed' },
+            {
+              at: '2026-10-31T10:00:01.900Z',
+              kind: 'written',
+              hash: H_AA,
+              items: [0],
+              replaces: null,
+            },
+            {
+              at: '2026-10-31T10:00:02.400Z',
+              kind: 'written',
+              hash: H_BB,
+              items: [0],
+              replaces: H_AA,
+            },
+            {
+              at: '2026-10-31T10:00:02.400Z',
+              kind: 'dropped',
+              hash: H_AA,
+              items: [0],
+              by: H_BB,
+              error: takenBy(8, 12),
+            },
+            { at: '2026-10-31T10:00:02.700Z', kind: 'sent', hash: H_BB, items: [0] },
+            { at: '2026-10-31T10:00:16.000Z', kind: 'confirmed', hash: H_BB, items: [0] },
+          ],
+        },
+      ),
+      clock('2026-10-31T11:00:00Z'),
+    );
+    expect(branches(flow)).toEqual([
+      {
+        kind: 'branch-done',
+        title: 'Nonce taken',
+        at: '10:00:02',
+        detail: 'Nonce 8 was taken by another sender. Sent again with nonce 12.',
+      },
+    ]);
+    expect(main(flow)).toEqual([
+      'done Submitted',
+      'done Claimed',
+      'done Signed and sent',
+      'done Confirmed',
+      'end-done Transaction hash',
+    ]);
+    expect(end(flow).hash).toBe(H_BB);
+  });
+
+  it('counts the taken nonces of a large Dispatch in one branch', () => {
+    const hashes = Array.from({ length: 8 }, (_, i) => `0x${String(i).repeat(64)}`);
+    const timeline: object[] = [
+      { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
+      { at: '2026-10-31T10:00:01.000Z', kind: 'claimed' },
+    ];
+    for (let item = 0; item < 4; item++) {
+      const [first, second] = [hashes[item * 2]!, hashes[item * 2 + 1]!];
+      timeline.push(
+        {
+          at: '2026-10-31T10:00:02.000Z',
+          kind: 'written',
+          hash: first,
+          items: [item],
+          replaces: null,
+        },
+        {
+          at: '2026-10-31T10:00:03.000Z',
+          kind: 'written',
+          hash: second,
+          items: [item],
+          replaces: first,
+        },
+        {
+          at: '2026-10-31T10:00:03.000Z',
+          kind: 'dropped',
+          hash: first,
+          items: [item],
+          by: second,
+          error: {
+            code: 'NONCE_ALREADY_USED',
+            message: 'taken',
+            chainDetail: { reason: 'nonce_taken', nonce: 40 + item, resentNonce: 50 + item },
+          },
+        },
+        { at: '2026-10-31T10:00:20.000Z', kind: 'confirmed', hash: second, items: [item] },
+      );
+    }
+    const flow = dispatchFlow(
+      load(
+        {
+          mode: 'managed',
+          chain: 'base',
+          status: 'confirmed',
+          createdAt: '2026-10-31T10:00:00.000Z',
+          itemCount: 4,
+          totals: [{ asset: 'USDC', decimals: 6, amount: '4000000' }],
+        },
+        {
+          mode: 'managed',
+          status: 'confirmed',
+          items: [0, 1, 2, 3].map((item) =>
+            usdc('1000000', {
+              status: 'confirmed',
+              transactionHash: hashes[item * 2 + 1],
+              error: null,
+            }),
+          ),
+          timeline,
+        },
+      ),
+      clock('2026-10-31T11:00:00Z'),
+    );
+    expect(branches(flow).map((s) => [s.title, s.detail])).toEqual([
+      [
+        'Nonces taken, 4',
+        'Another sender took 4 nonces, 40 to 43. The engine sent each of those again with a fresh nonce.',
+      ],
+    ]);
+  });
+
   it('waits on Approvers for a Multisig Sender, with the deadline and a link to Squads', () => {
     const chainRef = {
       kind: 'squads',

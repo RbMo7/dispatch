@@ -167,6 +167,7 @@ describe('the API client', () => {
                 },
               ],
               signerKey: { error: 'the Signer could not be reached' },
+              foreignActivity: null,
             },
           ],
         },
@@ -191,6 +192,7 @@ describe('the API client', () => {
       address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
       multisig: null,
       balances: [],
+      foreignActivity: null,
     };
     const { fetcher } = engine({
       '/v1/senders': {
@@ -215,6 +217,43 @@ describe('the API client', () => {
     expect(read!.signerKey).toMatchObject({
       ok: true,
       value: { curve: 'secp256k1', readAt: '2026-11-01T09:14:02.511Z' },
+    });
+  });
+
+  it('reads the nonces another sender used in a Base Sender, and refuses a range that is not two nonces', async () => {
+    const sender = (foreignActivity: unknown) => ({
+      chain: 'base',
+      name: 'payouts',
+      default: true,
+      network: 'base-sepolia',
+      mode: 'single',
+      address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
+      multisig: null,
+      balances: [],
+      signerKey: { status: 'not_read_yet' },
+      foreignActivity,
+    });
+    const used = { lastSeenAt: '2026-11-01T02:08:51.207Z', nonces: [3124, 3126], count: 3 };
+    const { fetcher } = engine({
+      '/v1/senders': { status: 200, body: { senders: [sender(used), sender(null)] } },
+    });
+    const [seen, quiet] = await createApiClient('t', () => {}, fetcher).listSenders();
+    expect(seen!.foreignActivity).toEqual({
+      lastSeenAt: new Date('2026-11-01T02:08:51.207Z'),
+      nonces: [3124, 3126],
+      count: 3,
+    });
+    expect(quiet!.foreignActivity).toBeNull();
+
+    const broken = engine({
+      '/v1/senders': {
+        status: 200,
+        body: { senders: [sender({ ...used, nonces: [3124] })] },
+      },
+    });
+    expect(await failure(createApiClient('t', () => {}, broken.fetcher).listSenders())).toEqual({
+      kind: 'malformed',
+      message: 'senders[0].foreignActivity.nonces is not the lowest and the highest nonce',
     });
   });
 
@@ -313,6 +352,7 @@ describe('the API client', () => {
       multisig: null,
       balances: [],
       signerKey: { status: 'not_read_yet' },
+      foreignActivity: null,
     };
     const { fetcher } = engine({
       '/v1/senders': {
@@ -357,6 +397,7 @@ describe('the API client', () => {
               multisig: null,
               balances: [],
               signerKey: { status: 'not_read_yet' },
+              foreignActivity: null,
             },
           ],
         },
@@ -451,6 +492,7 @@ describe('the API client', () => {
               multisig: null,
               balances: [],
               signerKey: { error: 'the Signer could not be reached' },
+              foreignActivity: null,
             },
           ],
         },

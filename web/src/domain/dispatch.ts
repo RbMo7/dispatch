@@ -129,13 +129,28 @@ export function itemAsset(item: Item): string | null {
 
 export type ItemFilter = 'all' | ItemStatus;
 
+/** A Base nonce another sender used first, and the one the engine sent the Call again with; null where the engine did not say. */
+export interface TakenNonce {
+  nonce: number | null;
+  resentNonce: number | null;
+}
+
 /** `GET /v1/dispatch/:id?include=timeline`'s entries, oldest first (docs/openapi.yaml). */
 export type TimelineEntry =
   | { kind: 'created' | 'claimed' | 'cancelled'; at: Date }
   | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
-  | { kind: 'replaced' | 'dropped'; at: Date; hash: string; items: number[]; by: string | null }
+  | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
+  | {
+      kind: 'dropped';
+      at: Date;
+      hash: string;
+      items: number[];
+      by: string | null;
+      /** Set when another sender used this version's nonce, so the engine sent it again as `by` (ADR-0064). */
+      taken: TakenNonce | null;
+    }
   | { kind: 'confirmed'; at: Date; hash: string | null; items: number[] }
   | {
       kind: 'failed' | 'abandoned';

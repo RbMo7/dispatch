@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo } from 
 import { SenderCard, type SenderCardProps } from '../components/SenderCard';
 import {
   feePayer,
+  foreignNonces,
   headlineAsset,
   HOLDER_LABEL,
   payer,
@@ -100,6 +101,9 @@ export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null
                 ? 'Not pinned'
                 : `${sender.signerKey.value.curve}${pinned ? ', pinned' : ''}`,
           },
+    ...(sender.foreignActivity && {
+      warning: `Another sender used ${foreignNonces(sender.foreignActivity)}`,
+    }),
   };
 }
 

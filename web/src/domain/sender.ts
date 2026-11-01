@@ -33,6 +33,15 @@ export interface SignerKey {
   readAt: string;
 }
 
+/** ADR-0064: nonces of the Sender's wallet that something other than this engine used in the last 24 hours. */
+export interface ForeignActivity {
+  /** When the worker first saw the most recent of them. */
+  lastSeenAt: Date;
+  /** The lowest and the highest. */
+  nonces: [first: number, last: number];
+  count: number;
+}
+
 export interface Sender {
   chain: Chain;
   /** Unique per chain: the name `sender` takes on `POST /v1/dispatch`. */
@@ -45,6 +54,13 @@ export interface Sender {
   multisig: { address: string; threshold: Read<number>; engineKey: string } | null;
   balances: Holding[];
   signerKey: Read<SignerKey>;
+  /** Base only; null when nothing else sent from the wallet. */
+  foreignActivity: ForeignActivity | null;
+}
+
+/** "nonce 3124", or "3 nonces, 3124 to 3126". */
+export function foreignNonces({ nonces: [first, last], count }: ForeignActivity): string {
+  return count === 1 ? `nonce ${first}` : `${count} nonces, ${first} to ${last}`;
 }
 
 /** Chain and name identify a Sender. */

@@ -214,8 +214,9 @@ export const CATALOGUE = {
   },
   NONCE_ALREADY_USED: {
     title: 'Nonce already used',
-    text: 'Something else sent from this Sender and used the nonce this transaction needed.',
-    next: 'Make sure only the engine sends from the Sender, then send it again.',
+    text: "Another sender keeps using this Sender's wallet. Each time the engine sent the payment, its nonce had already been used, so the engine sent it again with a fresh nonce, 3 times, and then stopped. Nothing was paid.",
+    next: 'Stop whatever else sends from the Sender, or give this engine a Sender of its own, then send it again.',
+    fix: () => SENDERS,
   },
   APPROVAL_REJECTED: {
     title: 'Rejected by Approvers',

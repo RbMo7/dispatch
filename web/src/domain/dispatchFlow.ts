@@ -14,6 +14,7 @@ import {
   type LoadedDispatch,
   type ManagedDetail,
   type RelayDetail,
+  type TakenNonce,
   type TimelineEntry,
 } from './dispatch';
 import { type ErrorContext, errorContext, explainError } from './errors';
@@ -476,7 +477,23 @@ function managedFlow(
     }),
   );
 
-  const repriced = written.filter((w) => w.replaces !== null);
+  const taken = of(timeline, 'dropped').filter((d) => d.taken !== null);
+  if (taken.length > 0) {
+    stages.push(
+      stage(
+        'branch-done',
+        taken.length === 1 ? 'Nonce taken' : `Nonces taken, ${n(taken.length)}`,
+        {
+          at: clock.time(taken[0]!.at),
+          detail: takenDetail(taken.map((d) => d.taken!)),
+        },
+      ),
+    );
+  }
+
+  // A resend at a fresh nonce replaces the taken version too, but it is no fee bump.
+  const resent = new Set(taken.flatMap((d) => (d.by ? [d.by] : [])));
+  const repriced = written.filter((w) => w.replaces !== null && !resent.has(w.hash));
   if (repriced.length > 0) {
     const solana = chain === 'solana';
     const one = repriced.length === 1 ? repriced[0]! : null;
@@ -682,6 +699,20 @@ function outcomeDetail(item: Item, chain: Chain, ctx: ErrorContext): Text {
       : 'It expired without landing.';
   }
   return errorText(item.error, ctx);
+}
+
+/** ADR-0064: "Nonce 8 was taken by another sender. Sent again with nonce 12." */
+function takenDetail(taken: readonly TakenNonce[]): string {
+  if (taken.length === 1) {
+    const { nonce, resentNonce } = taken[0]!;
+    const was = nonce === null ? 'Its nonce' : `Nonce ${nonce}`;
+    const again = resentNonce === null ? 'a fresh nonce' : `nonce ${resentNonce}`;
+    return `${was} was taken by another sender. Sent again with ${again}.`;
+  }
+  const known = taken.flatMap((t) => (t.nonce === null ? [] : [t.nonce]));
+  const range =
+    known.length === taken.length ? `, ${Math.min(...known)} to ${Math.max(...known)}` : '';
+  return `Another sender took ${n(taken.length)} nonces${range}. The engine sent each of those again with a fresh nonce.`;
 }
 
 function shortHash(hash: string): string {
