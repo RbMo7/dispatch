@@ -16,7 +16,7 @@ export interface DispatchSummary {
   totals: Money[];
 }
 
-/** docs/api.md's per-item status, also a Relay Dispatch's top-level one. */
+/** docs/openapi.yaml's per-item status, also a Relay Dispatch's top-level one. */
 export type ItemStatus = Extract<
   Status,
   | 'queued'
@@ -99,7 +99,7 @@ export function itemAsset(item: Item): string | null {
 
 export type ItemFilter = 'all' | ItemStatus;
 
-/** `GET /v1/dispatch/:id?include=timeline`'s entries, oldest first (docs/api.md). */
+/** `GET /v1/dispatch/:id?include=timeline`'s entries, oldest first (docs/openapi.yaml). */
 export type TimelineEntry =
   | { kind: 'created' | 'claimed' | 'cancelled'; at: Date }
   | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }

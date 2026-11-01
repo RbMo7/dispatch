@@ -50,7 +50,7 @@ function isCurrentVersion(transaction: Transaction): boolean {
  * Dispatch's Transactions, never stored redundantly. ABANDONED counts
  * alongside FAILED for this aggregate: the Coordinator has stopped
  * actively watching it, even though it might still confirm later — that
- * nuance stays visible at the per-item level (docs/api.md), not lost, just
+ * nuance stays visible at the per-item level (docs/openapi.yaml), not lost, just
  * not double-counted as "in progress" here.
  */
 function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {

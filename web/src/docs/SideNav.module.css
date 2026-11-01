@@ -43,15 +43,3 @@
   color: var(--accent-text);
   font-weight: 500;
 }
-
-.number {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-12);
-}
-
-.number + .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}

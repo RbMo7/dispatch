@@ -10,7 +10,7 @@ const ID = '7f3a91c2-0b1e-4c55-9a7e-2d41f0c3b8e6';
 const H_AA = '0xaa1f5e0c3b2d7a9e4f6c8b1d0e2a3f5c7b9d1e3f5a7c9e1b3d5f7a9c1e3b5d7f';
 const H_BB = '0xbb4c2d9e7f1a3b5c8d0e2f4a6b8c1d3e5f7a9b2c4d6e8f0a1b3c5d7e9f2a4b6c';
 
-/** docs/api.md's fee-bump timeline, as the engine sends it. */
+/** docs/openapi.yaml's fee-bump timeline, as the engine sends it. */
 const loaded = {
   summary: parsePage({
     dispatches: [

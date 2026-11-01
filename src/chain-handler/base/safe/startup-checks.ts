@@ -124,7 +124,7 @@ export async function runSafeStartupChecks(deps: SafeStartupDeps): Promise<{ war
   } else if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the executor',
-      `the Signer has no key for ${config.executorAddress}: add it to the Signer's config (docs/signer.md), pinned to the Safe by policy`,
+      `the Signer has no key for ${config.executorAddress}: add it to the Signer's config (docs/self-hosting/signer.md), pinned to the Safe by policy`,
     );
   } else if (signer.kind === 'unreachable') {
     fail(
@@ -138,7 +138,7 @@ export async function runSafeStartupChecks(deps: SafeStartupDeps): Promise<{ war
     if (allowedSafe === undefined || !sameAddress(allowedSafe, config.safeAddress)) {
       fail(
         'signer pins the Safe',
-        `the Signer's policy for ${config.executorAddress} pins ${allowedSafe ?? 'no Safe'}, but BASE_SAFE_ADDRESS is ${config.safeAddress}: set policy.allowedSafe for this key in the Signer's config (docs/signer.md)`,
+        `the Signer's policy for ${config.executorAddress} pins ${allowedSafe ?? 'no Safe'}, but BASE_SAFE_ADDRESS is ${config.safeAddress}: set policy.allowedSafe for this key in the Signer's config (docs/self-hosting/signer.md)`,
       );
     }
     if (chainIds === undefined || !chainIds.includes(deps.chainId)) {

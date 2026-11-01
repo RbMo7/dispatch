@@ -71,7 +71,7 @@ export function decodeUnsignedTransaction(unsignedTransaction: string): EncodedE
 /**
  * #13: a SignedTransaction as 0x-hex. This handler's own `sign` produces
  * 0x-hex; a Relay Dispatch caller sends the raw signed bytes as base64
- * (docs/api.md's chain-agnostic wire format), so both are accepted. Null
+ * (docs/openapi.yaml's chain-agnostic wire format), so both are accepted. Null
  * for anything that is neither.
  */
 export function signedTransactionHex(signed: string): `0x${string}` | null {

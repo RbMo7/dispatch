@@ -175,7 +175,7 @@ export interface DispatchStore {
   /** Idempotent create (ADR-0021): resubmitting an existing idempotencyKey returns the original Dispatch. */
   createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>>;
   getDispatch(id: string): Promise<Dispatch | null>;
-  /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/api.md) is built from. */
+  /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/openapi.yaml) is built from. */
   listTransactions(dispatchId: string): Promise<Transaction[]>;
   /** #109: every Attempt (rebroadcast) of every Transaction of a Dispatch or Relay Dispatch, oldest first. */
   listAttempts(dispatchId: string): Promise<Attempt[]>;

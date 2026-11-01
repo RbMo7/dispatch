@@ -1,6 +1,5 @@
 import type { Options } from 'minisearch';
 
-
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];
 
@@ -19,7 +18,8 @@ export interface DocPage {
   source: string;
   headings: DocHeading[];
   html: string;
-  adr?: { number: string; status?: string };
+  /** `reference`: an API reference page, built from docs/openapi.yaml, in two columns. */
+  layout?: 'reference';
 }
 
 export interface DocsManifest {

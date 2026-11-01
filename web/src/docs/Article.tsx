@@ -1,5 +1,5 @@
 import { PencilSimple } from '@phosphor-icons/react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import { type KeyboardEvent, type MouseEvent, useEffect, useRef } from 'react';
 
 import type { DocPage } from './manifest';
 import { REPO_BLOB_URL } from './nav';
@@ -43,17 +43,32 @@ export function Article({ page, onNavigate }: ArticleProps) {
     next.focus();
   }
 
+  // React does not report a change from a <select> it did not render, so listen natively.
+  const prose = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const scope = prose.current;
+    if (!scope) return;
+    const onChange = (event: Event) => {
+      const select = event.target;
+      if (select instanceof HTMLSelectElement && select.dataset.exampleSelect) {
+        showExample(scope, select.dataset.exampleSelect, select.value);
+      }
+    };
+    scope.addEventListener('change', onChange);
+    return () => scope.removeEventListener('change', onChange);
+  }, [page]);
+
   return (
-    <article className={styles.article}>
+    <article className={`${styles.article} ${page.layout === 'reference' ? styles.reference : ''}`}>
       <header className={styles.header}>
-        <p className={styles.eyebrow}>{page.adr ? `ADR-${page.adr.number}` : page.section}</p>
+        <p className={styles.eyebrow}>{page.section}</p>
         <h1 className={styles.title}>{page.title}</h1>
-        {page.adr?.status && <p className={styles.status}>Status: {page.adr.status}</p>}
       </header>
       <div
         className={styles.prose}
         onClick={onClick}
         onKeyDown={onKeyDown}
+        ref={prose}
         dangerouslySetInnerHTML={{ __html: page.html }}
       />
       <footer className={styles.footer}>
@@ -93,5 +108,12 @@ function selectTab(chosen: HTMLElement, scope: HTMLElement) {
       const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
       if (panel) panel.hidden = !selected;
     }
+  }
+}
+
+/** A reference operation shows one named example at a time: its request and its response. */
+function showExample(scope: HTMLElement, operation: string, name: string) {
+  for (const panel of scope.querySelectorAll<HTMLElement>(`[data-op="${operation}"]`)) {
+    panel.hidden = panel.dataset.example !== name;
   }
 }

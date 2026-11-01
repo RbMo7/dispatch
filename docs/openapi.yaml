@@ -1,0 +1,1408 @@
+openapi: 3.1.0
+info:
+  title: Dispatch API
+  version: '1'
+  summary: Send payments, contract calls and signed transactions on Solana and Base, and track each one to an outcome.
+  description: |
+    The engine's HTTP API. Every `/v1` route needs the engine's API token as a bearer token.
+    The reference pages on the docs site are built from this file, and the engine's offline
+    tests send each example below to the real routes and check every answer against these schemas.
+
+    Examples are real answers from an engine on Base Sepolia and Solana devnet. Each example has a
+    name, and the same name links a request to its answer: the request example `payBase` produces
+    the response example `payBase`, under the status it returns.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8420
+    description: An engine on your machine. Set `PORT` to change the port.
+security:
+  - apiToken: []
+tags:
+  - name: Dispatches
+    description: |
+      A Dispatch is one request to send something on one chain. A Managed Dispatch carries
+      payments and contract calls that the engine builds and signs. A Relay Dispatch carries one
+      transaction someone else already signed. Every route answers at once: you create a Dispatch,
+      then poll it until each item is final.
+  - name: Senders
+    description: |
+      The Sender is the wallet each chain pays from. One Sender per enabled chain.
+  - name: Health
+    description: |
+      A liveness check for load balancers and scripts.
+
+paths:
+  /v1/dispatch:
+    post:
+      tags: [Dispatches]
+      operationId: createDispatch
+      summary: Create a Dispatch
+      description: |
+        Stores a Managed or a Relay Dispatch and answers `202 Accepted` with its id. The answer never
+        carries a chain result: the engine has not checked a balance, signed anything or touched the
+        chain yet. Poll [Get a Dispatch](#get-a-dispatch) for the outcome.
+
+        Sending the same `Idempotency-Key` again returns the Dispatch that key already created, in its
+        current state, with `202`. Nothing new is created and nothing is paid twice. A request that
+        fails with `400` stores nothing and does not use up its key.
+
+        To pay through an aggregator contract on Base, add `bulkCall`. To relay a transaction your user
+        signed, send `mode: "relay"` and `signedTransaction` instead of `items`. The
+        [guides](./guides/send-payments.md) walk through each.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/ManagedDispatchRequest'
+                - $ref: '#/components/schemas/RelayDispatchRequest'
+            examples:
+              payBase:
+                summary: Pay two recipients on Base
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '50000000000000'
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: USDC
+                      amount: '40000000'
+              callAndPaySolana:
+                summary: A memo and a payment on Solana
+                value:
+                  chain: solana
+                  items:
+                    - type: call
+                      programId: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                      accounts: []
+                      data: aW52b2ljZSA0NDcx
+                    - type: payment
+                      recipient: Dmp2B7tvZKohJCYoD7YRk4aTo5k1Ndz2Wh7pGYsSCaT2
+                      asset: SOL
+                      amount: '2500000'
+              callBase:
+                summary: A contract call on Base
+                value:
+                  chain: base
+                  items:
+                    - type: call
+                      to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      data: 0x
+                      value: '20000000000000'
+              bulkCallBase:
+                summary: Two payments in one Bulk Call on Base
+                value:
+                  chain: base
+                  bulkCall:
+                    aggregator: '0xcA11bde05977b3631167028862bE2a173976CA11'
+                    maxBatchSize: 10
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '10000000000000'
+                    - type: payment
+                      recipient: '0xEd77f00C8a16513bc5939e27450ad4D253C876b7'
+                      asset: ETH
+                      amount: '10000000000000'
+              relayBase:
+                summary: Relay a signed Base transaction
+                value:
+                  chain: base
+                  mode: relay
+                  signedTransaction: '0x02f87183014a3480830f424083d59f80825208948ba1f109551bd432803012645ac136ddd64dba72861b48eb57e00080c001a02c2bc48c3fcabc9f5ea48fb0ee592480f25b957f0ccda68374bb34bb70719e62a0610f05e4780b00923708bd656935e31968d8ca6f21a0c326678105c5b13f54a3'
+              relaySolana:
+                summary: Relay a signed Solana transaction
+                value:
+                  chain: solana
+                  mode: relay
+                  signedTransaction: AfP25/Piq4hD7uKt5vhz4b5QntZw1rvNcJbRWhIoWrirJzCgl7299/SD7DWex9URbl+KhV9n7QiKR5iwM8LsfAoBAAEDHntsSEO3GyebSN8MUQyX06Ws4Taqnwsfzlq2Fqrbze69xvb1VVXvEsuYM2vL94stXfe/jNYCJlYL29F5kB85UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKPrcgScoX1f/WGmGI/bmUdz01PT6t/xstWyS4R/+owYBAgIAAQwCAAAAQEtMAAAAAAA=
+              resubmitCancelled:
+                summary: Resend the key of a cancelled Dispatch
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: USDC
+                      amount: '12500000'
+              missingIdempotencyKey:
+                summary: No Idempotency-Key header
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '1'
+              unknownAsset:
+                summary: A token the engine does not know
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: DAI
+                      amount: '1000000000000000000'
+              decimalAmount:
+                summary: An amount with a decimal point
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: USDC
+                      amount: '12.5'
+              invalidRecipient:
+                summary: A malformed Base address
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD43280301264'
+                      asset: ETH
+                      amount: '1'
+              unknownChain:
+                summary: A chain the API does not have
+                value:
+                  chain: ethereum
+                  items: []
+              relayNotDecodable:
+                summary: Relay bytes that are not a transaction
+                value:
+                  chain: base
+                  mode: relay
+                  signedTransaction: '0x02f8'
+              batchTooLarge:
+                summary: A Bulk Call batch over the limit
+                value:
+                  chain: base
+                  bulkCall:
+                    aggregator: '0xcA11bde05977b3631167028862bE2a173976CA11'
+                    maxBatchSize: 500
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '1'
+              bulkCallOnSolana:
+                summary: Bulk Call on Solana
+                value:
+                  chain: solana
+                  bulkCall:
+                    aggregator: '0xcA11bde05977b3631167028862bE2a173976CA11'
+                  items:
+                    - type: payment
+                      recipient: Dmp2B7tvZKohJCYoD7YRk4aTo5k1Ndz2Wh7pGYsSCaT2
+                      asset: SOL
+                      amount: '1'
+              unauthorized:
+                summary: A wrong API token
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '1'
+      responses:
+        '202':
+          description: Accepted. The Dispatch is stored, or an existing one is returned for its `Idempotency-Key`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DispatchAccepted'
+              examples:
+                payBase:
+                  summary: Pay two recipients on Base
+                  value: { dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4, status: queued }
+                callAndPaySolana:
+                  summary: A memo and a payment on Solana
+                  value: { dispatchId: 5757b997-07b6-4f94-a7f8-80e85ba8d43c, status: queued }
+                callBase:
+                  summary: A contract call on Base
+                  value: { dispatchId: e9dd9112-3da8-40e7-98e3-2bc34fb11a40, status: queued }
+                bulkCallBase:
+                  summary: Two payments in one Bulk Call on Base
+                  value: { dispatchId: 66d96716-22fe-4a3c-bc18-a08b1646fd40, status: queued }
+                relayBase:
+                  summary: Relay a signed Base transaction
+                  value: { dispatchId: 155d989f-0439-4c1c-ac75-68b2204b9d92, status: queued }
+                relaySolana:
+                  summary: Relay a signed Solana transaction
+                  value: { dispatchId: 78dbeb88-ec45-4e73-bf74-f71434302ba4, status: queued }
+                resubmitCancelled:
+                  summary: Resend the key of a cancelled Dispatch
+                  value: { dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2, status: cancelled }
+        '400':
+          description: The request is invalid. Nothing was stored, and the `Idempotency-Key` is not used up.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+                  - $ref: '#/components/schemas/RequestError'
+              examples:
+                missingIdempotencyKey:
+                  summary: No Idempotency-Key header
+                  value: { error: Idempotency-Key header is required }
+                unknownAsset:
+                  summary: A token the engine does not know
+                  value:
+                    code: UNKNOWN_ASSET
+                    message: no known token configured for asset "DAI"
+                    chainDetail: { asset: DAI }
+                decimalAmount:
+                  summary: An amount with a decimal point
+                  value: { error: 'items[0]: amount must be a non-negative integer string' }
+                invalidRecipient:
+                  summary: A malformed Base address
+                  value:
+                    code: INVALID_RECIPIENT
+                    message: 'not a well-formed EVM address: 0x8ba1f109551bD43280301264'
+                unknownChain:
+                  summary: A chain the API does not have
+                  value:
+                    statusCode: 400
+                    code: FST_ERR_VALIDATION
+                    error: Bad Request
+                    message: body/chain must be equal to one of the allowed values
+                relayNotDecodable:
+                  summary: Relay bytes that are not a transaction
+                  value:
+                    code: CHAIN_REJECTED
+                    message: not a decodable signed transaction
+                    chainDetail:
+                      error: "Position `1` is out of bounds (`0 < position < 1`).\n\nVersion: viem@2.56.9"
+                batchTooLarge:
+                  summary: A Bulk Call batch over the limit
+                  value:
+                    code: CHAIN_REJECTED
+                    message: maxBatchSize must be 1..50
+                    chainDetail: { maxBatchSize: 500 }
+                bulkCallOnSolana:
+                  summary: Bulk Call on Solana
+                  value: { error: chain solana has no Bulk Call mode }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: The body is over 1 MiB. A Dispatch of about 9,000 payment items fits; split a larger run into several Dispatches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestError'
+              examples:
+                bodyTooLarge:
+                  summary: A body over 1 MiB
+                  value:
+                    statusCode: 413
+                    code: FST_ERR_CTP_BODY_TOO_LARGE
+                    error: Payload Too Large
+                    message: Request body is too large
+
+  /v1/dispatch/{id}:
+    get:
+      tags: [Dispatches]
+      operationId: getDispatch
+      summary: Get a Dispatch
+      description: |
+        Returns one Dispatch, Managed or Relay, in its current state. `mode` says which shape the
+        body has. A Managed Dispatch has a status for the whole Dispatch and one per item. A Relay
+        Dispatch is one transaction, so its status, hash and error sit at the top level.
+
+        Add `include=timeline` to see every step the engine took, oldest first.
+        [The Dispatch lifecycle](./lifecycle.md) explains each status, and
+        [Track a Dispatch](./guides/track.md) reads a timeline line by line.
+      parameters:
+        - $ref: '#/components/parameters/DispatchId'
+        - name: include
+          in: query
+          required: false
+          description: '`timeline` adds a `timeline` array. Any other value leaves the body as it is.'
+          schema:
+            type: string
+          examples:
+            managedWithTimeline:
+              value: timeline
+      responses:
+        '200':
+          description: The Dispatch.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ManagedDispatch'
+                  - $ref: '#/components/schemas/RelayDispatch'
+              examples:
+                managed:
+                  summary: A Managed Dispatch, one item paid and one failed
+                  value:
+                    dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
+                    mode: managed
+                    chain: base
+                    createdAt: '2026-11-01T02:12:17.619Z'
+                    status: partial
+                    items:
+                      - type: payment
+                        recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                        asset: ETH
+                        decimals: 18
+                        amount: '50000000000000'
+                        status: confirmed
+                        transactionHash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        error: null
+                      - type: payment
+                        recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                        asset: USDC
+                        decimals: 6
+                        amount: '40000000'
+                        status: failed
+                        transactionHash: null
+                        error:
+                          code: INSUFFICIENT_FUNDS
+                          message: insufficient USDC balance
+                          chainDetail: { asset: USDC, short: '40000000' }
+                managedWithTimeline:
+                  summary: The same Dispatch with its timeline
+                  value:
+                    dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
+                    mode: managed
+                    chain: base
+                    createdAt: '2026-11-01T02:12:17.619Z'
+                    status: partial
+                    items:
+                      - type: payment
+                        recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                        asset: ETH
+                        decimals: 18
+                        amount: '50000000000000'
+                        status: confirmed
+                        transactionHash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        error: null
+                      - type: payment
+                        recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                        asset: USDC
+                        decimals: 6
+                        amount: '40000000'
+                        status: failed
+                        transactionHash: null
+                        error:
+                          code: INSUFFICIENT_FUNDS
+                          message: insufficient USDC balance
+                          chainDetail: { asset: USDC, short: '40000000' }
+                    timeline:
+                      - { kind: created, at: '2026-11-01T02:12:17.619Z' }
+                      - kind: failed
+                        at: '2026-11-01T02:12:18.695Z'
+                        hash: null
+                        items: [1]
+                        error:
+                          code: INSUFFICIENT_FUNDS
+                          message: insufficient USDC balance
+                          chainDetail: { asset: USDC, short: '40000000' }
+                      - { kind: claimed, at: '2026-11-01T02:12:22.042Z' }
+                      - kind: written
+                        at: '2026-11-01T02:12:22.050Z'
+                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        items: [0]
+                        replaces: null
+                      - kind: sent
+                        at: '2026-11-01T02:12:22.320Z'
+                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        items: [0]
+                      - kind: confirmed
+                        at: '2026-11-01T02:12:27.324Z'
+                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        items: [0]
+                relay:
+                  summary: A Relay Dispatch on Solana
+                  value:
+                    dispatchId: 78dbeb88-ec45-4e73-bf74-f71434302ba4
+                    mode: relay
+                    chain: solana
+                    createdAt: '2026-11-01T02:13:05.098Z'
+                    status: confirmed
+                    transactionHash: 5suMQ69pdMQgSMWUaHQBcrJ8ydto3tUFhfQPN4VXiWSPFvrjvkM2TVGUjfePRxQ1pxe1LWqgFkEXXQnTU5Z8KJkh
+                    error: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/dispatches:
+    get:
+      tags: [Dispatches]
+      operationId: listDispatches
+      summary: List Dispatches
+      description: |
+        Lists Managed and Relay Dispatches together, newest first, a page at a time. Each row is the
+        Dispatch without its items, plus how many items it has and the total per asset.
+
+        Pass `nextCursor` back as `cursor` until it is `null`. A `status` filter can return a short or
+        empty page that is not the last. [Pagination](./pagination.md) explains why.
+      parameters:
+        - name: limit
+          in: query
+          description: Rows per page.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+          examples:
+            firstPage: { value: 2 }
+            nextPage: { value: 2 }
+        - name: cursor
+          in: query
+          description: The `nextCursor` of the previous page, passed back as it came.
+          schema: { type: string }
+          examples:
+            nextPage:
+              value: WyIyMDI2LTExLTAxVDAyOjEzOjIxLjkyMTI3NloiLCJlY2Y1YWZmNy1kM2NlLTRjNzItOTJlZC0wNmY5MTBjN2I1ZjIiXQ
+        - name: chain
+          in: query
+          description: Only Dispatches on this chain.
+          schema: { $ref: '#/components/schemas/Chain' }
+          examples:
+            partialOnBase: { value: base }
+        - name: mode
+          in: query
+          description: Only Managed or only Relay Dispatches.
+          schema: { type: string, enum: [managed, relay] }
+        - name: status
+          in: query
+          description: |
+            Only Dispatches whose top-level status is this one, as Get a Dispatch reports it.
+            `abandoned` matches only a Relay Dispatch.
+          schema:
+            type: string
+            enum: [queued, broadcasting, confirmed, failed, partial, abandoned, cancelled]
+          examples:
+            partialOnBase: { value: partial }
+            unknownStatus: { value: done }
+        - name: from
+          in: query
+          description: Only Dispatches created at or after this ISO 8601 time.
+          schema: { type: string, format: date-time }
+          examples:
+            badFrom: { value: yesterday }
+        - name: to
+          in: query
+          description: Only Dispatches created before this ISO 8601 time.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: One page of Dispatches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DispatchPage'
+              examples:
+                firstPage:
+                  summary: The first page of two
+                  value:
+                    dispatches:
+                      - dispatchId: ec4a9228-b427-4f4e-9792-44ab1b8fcbd6
+                        mode: managed
+                        chain: solana
+                        status: confirmed
+                        createdAt: '2026-11-01T02:13:35.704Z'
+                        itemCount: 2
+                        totals: [{ asset: SOL, amount: '4650000', decimals: 9 }]
+                      - dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2
+                        mode: managed
+                        chain: base
+                        status: cancelled
+                        createdAt: '2026-11-01T02:13:21.921Z'
+                        itemCount: 1
+                        totals: [{ asset: USDC, amount: '12500000', decimals: 6 }]
+                    nextCursor: WyIyMDI2LTExLTAxVDAyOjEzOjIxLjkyMTI3NloiLCJlY2Y1YWZmNy1kM2NlLTRjNzItOTJlZC0wNmY5MTBjN2I1ZjIiXQ
+                nextPage:
+                  summary: The next page, two Relay Dispatches
+                  value:
+                    dispatches:
+                      - dispatchId: 78dbeb88-ec45-4e73-bf74-f71434302ba4
+                        mode: relay
+                        chain: solana
+                        status: confirmed
+                        transactionHash: 5suMQ69pdMQgSMWUaHQBcrJ8ydto3tUFhfQPN4VXiWSPFvrjvkM2TVGUjfePRxQ1pxe1LWqgFkEXXQnTU5Z8KJkh
+                        error: null
+                        createdAt: '2026-11-01T02:13:05.098Z'
+                        itemCount: 1
+                        totals: []
+                      - dispatchId: 155d989f-0439-4c1c-ac75-68b2204b9d92
+                        mode: relay
+                        chain: base
+                        status: confirmed
+                        transactionHash: '0x7361323e2ddfc2214b93957f9ff5526956239098bdd34ff983ed9fbf8fd61b1b'
+                        error: null
+                        createdAt: '2026-11-01T02:13:05.068Z'
+                        itemCount: 1
+                        totals: []
+                    nextCursor: WyIyMDI2LTExLTAxVDAyOjEzOjA1LjA2ODAxNloiLCIxNTVkOTg5Zi0wNDM5LTRjMWMtYWM3NS02OGIyMjA0YjlkOTIiXQ
+                partialOnBase:
+                  summary: Partly failed Dispatches on Base
+                  value:
+                    dispatches:
+                      - dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
+                        mode: managed
+                        chain: base
+                        status: partial
+                        createdAt: '2026-11-01T02:12:17.619Z'
+                        itemCount: 2
+                        totals:
+                          - { asset: ETH, amount: '50000000000000', decimals: 18 }
+                          - { asset: USDC, amount: '40000000', decimals: 6 }
+                    nextCursor: null
+        '400':
+          description: A query parameter is invalid.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PlainError'
+                  - $ref: '#/components/schemas/RequestError'
+              examples:
+                unknownStatus:
+                  summary: A status that does not exist
+                  value:
+                    statusCode: 400
+                    code: FST_ERR_VALIDATION
+                    error: Bad Request
+                    message: querystring/status must be equal to one of the allowed values
+                badFrom:
+                  summary: A time that is not ISO 8601
+                  value: { error: from must be an ISO 8601 timestamp }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/dispatch/{id}/cancel:
+    post:
+      tags: [Dispatches]
+      operationId: cancelDispatch
+      summary: Cancel a Dispatch
+      description: |
+        Withdraws a Managed or Relay Dispatch that the engine has not claimed yet. Nothing was or will
+        be signed, proposed or sent, and every item reads `cancelled`. The request has no body.
+
+        The cancel and the worker's claim are decided in one atomic write, so exactly one of them wins.
+        A running worker claims a queued Dispatch within a few seconds, so in practice you cancel what
+        is still waiting: when the worker is stopped, busy, or does not serve the chain. Cancelling a
+        cancelled Dispatch answers `200` with its current state. [Cancel a Dispatch](./guides/cancel.md)
+        has the rules.
+      parameters:
+        - $ref: '#/components/parameters/DispatchId'
+      responses:
+        '200':
+          description: Cancelled. The body is the Dispatch, as Get a Dispatch returns it.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ManagedDispatch'
+                  - $ref: '#/components/schemas/RelayDispatch'
+              examples:
+                cancelled:
+                  summary: A cancelled Dispatch
+                  value:
+                    dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2
+                    mode: managed
+                    chain: base
+                    createdAt: '2026-11-01T02:13:21.921Z'
+                    status: cancelled
+                    items:
+                      - type: payment
+                        recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                        asset: USDC
+                        decimals: 6
+                        amount: '12500000'
+                        status: cancelled
+                        transactionHash: null
+                        error: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Too late. The worker already claimed the Dispatch, whatever its items have done since.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyClaimed:
+                  summary: The worker already claimed it
+                  value:
+                    code: ALREADY_CLAIMED
+                    message: the engine has already claimed this Dispatch, so it can no longer be cancelled
+
+  /v1/senders:
+    get:
+      tags: [Senders]
+      operationId: listSenders
+      summary: List Senders
+      description: |
+        Returns one entry per enabled chain: the Sender's address and mode, the balances the Funding
+        Check looks at, and what the Signer reported about the key the engine signs with.
+
+        The API reads balances from the chain itself and keeps the answer for 15 seconds, so polling
+        this route costs at most one round of RPC reads per 15 seconds. It never calls the Signer:
+        `signerKey` is what the worker last read, at start and every five minutes after, and `readAt`
+        says when. A read that fails turns only its own field into `{ "error": "..." }`, and the route
+        still answers `200`. [Read Sender balances](./guides/sender-balances.md) shows how to use it
+        before you send.
+      responses:
+        '200':
+          description: The Senders, one per enabled chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SenderList'
+              examples:
+                twoSenders:
+                  summary: A plain Sender on each chain
+                  value:
+                    senders:
+                      - chain: base
+                        network: base-sepolia
+                        mode: single
+                        address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
+                        multisig: null
+                        balances:
+                          - holder: sender
+                            address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
+                            assets:
+                              - { asset: ETH, decimals: 18, balance: '5692964363506001', committed: '0' }
+                              - { asset: USDC, decimals: 6, balance: '0', committed: '0' }
+                        signerKey:
+                          curve: secp256k1
+                          address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
+                          readAt: '2026-11-01T02:09:20.649Z'
+                      - chain: solana
+                        network: devnet
+                        mode: single
+                        address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
+                        multisig: null
+                        balances:
+                          - holder: sender
+                            address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
+                            assets:
+                              - { asset: SOL, decimals: 9, balance: '9175636623', committed: '0' }
+                              - { asset: USDC, decimals: 6, balance: '0', committed: '0' }
+                        signerKey:
+                          curve: ed25519
+                          address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
+                          readAt: '2026-11-01T02:09:20.669Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Check the API is up
+      description: |
+        Answers `200` while the API process is running. It needs no token and reads nothing else: it
+        does not check the database, the worker, the Signer or any RPC.
+      security: []
+      responses:
+        '200':
+          description: The API process is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { const: ok }
+              examples:
+                up:
+                  summary: Running
+                  value: { status: ok }
+
+components:
+  securitySchemes:
+    apiToken:
+      type: http
+      scheme: bearer
+      description: |
+        The engine's API token, `AUTH_TOKEN` in its environment. There is one token per engine, with
+        no users or scopes, so treat it like a database password. The web console signs in with the
+        same token.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        A string you choose that makes the request safe to repeat. The same key returns the Dispatch
+        it already created. Keys are global to the engine, so derive one from your own records, such
+        as an invoice number or a payroll run id.
+      schema: { type: string, minLength: 1 }
+      examples:
+        payBase: { value: payroll-2026-11-01 }
+        callAndPaySolana: { value: invoice-4471 }
+        callBase: { value: call-base-2026-11-01 }
+        bulkCallBase: { value: bulk-base-2026-11-01 }
+        relayBase: { value: relay-order-8841 }
+        relaySolana: { value: relay-order-8842 }
+        resubmitCancelled: { value: refund-7731 }
+        unknownAsset: { value: probe-unknown-asset }
+        decimalAmount: { value: probe-decimal }
+        invalidRecipient: { value: probe-bad-addr }
+        unknownChain: { value: probe-chain }
+        relayNotDecodable: { value: probe-relay-bad }
+        batchTooLarge: { value: probe-batch }
+        bulkCallOnSolana: { value: probe-sol-bulk }
+        unauthorized: { value: payroll-2026-11-01 }
+    DispatchId:
+      name: id
+      in: path
+      required: true
+      description: The `dispatchId` that Create a Dispatch returned.
+      schema: { type: string, format: uuid }
+      examples:
+        managed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+        managedWithTimeline: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+        relay: { value: 78dbeb88-ec45-4e73-bf74-f71434302ba4 }
+        cancelled: { value: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2 }
+        alreadyClaimed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+        notFound: { value: 00000000-0000-4000-8000-000000000000 }
+        unauthorized: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+
+  responses:
+    Unauthorized:
+      description: The `Authorization` header is missing, or its token is not the engine's `AUTH_TOKEN`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PlainError'
+          examples:
+            unauthorized:
+              summary: A wrong API token
+              value: { error: unauthorized }
+    NotFound:
+      description: No Dispatch has this id. An id that is not a UUID gets the same answer.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PlainError'
+          examples:
+            notFound:
+              summary: No such Dispatch
+              value: { error: not found }
+
+  schemas:
+    Chain:
+      type: string
+      enum: [base, solana]
+      description: The chain. It must be in the engine's `ENABLED_CHAINS`. Which network it means, test or main, is the engine's configuration.
+
+    Amount:
+      type: string
+      pattern: '^\d+$'
+      description: A whole number in the asset's smallest unit, as a string. `40000000` is 40 USDC (6 decimals), and `50000000000000` wei is 0.00005 ETH.
+
+    PaymentRequest:
+      title: A payment item
+      type: object
+      required: [type, recipient, asset, amount]
+      properties:
+        type: { const: payment }
+        recipient:
+          type: string
+          description: The address that receives the payment. It needs no account with the engine.
+        asset:
+          type: string
+          description: '`ETH` on Base, `SOL` on Solana, or a token symbol the operator listed in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`.'
+        amount: { $ref: '#/components/schemas/Amount' }
+
+    BaseCallRequest:
+      title: A call item on Base
+      type: object
+      required: [type, to, data, value]
+      properties:
+        type: { const: call }
+        to: { type: string, description: The contract or address to call. }
+        data: { type: string, description: 'The calldata, as `0x` hex. `0x` sends no data.' }
+        value: { $ref: '#/components/schemas/Amount', description: The wei to send with the call, as a string. }
+
+    SolanaCallRequest:
+      title: A call item on Solana
+      type: object
+      required: [type, programId, accounts, data]
+      properties:
+        type: { const: call }
+        programId: { type: string, description: The program to invoke. }
+        accounts:
+          type: array
+          description: The instruction's accounts, in order. The engine can sign only for the Sender.
+          items:
+            type: object
+            required: [pubkey, isSigner, isWritable]
+            properties:
+              pubkey: { type: string }
+              isSigner: { type: boolean }
+              isWritable: { type: boolean }
+        data: { type: string, description: The instruction data, base64. }
+
+    BulkCall:
+      type: object
+      additionalProperties: false
+      required: [aggregator]
+      description: Base only. Sends the items as `aggregate3Value` calls through an aggregator contract you name.
+      properties:
+        aggregator:
+          type: string
+          minLength: 1
+          description: The aggregator's address. It must have contract code on the engine's network. ERC-20 items are refused through the canonical Multicall3.
+        maxBatchSize:
+          type: integer
+          minimum: 1
+          description: The most items per transaction. Defaults to, and cannot exceed, the operator's `BASE_BULK_CALL_MAX_BATCH_SIZE` (50 by default).
+        allowFailure:
+          type: boolean
+          default: false
+          description: '`false`: the items in one transaction land or fail together. `true`: each item lands or fails on its own, and the operator must set `BASE_TRACE_RPC_URL`.'
+
+    ManagedDispatchRequest:
+      title: A Managed Dispatch
+      type: object
+      additionalProperties: false
+      required: [chain, items]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        mode:
+          type: string
+          enum: [managed]
+          default: managed
+          description: Leave it out, or send `managed`.
+        items:
+          type: array
+          minItems: 1
+          description: What to send, in order. Mix payments and calls freely. Each item gets its own status.
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/PaymentRequest'
+              - $ref: '#/components/schemas/BaseCallRequest'
+              - $ref: '#/components/schemas/SolanaCallRequest'
+        retryPolicy:
+          type: boolean
+          description: Whether the engine may raise the fee of a stuck Base transaction. Left out, the operator's `DEFAULT_RETRY_POLICY` applies, which is off unless the operator turns it on. Fixed for the Dispatch's whole life.
+        bulkCall: { $ref: '#/components/schemas/BulkCall' }
+
+    RelayDispatchRequest:
+      title: A Relay Dispatch
+      type: object
+      additionalProperties: false
+      required: [chain, mode, signedTransaction]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        mode: { const: relay }
+        signedTransaction:
+          type: string
+          minLength: 1
+          description: |
+            The signed transaction, base64. On Base the usual `0x` hex raw transaction works too: an
+            EIP-1559 (type `0x02`) transaction for the engine's chain ID, with a low-s signature. On
+            Solana a legacy or v0 transaction whose every required signature verifies.
+
+    DispatchAccepted:
+      type: object
+      additionalProperties: false
+      required: [dispatchId, status]
+      properties:
+        dispatchId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [queued, broadcasting, cancelled]
+          description: '`queued` for a new Dispatch. A repeated `Idempotency-Key` returns the stored status of the Dispatch it created.'
+
+    DispatchStatus:
+      type: string
+      enum: [queued, broadcasting, confirmed, failed, partial, cancelled]
+      description: The whole Dispatch. `confirmed`, `failed` and `partial` are worked out from the items each time you read.
+
+    ItemStatus:
+      type: string
+      enum: [queued, awaiting_approval, broadcasting, confirmed, failed, abandoned, cancelled]
+      description: One item, or a Relay Dispatch's one transaction.
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - INSUFFICIENT_FUNDS
+            - INVALID_RECIPIENT
+            - UNKNOWN_ASSET
+            - CHAIN_REJECTED
+            - RPC_UNAVAILABLE
+            - SIGNER_UNREACHABLE
+            - SIGNER_REFUSED
+            - CHAIN_NOT_ENABLED
+            - NONCE_ALREADY_USED
+            - APPROVAL_REJECTED
+            - APPROVAL_TIMEOUT
+            - ALREADY_CLAIMED
+          description: What went wrong. Switch on this. [Errors](./errors.md) lists what to do about each.
+        message: { type: string, description: The most specific reason available, for people. On Base it is often the node's own words. }
+        chainDetail: { description: The raw detail from the chain or the check, such as a shortfall, a JSON-RPC code or revert data. Its shape depends on the code. }
+
+    PlainError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { type: string }
+
+    RequestError:
+      type: object
+      additionalProperties: false
+      required: [statusCode, code, error, message]
+      description: The HTTP server refused the request before the route read it.
+      properties:
+        statusCode: { type: integer, description: The HTTP status again. }
+        code:
+          type: string
+          enum: [FST_ERR_VALIDATION, FST_ERR_CTP_INVALID_JSON_BODY, FST_ERR_CTP_BODY_TOO_LARGE]
+          description: '`FST_ERR_VALIDATION`: the body or query string broke the route''s schema. `FST_ERR_CTP_INVALID_JSON_BODY`: the body is not valid JSON. `FST_ERR_CTP_BODY_TOO_LARGE`: the body is over 1 MiB.'
+        error: { type: string, description: The HTTP status text. }
+        message: { type: string, description: 'What broke, such as `body/chain must be equal to one of the allowed values`.' }
+
+    AssetTotal:
+      type: object
+      additionalProperties: false
+      required: [asset, amount]
+      properties:
+        asset: { type: string }
+        amount: { $ref: '#/components/schemas/Amount' }
+        decimals: { type: integer, description: How many decimal places the asset has. Left out when the asset is no longer configured. }
+
+    ChainRef:
+      description: The multisig's own handle for the Proposal, to open it in the Squads or Safe app.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, multisig, proposal, transactionIndex]
+          properties:
+            kind: { const: squads }
+            multisig: { type: string }
+            proposal: { type: string }
+            transactionIndex: { type: integer }
+        - type: object
+          additionalProperties: false
+          required: [kind, safe, safeTxHash, nonce]
+          properties:
+            kind: { const: safe }
+            safe: { type: string }
+            safeTxHash: { type: string }
+            nonce: { type: integer }
+
+    Approval:
+      type: object
+      additionalProperties: false
+      description: Only on an item of a Multisig Sender whose Call is in a Proposal.
+      required: [state, approvals, threshold, deadline, expected, chainRef]
+      properties:
+        state:
+          type: string
+          enum: [awaiting, approved, approved_after_deadline]
+          description: '`awaiting` is below the threshold. `approved` has reached it. `approved_after_deadline` was approved too late, and the engine will not execute it.'
+        approvals: { type: integer, description: The votes so far. }
+        threshold: { type: integer, description: The votes needed. }
+        deadline: { type: string, format: date-time, description: When the engine stops waiting. After it the item is `abandoned` with `APPROVAL_TIMEOUT`. }
+        expected:
+          type: object
+          additionalProperties: false
+          required: [recipients, totals]
+          description: What the engine says this Proposal pays. A mistake-catcher for Approvers, not a control.
+          properties:
+            recipients: { type: integer }
+            totals:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [asset, amount]
+                properties:
+                  asset: { type: string }
+                  amount: { $ref: '#/components/schemas/Amount' }
+        chainRef: { $ref: '#/components/schemas/ChainRef' }
+
+    ItemOutcome:
+      type: object
+      required: [status, transactionHash, error]
+      properties:
+        status: { $ref: '#/components/schemas/ItemStatus' }
+        transactionHash:
+          type: [string, 'null']
+          description: The transaction that carries the item. `null` until one is signed. Several items can share one.
+        error:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Error'
+          description: '`null` unless the item failed or was abandoned.'
+        approval: { $ref: '#/components/schemas/Approval' }
+
+    PaymentItem:
+      title: A payment item
+      allOf:
+        - $ref: '#/components/schemas/ItemOutcome'
+      type: object
+      unevaluatedProperties: false
+      required: [type, recipient, asset, amount]
+      properties:
+        type: { const: payment }
+        recipient: { type: string }
+        asset: { type: string }
+        decimals: { type: integer, description: The asset's decimal places, from the engine's configuration. Left out when the asset is no longer configured. }
+        amount: { $ref: '#/components/schemas/Amount' }
+
+    CallItem:
+      title: A call item
+      allOf:
+        - $ref: '#/components/schemas/ItemOutcome'
+      type: object
+      unevaluatedProperties: false
+      required: [type]
+      description: A call item shows only its target, `to` on Base or `programId` on Solana. Its data, value and accounts are left out.
+      properties:
+        type: { const: call }
+        to: { type: string }
+        programId: { type: string }
+      oneOf:
+        - required: [to]
+        - required: [programId]
+
+    TimelineEntry:
+      description: One step, oldest first. `items` are the positions of the items the step is about. `hash` names one version of a transaction.
+      oneOf:
+        - title: created
+          type: object
+          additionalProperties: false
+          required: [kind, at]
+          properties: { kind: { const: created }, at: { type: string, format: date-time } }
+        - title: claimed
+          type: object
+          additionalProperties: false
+          required: [kind, at]
+          properties: { kind: { const: claimed }, at: { type: string, format: date-time } }
+        - title: cancelled
+          type: object
+          additionalProperties: false
+          required: [kind, at]
+          properties: { kind: { const: cancelled }, at: { type: string, format: date-time } }
+        - title: written
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items, replaces]
+          properties:
+            kind: { const: written }
+            at: { type: string, format: date-time }
+            hash: { type: string }
+            items: { type: array, items: { type: integer } }
+            replaces: { type: [string, 'null'] }
+        - title: sent
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items]
+          properties:
+            kind: { const: sent }
+            at: { type: string, format: date-time }
+            hash: { type: string }
+            items: { type: array, items: { type: integer } }
+        - title: attempt
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items, error]
+          properties:
+            kind: { const: attempt }
+            at: { type: string, format: date-time }
+            hash: { type: string }
+            items: { type: array, items: { type: integer } }
+            error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        - title: replaced or dropped
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items, by]
+          properties:
+            kind: { enum: [replaced, dropped] }
+            at: { type: string, format: date-time }
+            hash: { type: string }
+            items: { type: array, items: { type: integer } }
+            by: { type: [string, 'null'] }
+        - title: confirmed
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items]
+          properties:
+            kind: { const: confirmed }
+            at: { type: string, format: date-time }
+            hash: { type: [string, 'null'] }
+            items: { type: array, items: { type: integer } }
+        - title: failed or abandoned
+          type: object
+          additionalProperties: false
+          required: [kind, at, hash, items, error]
+          properties:
+            kind: { enum: [failed, abandoned] }
+            at: { type: string, format: date-time }
+            hash: { type: [string, 'null'] }
+            items: { type: array, items: { type: integer } }
+            error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        - title: proposal_created
+          type: object
+          additionalProperties: false
+          required: [kind, at, proposalId, chainRef, items]
+          properties:
+            kind: { const: proposal_created }
+            at: { type: string, format: date-time }
+            proposalId: { type: string }
+            chainRef: { $ref: '#/components/schemas/ChainRef' }
+            items: { type: array, items: { type: integer } }
+        - title: proposal_approval
+          type: object
+          additionalProperties: false
+          required: [kind, at, proposalId, state, approvals, threshold]
+          properties:
+            kind: { const: proposal_approval }
+            at: { type: [string, 'null'], format: date-time }
+            proposalId: { type: string }
+            state: { type: string, enum: [awaiting, approved, approved_after_deadline] }
+            approvals: { type: integer }
+            threshold: { type: integer }
+        - title: proposal_timed_out
+          type: object
+          additionalProperties: false
+          required: [kind, at, proposalId]
+          properties:
+            kind: { const: proposal_timed_out }
+            at: { type: string, format: date-time }
+            proposalId: { type: string }
+        - title: proposal_resolved
+          type: object
+          additionalProperties: false
+          required: [kind, at, proposalId, outcome]
+          properties:
+            kind: { const: proposal_resolved }
+            at: { type: string, format: date-time }
+            proposalId: { type: string }
+            outcome: { type: string, enum: [executed, rejected, failed] }
+
+    ManagedDispatch:
+      title: A Managed Dispatch
+      type: object
+      additionalProperties: false
+      required: [dispatchId, mode, chain, createdAt, status, items]
+      properties:
+        dispatchId: { type: string, format: uuid }
+        mode: { const: managed }
+        chain: { $ref: '#/components/schemas/Chain' }
+        createdAt: { type: string, format: date-time, description: When the engine stored it. }
+        status: { $ref: '#/components/schemas/DispatchStatus' }
+        items:
+          type: array
+          description: One entry per item, in the order you sent them. Each repeats what you asked for and adds its own outcome.
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/PaymentItem'
+              - $ref: '#/components/schemas/CallItem'
+        timeline:
+          type: array
+          description: Only with `include=timeline`.
+          items: { $ref: '#/components/schemas/TimelineEntry' }
+
+    RelayDispatch:
+      title: A Relay Dispatch
+      type: object
+      additionalProperties: false
+      required: [dispatchId, mode, chain, createdAt, status, transactionHash, error]
+      properties:
+        dispatchId: { type: string, format: uuid }
+        mode: { const: relay }
+        chain: { $ref: '#/components/schemas/Chain' }
+        createdAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled]
+        transactionHash: { type: [string, 'null'] }
+        error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        timeline:
+          type: array
+          description: Only with `include=timeline`. The one transaction is item `0`.
+          items: { $ref: '#/components/schemas/TimelineEntry' }
+
+    DispatchRow:
+      description: A Dispatch without its items, plus `itemCount` and `totals`.
+      oneOf:
+        - title: A Managed Dispatch row
+          type: object
+          additionalProperties: false
+          required: [dispatchId, mode, chain, status, createdAt, itemCount, totals]
+          properties:
+            dispatchId: { type: string, format: uuid }
+            mode: { const: managed }
+            chain: { $ref: '#/components/schemas/Chain' }
+            status: { $ref: '#/components/schemas/DispatchStatus' }
+            createdAt: { type: string, format: date-time }
+            itemCount: { type: integer }
+            totals:
+              type: array
+              description: The sum per asset of the payment items. Call items carry no amount.
+              items: { $ref: '#/components/schemas/AssetTotal' }
+        - title: A Relay Dispatch row
+          type: object
+          additionalProperties: false
+          required: [dispatchId, mode, chain, status, transactionHash, error, createdAt, itemCount, totals]
+          properties:
+            dispatchId: { type: string, format: uuid }
+            mode: { const: relay }
+            chain: { $ref: '#/components/schemas/Chain' }
+            status: { type: string, enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled] }
+            transactionHash: { type: [string, 'null'] }
+            error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+            createdAt: { type: string, format: date-time }
+            itemCount: { const: 1 }
+            totals: { type: array, maxItems: 0 }
+
+    DispatchPage:
+      type: object
+      additionalProperties: false
+      required: [dispatches, nextCursor]
+      properties:
+        dispatches:
+          type: array
+          items: { $ref: '#/components/schemas/DispatchRow' }
+        nextCursor:
+          type: [string, 'null']
+          description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+
+    ReadError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: A read that failed. Balance and threshold errors carry an error code, such as `RPC_UNAVAILABLE`.
+      properties:
+        error: { type: string }
+
+    Sender:
+      type: object
+      additionalProperties: false
+      required: [chain, network, mode, address, multisig, balances, signerKey]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        network:
+          description: |
+            The network the engine talks to, for explorer links. On Base, from `BASE_CHAIN_ID`:
+            `base` for 8453, `base-sepolia` for 84532, and `{ "chainId": n }` for any other. On
+            Solana, from the RPC's genesis hash: `mainnet-beta`, `devnet`, `testnet` or `unknown`.
+          oneOf:
+            - type: string
+              enum: [base, base-sepolia, mainnet-beta, devnet, testnet, unknown]
+            - type: object
+              additionalProperties: false
+              required: [chainId]
+              properties:
+                chainId: { type: integer }
+        mode:
+          type: string
+          enum: [single, squads, safe]
+          description: '`single` is a plain key. `squads` and `safe` are Multisig Senders.'
+        address: { type: string, description: 'The Sender: the plain key, the Squads vault or the Safe.' }
+        multisig:
+          description: '`null` for `single`.'
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [address, threshold, engineKey]
+              properties:
+                address: { type: string, description: The Squads multisig account or the Safe. }
+                threshold:
+                  description: The approval threshold, as the chain reports it.
+                  oneOf:
+                    - type: integer
+                    - $ref: '#/components/schemas/ReadError'
+                engineKey: { type: string, description: The engine's own key, the Squads member key or the Safe executor. }
+        balances:
+          type: array
+          description: The balances the Funding Check looks at.
+          items:
+            type: object
+            additionalProperties: false
+            required: [holder, address, assets]
+            properties:
+              holder:
+                type: string
+                enum: [sender, vault, memberKey, safe, executor]
+                description: The same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`.
+              address: { type: string }
+              assets:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [asset, balance, committed]
+                  properties:
+                    asset: { type: string }
+                    decimals: { type: integer }
+                    balance:
+                      description: The balance in the smallest unit.
+                      oneOf:
+                        - $ref: '#/components/schemas/Amount'
+                        - $ref: '#/components/schemas/ReadError'
+                    committed:
+                      $ref: '#/components/schemas/Amount'
+                      description: What open Proposals and Calls waiting to be proposed already hold back. Always `0` for a plain Sender.
+        signerKey:
+          description: What the Signer reported about the key the engine signs with, as the worker last read it.
+          oneOf:
+            - title: Pins
+              type: object
+              additionalProperties: false
+              required: [address, curve, readAt]
+              properties:
+                address: { type: string }
+                curve: { type: string, enum: [secp256k1, ed25519] }
+                chainIds: { type: array, items: { type: integer } }
+                allowedSafe: { type: string }
+                allowedMultisig: { type: string }
+                readAt: { type: string, format: date-time }
+            - title: A failed read
+              type: object
+              additionalProperties: false
+              required: [error, readAt]
+              properties:
+                error:
+                  type: string
+                  enum:
+                    - the Signer has no key for this address
+                    - the Signer is too old to report a key policy
+                    - the Signer could not be reached
+                readAt: { type: string, format: date-time }
+            - title: Not read yet
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { const: not_read_yet }
+
+    SenderList:
+      type: object
+      additionalProperties: false
+      required: [senders]
+      properties:
+        senders:
+          type: array
+          items: { $ref: '#/components/schemas/Sender' }
