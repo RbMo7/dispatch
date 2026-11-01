@@ -36,7 +36,9 @@ tags:
       token; writing them takes the operator token.
   - name: Senders
     description: |
-      The Sender is the wallet each chain pays from. One Sender per enabled chain.
+      A Sender is a wallet the engine pays from. Each enabled chain has one or more, each named,
+      with its own key, mode, balances and nonces, and at most one per chain is the default. A
+      Managed Dispatch names its Sender with `sender`, or pays from its chain's default.
   - name: Setup
     description: |
       The engine's setup checks, the same ones `pnpm dispatch doctor` runs, as this engine last ran
@@ -68,6 +70,11 @@ paths:
         stored whole as `held`, and the `202` says so. Nothing is signed, proposed or sent until an
         operator releases it. A Relay Dispatch is never checked, and a repeated `Idempotency-Key`
         answers with the stored Dispatch, held or not, whatever the rules say now.
+
+        `sender` names the configured Sender that pays, as [List Senders](./openapi.yaml#list-senders)
+        names it. Left out, the chain's default Sender pays. A name the chain does not have is a `400`
+        with `UNKNOWN_SENDER`, and leaving it out on a chain with no default is a `400` with
+        `SENDER_REQUIRED`. A Relay Dispatch has no Sender and refuses the field.
 
         To pay through an aggregator contract on Base, add `bulkCall`. To relay a transaction your user
         signed, send `mode: "relay"` and `signedTransaction` instead of `items`. The
@@ -155,6 +162,33 @@ paths:
                       recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
                       asset: USDC
                       amount: '12500000'
+              payFromTreasury:
+                summary: Pay from a named Sender
+                value:
+                  chain: base
+                  sender: treasury
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '250000000000000'
+              unknownSender:
+                summary: A Sender the chain does not have
+                value:
+                  chain: base
+                  sender: ops
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '1'
+              relayWithSender:
+                summary: A Relay Dispatch that names a Sender
+                value:
+                  chain: base
+                  mode: relay
+                  sender: payouts
+                  signedTransaction: '0x02f87183014a3480830f424083d59f80825208948ba1f109551bd432803012645ac136ddd64dba72861b48eb57e00080c001a02c2bc48c3fcabc9f5ea48fb0ee592480f25b957f0ccda68374bb34bb70719e62a0610f05e4780b00923708bd656935e31968d8ca6f21a0c326678105c5b13f54a3'
               heldBase:
                 summary: A payment over a Flag Rule's limit
                 value:
@@ -272,6 +306,9 @@ paths:
                 resubmitCancelled:
                   summary: Resend the key of a cancelled Dispatch
                   value: { dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2, status: cancelled }
+                payFromTreasury:
+                  summary: Pay from a named Sender
+                  value: { dispatchId: 0b6e4f2a-8c31-4d97-a5e2-9f1c3d7b8a60, status: queued }
                 heldBase:
                   summary: Held by a Flag Rule
                   value: { dispatchId: 3f8e2a61-9c4d-4b7e-8f12-6a5d0c9e4b27, status: held }
@@ -325,6 +362,15 @@ paths:
                 bulkCallOnSolana:
                   summary: Bulk Call on Solana
                   value: { error: chain solana has no Bulk Call mode }
+                unknownSender:
+                  summary: A Sender the chain does not have
+                  value:
+                    code: UNKNOWN_SENDER
+                    message: 'base has no Sender named "ops" (payouts, treasury)'
+                relayWithSender:
+                  summary: A Relay Dispatch that names a Sender
+                  value:
+                    error: 'a relay dispatch has no Sender: it arrives already signed by its own wallet, so it takes no sender'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '413':
@@ -385,6 +431,7 @@ paths:
                     dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
                     mode: managed
                     chain: base
+                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                     createdAt: '2026-11-01T02:12:17.619Z'
                     status: partial
                     items:
@@ -413,6 +460,7 @@ paths:
                     dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
                     mode: managed
                     chain: base
+                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                     createdAt: '2026-11-01T02:12:17.619Z'
                     status: partial
                     items:
@@ -475,6 +523,7 @@ paths:
                     dispatchId: 3f8e2a61-9c4d-4b7e-8f12-6a5d0c9e4b27
                     mode: managed
                     chain: base
+                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                     createdAt: '2026-11-01T02:14:02.311Z'
                     status: held
                     items:
@@ -545,6 +594,15 @@ paths:
           examples:
             partialOnBase: { value: partial }
             unknownStatus: { value: done }
+        - name: sender
+          in: query
+          description: |
+            Only Managed Dispatches paid by the Sender of this name, so never a Relay Dispatch. Names
+            are unique per chain, so without `chain` it matches every chain's Sender of that name.
+          schema: { type: string, minLength: 1 }
+          examples:
+            byTreasury: { value: treasury }
+            unknownSenderFilter: { value: ops }
         - name: from
           in: query
           description: Only Dispatches created at or after this ISO 8601 time.
@@ -570,6 +628,7 @@ paths:
                       - dispatchId: ec4a9228-b427-4f4e-9792-44ab1b8fcbd6
                         mode: managed
                         chain: solana
+                        sender: { name: payouts, address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf }
                         status: confirmed
                         createdAt: '2026-11-01T02:13:35.704Z'
                         itemCount: 2
@@ -577,6 +636,7 @@ paths:
                       - dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2
                         mode: managed
                         chain: base
+                        sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                         status: cancelled
                         createdAt: '2026-11-01T02:13:21.921Z'
                         itemCount: 1
@@ -605,6 +665,19 @@ paths:
                         itemCount: 1
                         totals: []
                     nextCursor: WyIyMDI2LTExLTAxVDAyOjEzOjA1LjA2ODAxNloiLCIxNTVkOTg5Zi0wNDM5LTRjMWMtYWM3NS02OGIyMjA0YjlkOTIiXQ
+                byTreasury:
+                  summary: The Dispatches the treasury Sender paid
+                  value:
+                    dispatches:
+                      - dispatchId: 0b6e4f2a-8c31-4d97-a5e2-9f1c3d7b8a60
+                        mode: managed
+                        chain: base
+                        sender: { name: treasury, address: '0x5afe000000000000000000000000000000005afe' }
+                        status: queued
+                        createdAt: '2026-11-01T02:13:58.204Z'
+                        itemCount: 1
+                        totals: [{ asset: ETH, amount: '250000000000000', decimals: 18 }]
+                    nextCursor: null
                 partialOnBase:
                   summary: Partly failed Dispatches on Base
                   value:
@@ -612,6 +685,7 @@ paths:
                       - dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
                         mode: managed
                         chain: base
+                        sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                         status: partial
                         createdAt: '2026-11-01T02:12:17.619Z'
                         itemCount: 2
@@ -620,14 +694,18 @@ paths:
                           - { asset: USDC, amount: '40000000', decimals: 6 }
                     nextCursor: null
         '400':
-          description: A query parameter is invalid.
+          description: A query parameter is invalid, or `sender` names no configured Sender.
           content:
             application/json:
               schema:
                 oneOf:
+                  - $ref: '#/components/schemas/Error'
                   - $ref: '#/components/schemas/PlainError'
                   - $ref: '#/components/schemas/RequestError'
               examples:
+                unknownSenderFilter:
+                  summary: A Sender no chain has
+                  value: { code: UNKNOWN_SENDER, message: 'no Sender named "ops"' }
                 unknownStatus:
                   summary: A status that does not exist
                   value:
@@ -688,6 +766,7 @@ paths:
                     dispatchId: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2
                     mode: managed
                     chain: base
+                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                     createdAt: '2026-11-01T02:13:21.921Z'
                     status: cancelled
                     items:
@@ -771,6 +850,7 @@ paths:
                     dispatchId: 3f8e2a61-9c4d-4b7e-8f12-6a5d0c9e4b27
                     mode: managed
                     chain: base
+                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
                     createdAt: '2026-11-01T02:14:02.311Z'
                     status: queued
                     items:
@@ -1411,8 +1491,10 @@ paths:
       operationId: listSenders
       summary: List Senders
       description: |
-        Returns one entry per enabled chain: the Sender's address and mode, the balances the Funding
-        Check looks at, and what the Signer reported about the key the engine signs with.
+        Returns one entry per Sender, each chain's in the order the senders file lists them: its name,
+        whether it is its chain's default, its address and mode, the balances the Funding Check looks
+        at, and what the Signer reported about the key the engine signs with. Without a senders file,
+        each enabled chain has one Sender, named `default`, and it is the default.
 
         The API reads balances from the chain itself and keeps the answer for 15 seconds, so polling
         this route costs at most one round of RPC reads per 15 seconds. It never calls the Signer:
@@ -1422,7 +1504,7 @@ paths:
         before you send.
       responses:
         '200':
-          description: The Senders, one per enabled chain.
+          description: The Senders, each enabled chain's one or more.
           content:
             application/json:
               schema:
@@ -1433,6 +1515,8 @@ paths:
                   value:
                     senders:
                       - chain: base
+                        name: payouts
+                        default: true
                         network: base-sepolia
                         mode: single
                         address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
@@ -1448,6 +1532,8 @@ paths:
                           address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
                           readAt: '2026-11-01T02:09:20.649Z'
                       - chain: solana
+                        name: payouts
+                        default: true
                         network: devnet
                         mode: single
                         address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
@@ -1529,6 +1615,9 @@ components:
         relaySolana: { value: relay-order-8842 }
         resubmitCancelled: { value: refund-7731 }
         heldBase: { value: payout-9912 }
+        payFromTreasury: { value: treasury-2026-11-01 }
+        unknownSender: { value: probe-unknown-sender }
+        relayWithSender: { value: probe-relay-sender }
         unknownAsset: { value: probe-unknown-asset }
         decimalAmount: { value: probe-decimal }
         invalidRecipient: { value: probe-bad-addr }
@@ -1708,6 +1797,10 @@ components:
       required: [chain, items]
       properties:
         chain: { $ref: '#/components/schemas/Chain' }
+        sender:
+          type: string
+          minLength: 1
+          description: The name of the configured Sender that pays. Left out, the chain's default Sender pays.
         mode:
           type: string
           enum: [managed]
@@ -1780,6 +1873,8 @@ components:
             - SIGNER_UNREACHABLE
             - SIGNER_REFUSED
             - CHAIN_NOT_ENABLED
+            - UNKNOWN_SENDER
+            - SENDER_REQUIRED
             - NONCE_ALREADY_USED
             - APPROVAL_REJECTED
             - APPROVAL_TIMEOUT
@@ -2040,6 +2135,7 @@ components:
         dispatchId: { type: string, format: uuid }
         mode: { const: managed }
         chain: { $ref: '#/components/schemas/Chain' }
+        sender: { $ref: '#/components/schemas/SenderRef' }
         createdAt: { type: string, format: date-time, description: When the engine stored it. }
         status: { $ref: '#/components/schemas/DispatchStatus' }
         items:
@@ -2086,6 +2182,7 @@ components:
             dispatchId: { type: string, format: uuid }
             mode: { const: managed }
             chain: { $ref: '#/components/schemas/Chain' }
+            sender: { $ref: '#/components/schemas/SenderRef' }
             status: { $ref: '#/components/schemas/DispatchStatus' }
             createdAt: { type: string, format: date-time }
             itemCount: { type: integer }
@@ -2131,9 +2228,15 @@ components:
     Sender:
       type: object
       additionalProperties: false
-      required: [chain, network, mode, address, multisig, balances, signerKey]
+      required: [chain, name, default, network, mode, address, multisig, balances, signerKey]
       properties:
         chain: { $ref: '#/components/schemas/Chain' }
+        name:
+          type: string
+          description: The Sender's configured name, the one `sender` takes on Create a Dispatch.
+        default:
+          type: boolean
+          description: Whether a Dispatch on this chain that names no Sender pays from it.
         network:
           description: |
             The network the engine talks to, for explorer links. On Base, from `BASE_CHAIN_ID`:
@@ -2506,3 +2609,16 @@ components:
         checks:
           type: array
           items: { $ref: '#/components/schemas/SetupCheck' }
+
+    SenderRef:
+      type: object
+      additionalProperties: false
+      required: [name, address]
+      description: |
+        The Sender that pays, recorded when the Dispatch was accepted. `name` is its name in the
+        current configuration, so renaming a Sender keeps its history, and `null` when no configured
+        Sender has the address any more. Absent only on a Dispatch stored before named Senders, until
+        the engine gives it to its chain's default Sender at startup. A Relay Dispatch has none.
+      properties:
+        name: { type: [string, 'null'] }
+        address: { type: string, description: 'The plain key, the Squads vault or the Safe.' }

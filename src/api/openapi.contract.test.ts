@@ -14,6 +14,7 @@ import { SolanaChainHandler } from '../chain-handler/solana/solana-chain-handler
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import { CHAINS } from '../domain/chain.js';
 import { err, ok } from '../domain/result.js';
+import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import type { AssetDecimals } from './asset-decimals.js';
@@ -165,6 +166,8 @@ const assetDecimals: AssetDecimals = (chain, asset) =>
 const senderConfigs: SenderConfig[] = [
   {
     chain: 'base',
+    name: 'payouts',
+    isDefault: true,
     network: 'base-sepolia',
     address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A',
     assets: ['ETH', 'USDC'],
@@ -172,6 +175,8 @@ const senderConfigs: SenderConfig[] = [
   },
   {
     chain: 'solana',
+    name: 'payouts',
+    isDefault: true,
     network: 'devnet',
     address: 'Vault1111111111111111111111111111111111111',
     assets: ['SOL', 'USDC'],
@@ -186,6 +191,8 @@ const senderConfigs: SenderConfig[] = [
   },
   {
     chain: 'base',
+    name: 'treasury',
+    isDefault: false,
     network: { chainId: 31337 },
     address: '0x5afe000000000000000000000000000000005afe',
     assets: ['ETH'],
@@ -275,28 +282,41 @@ const readSetup = setupReader({
 
 async function buildContractApp() {
   const store = new InMemoryDispatchStore();
-  const chainRegistry = await ChainRegistry.load(['base', 'solana'], {
-    base: () =>
-      BaseChainHandler.create({
-        rpcUrl: 'http://base.invalid',
-        chainId: 84532,
-        senderAddress: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A',
-        knownTokens: parseBaseKnownTokens('USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6'),
-        nonceHistoryStore: new InMemoryNonceHistoryStore(),
-        bulkCallMaxBatchSize: 50,
-        fetch: fakeBaseRpc,
-      }),
-    solana: () =>
-      Promise.resolve(
-        new SolanaChainHandler({
-          connection: new Connection('http://solana.invalid'),
-          senderAddress: '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf',
-          knownTokens: parseSolanaKnownTokens(
-            'USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
-          ),
-        }),
-      ),
+  const baseHandler = (senderAddress: string) =>
+    BaseChainHandler.create({
+      rpcUrl: 'http://base.invalid',
+      chainId: 84532,
+      senderAddress,
+      knownTokens: parseBaseKnownTokens('USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6'),
+      nonceHistoryStore: new InMemoryNonceHistoryStore(),
+      bulkCallMaxBatchSize: 50,
+      fetch: fakeBaseRpc,
+    });
+  const sender = (chain: 'base' | 'solana', name: string, address: string, isDefault: boolean) => ({
+    chain,
+    name: name as SenderName,
+    address: address as SenderAddress,
+    isDefault,
   });
+  // Two named Senders on Base, `payouts` the default, and one on Solana.
+  const chainRegistry = ChainRegistry.fromSenders([
+    {
+      ...sender('base', 'payouts', '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A', true),
+      handler: await baseHandler('0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'),
+    },
+    {
+      ...sender('base', 'treasury', '0x5afe000000000000000000000000000000005afe', false),
+      handler: await baseHandler('0x5afe000000000000000000000000000000005afe'),
+    },
+    {
+      ...sender('solana', 'payouts', '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf', true),
+      handler: new SolanaChainHandler({
+        connection: new Connection('http://solana.invalid'),
+        senderAddress: '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf',
+        knownTokens: parseSolanaKnownTokens('USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6'),
+      }),
+    },
+  ]);
   const routes: string[] = [];
   const app = buildApp({
     store,

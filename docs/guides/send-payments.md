@@ -60,6 +60,8 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch" \
 
 `202` means the engine stored the Dispatch. It says nothing about the balance or the chain yet.
 
+If the operator configured several Senders on the chain, add `"sender": "<name>"` to pay from one of them. [List Senders](../openapi.yaml#list-senders) shows each Sender's `name` and which is the `default`. Without `sender`, the chain's default Sender pays. A name the chain does not have is refused with `UNKNOWN_SENDER`, and nothing is stored.
+
 ## 5. Poll until it is final
 
 ```sh
