@@ -59,6 +59,24 @@ pnpm dev:worker     # in another
 
 Configuration is environment variables, documented in [`.env.example`](./.env.example). A local `.env` is loaded automatically, and real environment variables win. Chains are switched on by `ENABLED_CHAINS` (ADR-0019); `BASE_TRACE_RPC_URL` (a tracing-capable RPC) is only needed for Bulk Call's `allowFailure: true`. On Solana mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`.
 
+### Setting it up
+
+`pnpm dispatch init` sets up a working engine. It first checks for Node 22, pnpm, Docker and Compose, and prints how to install anything missing on this operating system. Then it asks:
+
+- which chains to enable, and the network for each (devnet or Base Sepolia, unless you type `yes, mainnet`) and its RPC URL,
+- how each Sender signs: a new local encrypted key made by the Signer's own `keys new`, an existing Privy wallet, an existing AWS KMS key, or the committed dev keyfile (development only),
+- whether the Sender is a plain wallet, a Squads multisig or a Safe,
+- the database (Compose's Postgres by default).
+
+It writes `signer/local/signer.config.json` (a default policy per key, and the pin for a Multisig Sender) and `.env`. Both are mode 0600, the old file is backed up first, and every `.env` line init does not set is kept. It generates `AUTH_TOKEN`, `OPERATOR_TOKEN` and `SIGNER_AUTH_TOKEN` into `.env` and never prints them. If you say yes to starting the services, it starts Postgres and the Signer with Docker Compose, applies migrations, starts the API and the worker, and waits for each. It ends by running `doctor` and listing each address to fund, with a faucet link on test networks.
+
+```sh
+pnpm install && pnpm dispatch init
+SIGNER_KEYSTORE_PASSPHRASE=… pnpm dispatch init --yes --chains solana --solana-signer local --no-start
+```
+
+Run it again to change one chain or add another. It shows the current setup, changes only what you pick, and never replaces a token that passes `doctor`. A local key's passphrase is read without echo (with `--yes`, from `SIGNER_KEYSTORE_PASSPHRASE`) and never written to a file, so Compose's Signer takes it from the shell that runs `docker compose`. `pnpm dispatch init --help` lists every flag.
+
 ### Checking a setup
 
 `pnpm dispatch doctor` checks the setup in this directory's environment and `.env`: configuration, the database and its migrations, each enabled chain's RPC and network, the Signer (reachable, token accepted, key held, a Multisig Sender's key pinned, and no Signer settings in the API's environment), the fee and token balances, the multisig, and the console build. It prints one line per check, PASS, WARN or FAIL, and the step that fixes each warning and failure. It never prints a secret, only the name of the variable that holds it.
