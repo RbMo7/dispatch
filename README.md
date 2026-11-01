@@ -59,6 +59,18 @@ pnpm dev:worker     # in another
 
 Configuration is environment variables, documented in [`.env.example`](./.env.example). A local `.env` is loaded automatically, and real environment variables win. Chains are switched on by `ENABLED_CHAINS` (ADR-0019); `BASE_TRACE_RPC_URL` (a tracing-capable RPC) is only needed for Bulk Call's `allowFailure: true`. On Solana mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`.
 
+### Checking a setup
+
+`pnpm dispatch doctor` checks the setup in this directory's environment and `.env`: configuration, the database and its migrations, each enabled chain's RPC and network, the Signer (reachable, token accepted, key held, a Multisig Sender's key pinned, and no Signer settings in the API's environment), the fee and token balances, the multisig, and the console build. It prints one line per check, PASS, WARN or FAIL, and the step that fixes each warning and failure. It never prints a secret, only the name of the variable that holds it.
+
+```sh
+pnpm dispatch doctor                    # every check, grouped by area
+pnpm dispatch doctor --only signer      # one area: configuration, database, chain, signer, sender, multisig, console
+pnpm dispatch doctor --json             # the same results as JSON
+```
+
+It exits 0 when nothing failed, 1 when a check failed (so a deploy can stop on it), and 2 when it could not run. The fee check compares the fee payer's balance with the fees the engine paid on that chain in the last 24 hours, read from the chain for the latest 20 Transactions; with no history yet it warns only at a zero balance.
+
 ## Console
 
 `web/` holds the operator console, the docs site and the landing page ([`web/README.md`](./web/README.md)). Build it with `pnpm --dir web install && pnpm --dir web build`, and the API serves the console at `/console` and the docs at `/docs`, redirecting `/` to the console. Without a build the API serves only the API. The console's pages are not built yet; `/console/_primitives` shows the design system they will use.
