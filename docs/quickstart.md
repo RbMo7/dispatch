@@ -2,7 +2,7 @@
 
 In this guide you run the engine on your machine and send one payment on a test network: 0.0001 ETH on Base Sepolia, or 0.01 SOL on Solana devnet. You finish with a Dispatch whose status is `confirmed` and a transaction you can open in a block explorer. Allow about 20 minutes, most of it waiting for a faucet.
 
-Every command below was run as written. Where an example shows an address, a hash or an id, yours will differ.
+Where an example shows an address, a hash or an id, yours will differ.
 
 ## Before you start
 
@@ -126,7 +126,7 @@ cat > "$HOME/.dispatch/signer.json" <<'EOF'
 EOF
 ```
 
-The engine and the Signer share a bearer token, so nothing else on your network can ask for a signature. Generate one, and note it, because the engine needs the same value in step 6:
+The worker and the Signer share a bearer token, so nothing else on your network can ask for a signature. Generate one, and note it, because the worker needs the same value in step 6:
 
 ```sh
 export SIGNER_AUTH_TOKEN=$(openssl rand -hex 32)
@@ -146,7 +146,7 @@ NOTICE: the local backend decrypts keys from /Users/you/.dispatch/keystore into 
 signer listening on :8421
 ```
 
-If it prints `signer refused to start:` instead, the line after it says what is wrong. [Read the startup checks](./signer.md#read-the-startup-checks) lists every message.
+If it prints `signer refused to start:` instead, the line after it says what is wrong. [Read the startup checks](./self-hosting/signer.md#read-the-startup-checks) lists every message.
 
 ## 6. Configure the engine
 
@@ -172,7 +172,9 @@ SIGNER_AUTH_TOKEN=<the token from step 5>
 AUTH_TOKEN=<a new random token>
 ```
 
-The rest of `.env.example` already points at Base Sepolia (`BASE_RPC_URL=https://sepolia.base.org`, `BASE_CHAIN_ID=84532`) and Solana devnet (`SOLANA_RPC_URL=https://api.devnet.solana.com`). Public endpoints rate-limit, so for anything beyond this guide use your own RPC provider. [Configuration](./operations/configuration.md) explains every setting.
+The API and the worker both read `.env`. Only the worker uses `SIGNER_AUTH_TOKEN`. In production, give the Signer settings to the worker alone, as [Set up a Signer](./self-hosting/signer.md#8-point-the-engine-at-the-signer) explains.
+
+The rest of `.env.example` already points at Base Sepolia (`BASE_RPC_URL=https://sepolia.base.org`, `BASE_CHAIN_ID=84532`) and Solana devnet (`SOLANA_RPC_URL=https://api.devnet.solana.com`). Public endpoints rate-limit, so for anything beyond this guide use your own RPC provider. [Configuration](./self-hosting/configuration.md) explains every setting.
 
 ## 7. Start the API and the worker
 
@@ -228,7 +230,7 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch" \
     "items": [
       {
         "type": "payment",
-        "recipient": "HUJCp4QWFAtmTa6oEk4gXw5r2fuCah4FHn8c12QBv9KB",
+        "recipient": "Dmp2B7tvZKohJCYoD7YRk4aTo5k1Ndz2Wh7pGYsSCaT2",
         "asset": "SOL",
         "amount": "10000000"
       }
@@ -236,20 +238,29 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch" \
   }'
 ```
 
-The engine stores the Dispatch and answers right away with its id:
+The engine stores the Dispatch and answers at once with its id:
 
-```json
-{ "dispatchId": "cfd579de-2909-4ee5-ba4c-64e08db93040", "status": "queued" }
+```json title="Base"
+{ "dispatchId": "74192aa6-2141-477f-bba2-57d5004cbf88", "status": "queued" }
 ```
 
-`amount` is in the asset's smallest unit: 100000000000000 wei is 0.0001 ETH, and 10000000 lamports is 0.01 SOL. [Your first Dispatch, line by line](./first-dispatch.md) explains each field.
+```json title="Solana"
+{ "dispatchId": "622f4dc3-6ea0-4f6d-821f-77f566838442", "status": "queued" }
+```
+
+`amount` is in the asset's smallest unit: 100000000000000 wei is 0.0001 ETH, and 10000000 lamports is 0.01 SOL. [Making requests](./making-requests.md) explains amounts and the `Idempotency-Key`.
 
 ## 9. Poll until it is confirmed
 
 Save the id from the response and ask for the Dispatch:
 
-```sh
-export DISPATCH_ID=cfd579de-2909-4ee5-ba4c-64e08db93040
+```sh title="Base"
+export DISPATCH_ID=74192aa6-2141-477f-bba2-57d5004cbf88
+curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISPATCH_TOKEN"
+```
+
+```sh title="Solana"
+export DISPATCH_ID=622f4dc3-6ea0-4f6d-821f-77f566838442
 curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISPATCH_TOKEN"
 ```
 
@@ -257,8 +268,10 @@ Within a few seconds the worker claims it and sends the transaction. The item is
 
 ```json title="Base"
 {
-  "dispatchId": "cfd579de-2909-4ee5-ba4c-64e08db93040",
+  "dispatchId": "74192aa6-2141-477f-bba2-57d5004cbf88",
   "mode": "managed",
+  "chain": "base",
+  "createdAt": "2026-11-01T02:12:18.094Z",
   "status": "confirmed",
   "items": [
     {
@@ -268,7 +281,7 @@ Within a few seconds the worker claims it and sends the transaction. The item is
       "decimals": 18,
       "amount": "100000000000000",
       "status": "confirmed",
-      "transactionHash": "0xc45a587722caedff3ceb01804d121eb746463f30a79f13fe42d79fd8264c5bb3",
+      "transactionHash": "0x566ab1449175d2558f4533089c1221236f28cdf18d6adece139f1be908638c8f",
       "error": null
     }
   ]
@@ -277,25 +290,27 @@ Within a few seconds the worker claims it and sends the transaction. The item is
 
 ```json title="Solana"
 {
-  "dispatchId": "f047a17d-4058-44c6-bd81-42c3f831963a",
+  "dispatchId": "622f4dc3-6ea0-4f6d-821f-77f566838442",
   "mode": "managed",
+  "chain": "solana",
+  "createdAt": "2026-11-01T02:12:18.124Z",
   "status": "confirmed",
   "items": [
     {
       "type": "payment",
-      "recipient": "HUJCp4QWFAtmTa6oEk4gXw5r2fuCah4FHn8c12QBv9KB",
+      "recipient": "Dmp2B7tvZKohJCYoD7YRk4aTo5k1Ndz2Wh7pGYsSCaT2",
       "asset": "SOL",
       "decimals": 9,
       "amount": "10000000",
       "status": "confirmed",
-      "transactionHash": "324MMGSjRpbz9XmpnP5zCZVP9UfHRY1gpEDxeakkV5SSTGCkVFs1A17ioQBgbegHM3s2m7hCFqxvEWoZx1RiYQ9R",
+      "transactionHash": "9E9bsn8mMj9kEF37tMQ99CqGMkybEryqNaC7SNcaE8htBPBkRcnVefFzWueJ7MHWZXZrHDRjJDNYTE3WZpqpizW",
       "error": null
     }
   ]
 }
 ```
 
-In our run the Base payment confirmed 12 seconds after it was submitted, and the Solana one 14 seconds after.
+In our run the Base payment confirmed 10 seconds after it was submitted, and the Solana one 12 seconds after.
 
 Open the transaction in an explorer to see it on chain:
 
@@ -305,14 +320,14 @@ Open the transaction in an explorer to see it on chain:
 ## If it does not confirm
 
 - **The item is `failed` with `INSUFFICIENT_FUNDS`.** The Sender cannot pay. `chainDetail.short` is how much more it needs, in the smallest unit. Fund it, then send the payment again with a new `Idempotency-Key`.
-- **The item is `failed` with `SIGNER_UNREACHABLE`.** The worker could not get a signature. Check that the Signer is running and that `SIGNER_AUTH_TOKEN` is the same in both places.
+- **The item is `failed` with `SIGNER_UNREACHABLE`.** The worker could not get a signature. Check that the Signer is running and that `SIGNER_AUTH_TOKEN` is the same for the worker and the Signer.
 - **The status stays `queued`.** The worker is not running, or it does not serve this chain. Check `ENABLED_CHAINS` and the worker's log.
 - **The API answers `400` with `CHAIN_NOT_ENABLED`.** The `chain` in your request is not in `ENABLED_CHAINS`.
 
-[Troubleshooting](./operations/troubleshooting.md) covers the rest.
+[Troubleshooting](./self-hosting/troubleshooting.md) covers the rest.
 
-## Next
+## Next steps
 
-- [Your first Dispatch, line by line](./first-dispatch.md)
-- [Set up a production Signer](./signer.md) before you hold real funds
-- [The HTTP API](./api.md)
+- [Send a batch of payments](./guides/send-payments.md)
+- [Track a Dispatch to confirmation](./guides/track.md), with its timeline
+- [Set up a Signer](./self-hosting/signer.md) before you hold real funds
