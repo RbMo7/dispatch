@@ -119,7 +119,8 @@ describe('buildDocs', () => {
       'REST API reference',
       'Self-hosting',
     ]);
-  });
+    // It renders every real page and reference sample, so it grows with the docs.
+  }, 30_000);
 
   it('lists sections in table order, leaves out empty ones, and keeps decision records off the site', async () => {
     const { manifest } = await buildDocs(repo(VALID), NAV);
