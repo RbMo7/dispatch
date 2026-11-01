@@ -1,5 +1,7 @@
 # The engine proposes and executes multisig transactions but never approves
 
+Amended by ADR-0053 (an undecided proposal is ABANDONED and watched) and ADR-0054 (approval is a Chain Handler capability).
+
 A Multisig Sender's address is a multisig wallet, so a transaction from it needs M-of-N Approvers before it can run. On Squads v4 that is three steps: someone proposes, Approvers vote, and a member with Execute permission runs it. Squads splits these into separate permissions (Initiate, Vote, Execute), so the engine can be given part of the job. How much of it?
 
 ## Decision
