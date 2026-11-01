@@ -6,7 +6,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { config } from '../config.js';
-import { dispatches, transactions } from '../db/schema.js';
+import { dispatches, senderForeignNonces, transactions } from '../db/schema.js';
 import { postgresReads } from './postgres-reads.js';
 
 /** A database of this file's own, so no other Postgres-tier file's truncation races these rows. */
@@ -88,5 +88,30 @@ describe('postgresReads (real Postgres)', () => {
       count: 2,
       latestHashes: ['newer', 'older'],
     });
+  });
+
+  it('reads the nonces the worker recorded another sender using, in a window (ADR-0064)', async () => {
+    const sender = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A';
+    const client = postgres(database.url, { max: 1, onnotice: () => {} });
+    const seen = (nonce: number, at: string, senderAddress = sender) =>
+      ({ chain: 'base', senderAddress, nonce, firstSeenAt: new Date(at) }) as const;
+    await drizzle(client)
+      .insert(senderForeignNonces)
+      .values([
+        seen(3, '2026-10-30T00:00:00Z'),
+        seen(7, '2026-11-01T10:00:00Z'),
+        seen(9, '2026-11-01T11:00:00Z'),
+        seen(8, '2026-11-01T11:00:00Z', '0x0000000000000000000000000000000000000001'),
+      ]);
+    await client.end();
+
+    expect(await reads.foreignActivity('base', sender, new Date('2026-10-31T12:00:00Z'))).toEqual({
+      lastSeenAt: new Date('2026-11-01T11:00:00Z'),
+      nonces: [7, 9],
+      count: 2,
+    });
+    expect(
+      await reads.foreignActivity('base', sender, new Date('2026-11-02T00:00:00Z')),
+    ).toBeNull();
   });
 });

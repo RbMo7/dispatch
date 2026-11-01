@@ -200,9 +200,13 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   /** issue 02: the single next-nonce authority for `senderAddress` (nonce-authority.ts) — assigned in-process, never via a per-request `eth_getTransactionCount("pending")` read, so concurrent Managed Dispatch submissions can't collide or skip (ADR-0002's single-nonce-authority requirement). */
   private readonly nonceCounter: NonceCounter;
 
+  /** #172: every nonce below this has been checked for another sender's use. */
+  private foreignCheckedTo: number;
+
   private constructor(
     deps: BaseChainHandlerDeps & { client: PublicClient; senderAddress: Address },
     initialNonce: number,
+    confirmedNonce: number,
   ) {
     this.client = deps.client;
     this.chainId = deps.chainId;
@@ -222,6 +226,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'base-chain-handler' });
     this.nonceCounter = new NonceCounter(initialNonce);
+    this.foreignCheckedTo = confirmedNonce;
   }
 
   /**
@@ -255,7 +260,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     ]);
     const initialNonce = Math.max(confirmed, pending);
 
-    return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce);
+    return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce, confirmed);
   }
 
   /**
@@ -990,29 +995,66 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         const detail = typeof error.chainDetail === 'object' ? error.chainDetail : {};
         return err({ ...error, chainDetail: { ...detail, nonce } });
       }
+      // It may have reached the node, so the nonce may be this engine's (#172).
+      if (error.code === 'RPC_UNAVAILABLE' || error.code === 'ALREADY_KNOWN') {
+        await this.recordNonceHistory(sender.value, nonce, keccak256(hex));
+      }
       return err(error);
     }
 
     this.unsentNonces.delete(nonce);
-    // #10: the transaction is already on-chain at this point — a failed
-    // history write must never turn that into an error, or the Coordinator
-    // would lose the hash of a transaction that may land. Logged loudly
-    // instead (ADR-0010: surfaced, not swallowed).
+    await this.recordNonceHistory(sender.value, nonce, hash);
+    this.logger.info({ hash, nonce }, 'transaction broadcast');
+    return ok({ hash });
+  }
+
+  /**
+   * #10: the transaction may be on-chain at this point — a failed history
+   * write must never turn that into an error, or the Coordinator would lose
+   * the hash of a transaction that may land. Logged loudly instead
+   * (ADR-0010: surfaced, not swallowed).
+   */
+  private async recordNonceHistory(senderAddress: Address, nonce: number, hash: string) {
     try {
-      await this.nonceHistoryStore.recordNonce({
-        chain: 'base',
-        senderAddress: sender.value,
-        nonce,
-        hash,
-      });
+      await this.nonceHistoryStore.recordNonce({ chain: 'base', senderAddress, nonce, hash });
     } catch (cause) {
       this.logger.error(
         { hash, nonce, error: extractMessage(cause) },
-        'broadcast succeeded but recording its nonce history failed',
+        'recording a sent nonce in the nonce history failed',
       );
     }
-    this.logger.info({ hash, nonce }, 'transaction broadcast');
-    return ok({ hash });
+  }
+
+  /**
+   * #172 (ADR-0064): the nonces between the last check and the chain's
+   * confirmed count that this engine never sent, by its nonce history. Only
+   * nonces confirmed since this handler started are checked: anything older
+   * is history from before it.
+   */
+  async foreignNonces(): Promise<Result<number[], DispatchError>> {
+    let confirmed: number;
+    try {
+      confirmed = await this.client.getTransactionCount({
+        address: this.senderAddress,
+        blockTag: 'latest',
+      });
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+    const from = this.foreignCheckedTo;
+    if (confirmed <= from) return ok([]);
+    const ours = new Set(
+      (
+        await this.nonceHistoryStore.listNonceHistory('base', getAddress(this.senderAddress), {
+          from,
+          to: confirmed,
+        })
+      ).map((record) => record.nonce),
+    );
+    this.foreignCheckedTo = confirmed;
+    const foreign: number[] = [];
+    for (let nonce = from; nonce < confirmed; nonce++) if (!ours.has(nonce)) foreign.push(nonce);
+    return ok(foreign);
   }
 
   /**

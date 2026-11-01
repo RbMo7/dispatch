@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { Chain } from '../domain/chain.js';
+import type { ForeignActivity } from '../domain/sender.js';
 import { err, ok } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import type { SignerKeyRecord } from '../repository/dispatch-store.js';
@@ -60,6 +61,7 @@ function fakeReads(options: {
   signerKeys?: Record<string, SignerKeyRecord>;
   threshold?: Partial<Record<Chain, number>>;
   committed?: Record<string, { asset: string; amount: string }[]>;
+  foreign?: Record<string, ForeignActivity>;
   clock?: { now: number };
 }) {
   const calls = { getBalance: 0, getSignerKey: 0 };
@@ -85,6 +87,10 @@ function fakeReads(options: {
     },
     listCommitted: (chain, holder) =>
       Promise.resolve(options.committed?.[`${chain}:${holder}`] ?? []),
+    foreignActivity: (_chain, address, since) => {
+      const activity = options.foreign?.[address];
+      return Promise.resolve(activity && activity.lastSeenAt >= since ? activity : null);
+    },
     now: () => new Date(options.clock?.now ?? 0),
   };
   return { reads, calls };
@@ -109,6 +115,35 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
 }
 
 describe('GET /v1/senders (#111)', () => {
+  it('reports the nonces another sender used in the last 24 hours (ADR-0064)', async () => {
+    const now = Date.parse('2026-11-02T12:00:00Z');
+    const { reads } = fakeReads({
+      clock: { now },
+      foreign: {
+        '0xSender': {
+          lastSeenAt: new Date('2026-11-02T11:59:00Z'),
+          nonces: [3124, 3126],
+          count: 3,
+        },
+        '0xSafe': {
+          lastSeenAt: new Date('2026-11-01T11:00:00Z'),
+          nonces: [7, 7],
+          count: 1,
+        },
+      },
+    });
+
+    const response = await getSenders([plain, safe], reads);
+
+    const [single, multisig] = response.json<{ senders: { foreignActivity: unknown }[] }>().senders;
+    expect(single?.foreignActivity).toEqual({
+      lastSeenAt: '2026-11-02T11:59:00.000Z',
+      nonces: [3124, 3126],
+      count: 3,
+    });
+    expect(multisig?.foreignActivity).toBeNull();
+  });
+
   it('rejects a request without a valid bearer token', async () => {
     const { reads } = fakeReads({});
 
@@ -152,6 +187,7 @@ describe('GET /v1/senders (#111)', () => {
             chainIds: [84532],
             readAt: '2026-11-01T10:00:00.000Z',
           },
+          foreignActivity: null,
         },
       ],
     });
@@ -205,6 +241,7 @@ describe('GET /v1/senders (#111)', () => {
             allowedMultisig: 'Multisig111',
             readAt: '2026-11-01T10:00:00.000Z',
           },
+          foreignActivity: null,
         },
       ],
     });

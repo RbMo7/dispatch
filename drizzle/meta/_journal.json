@@ -176,6 +176,13 @@
       "when": 1793548993573,
       "tag": "0024_proposal_approvers",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793553206714,
+      "tag": "0025_sender_foreign_nonces",
+      "breakpoints": true
     }
   ]
 }

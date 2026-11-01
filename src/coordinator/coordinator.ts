@@ -935,6 +935,45 @@ export class Coordinator {
         ),
       ),
     );
+    await this.detectForeignNonces();
+  }
+
+  /**
+   * #172 (ADR-0064): records the nonces each plain Sender's chain shows
+   * another sender used. Never fails the poll: a failed read is tried again
+   * on the next pass.
+   */
+  private async detectForeignNonces(): Promise<void> {
+    await Promise.all(
+      this.senders.map(async (sender) => {
+        if (!sender.handler.foreignNonces || sender.handler.approval) return;
+        const log = this.logger.child({ chain: sender.ref.chain, sender: sender.ref.address });
+        try {
+          const found = await sender.handler.foreignNonces();
+          if (found.ok) await this.recordForeignNonces(sender, found.value);
+          else log.debug({ error: found.error }, 'could not check for another sender');
+        } catch (cause) {
+          log.warn({ err: cause }, 'could not record nonces another sender used');
+        }
+      }),
+    );
+  }
+
+  /** Warns once for each run of consecutive nonces not seen before. */
+  private async recordForeignNonces(sender: CoordinatorSender, nonces: number[]): Promise<void> {
+    if (nonces.length === 0) return;
+    const added = await this.store.recordForeignNonces(sender.ref, nonces, this.now());
+    for (const [first, last] of consecutiveRuns(added)) {
+      this.logger.warn(
+        {
+          chain: sender.ref.chain,
+          sender: sender.ref.address,
+          nonces: [first, last],
+          count: last - first + 1,
+        },
+        `another sender used this Sender's wallet: ${first === last ? `nonce ${first} was` : `nonces ${first} to ${last} were`} not sent by this engine. Only this engine may send from a Sender`,
+      );
+    }
   }
 
   /**
@@ -1412,6 +1451,7 @@ export class Coordinator {
         if (version.id !== member.id) await this.store.markDropped(version.id);
       }
     }
+    if (takenNonce !== undefined) await this.recordForeignNonces(sender, [takenNonce]);
 
     const broadcast = await handler.broadcast(signed.value);
     if (broadcast.ok) {
@@ -1750,6 +1790,17 @@ function singleSenders(deps: CoordinatorDeps): CoordinatorSender[] {
       },
     ];
   });
+}
+
+/** Ascending numbers as [first, last] runs of consecutive values. */
+function consecutiveRuns(sorted: number[]): [number, number][] {
+  const runs: [number, number][] = [];
+  for (const n of sorted) {
+    const run = runs.at(-1);
+    if (run && n === run[1] + 1) run[1] = n;
+    else runs.push([n, n]);
+  }
+  return runs;
 }
 
 /** #42 (ADR-0044): runs `task` over `items`, at most `limit` at a time (one when unset). */

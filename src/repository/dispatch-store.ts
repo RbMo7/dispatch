@@ -15,7 +15,7 @@ import type { OperatorAction, OperatorActor } from '../domain/operator-action.js
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Result } from '../domain/result.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { ForeignActivity, SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type { CheckOutcome } from '../setup/run.js';
 import type { SignerPins } from '../signer/client.js';
@@ -442,5 +442,14 @@ export interface DispatchStore {
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
   /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
   recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+
+  /** ADR-0064 (#172): nonces of `sender`'s wallet another sender used, first seen at `seenAt`. Returns the ones not recorded before, ascending. */
+  recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]>;
+  /** ADR-0064 (#172): the foreign nonces of `sender` first seen at or after `since`; null when there are none. */
+  foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null>;
   listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

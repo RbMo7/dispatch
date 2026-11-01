@@ -9,6 +9,7 @@ import {
   KeySigner,
 } from '../chain-handler/base/test-support/fake-base-chain.js';
 import type { DispatchItem } from '../domain/call.js';
+import type { SenderAddress } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import { Coordinator } from './coordinator.js';
@@ -42,6 +43,7 @@ async function engine() {
     logger: silent,
   });
   const store = new InMemoryDispatchStore(() => clock);
+  const warnings: string[] = [];
   const coordinator = new Coordinator({
     store,
     chainHandlers: new Map([['base', handler]]),
@@ -49,7 +51,10 @@ async function engine() {
     abandonmentTimeoutMs: new Map([['base', 15 * 60_000]]),
     stuckHandling: new Map([['base', { stuckAfterMs: STUCK_AFTER_MS, maxFeeBumps: 5 }]]),
     now: () => clock,
-    logger: silent,
+    logger: pino(
+      { level: 'warn' },
+      { write: (line: string) => warnings.push((JSON.parse(line) as { msg: string }).msg) },
+    ),
   });
   const submit = async (items: DispatchItem<'base'>[]) =>
     store.createDispatch({
@@ -71,7 +76,19 @@ async function engine() {
   const advance = (ms: number) => {
     clock = new Date(clock.getTime() + ms);
   };
-  return { chain, signer, handler, store, coordinator, submit, statuses, advance };
+  const sender = { chain: 'base' as const, address: signer.address as SenderAddress };
+  return {
+    chain,
+    signer,
+    sender,
+    handler,
+    store,
+    coordinator,
+    submit,
+    statuses,
+    advance,
+    warnings,
+  };
 }
 
 describe('a Base nonce another sender took (ADR-0064)', () => {
@@ -151,5 +168,62 @@ describe('a Base nonce another sender took (ADR-0064)', () => {
       code: 'NONCE_ALREADY_USED',
       chainDetail: { reason: 'nonce_taken', resends: 3 },
     });
+  });
+});
+
+describe("detecting another sender in a Sender's wallet (ADR-0064)", () => {
+  const another = /^another sender used this Sender's wallet/;
+
+  it('records the nonces an outside writer used while the engine sent nothing, and warns once', async () => {
+    const { chain, signer, sender, store, coordinator, warnings } = await engine();
+    chain.outsiderSends(signer.address, 3);
+
+    await coordinator.pollPendingTransactions(50);
+    await coordinator.pollPendingTransactions(50);
+
+    expect(await store.foreignActivity(sender, new Date(0))).toMatchObject({
+      nonces: [0, 2],
+      count: 3,
+    });
+    expect(warnings.filter((w) => another.test(w))).toEqual([
+      "another sender used this Sender's wallet: nonces 0 to 2 were not sent by this engine. Only this engine may send from a Sender",
+    ]);
+  });
+
+  it('tells its own nonces, confirmed or in flight, from the ones another sender used', async () => {
+    const { chain, signer, sender, store, coordinator, submit, statuses, warnings } =
+      await engine();
+    await submit([payment(5001).item, payment(5002).item]);
+    await coordinator.processQueuedDispatches(10);
+    chain.outsiderSends(signer.address, 2);
+    chain.mineOnSend = false;
+    const inFlight = await submit([payment(5003).item]);
+    await coordinator.processQueuedDispatches(10);
+
+    await coordinator.pollPendingTransactions(50);
+    expect(await statuses(inFlight.id)).toEqual(['PENDING']);
+    chain.mineAll();
+    await coordinator.pollPendingTransactions(50);
+
+    expect(await statuses(inFlight.id)).toEqual(['CONFIRMED']);
+    expect(await store.foreignActivity(sender, new Date(0))).toMatchObject({
+      nonces: [2, 3],
+      count: 2,
+    });
+    expect(warnings.filter((w) => another.test(w))).toEqual([
+      "another sender used this Sender's wallet: nonce 2 was not sent by this engine. Only this engine may send from a Sender",
+      "another sender used this Sender's wallet: nonce 3 was not sent by this engine. Only this engine may send from a Sender",
+    ]);
+  });
+
+  it('reports nothing when only this engine sends', async () => {
+    const { sender, store, coordinator, submit, warnings } = await engine();
+    await submit([payment(6001).item, payment(6002).item]);
+    await coordinator.processQueuedDispatches(10);
+
+    await coordinator.pollPendingTransactions(50);
+
+    expect(await store.foreignActivity(sender, new Date(0))).toBeNull();
+    expect(warnings.filter((w) => another.test(w))).toEqual([]);
   });
 });

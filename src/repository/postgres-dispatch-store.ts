@@ -1,5 +1,6 @@
 import {
   and,
+  count,
   desc,
   eq,
   gte,
@@ -8,6 +9,8 @@ import {
   isNull,
   lt,
   lte,
+  max,
+  min,
   ne,
   notInArray,
   or,
@@ -26,6 +29,7 @@ import {
   operatorActions,
   proposals,
   relayDispatches,
+  senderForeignNonces,
   setupChecks,
   signerKeys,
   transactions,
@@ -59,7 +63,7 @@ import type {
   ProposalPhase,
 } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { ForeignActivity, SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Area } from '../setup/check.js';
 import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
@@ -1511,6 +1515,47 @@ export class PostgresDispatchStore implements DispatchStore {
           },
         });
     });
+  }
+
+  async recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]> {
+    if (nonces.length === 0) return [];
+    const rows = await this.db
+      .insert(senderForeignNonces)
+      .values(
+        [...new Set(nonces)].map((nonce) => ({
+          chain: sender.chain,
+          senderAddress: sender.address,
+          nonce,
+          firstSeenAt: seenAt,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ nonce: senderForeignNonces.nonce });
+    return rows.map(({ nonce }) => nonce).sort((a, b) => a - b);
+  }
+
+  async foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null> {
+    const [row] = await this.db
+      .select({
+        lastSeenAt: max(senderForeignNonces.firstSeenAt),
+        first: min(senderForeignNonces.nonce),
+        last: max(senderForeignNonces.nonce),
+        count: count(),
+      })
+      .from(senderForeignNonces)
+      .where(
+        and(
+          eq(senderForeignNonces.chain, sender.chain),
+          eq(senderForeignNonces.senderAddress, sender.address),
+          gte(senderForeignNonces.firstSeenAt, since),
+        ),
+      );
+    if (!row?.lastSeenAt || row.first === null || row.last === null) return null;
+    return { lastSeenAt: row.lastSeenAt, nonces: [row.first, row.last], count: row.count };
   }
 
   async listSetupChecks(): Promise<SetupCheckRecord[]> {

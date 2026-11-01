@@ -340,6 +340,13 @@ export interface ChainHandler<C extends Chain = Chain> {
   nonceOf?(signed: SignedTransaction): number | undefined;
 
   /**
+   * #172 (ADR-0064), optional: only a chain with account nonces implements
+   * it. Nonces of this handler's Sender that the chain shows used since the
+   * last call, and that this engine never sent. Each is reported once.
+   */
+  foreignNonces?(): Promise<Result<number[], DispatchError>>;
+
+  /**
    * #11 (ADR-0038), optional: only a chain with Bulk Call implements it —
    * its presence is the capability. Checks a request's `bulkCall` against
    * its items before anything is persisted, resolving the batch size and

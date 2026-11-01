@@ -1992,6 +1992,10 @@ paths:
                           curve: secp256k1
                           address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
                           readAt: '2026-11-01T02:09:20.649Z'
+                        foreignActivity:
+                          lastSeenAt: '2026-11-01T02:08:51.207Z'
+                          nonces: [3124, 3126]
+                          count: 3
                       - chain: solana
                         name: payouts
                         default: true
@@ -2009,6 +2013,7 @@ paths:
                           curve: ed25519
                           address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
                           readAt: '2026-11-01T02:09:20.669Z'
+                        foreignActivity: null
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2731,7 +2736,8 @@ components:
     Sender:
       type: object
       additionalProperties: false
-      required: [chain, name, default, network, mode, address, multisig, balances, signerKey]
+      required:
+        [chain, name, default, network, mode, address, multisig, balances, signerKey, foreignActivity]
       properties:
         chain: { $ref: '#/components/schemas/Chain' }
         name:
@@ -2835,6 +2841,30 @@ components:
               required: [status]
               properties:
                 status: { const: not_read_yet }
+        foreignActivity:
+          description: |
+            Base only. Nonces of this Sender's wallet that something other than this engine used in
+            the last 24 hours, as the worker found them on chain: `null` when there were none.
+            Something else sending from the wallet makes the engine resend payments whose nonce it
+            took, and only one engine may send from a Sender
+            ([Errors](../errors.md#errors), `NONCE_ALREADY_USED`).
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [lastSeenAt, nonces, count]
+              properties:
+                lastSeenAt:
+                  type: string
+                  format: date-time
+                  description: When the worker first saw the most recent of them.
+                nonces:
+                  type: array
+                  items: { type: integer }
+                  minItems: 2
+                  maxItems: 2
+                  description: The lowest and the highest.
+                count: { type: integer }
 
     SenderList:
       type: object

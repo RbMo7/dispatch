@@ -66,6 +66,7 @@ async function engine() {
       getSignerKey: (chain, address) => store.getSignerKey(chain, address),
       readThreshold: () => Promise.resolve(ok(1)),
       listCommitted: () => Promise.resolve([]),
+      foreignActivity: () => Promise.resolve(null),
       now,
     }),
     readSetup: () => Promise.reject(new Error('not read in this test')),

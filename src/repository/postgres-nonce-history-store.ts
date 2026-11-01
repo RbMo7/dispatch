@@ -1,9 +1,9 @@
-import { asc, eq, and } from 'drizzle-orm';
+import { and, asc, eq, gte, lt } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
 import { nonceHistory } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
-import type { NonceHistoryRecord, NonceHistoryStore } from './nonce-history-store.js';
+import type { NonceHistoryRecord, NonceHistoryStore, NonceRange } from './nonce-history-store.js';
 
 type NonceHistoryRow = typeof nonceHistory.$inferSelect;
 
@@ -29,11 +29,22 @@ export class PostgresNonceHistoryStore implements NonceHistoryStore {
       });
   }
 
-  async listNonceHistory(chain: Chain, senderAddress: string): Promise<NonceHistoryRecord[]> {
+  async listNonceHistory(
+    chain: Chain,
+    senderAddress: string,
+    range?: NonceRange,
+  ): Promise<NonceHistoryRecord[]> {
     const rows = await this.db
       .select()
       .from(nonceHistory)
-      .where(and(eq(nonceHistory.chain, chain), eq(nonceHistory.senderAddress, senderAddress)))
+      .where(
+        and(
+          eq(nonceHistory.chain, chain),
+          eq(nonceHistory.senderAddress, senderAddress),
+          range ? gte(nonceHistory.nonce, range.from) : undefined,
+          range ? lt(nonceHistory.nonce, range.to) : undefined,
+        ),
+      )
       .orderBy(asc(nonceHistory.nonce));
     return rows.map(toRecord);
   }
