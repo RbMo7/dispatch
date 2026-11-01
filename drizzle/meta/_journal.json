@@ -141,6 +141,13 @@
       "when": 1793498419840,
       "tag": "0019_flag_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793535894061,
+      "tag": "0020_setup_checks",
+      "breakpoints": true
     }
   ]
 }

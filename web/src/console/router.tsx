@@ -4,6 +4,7 @@ export const PAGES = {
   overview: '/console',
   dispatches: '/console/dispatches',
   senders: '/console/senders',
+  setup: '/console/setup',
 } as const;
 
 export type Page = keyof typeof PAGES;
@@ -79,7 +80,7 @@ export function Link({
   ...rest
 }: {
   page: Page;
-  params?: URLSearchParams;
+  params?: URLSearchParams | undefined;
   className?: string | undefined;
   children: ReactNode;
   'aria-current'?: 'page' | undefined;

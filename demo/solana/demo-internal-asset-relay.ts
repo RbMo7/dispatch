@@ -140,6 +140,7 @@ async function main() {
     defaultRetryPolicy: false,
     assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('this demo serves no setup checks')),
   });
 
   const postResponse = await app.inject({

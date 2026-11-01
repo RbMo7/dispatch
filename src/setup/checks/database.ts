@@ -24,7 +24,8 @@ export const databaseReachable: Check = {
   id: 'database.reachable',
   area: 'database',
   title: 'Reachable',
-  runsIn: ['cli', 'worker'],
+  // The worker records its results in this database, so it could never record this failing; the API checks it on every read.
+  runsIn: ['cli', 'api'],
   scope: 'engine',
   run: async ({ config, database }) => {
     const where = databaseName(config.databaseUrl);
@@ -44,7 +45,7 @@ export const databaseMigrated: Check = {
   id: 'database.migrated',
   area: 'database',
   title: 'Migrated',
-  runsIn: ['cli', 'worker'],
+  runsIn: ['cli', 'api'],
   scope: 'engine',
   run: async ({ database }) => {
     let pending: string[];

@@ -4,8 +4,8 @@ export const consoleBuilt: Check = {
   id: 'console.built',
   area: 'console',
   title: 'Built',
-  // The worker never serves the console, so only the place that sees the API's files checks it.
-  runsIn: ['cli'],
+  // The worker never serves the console, so only the places that see the API's files check it.
+  runsIn: ['cli', 'api'],
   scope: 'engine',
   run: ({ consoleBuilt }) =>
     consoleBuilt()

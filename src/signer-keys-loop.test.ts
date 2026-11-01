@@ -67,6 +67,7 @@ async function engine() {
       listCommitted: () => Promise.resolve([]),
       now,
     }),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   const getSignerKey = async () => {
     clock.now += SENDERS_CACHE_MS;

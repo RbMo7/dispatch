@@ -21,6 +21,7 @@ async function buildTestApp(operatorToken: string | null = 'operator-token') {
     defaultRetryPolicy: false,
     assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   return { app, store };
 }

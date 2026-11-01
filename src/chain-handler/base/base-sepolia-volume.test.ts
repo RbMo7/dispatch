@@ -114,6 +114,7 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       defaultRetryPolicy: false,
       assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
     coordinator = new Coordinator({
       store,

@@ -12,6 +12,7 @@ async function testApp() {
     defaultRetryPolicy: false,
     assetDecimals: () => undefined,
     listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
 }
 

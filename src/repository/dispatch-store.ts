@@ -14,6 +14,7 @@ import type { OperatorAction, OperatorActor } from '../domain/operator-action.js
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
+import type { CheckOutcome } from '../setup/run.js';
 import type { SignerPins } from '../signer/client.js';
 
 /** ADR-0054: a multisig Call claimed, validated and funded, to be written down as `UNPROPOSED`. */
@@ -165,6 +166,9 @@ export type SignerKeyRecord = {
   read: { pins: SignerPins } | { error: string };
   readAt: Date;
 };
+
+/** One check from the worker's latest run of its setup checks (#137), and when that run finished. */
+export type SetupCheckRecord = CheckOutcome & { ranAt: Date };
 
 /**
  * The Coordinator's — and the API's — only way to touch persistence
@@ -383,4 +387,7 @@ export interface DispatchStore {
   /** ADR-0059: replaces whatever was recorded for the record's chain and address. */
   recordSignerKey(record: SignerKeyRecord): Promise<void>;
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
+  /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
+  recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+  listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

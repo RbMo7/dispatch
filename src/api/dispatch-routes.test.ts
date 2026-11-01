@@ -48,6 +48,7 @@ async function buildTestApp(options?: {
     assetDecimals: (chain, asset) =>
       ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
     listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   return { app, store };
 }

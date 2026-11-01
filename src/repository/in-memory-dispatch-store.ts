@@ -38,6 +38,7 @@ import type {
   OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
+  SetupCheckRecord,
   SignerKeyRecord,
 } from './dispatch-store.js';
 
@@ -59,6 +60,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly flagRules = new Map<string, FlagRule>();
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
+  private setupChecks: SetupCheckRecord[] = [];
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -1011,6 +1013,15 @@ export class InMemoryDispatchStore implements DispatchStore {
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null> {
     const record = this.signerKeys.get(`${chain}:${address}`);
     return Promise.resolve(record ? structuredClone(record) : null);
+  }
+
+  recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void> {
+    this.setupChecks = structuredClone([...records]);
+    return Promise.resolve();
+  }
+
+  listSetupChecks(): Promise<SetupCheckRecord[]> {
+    return Promise.resolve(structuredClone(this.setupChecks));
   }
 
   /** Test-only inspection — not part of DispatchStore. */

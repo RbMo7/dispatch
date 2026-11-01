@@ -264,6 +264,7 @@ async function buildContractApp() {
     defaultRetryPolicy: false,
     assetDecimals,
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   app.addHook('onRoute', ({ method, url }) => {
     for (const m of [method].flat()) {

@@ -7,6 +7,7 @@ import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
+import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
@@ -28,6 +29,7 @@ describe('InMemoryDispatchStore', () => {
   runTimelineConformanceSuite(() => new InMemoryDispatchStore());
   runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
   runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());
+  runSetupCheckConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

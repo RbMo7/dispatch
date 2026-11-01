@@ -98,6 +98,7 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
     defaultRetryPolicy: false,
     assetDecimals: () => undefined,
     listSenders: cachedSenders(configs, reads),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   return app.inject({
     method: 'GET',

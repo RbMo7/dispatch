@@ -10,6 +10,10 @@ import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
+import { cliContext } from './setup/cli-context.js';
+import { CHECKS } from './setup/checks.js';
+import { planChecks, runPlanned } from './setup/run.js';
+import { setupChecksLoop as runSetupChecksLoop } from './setup-checks-loop.js';
 import { signerKeysLoop as runSignerKeysLoop } from './signer-keys-loop.js';
 
 /**
@@ -189,9 +193,32 @@ function signerKeysLoop(): Promise<void> {
   });
 }
 
+/**
+ * #137: runs the `worker` setup checks and records them for `GET /v1/setup`.
+ * Each run builds its reads afresh, so a read that failed once is tried again
+ * on the next run rather than remembered.
+ */
+function setupChecksLoop(): Promise<void> {
+  return runSetupChecksLoop({
+    runChecks: async () => {
+      const { context, close } = cliContext(process.env);
+      try {
+        return await runPlanned(planChecks(CHECKS, context, { place: 'worker' }));
+      } finally {
+        await close().catch(() => {});
+      }
+    },
+    store,
+    now: () => new Date(),
+    logger,
+    isRunning: () => running,
+    sleep,
+  });
+}
+
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// All six are self-scheduling loops, not setInterval: each only
+// All seven are self-scheduling loops, not setInterval: each only
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
@@ -202,6 +229,7 @@ await Promise.all([
   reclaimLoop(),
   approvalLoop(),
   signerKeysLoop(),
+  setupChecksLoop(),
 ]);
 
 logger.info('worker stopped');

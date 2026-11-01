@@ -41,7 +41,11 @@ function memo<K, V>(make: (key: K) => V): (key: K) => V {
   };
 }
 
-/** The context `doctor` runs the `cli` checks in: this machine's environment, and each read made for real. */
+/**
+ * The context `doctor` runs the `cli` checks in, and the worker its `worker`
+ * checks: this process's environment, and each read made for real. Reads are
+ * remembered for the context's life, so a long-lived caller builds one per run.
+ */
 export function cliContext(env: Env): { context: CheckContext; close: () => Promise<void> } {
   const config = configFrom(env);
   const settings = readSettings(config);

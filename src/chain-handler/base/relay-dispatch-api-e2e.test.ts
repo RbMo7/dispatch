@@ -180,6 +180,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       defaultRetryPolicy: false,
       assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
 
     for (const signedTransaction of [
@@ -215,6 +216,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       defaultRetryPolicy: false,
       assetDecimals: () => undefined,
       listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
     const post = await app.inject({
       method: 'POST',

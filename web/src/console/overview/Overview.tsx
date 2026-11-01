@@ -14,12 +14,14 @@ import { CHAINS } from '../../domain/chains';
 import { dispatchName, type DispatchSummary, shortId } from '../../domain/dispatch';
 import { duration } from '../../domain/dispatchFlow';
 import { free, headlineAsset, isShort, payer } from '../../domain/sender';
+import { AREA_LABEL, type Setup } from '../../domain/setup';
 import { describeFailure } from '../api/client';
 import styles from '../console.module.css';
 import { nextDelay, SENDERS_MS, usePoll } from '../live';
-import { Link, PAGES } from '../router';
+import { Link, type Page, PAGES } from '../router';
 import { SENDER_NAME, useSenders } from '../senderData';
 import { useApi } from '../session';
+import { useSetup } from '../setup/setupData';
 import { PageBar } from '../Shell';
 import {
   loadHistory,
@@ -52,6 +54,7 @@ export function Overview() {
     [api, range],
   );
   const history = usePoll({ key: `history:${range}`, load: loadH, delay: () => SENDERS_MS });
+  const setup = useSetup();
 
   return (
     <main className={styles.main}>
@@ -72,6 +75,7 @@ export function Overview() {
             pulse={pulse.data}
             attention={history.data?.attention}
             settled={history.data ? settledToday(history.data.rows.rows, new Date()) : null}
+            setup={setup.data}
           />
           <Card
             title="Recent"
@@ -284,10 +288,37 @@ function SendersCard() {
   );
 }
 
+type AttentionEntry = {
+  id: string;
+  title: string;
+  /** A Dispatch's short id, beside the title. */
+  mono?: string;
+  detail: string;
+  page: Page;
+  params?: URLSearchParams;
+};
+
+function dispatchEntry(
+  id: string,
+  title: string,
+  detail: string,
+  row: DispatchSummary,
+): AttentionEntry {
+  return {
+    id,
+    title,
+    mono: shortId(row.id),
+    detail,
+    page: 'dispatches',
+    params: dispatchLink(row.id),
+  };
+}
+
 function AttentionCard({
   pulse,
   attention,
   settled,
+  setup,
 }: {
   pulse: Pulse | undefined;
   attention:
@@ -297,33 +328,49 @@ function AttentionCard({
       }
     | undefined;
   settled: number | null;
+  setup: Setup | undefined;
 }) {
   const oldest = pulse?.queued.complete ? pulse.queued.rows.at(-1) : undefined;
   const now = Date.now();
-  const entries: { id: string; title: string; detail: string; row: DispatchSummary }[] = [];
-  if (oldest) {
+  const entries: AttentionEntry[] = [];
+  for (const check of setup?.checks ?? []) {
+    if (check.status !== 'fail') continue;
     entries.push({
-      id: `oldest-${oldest.id}`,
-      title: 'Oldest unclaimed',
-      detail: `${dispatchName(oldest)}, waiting ${duration(now - oldest.createdAt.getTime())}`,
-      row: oldest,
+      id: `setup-${check.id}`,
+      title: 'Setup problem',
+      detail: `${AREA_LABEL[check.area]}, ${check.title}: ${check.finding}`,
+      page: 'setup',
     });
+  }
+  if (oldest) {
+    entries.push(
+      dispatchEntry(
+        `oldest-${oldest.id}`,
+        'Oldest unclaimed',
+        `${dispatchName(oldest)}, waiting ${duration(now - oldest.createdAt.getTime())}`,
+        oldest,
+      ),
+    );
   }
   for (const { summary, items } of attention?.awaiting ?? []) {
-    entries.push({
-      id: `awaiting-${summary.id}`,
-      title: 'Awaiting approval',
-      detail: `${count.format(items)} ${items === 1 ? 'item' : 'items'} in an open Proposal`,
-      row: summary,
-    });
+    entries.push(
+      dispatchEntry(
+        `awaiting-${summary.id}`,
+        'Awaiting approval',
+        `${count.format(items)} ${items === 1 ? 'item' : 'items'} in an open Proposal`,
+        summary,
+      ),
+    );
   }
   for (const { summary, items } of attention?.abandoned ?? []) {
-    entries.push({
-      id: `abandoned-${summary.id}`,
-      title: 'Abandoned',
-      detail: `${count.format(items)} ${items === 1 ? 'item' : 'items'} with no answer; may still land`,
-      row: summary,
-    });
+    entries.push(
+      dispatchEntry(
+        `abandoned-${summary.id}`,
+        'Abandoned',
+        `${count.format(items)} ${items === 1 ? 'item' : 'items'} with no answer; may still land`,
+        summary,
+      ),
+    );
   }
 
   return (
@@ -338,13 +385,9 @@ function AttentionCard({
         <ul className={styles.attention}>
           {entries.map((entry) => (
             <li key={entry.id}>
-              <Link
-                page="dispatches"
-                params={dispatchLink(entry.row.id)}
-                className={styles.attentionRow}
-              >
+              <Link page={entry.page} params={entry.params} className={styles.attentionRow}>
                 <span className={styles.attentionTitle}>{entry.title}</span>
-                <span className={styles.mono}>{shortId(entry.row.id)}</span>
+                <span className={styles.mono}>{entry.mono}</span>
                 <span className={styles.attentionDetail}>{entry.detail}</span>
               </Link>
             </li>
