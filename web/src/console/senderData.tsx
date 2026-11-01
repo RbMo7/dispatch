@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useCallback, useContext } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useMemo } from 'react';
 
 import { truncateMiddle } from '../components/MonoValue';
 import { SenderCard, type SenderCardProps } from '../components/SenderCard';
@@ -11,6 +11,7 @@ import {
   type Sender,
   signingLine,
 } from '../domain/sender';
+import type { Chain } from '../domain/chains';
 import { describeFailure } from './api/client';
 import styles from './console.module.css';
 import { type Polled, SENDERS_MS, usePoll } from './live';
@@ -31,6 +32,12 @@ export function useSenders(): Polled<Sender[]> {
   const senders = useContext(SendersContext);
   if (!senders) throw new Error('useSenders outside SendersProvider');
   return senders;
+}
+
+/** The chains this engine has enabled: one Sender each, so they are exactly the Senders' chains. */
+export function useEnabledChains(): Chain[] {
+  const { data } = useSenders();
+  return useMemo(() => [...new Set((data ?? []).map((sender) => sender.chain))], [data]);
 }
 
 export const SENDER_NAME: Record<Sender['mode'], string> = {

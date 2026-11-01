@@ -27,7 +27,7 @@ import { Modal } from '../../motion/Overlay';
 import { describeFailure, isUuid } from '../api/client';
 import styles from '../console.module.css';
 import { useRouter } from '../router';
-import { useSenders } from '../senderData';
+import { useEnabledChains, useSenders } from '../senderData';
 import { useApi } from '../session';
 import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
@@ -68,13 +68,14 @@ const full = new Intl.DateTimeFormat('en-US', {
   hourCycle: 'h23',
 });
 
-const CHAIN_OPTIONS = [
-  { value: 'all', label: 'All' },
-  ...(Object.keys(CHAINS) as Chain[]).map((chain) => ({
-    value: chain,
-    label: CHAINS[chain].label,
-  })),
-];
+/** A chain control only when there is a choice: two or more enabled chains. */
+function chainOptions(enabled: Chain[]): { value: string; label: string }[] | null {
+  if (enabled.length < 2) return null;
+  return [
+    { value: 'all', label: 'All' },
+    ...enabled.map((chain) => ({ value: chain, label: CHAINS[chain].label })),
+  ];
+}
 
 /** Below this page width the chain control moves into the Filters menu while the pane is open. */
 const ROOMY = 1500;
@@ -97,6 +98,8 @@ export function DispatchesPage() {
   const selected = useDispatch(query.selected);
   const roomy = useWidth() >= ROOMY;
   const compact = query.selected !== null && !roomy;
+  const enabledChains = useEnabledChains();
+  const chains = useMemo(() => chainOptions(enabledChains), [enabledChains]);
 
   const select = useCallback(
     (id: string | null) => set({ selected: id, tab: 'flow', items: 'all' }),
@@ -135,13 +138,13 @@ export function DispatchesPage() {
       ],
       onChange: (mode) => set({ mode: mode as DispatchesQuery['mode'] }),
     },
-    ...(compact
+    ...(compact && chains
       ? [
           {
             id: 'chain',
             label: 'Chain',
             value: query.chain,
-            options: CHAIN_OPTIONS.map((o) =>
+            options: chains.map((o) =>
               o.value === 'all' ? { ...o, label: 'Any chain' } : o,
             ),
             onChange: (chain: string) => set({ chain: chain as DispatchesQuery['chain'] }),
@@ -161,10 +164,10 @@ export function DispatchesPage() {
             onChange={(range) => set({ range })}
             today={today}
           />
-          {!compact && (
+          {!compact && chains && (
             <SegmentedControl
               label="Chain"
-              options={CHAIN_OPTIONS}
+              options={chains}
               value={query.chain}
               onChange={(chain) => set({ chain: chain as DispatchesQuery['chain'] })}
             />
