@@ -299,8 +299,23 @@ describe('docs/openapi.yaml against the real routes', () => {
           ? {}
           : { authorization: `Bearer ${scenario.authenticated ? TOKEN : 'wrong-token'}` }),
       },
-      ...(scenario.body === undefined ? {} : { payload: scenario.body as Json }),
+      ...(scenario.status === '413'
+        ? { payload: oversizedBody() }
+        : scenario.body === undefined
+          ? {}
+          : { payload: scenario.body as Json }),
     });
+  }
+
+  /** A 413 example has no request body in the spec: a body over 1 MiB would bury the page. */
+  function oversizedBody(): Json {
+    const item = {
+      type: 'payment',
+      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72',
+      asset: 'ETH',
+      amount: '1',
+    };
+    return { chain: 'base', items: Array.from({ length: 12_000 }, () => item) };
   }
 
   beforeAll(async () => {

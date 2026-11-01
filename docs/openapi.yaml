@@ -250,7 +250,7 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/Error'
                   - $ref: '#/components/schemas/PlainError'
-                  - $ref: '#/components/schemas/SchemaError'
+                  - $ref: '#/components/schemas/RequestError'
               examples:
                 missingIdempotencyKey:
                   summary: No Idempotency-Key header
@@ -294,6 +294,20 @@ paths:
                   value: { error: chain solana has no Bulk Call mode }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: The body is over 1 MiB. A Dispatch of about 9,000 payment items fits; split a larger run into several Dispatches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestError'
+              examples:
+                bodyTooLarge:
+                  summary: A body over 1 MiB
+                  value:
+                    statusCode: 413
+                    code: FST_ERR_CTP_BODY_TOO_LARGE
+                    error: Payload Too Large
+                    message: Request body is too large
 
   /v1/dispatch/{id}:
     get:
@@ -316,7 +330,6 @@ paths:
           description: '`timeline` adds a `timeline` array. Any other value leaves the body as it is.'
           schema:
             type: string
-            enum: [timeline]
           examples:
             managedWithTimeline:
               value: timeline
@@ -553,7 +566,7 @@ paths:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/PlainError'
-                  - $ref: '#/components/schemas/SchemaError'
+                  - $ref: '#/components/schemas/RequestError'
               examples:
                 unknownStatus:
                   summary: A status that does not exist
@@ -953,16 +966,19 @@ components:
       properties:
         error: { type: string }
 
-    SchemaError:
+    RequestError:
       type: object
       additionalProperties: false
       required: [statusCode, code, error, message]
-      description: The body or query string broke the route's schema.
+      description: The HTTP server refused the request before the route read it.
       properties:
-        statusCode: { const: 400 }
-        code: { const: FST_ERR_VALIDATION }
-        error: { const: Bad Request }
-        message: { type: string, description: 'Which field broke which rule, such as `body/chain must be equal to one of the allowed values`.' }
+        statusCode: { type: integer, description: The HTTP status again. }
+        code:
+          type: string
+          enum: [FST_ERR_VALIDATION, FST_ERR_CTP_INVALID_JSON_BODY, FST_ERR_CTP_BODY_TOO_LARGE]
+          description: '`FST_ERR_VALIDATION`: the body or query string broke the route''s schema. `FST_ERR_CTP_INVALID_JSON_BODY`: the body is not valid JSON. `FST_ERR_CTP_BODY_TOO_LARGE`: the body is over 1 MiB.'
+        error: { type: string, description: The HTTP status text. }
+        message: { type: string, description: 'What broke, such as `body/chain must be equal to one of the allowed values`.' }
 
     AssetTotal:
       type: object
