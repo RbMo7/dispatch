@@ -1,4 +1,4 @@
-Status: drafted 2026-11-01; not ticketed; open questions at the end
+Status: decided 2026-11-01; tickets below
 
 # Setup tooling: `init`, `doctor` and the console's Setup page
 
@@ -47,7 +47,7 @@ Places a check can run: `cli` (doctor and init, with access to the config files 
 | Signer | Key held | The Signer has no key for a Sender address (ADR-0055's 404). |
 | Signer | Pinned | A Multisig Sender's key is not pinned to its multisig or Safe (as at startup, ADR-0055). |
 | Signer | Not reachable from the API | The API process has `SIGNER_URL` or `SIGNER_AUTH_TOKEN` set (ADR-0059). |
-| Sender | Fee balance | The native balance can't pay for about a day of the engine's own fees (warn below a configurable floor, fail at zero). |
+| Sender | Fee balance | Warns when the native balance would not cover the fees the engine actually paid on that chain in the last 24 hours; fails at zero. With no fee history yet (a new install), it warns only at zero. |
 | Sender | Token balances | A known token's balance is zero (warn). |
 | Multisig | Account exists | The Squads multisig or Safe address has no account or code on this network. |
 | Multisig | Engine key is member or delegate | The member key isn't a Squads member, or the executor isn't a registered Safe delegate. |
@@ -71,6 +71,8 @@ Checks share the engine's existing code paths: config parsing, the chain handler
   - The Signer config, with a default policy per address (allowed chain ids; for a Multisig Sender, its pin), which the operator is told to tighten.
   - The engine's `.env`: new values only, existing lines kept, a backup taken first, file mode 0600. Random `AUTH_TOKEN`, `OPERATOR_TOKEN` and `SIGNER_AUTH_TOKEN` values are generated and written to the files, never printed.
 - **Safe to run again.** Running it again shows the current setup and changes only what you choose. Adding a chain later is the same command.
+- **Prerequisites first.** Before asking anything, `init` checks for what it needs: Node 22+, pnpm, and Docker with Compose. Anything missing gets a short line with the install command or link for this operating system (Homebrew on macOS, the package manager or Docker's script on Linux), and `init` stops until it is there.
+- **Starts the services.** After writing the configuration it asks "Start all services now?". On yes, it runs Docker Compose to start Postgres, the Signer, the API and the worker, applies migrations, and waits until each is healthy, showing progress per service. On no, it prints the exact commands to start them later.
 - **Ends with `doctor`.** It runs the doctor checks and prints the address to fund for each chain, with a faucet link on test networks.
 
 ## `pnpm dispatch doctor`
@@ -112,8 +114,8 @@ Checks share the engine's existing code paths: config parsing, the chain handler
 6. `pnpm dispatch init`: interactive and scripted, the Signer key step, safe `.env` and config writes.
 7. Docs: the Self-hosting quickstart rewritten around `init` and `doctor`, and a Setup page section in the console guide.
 
-## Open questions
+## Settled
 
-1. Should `init` also start the services for you (with Docker Compose when Docker is present), or stop after writing configuration?
-2. Fee floor for the "Fee balance" warning: a fixed amount per chain (for example 0.05 SOL, 0.005 ETH), or an estimate from the last 24 hours of fees?
-3. Should a failing `doctor` check also block the worker from starting? Today only the ADR-0055 checks do. My recommendation is no: `doctor` reports, and startup refusals stay limited to unsafe states.
+- `init` checks prerequisites (Node, pnpm, Docker and Compose) and shows how to install what is missing; it asks before starting all services with Docker Compose.
+- The fee warning is measured against the last 24 hours of real fees, not a fixed floor.
+- A failing check never stops the worker; startup refusals stay limited to the unsafe states they cover today (ADR-0055, ADR-0057).
