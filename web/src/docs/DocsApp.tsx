@@ -87,7 +87,7 @@ export function DocsApp() {
         </div>
       </header>
 
-      <div className={styles.layout}>
+      <div className={styles.layout} data-layout={page?.layout}>
         <aside className={styles.sidebar}>
           <SideNav current={page} onNavigate={navigate} />
           <div className={styles.appearance}>

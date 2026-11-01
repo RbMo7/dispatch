@@ -21,15 +21,13 @@ export function SideNav({ current, onNavigate }: SideNavProps) {
                   href={hrefFor(page)}
                   className={styles.item}
                   aria-current={page === current ? 'page' : undefined}
-                  title={page.adr ? page.label : undefined}
                   onClick={(event) => {
                     if (!isPlainClick(event)) return;
                     event.preventDefault();
                     onNavigate(hrefFor(page));
                   }}
                 >
-                  {page.adr && <span className={styles.number}>{page.adr.number}</span>}
-                  <span className={styles.label}>{page.label}</span>
+                  {page.label}
                 </a>
               </li>
             ))}

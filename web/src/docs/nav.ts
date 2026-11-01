@@ -3,70 +3,66 @@ export interface NavPage {
   slug?: string;
   title?: string;
   label?: string;
+  /** Builds the page from this tag of the OpenAPI file in `source`, instead of from Markdown. */
+  tag?: string;
 }
 
 export interface NavSection {
   title: string;
-  pages: readonly NavPage[] | { adrDirectory: string };
+  pages: readonly NavPage[];
 }
 
 export const NAV: readonly NavSection[] = [
   {
     title: 'Get started',
     pages: [
-      { source: 'docs/concept.md', slug: 'introduction', label: 'What Dispatch is' },
+      { source: 'docs/about.md', slug: 'about' },
       { source: 'docs/quickstart.md', slug: 'quickstart' },
-      { source: 'docs/first-dispatch.md', slug: 'first-dispatch', label: 'Your first Dispatch' },
-    ],
-  },
-  {
-    title: 'Concepts',
-    pages: [
-      { source: 'docs/concepts/managed-and-relay.md', slug: 'concepts/managed-and-relay' },
-      { source: 'docs/concepts/senders-and-signers.md', slug: 'concepts/senders-and-signers' },
-      { source: 'docs/concepts/calls-and-payments.md', slug: 'concepts/calls-and-payments' },
-      { source: 'docs/concepts/statuses.md', slug: 'concepts/statuses' },
-      { source: 'docs/concepts/funding-check.md', slug: 'concepts/funding-check' },
-      { source: 'docs/concepts/retry-policy.md', slug: 'concepts/retry-policy' },
-      { source: 'docs/concepts/multisig-and-treasury.md', slug: 'concepts/multisig-and-treasury' },
-      { source: 'docs/concepts/proposals.md', slug: 'concepts/proposals' },
-      { source: 'CONTEXT.md', slug: 'glossary', title: 'Glossary' },
-    ],
-  },
-  {
-    title: 'API reference',
-    pages: [
-      { source: 'docs/api.md', slug: 'api', label: 'Overview and errors' },
-      { source: 'docs/api/create-dispatch.md', slug: 'api/create-dispatch' },
-      { source: 'docs/api/get-dispatch.md', slug: 'api/get-dispatch' },
-      { source: 'docs/api/list-dispatches.md', slug: 'api/list-dispatches' },
-      { source: 'docs/api/cancel-dispatch.md', slug: 'api/cancel-dispatch' },
-      { source: 'docs/api/senders.md', slug: 'api/senders' },
+      { source: 'docs/authentication.md', slug: 'authentication' },
+      { source: 'docs/making-requests.md', slug: 'making-requests' },
+      { source: 'docs/errors.md', slug: 'errors' },
+      { source: 'docs/lifecycle.md', slug: 'lifecycle' },
+      { source: 'docs/pagination.md', slug: 'pagination' },
+      { source: 'docs/polling.md', slug: 'polling' },
     ],
   },
   {
     title: 'Guides',
     pages: [
-      { source: 'docs/signer.md', slug: 'signer', label: 'Set up the Signer' },
-      { source: 'docs/multisig.md', slug: 'multisig', label: 'Multisig' },
-      { source: 'docs/guides/squads.md', slug: 'guides/squads' },
-      { source: 'docs/guides/safe.md', slug: 'guides/safe' },
-      { source: 'docs/guides/relay-dispatch.md', slug: 'guides/relay-dispatch', label: 'Relay Dispatch' },
-      { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call', label: 'Bulk Call' },
-      { source: 'docs/guides/console.md', slug: 'guides/console', label: 'Web console' },
+      { source: 'docs/guides/send-payments.md', slug: 'guides/send-payments' },
+      { source: 'docs/guides/call-a-contract.md', slug: 'guides/call-a-contract' },
+      { source: 'docs/guides/relay.md', slug: 'guides/relay' },
+      { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
+      { source: 'docs/guides/multisig.md', slug: 'guides/multisig' },
+      { source: 'docs/guides/cancel.md', slug: 'guides/cancel' },
+      { source: 'docs/guides/track.md', slug: 'guides/track' },
+      { source: 'docs/guides/sender-balances.md', slug: 'guides/sender-balances' },
+      { source: 'docs/guides/console-export.md', slug: 'guides/console-export' },
     ],
   },
   {
-    title: 'Operations',
+    title: 'REST API reference',
     pages: [
-      { source: 'docs/operations/configuration.md', slug: 'operations/configuration' },
-      { source: 'docs/operations/troubleshooting.md', slug: 'operations/troubleshooting' },
-      { source: 'docs/operations/mainnet-checklist.md', slug: 'operations/mainnet-checklist' },
+      { source: 'docs/openapi.yaml', tag: 'Dispatches', slug: 'rest/dispatches' },
+      { source: 'docs/openapi.yaml', tag: 'Senders', slug: 'rest/senders' },
+      { source: 'docs/openapi.yaml', tag: 'Health', slug: 'rest/health' },
     ],
   },
-  { title: 'Decisions', pages: { adrDirectory: 'docs/adr' } },
+  {
+    title: 'Self-hosting',
+    pages: [
+      { source: 'docs/self-hosting/install.md', slug: 'self-hosting/install' },
+      { source: 'docs/self-hosting/configuration.md', slug: 'self-hosting/configuration' },
+      { source: 'docs/self-hosting/signer.md', slug: 'self-hosting/signer' },
+      { source: 'docs/self-hosting/multisig.md', slug: 'self-hosting/multisig' },
+      { source: 'docs/self-hosting/console.md', slug: 'self-hosting/console' },
+      { source: 'docs/self-hosting/troubleshooting.md', slug: 'self-hosting/troubleshooting' },
+      { source: 'docs/self-hosting/mainnet.md', slug: 'self-hosting/mainnet' },
+    ],
+  },
 ];
 
-export const EXCLUDED_DIRS: readonly string[] = ['docs/agents'];
+/** Agent guidance and the decision records stay in the repo, off the site. */
+export const EXCLUDED_DIRS: readonly string[] = ['docs/agents', 'docs/adr'];
 
 export const REPO_BLOB_URL = 'https://github.com/RbMo7/dispatch/blob/main';

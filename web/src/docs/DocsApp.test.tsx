@@ -23,66 +23,76 @@ const title = () => screen.getByRole('heading', { level: 1 }).textContent;
 const sideNav = () => within(screen.getByRole('navigation', { name: 'Docs' }));
 
 describe('the docs site', () => {
-  it('shows the first page in nav order at /docs, and only sections that have pages', () => {
+  it('opens on About Dispatch, with the four sections GitHub-style docs have', () => {
     open('/docs');
 
-    expect(title()).toBe('What Dispatch is');
+    expect(title()).toBe('About Dispatch');
     const sections = sideNav()
       .getAllByRole('heading', { level: 2 })
       .map((heading) => heading.textContent);
-    expect(sections).toEqual([
-      'Get started',
-      'Concepts',
-      'API reference',
-      'Guides',
-      'Operations',
-      'Decisions',
-    ]);
+    expect(sections).toEqual(['Get started', 'Guides', 'REST API reference', 'Self-hosting']);
+    expect(sideNav().queryByText(/^0046/)).toBeNull();
   });
 
-  it('renders a page with its method badges in the rail and an edit link to its source', () => {
-    open('/docs/api/create-dispatch');
+  it('renders a reference page with each operation in the rail and an edit link to the spec', () => {
+    open('/docs/rest/dispatches');
 
-    expect(title()).toBe('Create a Dispatch');
+    expect(title()).toBe('Dispatches');
     const rail = within(screen.getByRole('navigation', { name: 'On this page' }));
-    expect(rail.getByRole('link', { name: 'POST /v1/dispatch' })).toHaveProperty(
+    expect(rail.getByRole('link', { name: 'POST Create a Dispatch' })).toHaveProperty(
       'hash',
-      '#post-v1dispatch',
+      '#create-a-dispatch',
     );
+    expect(rail.getByRole('link', { name: 'GET List Dispatches' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Edit this page' })).toHaveProperty(
       'href',
-      'https://github.com/RbMo7/dispatch/blob/main/docs/api/create-dispatch.md',
+      'https://github.com/RbMo7/dispatch/blob/main/docs/openapi.yaml',
     );
   });
 
-  it('lists the decisions by number and opens one', async () => {
-    const user = open('/docs');
+  it('switches every sample on the page to the language you choose', async () => {
+    const user = open('/docs/rest/dispatches');
 
-    await user.click(sideNav().getByRole('link', { name: /^0046/ }));
+    const [python] = screen.getAllByRole('tab', { name: 'Python' });
+    await user.click(python!);
 
-    expect(window.location.pathname).toBe('/docs/adr/0046');
-    expect(screen.getByText('ADR-0046')).toBeTruthy();
-    expect(title()).toMatch(/^The Signer sees the whole transaction/);
+    for (const tab of screen.getAllByRole('tab', { name: 'Python' })) {
+      expect(tab.getAttribute('aria-selected')).toBe('true');
+    }
+  });
+
+  it('shows the request and response of the example you pick', async () => {
+    const user = open('/docs/rest/dispatches');
+
+    const [menu] = screen.getAllByRole('combobox');
+    await user.selectOptions(menu!, 'unknownAsset');
+
+    const shown = document.querySelector<HTMLElement>(
+      '[data-op="create-a-dispatch"]:not([hidden])',
+    )!;
+    expect(shown.dataset.example).toBe('unknownAsset');
+    expect(shown.textContent).toContain('Status: 400');
+    expect(shown.textContent).toContain('UNKNOWN_ASSET');
   });
 
   it('follows a link between Markdown files to its site route', async () => {
-    const user = open('/docs/multisig');
+    const user = open('/docs/self-hosting/signer');
 
     const link = screen
       .getAllByRole('link')
-      .find((a) => a.getAttribute('href') === '/docs/operations/mainnet-checklist')!;
+      .find((a) => a.getAttribute('href') === '/docs/self-hosting/mainnet')!;
     await user.click(link);
 
-    expect(window.location.pathname).toBe('/docs/operations/mainnet-checklist');
-    expect(title()).toBe('Mainnet checklist');
+    expect(window.location.pathname).toBe('/docs/self-hosting/mainnet');
+    expect(title()).toBe('Going to mainnet');
   });
 
   it('copies a code block', async () => {
-    const user = open('/docs/api/create-dispatch');
+    const user = open('/docs/making-requests');
 
-    await user.click(screen.getAllByRole('button', { name: 'Copy' })[1]!);
+    await user.click(screen.getAllByRole('button', { name: 'Copy' })[0]!);
 
-    expect(await navigator.clipboard.readText()).toMatch(/^\{ "dispatchId": /);
+    expect(await navigator.clipboard.readText()).toMatch(/^export DISPATCH_URL=/);
     expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
   });
 
@@ -95,7 +105,7 @@ describe('the docs site', () => {
     expect(first[0]!.textContent).toContain('Many small Dispatches mean many small proposals');
     await user.keyboard('{Enter}');
 
-    expect(window.location.pathname).toBe('/docs/multisig');
+    expect(window.location.pathname).toBe('/docs/self-hosting/multisig');
     expect(window.location.hash).toBe('#many-small-dispatches-mean-many-small-proposals');
   });
 

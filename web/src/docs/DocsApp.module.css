@@ -145,8 +145,34 @@
   padding: var(--space-10) 0 var(--space-16);
 }
 
+/* A reference page needs the width for its two columns, so its rail shows only on wide screens. */
+.layout[data-layout='reference'] {
+  grid-template-columns: 248px minmax(0, 1fr);
+  max-width: 1600px;
+}
+
+.layout[data-layout='reference'] .rail {
+  display: none;
+}
+
+.layout[data-layout='reference'] .content {
+  max-width: none;
+}
+
+@media (min-width: 1700px) {
+  .layout[data-layout='reference'] {
+    grid-template-columns: 248px minmax(0, 1fr) 208px;
+    max-width: 1880px;
+  }
+
+  .layout[data-layout='reference'] .rail {
+    display: block;
+  }
+}
+
 @media (max-width: 1100px) {
-  .layout {
+  .layout,
+  .layout[data-layout='reference'] {
     grid-template-columns: 232px minmax(0, 1fr);
     gap: var(--space-10);
   }
@@ -157,6 +183,10 @@
 }
 
 @media (max-width: 768px) {
+  .layout[data-layout='reference'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .bar {
     gap: var(--space-2);
     padding: 0 var(--space-4);

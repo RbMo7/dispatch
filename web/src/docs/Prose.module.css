@@ -20,16 +20,6 @@
   text-wrap: balance;
 }
 
-.status {
-  display: inline-block;
-  margin: var(--space-4) 0 0;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--pill-queued-bg);
-  color: var(--pill-queued-fg);
-  font-size: var(--text-13);
-}
-
 .prose {
   font-size: var(--text-15);
   line-height: 1.65;
@@ -271,32 +261,257 @@
 }
 
 :global(.method) {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-full);
-  background: var(--pill-broadcasting-bg);
-  color: var(--pill-broadcasting-fg);
   font-family: var(--font-sans);
-  font-size: var(--text-10-5);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  vertical-align: 0.15em;
+  font-size: var(--text-11-5);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--pill-broadcasting-fg);
 }
 
 :global(.method[data-method='POST']) {
-  background: var(--pill-confirmed-bg);
   color: var(--pill-confirmed-fg);
 }
 
 :global(.method:is([data-method='PUT'], [data-method='PATCH'])) {
-  background: var(--pill-partial-bg);
   color: var(--pill-partial-fg);
 }
 
 :global(.method[data-method='DELETE']) {
-  background: var(--pill-failed-bg);
   color: var(--pill-failed-fg);
+}
+
+.prose :global(.diagram-host) {
+  margin: 0 0 var(--space-6);
+}
+
+.prose :global(.diagram) {
+  margin: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+
+.prose :global(.diagram svg) {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.prose :global(.diagram figcaption) {
+  margin-top: var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-13);
+}
+
+/* Reference pages: one operation per section, prose on the left and samples on the right. */
+
+.reference .prose :global(.op-index) {
+  padding: 0;
+  list-style: none;
+}
+
+.reference .prose :global(.op-index a) {
+  text-decoration: none;
+}
+
+.reference .prose :global(.op-index .method) {
+  display: inline-block;
+  min-width: 44px;
+}
+
+.reference .prose :global(.op-title) {
+  margin-top: var(--space-16);
+  padding-top: var(--space-10);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-22);
+}
+
+.reference .prose :global(.op) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-10);
+  align-items: start;
+}
+
+.reference .prose :global(.op-route) {
+  font-size: var(--text-14);
+}
+
+.reference .prose :global(.op-doc h3) {
+  margin-top: var(--space-8);
+  font-size: var(--text-15);
+}
+
+.reference .prose :global(.op-doc h4) {
+  margin: var(--space-5) 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.reference .prose :global(table.params),
+.reference .prose :global(table.statuses) {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.reference .prose :global(table.params th:first-child) {
+  width: 36%;
+}
+
+.reference .prose :global(table.statuses th:first-child) {
+  width: 32%;
+}
+
+.reference .prose :global(.param-name) {
+  overflow-wrap: anywhere;
+}
+
+.reference .prose :global(.param-name code) {
+  font-weight: 600;
+}
+
+.reference .prose :global(:is(.param-type, .param-required)) {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-12);
+}
+
+.reference .prose :global(.param-type) {
+  color: var(--muted);
+}
+
+.reference .prose :global(.param-required) {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.reference .prose :global(td > p) {
+  margin: 0 0 var(--space-2);
+}
+
+.reference .prose :global(.param-meta) {
+  color: var(--muted);
+  font-size: var(--text-13);
+}
+
+.reference .prose :global(.param-variant) {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-14);
+  font-weight: 600;
+}
+
+.reference .prose :global(.param-nested) {
+  margin: var(--space-2) 0;
+}
+
+.reference .prose :global(.param-nested summary) {
+  color: var(--accent-text);
+  font-size: var(--text-13);
+  cursor: pointer;
+}
+
+.reference .prose :global(.param-nested table) {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+}
+
+.reference .prose :global(.op-samples) {
+  position: sticky;
+  top: calc(var(--bar-height, 52px) + var(--space-6));
+  max-height: calc(100dvh - var(--bar-height, 52px) - var(--space-10));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.reference .prose :global(.sample) {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--canvas);
+}
+
+.reference .prose :global(.sample-head) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.reference .prose :global(.sample-title) {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.reference .prose :global(.sample-head .sample-title) {
+  margin: 0;
+}
+
+.reference .prose :global(.sample-menu) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  color: var(--muted);
+  font-size: var(--text-12);
+}
+
+.reference .prose :global(.sample-menu select) {
+  min-width: 0;
+  max-width: 260px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-12);
+}
+
+.reference .prose :global(.sample-route) {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-13);
+  overflow-wrap: anywhere;
+}
+
+.reference .prose :global(.sample-status) {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+}
+
+.reference .prose :global(.op-samples pre) {
+  max-height: 420px;
+}
+
+.reference .prose :global(.op-samples .code-tabs [role='tablist']) {
+  background: var(--sunken);
+}
+
+@media (max-width: 1280px) {
+  .reference .prose :global(.op) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reference .prose :global(.op-samples) {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+.reference .prose :global(.op-samples .code-lang) {
+  visibility: hidden;
+}
+
+.reference .prose > :global(p) {
+  max-width: 75ch;
 }
