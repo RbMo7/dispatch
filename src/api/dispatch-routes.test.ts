@@ -613,7 +613,16 @@ describe('GET /v1/dispatch/:id', () => {
       chain: 'base',
       createdAt: dispatch.createdAt.toISOString(),
       status: 'queued',
-      items: [{ type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null }],
+      items: [
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
+      ],
     });
   });
 
@@ -679,7 +688,23 @@ describe('GET /v1/dispatch/:id', () => {
         transactionHash: null,
         error: null,
       },
-      { type: 'call', to: '0xcontract', status: 'queued', transactionHash: null, error: null },
+      {
+        type: 'call',
+        to: '0xcontract',
+        call: {
+          target: '0xcontract',
+          decoded: false,
+          data: '0x1234',
+          value: {
+            amount: '7',
+            asset: { address: 'native', symbol: 'ETH', name: 'Ether', decimals: 18 },
+            formatted: '0.000000000000000007',
+          },
+        },
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
     ]);
     expect(await itemsOf(solana.id)).toEqual([
       {
@@ -692,7 +717,14 @@ describe('GET /v1/dispatch/:id', () => {
         transactionHash: null,
         error: null,
       },
-      { type: 'call', programId: 'Memo1111', status: 'queued', transactionHash: null, error: null },
+      {
+        type: 'call',
+        programId: 'Memo1111',
+        call: { target: 'Memo1111', decoded: false, selector: '6869', data: 'aGk=' },
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
     ]);
   });
 
@@ -748,7 +780,14 @@ describe('GET /v1/dispatch/:id', () => {
       createdAt: dispatch.createdAt.toISOString(),
       status: 'confirmed',
       items: [
-        { type: 'call', to: '0xabc', status: 'confirmed', transactionHash: 'hash-1', error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'confirmed',
+          transactionHash: 'hash-1',
+          error: null,
+        },
       ],
     });
   });
@@ -841,10 +880,18 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(body.status).toBe('partial');
     expect(body.items).toEqual([
-      { type: 'call', to: '0xa', status: 'confirmed', transactionHash: 'hash-1', error: null },
+      {
+        type: 'call',
+        to: '0xa',
+        call: { target: '0xa', decoded: true },
+        status: 'confirmed',
+        transactionHash: 'hash-1',
+        error: null,
+      },
       {
         type: 'call',
         to: '0xb',
+        call: { target: '0xb', decoded: true },
         status: 'failed',
         transactionHash: null,
         error: { code: 'INSUFFICIENT_FUNDS', message: 'short' },
@@ -1105,8 +1152,22 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       chain: 'base',
       createdAt: expect.any(String) as string,
       items: [
-        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
-        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
       ],
     });
   });
@@ -1146,6 +1207,7 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       ...[0, 1].map(() => ({
         type: 'call',
         to: '0xabc',
+        call: { target: '0xabc', decoded: true },
         status: 'awaiting_approval',
         transactionHash: null,
         error: null,
@@ -1263,6 +1325,7 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
           {
             type: 'call',
             to: '0xabc',
+            call: { target: '0xabc', decoded: true },
             status: 'confirmed',
             transactionHash: 'hash-1',
             error: null,
@@ -1319,8 +1382,22 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
       createdAt: expect.any(String) as string,
       status: 'cancelled',
       items: [
-        { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
-        { type: 'call', to: '0xdef', status: 'cancelled', transactionHash: null, error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'cancelled',
+          transactionHash: null,
+          error: null,
+        },
+        {
+          type: 'call',
+          to: '0xdef',
+          call: { target: '0xdef', decoded: true },
+          status: 'cancelled',
+          transactionHash: null,
+          error: null,
+        },
       ],
       cancellation: { at: expect.any(String) as string, tokenKind: 'auth', reason: null },
     };
@@ -1488,6 +1565,7 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
           {
             type: 'call',
             to: '0xabc',
+            call: { target: '0xabc', decoded: true },
             status: 'confirmed',
             transactionHash: 'hash-1',
             error: null,

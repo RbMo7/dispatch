@@ -29,10 +29,12 @@ import {
   relayDispatches,
   setupChecks,
   signerKeys,
+  transactionEffects,
   transactions,
 } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
+import { EFFECTS_READ, type TransactionEffects, type TransactionRef } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import {
   definitionFromJson,
@@ -110,6 +112,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     bulkCall: row.bulkCall ?? null,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
     senderAddress: row.senderAddress as SenderAddress | null,
   };
@@ -131,6 +134,7 @@ function toTransaction(row: TransactionRow): Transaction {
     failedAt: row.failedAt,
     lastCheckedAt: row.lastCheckedAt,
     lastBroadcastAt: row.lastBroadcastAt,
+    sentAt: row.sentAt,
     replacesTransactionId: row.replacesTransactionId,
     feeBumpAttempts: row.feeBumpAttempts,
     proposalId: row.proposalId,
@@ -182,6 +186,7 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
     transactionId: row.transactionId,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
   };
 }
@@ -400,9 +405,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(dispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             dispatches.id,
@@ -970,10 +976,14 @@ export class PostgresDispatchStore implements DispatchStore {
       .where(eq(transactions.id, transactionId));
   }
 
-  async recordSent(transactionId: string, hash: string): Promise<void> {
+  async recordSent(transactionId: string, hash: string, sentAt = new Date()): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ hash, lastBroadcastAt: new Date() })
+      .set({
+        hash,
+        lastBroadcastAt: sentAt,
+        sentAt: sql`coalesce(${transactions.sentAt}, ${sentAt.toISOString()}::timestamptz)`,
+      })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -1399,7 +1409,14 @@ export class PostgresDispatchStore implements DispatchStore {
       await tx.update(proposals).set({ phase: 'executing' }).where(eq(proposals.id, proposalId));
       const rows = await tx
         .update(transactions)
-        .set({ status: 'PENDING', hash, signedBytes, broadcastAt: now, lastBroadcastAt: now })
+        .set({
+          status: 'PENDING',
+          hash,
+          signedBytes,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+          sentAt: null,
+        })
         .where(
           inArray(
             transactions.id,
@@ -1434,6 +1451,7 @@ export class PostgresDispatchStore implements DispatchStore {
           failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
+          sentAt: null,
         })
         .where(
           inArray(
@@ -1759,9 +1777,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(relayDispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             relayDispatches.id,
@@ -1779,5 +1798,87 @@ export class PostgresDispatchStore implements DispatchStore {
       .update(relayDispatches)
       .set({ transactionId })
       .where(eq(relayDispatches.id, relayDispatchId));
+  }
+
+  async listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]> {
+    const confirmedAfter = new Date(now.getTime() - EFFECTS_READ.windowMs);
+    const rows = await this.db
+      .select({ chain: transactions.chain, hash: sql<string>`${transactions.hash}` })
+      .from(transactions)
+      .leftJoin(
+        transactionEffects,
+        and(
+          eq(transactionEffects.chain, transactions.chain),
+          eq(transactionEffects.hash, transactions.hash),
+        ),
+      )
+      .where(
+        and(
+          eq(transactions.status, 'CONFIRMED'),
+          isNotNull(transactions.hash),
+          inArray(transactions.chain, chains),
+          gte(transactions.confirmedAt, confirmedAfter),
+          or(
+            isNull(transactionEffects.hash),
+            and(
+              isNull(transactionEffects.effects),
+              lt(transactionEffects.readFailures, EFFECTS_READ.maxFailures),
+              sql`${transactionEffects.readAt} + ${transactionEffects.readFailures} * ${`${EFFECTS_READ.retryAfterMs} milliseconds`}::interval <= ${now.toISOString()}::timestamptz`,
+            ),
+          ),
+        ),
+      )
+      .groupBy(transactions.chain, transactions.hash)
+      .orderBy(sql`min(${transactions.confirmedAt})`)
+      .limit(limit);
+    return rows.map(({ chain, hash }) => ({ chain: chain as Chain, hash }));
+  }
+
+  async recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void> {
+    await this.db
+      .insert(transactionEffects)
+      .values({ ...ref, effects, readAt: at })
+      .onConflictDoUpdate({
+        target: [transactionEffects.chain, transactionEffects.hash],
+        set: { effects, readAt: at, lastError: null },
+        where: isNull(transactionEffects.effects),
+      });
+  }
+
+  async recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void> {
+    await this.db
+      .insert(transactionEffects)
+      .values({ ...ref, readFailures: 1, lastError: error, readAt: at })
+      .onConflictDoUpdate({
+        target: [transactionEffects.chain, transactionEffects.hash],
+        set: {
+          readFailures: sql`${transactionEffects.readFailures} + 1`,
+          lastError: error,
+          readAt: at,
+        },
+        where: isNull(transactionEffects.effects),
+      });
+  }
+
+  async listEffects(
+    chain: Chain,
+    hashes: readonly string[],
+  ): Promise<Map<string, TransactionEffects>> {
+    if (hashes.length === 0) return new Map();
+    const rows = await this.db
+      .select({ hash: transactionEffects.hash, effects: transactionEffects.effects })
+      .from(transactionEffects)
+      .where(
+        and(
+          eq(transactionEffects.chain, chain),
+          inArray(transactionEffects.hash, [...hashes]),
+          isNotNull(transactionEffects.effects),
+        ),
+      );
+    return new Map(rows.flatMap(({ hash, effects }) => (effects ? [[hash, effects]] : [])));
   }
 }

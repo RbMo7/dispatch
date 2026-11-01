@@ -2,6 +2,7 @@ import type { CallForChain, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { NewKnownAsset } from '../domain/known-asset.js';
+import type { TransactionEffects } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
   Approver,
@@ -55,6 +56,8 @@ export type BundleSlotStatus = { status: ChainStatus; detail?: unknown };
 
 export type BroadcastResult = {
   hash: string;
+  /** #169: when the node accepted the bytes, for a broadcast that waits on past that (Solana waits for confirmation). Absent: just now. */
+  sentAt?: Date;
 };
 
 /**
@@ -303,6 +306,12 @@ export interface ChainHandler<C extends Chain = Chain> {
     calls: CallForChain<C>[],
     senderAddress: string,
   ): Promise<Result<Balance, DispatchError>>;
+
+  /**
+   * ADR-0063, optional: what a confirmed transaction changed, read once by the
+   * worker and stored raw. An error is retried a few times, then given up.
+   */
+  readEffects?(hash: string): Promise<Result<TransactionEffects, DispatchError>>;
 
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;

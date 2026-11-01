@@ -51,7 +51,7 @@ export type TimelineEntry =
     };
 
 export type TimelineSource = {
-  dispatch: { createdAt: Date; claimedAt: Date | null; cancelledAt: Date | null };
+  dispatch: { createdAt: Date; firstClaimedAt: Date | null; cancelledAt: Date | null };
   /** Every version, REPLACED and DROPPED included. */
   transactions: Transaction[];
   attempts: Attempt[];
@@ -70,7 +70,7 @@ export function buildTimeline({
   proposals,
 }: TimelineSource): TimelineEntry[] {
   const entries: TimelineEntry[] = [{ kind: 'created', at: dispatch.createdAt }];
-  if (dispatch.claimedAt) entries.push({ kind: 'claimed', at: dispatch.claimedAt });
+  if (dispatch.firstClaimedAt) entries.push({ kind: 'claimed', at: dispatch.firstClaimedAt });
   if (dispatch.cancelledAt) entries.push({ kind: 'cancelled', at: dispatch.cancelledAt });
 
   const byId = new Map(transactions.map((t) => [t.id, t]));
@@ -108,14 +108,7 @@ export function buildTimeline({
         items,
         replaces: predecessor?.hash ?? null,
       });
-      // Each resend overwrites lastBroadcastAt, so the first send's moment survives only until one.
-      if (
-        rowAttempts.length === 0 &&
-        first.lastBroadcastAt &&
-        first.lastBroadcastAt > first.broadcastAt
-      ) {
-        entries.push({ kind: 'sent', at: first.lastBroadcastAt, hash, items });
-      }
+      if (first.sentAt) entries.push({ kind: 'sent', at: first.sentAt, hash, items });
       for (const attempt of rowAttempts) {
         entries.push({
           kind: 'attempt',

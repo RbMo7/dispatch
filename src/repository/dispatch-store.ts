@@ -2,6 +2,7 @@ import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import type { TransactionEffects, TransactionRef } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
   FlagRule,
@@ -331,7 +332,7 @@ export interface DispatchStore {
   /** #9: records a failed (or exhausted) fee-bump attempt against the cap without creating a replacement. */
   setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void>;
   /** #20 (ADR-0041): a Transaction written down before sending was actually sent — stamps lastBroadcastAt, and takes the hash the chain reported if it differs (Solana re-signing with a fresh blockhash). */
-  recordSent(transactionId: string, hash: string): Promise<void>;
+  recordSent(transactionId: string, hash: string, sentAt?: Date): Promise<void>;
   /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
   undoReplacement(replacementId: string): Promise<void>;
   /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` (or was never stamped) and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
@@ -458,5 +459,22 @@ export interface DispatchStore {
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
   /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
   recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+
+  /**
+   * ADR-0063: CONFIRMED transactions on `chains` whose effects the worker
+   * should read now, oldest confirmation first, each once however many Calls
+   * share it (`EFFECTS_READ` says which are due).
+   */
+  listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]>;
+  /** Stores a transaction's effects. Effects already stored are kept, so a second read changes nothing. */
+  recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void>;
+  /** Counts one failed read, so the next waits longer and the reads stop after `EFFECTS_READ.maxFailures`. */
+  recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void>;
+  /** The stored effects of these transactions on `chain`, by hash; a hash with none is left out. */
+  listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>>;
   listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

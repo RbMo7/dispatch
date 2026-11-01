@@ -49,8 +49,11 @@ export function solanaPayoutsKeypair(): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(readJson<number[]>(file)));
 }
 
-/** The committed Base dev key (`signer/keys.dev.json`), funded on Base Sepolia. */
+/** The committed Base dev key (`signer/keys.dev.json`), funded on Base Sepolia, or `FLOWS_BASE_KEY` (a `{ privateKey }` file). */
 export function basePayoutsKey(): `0x${string}` {
+  if (process.env.FLOWS_BASE_KEY) {
+    return readJson<{ privateKey: `0x${string}` }>(process.env.FLOWS_BASE_KEY).privateKey;
+  }
   const keys = readJson<{ secp256k1: Record<string, string> }>(
     path.join(REPO_ROOT, 'signer/keys.dev.json'),
   );

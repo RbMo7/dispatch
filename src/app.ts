@@ -12,7 +12,7 @@ import { registerTokenRoutes } from './api/token-routes.js';
 import { logger } from './logger.js';
 import { webStatic } from './web-static.js';
 
-export type AppDeps = Omit<DispatchRouteDeps, 'tokens' | 'assetDecimals'> &
+export type AppDeps = Omit<DispatchRouteDeps, 'tokens' | 'assetDecimals' | 'assetAt'> &
   Pick<AssetRouteDeps, 'assets' | 'readToken'> &
   Pick<SenderRouteDeps, 'listSenders'> &
   Pick<SetupRouteDeps, 'readSetup'> & {
@@ -28,7 +28,12 @@ export function buildApp({ authToken, operatorToken, assets, readToken, ...deps 
   const app = Fastify({ loggerInstance: logger });
 
   app.get('/health', () => ({ status: 'ok' }));
-  app.register(registerDispatchRoutes, { ...deps, tokens, assetDecimals: assets.decimalsOf });
+  app.register(registerDispatchRoutes, {
+    ...deps,
+    tokens,
+    assetDecimals: assets.decimalsOf,
+    assetAt: (chain, address) => assets.forChain(chain).byAddress(address),
+  });
   app.register(registerSenderRoutes, { tokens, listSenders: deps.listSenders });
   app.register(registerSetupRoutes, { tokens, readSetup: deps.readSetup });
   app.register(registerActivityRoutes, { tokens, store: deps.store });

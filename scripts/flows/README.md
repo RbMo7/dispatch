@@ -7,7 +7,7 @@ It spends testnet funds. Run it by hand, never in CI.
 ## What it needs
 
 - Postgres, for the scratch database `local-engine.ts` creates and drops. It connects to `FLOWS_PG_ADMIN_URL`, by default `postgres://dispatch:dispatch@localhost:5433/postgres`, and never touches the `dispatch` database.
-- A funded devnet wallet, by default `.devnet-fixtures/sender-keypair.json` (`FLOWS_SOLANA_KEYPAIR` to change it), and the committed Base dev key in `signer/keys.dev.json`, funded on Base Sepolia.
+- A funded devnet wallet, by default `.devnet-fixtures/sender-keypair.json` (`FLOWS_SOLANA_KEYPAIR` to change it), and the committed Base dev key in `signer/keys.dev.json`, funded on Base Sepolia (`FLOWS_BASE_KEY`, a `{ "privateKey": "0x…" }` file, to change it). Give a run its own keys when another engine may be sending from the shared ones.
 - RPC URLs from the repository's `.env` (`SOLANA_DEVNET_RPC_URL`, `BASE_SEPOLIA_RPC_URL`; `FLOWS_DOTENV` to read another file). The public endpoints are the fallback.
 - Google Chrome, for the screenshots (`FLOWS_CHROME` to point elsewhere).
 - The console built into `web/dist/engine`: `cd web && pnpm install && npx vite build --mode engine`.
