@@ -41,7 +41,7 @@ A rule is a `name`, a `chain` (`base` or `solana`), a `kind`, and exactly that k
 | --- | --- | --- |
 | `item_over` | `asset`, `limit` | one `payment` item of `asset` is over `limit` |
 | `dispatch_total_over` | `asset`, `limit` | its `payment` items of `asset` add up to more than `limit` |
-| `daily_volume_over` | `asset`, `limit` | the `payment` items of `asset` in Managed Dispatches accepted in the last 24 hours and not cancelled, held ones included, plus this one's, add up to more than `limit` |
+| `daily_volume_over` | `asset`, `limit` | the `payment` items of `asset` in Managed Dispatches accepted in the last 24 hours and not cancelled, held ones included, plus this one's, add up to more than `limit`. A rule with `sender` counts only that Sender's Dispatches |
 | `first_time_recipient` | none | a `payment` item's recipient has never had a confirmed payment from this engine on this chain |
 | `recipient_not_allowlisted` | `addresses` | a `payment` item's recipient is not in `addresses` |
 | `call_target_not_allowlisted` | `addresses` | a `call` item's `to` (Base) or `programId` (Solana) is not in `addresses` |
@@ -50,11 +50,7 @@ A rule is a `name`, a `chain` (`base` or `solana`), a `kind`, and exactly that k
 
 The check reads only the engine's own database, never a chain. Amounts are compared as integers in the asset's smallest unit. [The six rule kinds](#the-six-rule-kinds) has a worked example of each.
 
-To hold only the hot Sender's large payments, scope the rule to it:
-
-```json
-{ "name": "Large payout", "chain": "solana", "sender": "payouts", "kind": "item_over", "asset": "USDC", "limit": "5000" }
-```
+To check only one Sender's Dispatches, such as a hot wallet's, add `sender`. [Scope a rule to one Sender](#scope-a-rule-to-one-sender) shows it end to end.
 
 ## 2. Preview it
 
@@ -287,6 +283,91 @@ The answer is the rule with `deletedAt` set. Editing a deleted rule answers `409
 ```
 
 Editing or deleting a rule never re-checks or releases a Dispatch already held.
+
+## Scope a rule to one Sender
+
+On an engine with [more than one Sender](./multiple-senders.md), `sender` limits a rule to the Dispatches one Sender pays. This engine has two Solana Senders: `payouts`, the default, and `treasury`. The rule holds any payout over 0.01 SOL from `payouts`:
+
+```sh
+curl -s -X POST "$DISPATCH_URL/v1/flag-rules" \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Large payout","chain":"solana","sender":"payouts","kind":"item_over","asset":"SOL","limit":"0.01","reason":"finance reviews any payout over 0.01 SOL from the hot Sender"}'
+```
+
+```json
+{
+  "ruleId": "b2a3f0ad-6384-439f-a23d-0a24562324be",
+  "version": 1,
+  "name": "Large payout",
+  "chain": "solana",
+  "sender": { "name": "payouts", "address": "33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf" },
+  "enabled": true,
+  "kind": "item_over",
+  "asset": "SOL",
+  "limit": "0.01",
+  "createdAt": "2026-11-01T14:03:35.580Z",
+  "updatedAt": "2026-11-01T14:03:35.580Z",
+  "deletedAt": null,
+  "versions": [
+    {
+      "version": 1,
+      "name": "Large payout",
+      "chain": "solana",
+      "sender": { "name": "payouts", "address": "33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf" },
+      "enabled": true,
+      "kind": "item_over",
+      "asset": "SOL",
+      "limit": "0.01",
+      "createdAt": "2026-11-01T14:03:35.580Z"
+    }
+  ]
+}
+```
+
+The rule stores the Sender's address and shows it with the name the senders file gives it now. A rule without `sender` reads `"sender": null`.
+
+Two Dispatches then paid the same 0.02 SOL to the same recipient. The first named no Sender, so `payouts` paid it, and the rule held it:
+
+```json
+{ "dispatchId": "fc659d9d-64b6-4464-9454-75212867b213", "status": "held" }
+```
+
+The second named `"sender": "treasury"`, and the rule did not check it:
+
+```json
+{ "dispatchId": "fbca9076-f897-4c06-969a-2976233d3330", "status": "queued" }
+```
+
+Releasing the first with a reason sent it, and both confirmed.
+
+A scoped `daily_volume_over` rule counts only its Sender's volume. Here `treasury` had paid 0.021 SOL that day and the whole chain 0.091 SOL. This rule allows `treasury` 0.025 SOL a day:
+
+```json
+{ "name": "Treasury daily volume", "chain": "solana", "sender": "treasury", "kind": "daily_volume_over", "asset": "SOL", "limit": "0.025" }
+```
+
+A 0.003 SOL payment from `treasury` brought its total to 0.024 SOL and was queued, though the chain's total was well over the limit. The next 0.003 SOL payment brought it to 0.027 SOL and was held:
+
+```json
+{ "rule": { "name": "Treasury daily volume", "kind": "daily_volume_over", "asset": "SOL", "limit": "0.025" }, "ruleId": "f4357ce5-ddc4-458e-b4df-3c816faad0fa", "ruleVersion": 1, "items": [0] }
+```
+
+### When the Sender is removed
+
+If the operator removes a Sender from the senders file, its rules stay on the list and keep their scope. They show the address with `"name": null`:
+
+```json
+"sender": { "name": null, "address": "Hd7W6MwuqSdmyNXvUnQGSQR9SKyevuY5fjs6jCVaMwPd" }
+```
+
+Such a rule holds nothing, because no request can name a Sender that is not configured. If a Sender with the same address returns, under any name, the rule checks its Dispatches again. An edit must name a configured Sender, or send `"sender": null` to check every Sender on the chain. Keeping the old name is a `400`:
+
+```json
+{ "error": "sender: solana has no Sender named \"treasury\" (payouts)" }
+```
+
+Delete the rule if you no longer need it.
 
 ## The six rule kinds
 
