@@ -5,6 +5,7 @@ import { ChainRegistry, type RegisteredSender } from '../chain-registry/chain-re
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const CLIENT = { authorization: 'Bearer client-token' };
 const OPERATOR = { authorization: 'Bearer operator-token' };
@@ -30,7 +31,8 @@ function setup(senders = [sender('payouts', PAYOUTS, true), sender('treasury', T
     authToken: 'client-token',
     operatorToken: 'operator-token',
     defaultRetryPolicy: false,
-    assetDecimals: (chain, asset) => (chain === 'base' && asset === 'USDC' ? 6 : undefined),
+    assets: registryFromConfig({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6' }),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });

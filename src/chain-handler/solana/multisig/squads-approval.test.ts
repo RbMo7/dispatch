@@ -28,6 +28,7 @@ import {
   type SquadsConnection,
 } from './squads-approval.js';
 import { deriveProposalPda, deriveTransactionPda } from './vault-transaction.js';
+import { registryFromConfig } from '../../../asset-registry/configured-assets.js';
 
 const MULTISIG = Keypair.generate().publicKey;
 const VAULT = deriveVaultAddress(MULTISIG);
@@ -130,7 +131,6 @@ function approval(
   c = fakeConnection(),
   s = fakeSigner(),
   extra: {
-    knownTokens?: Record<string, { mint: string; decimals: number; tokenProgram?: 'token-2022' }>;
     price?: number;
   } = {},
 ) {
@@ -142,7 +142,7 @@ function approval(
       memberAddress: MEMBER.publicKey.toBase58(),
       vaultAddress: VAULT.toBase58(),
     },
-    knownTokens: extra.knownTokens ?? { USDC: { mint: MINT.toBase58(), decimals: 6 } },
+    assets: registryFromConfig({ solana: `USDC:${MINT.toBase58()}:6` }).forChain('solana'),
     ...(extra.price ? { computeUnitPriceMicroLamports: extra.price } : {}),
     pollIntervalMs: 1,
     resendIntervalMs: 0,

@@ -15,6 +15,7 @@ import { planChecks, runPlanned } from './setup/run.js';
 import { fakeContext, goodEnv } from './setup/test-support/fake-context.js';
 import { SETUP_CHECKS_TICK_MS, setupChecksLoop } from './setup-checks-loop.js';
 import { SignerClient } from './signer/client.js';
+import { registryFromConfig } from './asset-registry/configured-assets.js';
 
 const TOKEN = 'signer-token-0123456789abcdef0123456789';
 const START = Date.parse('2026-11-01T10:00:00.000Z');
@@ -61,13 +62,15 @@ async function engine({ workerSignerUrl }: { workerSignerUrl?: string } = {}) {
     ping: () => Promise.resolve(),
     pendingMigrations: () => Promise.resolve([]),
     recentTransactions: () => Promise.resolve({ count: 0, latestHashes: [] }),
+    knownAssets: () => Promise.resolve([]),
   };
   const app = buildApp({
     store,
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'api-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => 9,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: setupReader({
       enabledChains: ['solana'],

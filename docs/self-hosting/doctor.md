@@ -179,7 +179,7 @@ Fix: send the native asset to the address. On Solana devnet the fix is `solana a
 
 Id `sender.tokens`. Runs in doctor and the worker, once per Sender.
 
-Checks the Sender's balance of each token in `SOLANA_KNOWN_TOKENS` or `BASE_KNOWN_TOKENS`. It warns for each token the Sender holds none of, because every payment in that token fails its [Funding Check](../lifecycle.md#the-funding-check). It passes when no tokens are configured. Fix: send the token to the Sender, or remove the token from the known tokens if you do not pay in it.
+Checks the Sender's balance of each enabled token in the Known Asset registry (`GET /v1/assets`): the ones in `SOLANA_KNOWN_TOKENS` or `BASE_KNOWN_TOKENS` and the ones added through the API. Run from your machine, it reads the registry from `DATABASE_URL`, or only the variables when the database can't be read. It warns for each token the Sender holds none of, because every payment in that token fails its [Funding Check](../lifecycle.md#the-funding-check). It passes when no tokens are configured. Fix: send the token to the Sender, or disable the token (or remove it from the variable) if you do not pay in it.
 
 ## Multisig
 

@@ -37,6 +37,7 @@ import {
 import { MULTI_SEND_CALL_ONLY, SafeApproval } from './safe-approval.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import { SafeTxServiceClient } from './tx-service-client.js';
+import { registryFromConfig } from '../../../asset-registry/configured-assets.js';
 
 const USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 const A = '0x1111111111111111111111111111111111111111';
@@ -119,7 +120,7 @@ async function setup(
     client: node.client,
     signer: { signSafeTransaction: () => Promise.reject(new Error('never signs here')) },
     service: new SafeTxServiceClient({ baseUrl: service.url, apiKey: API_KEY }),
-    knownTokens: { USDC: { contractAddress: USDC, decimals: 6 } },
+    assets: registryFromConfig({ base: `USDC:${USDC}:${6}` }).forChain('base'),
     prepare,
     staleReadRetryDelayMs: 0,
   });

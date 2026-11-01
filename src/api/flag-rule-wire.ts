@@ -12,7 +12,7 @@ import type {
 } from '../domain/flag-rule.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { SenderAddress } from '../domain/sender.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 
 /** #149: the configured Senders of a chain, which a rule's `sender` names and its reads show by name. */
 export type FlagRuleSenders = {

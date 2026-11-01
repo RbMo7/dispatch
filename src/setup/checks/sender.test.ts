@@ -146,6 +146,7 @@ describe('Sender: Token balances', () => {
       chain: (chain) => ({
         ...healthyChain(chain),
         balance: (_address, asset) => Promise.resolve(ok({ asset, amount })),
+        tokens: () => Promise.resolve([{ symbol: 'USDC', decimals: 6 }]),
       }),
     });
   }

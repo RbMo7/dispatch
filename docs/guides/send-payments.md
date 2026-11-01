@@ -30,7 +30,7 @@ Each payment names a `recipient`, an `asset` and an `amount` in the asset's smal
 - `"50000000000000"` wei is 0.00005 ETH.
 - `"40000000"` is 40 USDC, which has 6 decimals.
 
-`ETH` and `SOL` always work. A token works only if the operator listed it in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`. Otherwise the request is refused with `UNKNOWN_ASSET` and nothing is stored.
+`ETH` and `SOL` always work. A token works only if it is an enabled Known Asset (`GET /v1/assets`): listed in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`, or added by the operator with `POST /v1/assets`. Otherwise the request is refused with `UNKNOWN_ASSET` and nothing is stored.
 
 A Dispatch can hold thousands of items, up to a 1 MiB body. Each item gets its own status. On Solana the engine packs several payments into one transaction. On Base it sends one transaction per payment, in nonce order. To bundle Base payments into fewer transactions, see [Batch payments into one transaction on Base](./bulk-call.md).
 

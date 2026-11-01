@@ -19,6 +19,7 @@ import {
 } from './safe-approval.js';
 import type { BaseSafeConfig } from './safe-config.js';
 import { SafeTxServiceClient } from './tx-service-client.js';
+import { registryFromConfig } from '../../../asset-registry/configured-assets.js';
 
 const SAFE = '0x84Ac281B68de095f6227050F56C74d93d294e609';
 const USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
@@ -149,7 +150,7 @@ function approval(
     client: chain.client,
     signer,
     service: neverCalled,
-    knownTokens: { USDC: { contractAddress: USDC, decimals: 6 } },
+    assets: registryFromConfig({ base: `USDC:${USDC}:${6}` }).forChain('base'),
     prepare: () => Promise.reject(new Error('not expected')),
     ...extra,
   };

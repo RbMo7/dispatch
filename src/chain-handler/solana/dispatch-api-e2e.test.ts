@@ -19,6 +19,7 @@ import {
   testMintDecimals,
   type TestSignerHandle,
 } from './test-support/devnet-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 /**
  * The whole engine, exercised the way an integrator actually would:
@@ -99,7 +100,9 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
             connection,
             signerClient: new SignerClient(signer!.url, signer!.token),
             senderAddress: sender.publicKey.toBase58(),
-            knownTokens: { TEST: { mint: mint.toBase58(), decimals } },
+            assets: registryFromConfig({ solana: `TEST:${mint.toBase58()}:${decimals}` }).forChain(
+              'solana',
+            ),
           }),
         ),
     });
@@ -108,7 +111,8 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });
@@ -208,7 +212,8 @@ describe('Solana Managed Dispatch — full API end to end (real devnet)', () => 
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

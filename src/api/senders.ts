@@ -1,6 +1,6 @@
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetRegistry } from '../asset-registry/asset-registry.js';
 import type { Network } from './network.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount } from '../domain/proposal.js';
@@ -9,9 +9,9 @@ import type { CommittedHolder, SignerKeyRecord } from '../repository/dispatch-st
 import type { SignerPins } from '../signer/client.js';
 
 /**
- * #111: what one enabled chain's Sender is, from config. `assets` lists the
- * native asset first, then every known token. `approval` is present exactly
- * for a Multisig Sender (ADR-0049).
+ * #111: what one enabled chain's Sender is, from config. Its balances are
+ * read in every payable asset of `assets` (ADR-0061), the native coin first.
+ * `approval` is present exactly for a Multisig Sender (ADR-0049).
  */
 export type SenderConfig = {
   chain: Chain;
@@ -21,8 +21,7 @@ export type SenderConfig = {
   network: Network;
   /** What pays the payments: the plain key, the Squads vault, or the Safe. */
   address: string;
-  assets: readonly string[];
-  assetDecimals: AssetDecimals;
+  assets: Pick<AssetRegistry, 'payableSymbols' | 'decimalsOf'>;
   approval?: {
     mode: 'squads' | 'safe';
     /** The Squads multisig account, or the Safe (then the same as `address`). */
@@ -112,7 +111,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
       assets: await Promise.all(
         assets.map(async (asset) => {
           const balance = await reads.getBalance(chain, address, asset);
-          const decimals = config.assetDecimals(chain, asset);
+          const decimals = config.assets.decimalsOf(chain, asset);
           return {
             asset,
             ...(decimals === undefined ? {} : { decimals }),
@@ -123,20 +122,21 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
       ),
     };
   };
+  const assets = config.assets.payableSymbols(chain);
   const signingKey = approval?.engineKey ?? config.address;
   const [balances, signerKey, threshold] = await Promise.all([
     Promise.all(
       approval
         ? [
-            holderBalances(approval.holders.sender, 'sender', config.address, config.assets),
+            holderBalances(approval.holders.sender, 'sender', config.address, assets),
             holderBalances(
               approval.holders.proposer,
               'proposer',
               approval.engineKey,
-              config.assets.slice(0, 1),
+              assets.slice(0, 1),
             ),
           ]
-        : [holderBalances('sender', 'sender', config.address, config.assets)],
+        : [holderBalances('sender', 'sender', config.address, assets)],
     ),
     reads.getSignerKey(chain, signingKey),
     approval ? reads.readThreshold(chain, approval.multisigAddress) : undefined,

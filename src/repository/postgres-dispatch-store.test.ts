@@ -10,6 +10,7 @@ import {
   dispatchHolds,
   flagRules,
   flagRuleVersions,
+  knownAssets,
   operatorActions,
   proposals,
   relayDispatches,
@@ -29,6 +30,7 @@ import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
+import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
@@ -45,7 +47,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks}, ${knownAssets} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -66,6 +68,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runFlagRuleConformanceSuite(() => new PostgresDispatchStore(db));
   runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
   runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
+  runKnownAssetConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

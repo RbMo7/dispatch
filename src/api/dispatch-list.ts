@@ -5,7 +5,7 @@ import type {
   DispatchListQuery,
   DispatchStore,
 } from '../repository/dispatch-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import { summarizeDispatch, type SenderNameOf } from './dispatch-view.js';
 import { isUuid } from './uuid.js';
 

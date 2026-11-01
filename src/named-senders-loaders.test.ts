@@ -9,6 +9,7 @@ import { ChainRegistry } from './chain-registry/chain-registry.js';
 import { StubChainHandler } from './chain-handler/stub-chain-handler.js';
 import { FakeApproval } from './chain-handler/test-support/fake-approval.js';
 import type { SenderAddress, SenderName } from './domain/sender.js';
+import { registryFromConfig } from './asset-registry/configured-assets.js';
 
 const saved = { ...process.env };
 
@@ -46,7 +47,7 @@ describe('loading named Senders (ADR-0060)', () => {
       },
     });
 
-    const registry = await loaders.loadChainRegistry();
+    const registry = await loaders.loadChainRegistry(registryFromConfig());
 
     const [payouts, refunds] = registry.senders;
     expect(registry.senders.map((s) => [s.name, s.address, s.isDefault])).toEqual([
@@ -75,7 +76,7 @@ describe('loading named Senders (ADR-0060)', () => {
       },
     });
 
-    await expect(loaders.loadChainRegistry()).rejects.toThrow(
+    await expect(loaders.loadChainRegistry(registryFromConfig())).rejects.toThrow(
       /^solana sender "treasury": invalid Solana multisig sender config:\n.*must be different addresses/,
     );
   });

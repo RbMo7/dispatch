@@ -113,7 +113,7 @@ These go on the worker, next to your other Solana settings. [`.env.example`](../
 
 In single mode, setting `SOLANA_MULTISIG_ADDRESS` or `SOLANA_MULTISIG_MEMBER_ADDRESS` is an error, so a half-edited config never starts quietly.
 
-`SOLANA_KNOWN_TOKENS` is read as usual: a token Payment needs its mint configured. A fixed `SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` is applied to the proposal's create transaction. An `auto` price is not applied to proposals. The execute transaction asks for a 256 KB heap and a compute-unit limit from a simulation, and carries no price instruction.
+Known Assets work as usual: a token Payment needs its mint to be an enabled Known Asset, from `SOLANA_KNOWN_TOKENS` or added through the API. A fixed `SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` is applied to the proposal's create transaction. An `auto` price is not applied to proposals. The execute transaction asks for a 256 KB heap and a compute-unit limit from a simulation, and carries no price instruction.
 
 ```
 SOLANA_SENDER_MODE=multisig
@@ -292,7 +292,7 @@ The hosted service is `https://api.safe.global/tx-service/base` for Base and `..
 | `BASE_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | How long, counted from the timeout, the engine keeps reading a timed-out proposal ([after a timeout](#what-the-engine-does-and-does-not-do-after-a-timeout)). |
 | `BASE_SAFE_BUNDLE_LIMIT` | `50` | The most payments in one proposal (one MultiSend). A whole number from 1 to 300. |
 
-The Safe settings are an error in single mode, as on Solana. `BASE_KNOWN_TOKENS` is read as usual, and an ERC-20 Payment needs its token configured.
+The Safe settings are an error in single mode, as on Solana. Known Assets work as usual: an ERC-20 Payment needs its token to be a Known Asset.
 
 ```
 BASE_SENDER_MODE=safe
@@ -304,7 +304,7 @@ BASE_APPROVAL_DEADLINE_MS=259200000
 
 The engine bundles payments with **MultiSendCallOnly**, a delegatecall from the Safe, so ERC-20 payments come out of the Safe. It chooses the contract by the Safe's `VERSION()`: `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` for 1.4.1 and `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` for 1.3.0 (the Signer also allows `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D`, the 1.3.0 canonical deployment). Their code was checked on Base Sepolia only. The mainnet check is in the checklist.
 
-A Safe Sender proposes **only** native transfers and ERC-20 `transfer` calls of tokens in `BASE_KNOWN_TOKENS`. Any other `call` item is refused at `POST /v1/dispatch` with a 400 naming the item (#94). If one still reached the engine, planning the proposals would refuse it with `CHAIN_REJECTED` and fail every Call of its Dispatch claimed with it. Bulk Call is not how a Safe Sender bundles: a request that sets `bulkCall` for a Multisig Sender is a 400.
+A Safe Sender proposes **only** native transfers and ERC-20 `transfer` calls of Known Assets. Any other `call` item is refused at `POST /v1/dispatch` with a 400 naming the item (#94). If one still reached the engine, planning the proposals would refuse it with `CHAIN_REJECTED` and fail every Call of its Dispatch claimed with it. Bulk Call is not how a Safe Sender bundles: a request that sets `bulkCall` for a Multisig Sender is a 400.
 
 ### Fund the Safe and the executor
 

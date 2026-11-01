@@ -308,3 +308,29 @@ export const setupChecks = pgTable(
     check('setup_checks_fix_unless_pass', sql`(${table.status} = 'pass') = (${table.fix} IS NULL)`),
   ],
 );
+
+/** ADR-0061: the Known Asset registry. A row is disabled, never deleted, so history keeps resolving. */
+export const knownAssets = pgTable(
+  'known_assets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    /** The mint or contract (Base checksummed), or `native`. */
+    address: text('address').notNull(),
+    symbol: text('symbol').notNull(),
+    name: text('name').notNull(),
+    decimals: integer('decimals').notNull(),
+    kind: text('kind').notNull(),
+    source: text('source').notNull(),
+    addedBy: text('added_by'),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+    enabled: boolean('enabled').notNull(),
+  },
+  (table) => [
+    uniqueIndex('known_assets_chain_address_idx').on(table.chain, table.address),
+    uniqueIndex('known_assets_enabled_symbol_idx')
+      .on(table.chain, sql`upper(${table.symbol})`)
+      .where(sql`${table.enabled}`),
+    check('known_assets_decimals', sql`${table.decimals} BETWEEN 0 AND 255`),
+  ],
+);

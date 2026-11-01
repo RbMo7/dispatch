@@ -37,7 +37,7 @@ Every amount is a whole number of the asset's smallest unit, written as a string
 
 A string holds an 18-decimal amount exactly where a JSON number would round it, and a whole number leaves nothing to interpret. `"12.5"` is refused with `400` and `items[0]: amount must be a non-negative integer string`.
 
-When you read a Dispatch back, each payment item carries `decimals`, the asset's decimal places from the engine's configuration. Divide `amount` by 10 to the power of `decimals` to show it to people. A token is known to the engine only when the operator lists it in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`.
+When you read a Dispatch back, each payment item carries `decimals`, the asset's decimal places from its Known Asset record (`GET /v1/assets`). Divide `amount` by 10 to the power of `decimals` to show it to people. A token is known to the engine when the operator lists it in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`, or adds it with `POST /v1/assets`, which reads its decimals from the chain.
 
 ## Addresses
 

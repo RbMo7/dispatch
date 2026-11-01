@@ -22,7 +22,7 @@ Choose a Treasury when you accept a hot wallet with a bounded balance and you wa
 
 ## 1. Send only transfers
 
-A Multisig Sender proposes only native transfers and token transfers: SOL, SPL and Token-2022 on Solana, and ETH and the ERC-20 tokens in `BASE_KNOWN_TOKENS` on Base. `POST /v1/dispatch` checks every item before it stores anything. A `call` item the multisig cannot hold, or a `bulkCall`, is a `400` with `CHAIN_REJECTED` whose message names the item, such as `items[1]: …`. No Dispatch is stored, and the `Idempotency-Key` is not used up. Send unusual calls through a plain Sender.
+A Multisig Sender proposes only native transfers and token transfers: SOL, SPL and Token-2022 on Solana, and ETH and the ERC-20 Known Assets on Base. `POST /v1/dispatch` checks every item before it stores anything. A `call` item the multisig cannot hold, or a `bulkCall`, is a `400` with `CHAIN_REJECTED` whose message names the item, such as `items[1]: …`. No Dispatch is stored, and the `Idempotency-Key` is not used up. Send unusual calls through a plain Sender.
 
 ## 2. Batch your payments into few Dispatches
 

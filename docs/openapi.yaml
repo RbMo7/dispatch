@@ -5,8 +5,8 @@ info:
   summary: Send payments, contract calls and signed transactions on Solana and Base, and track each one to an outcome.
   description: |
     The engine's HTTP API. Every `/v1` route needs a bearer token: the engine's API token, or
-    its operator token, which the operator-only routes (release, Flag Rule writes and the
-    activity record) require.
+    its operator token, which the operator-only routes (release, Flag Rule writes, Known Asset
+    writes and the activity record) require.
     The reference pages on the docs site are built from this file, and the engine's offline
     tests send each example below to the real routes and check every answer against these schemas.
 
@@ -34,6 +34,12 @@ tags:
       submitted. A Dispatch that matches any enabled rule on its chain is stored `held`, and
       nothing is signed, proposed or sent until an operator releases it. Reading rules takes either
       token; writing them takes the operator token.
+  - name: Assets
+    description: |
+      The Known Assets a payment may name on each chain: the native coin, the tokens the operator
+      configured, and the tokens added here. Each token's decimals, name and symbol are read from
+      the chain, never typed in. Reading takes either token; adding, enabling and disabling take
+      the operator token.
   - name: Senders
     description: |
       A Sender is a wallet the engine pays from. Each enabled chain has one or more, each named,
@@ -45,8 +51,8 @@ tags:
       them. The console's Setup page reads them.
   - name: Activity
     description: |
-      The operator action record: every cancel that landed, every release, and every Flag Rule
-      create, edit and delete, newest first.
+      The operator action record: every cancel that landed, every release, every Flag Rule
+      create, edit and delete, and every Known Asset added, disabled or enabled, newest first.
   - name: Health
     description: |
       A liveness check for load balancers and scripts.
@@ -1418,6 +1424,361 @@ paths:
         '404':
           $ref: '#/components/responses/RuleNotFound'
 
+  /v1/assets:
+    get:
+      tags: [Assets]
+      operationId: listAssets
+      summary: List Known Assets
+      description: |
+        Returns every Known Asset, enabled or not: each chain's native coin first, then its tokens by
+        symbol. Either token can read. A `payment` item may name the `symbol` of any enabled asset on
+        its chain; any other asset is refused with `UNKNOWN_ASSET`.
+
+        `source: config` rows come from `SOLANA_KNOWN_TOKENS`, `BASE_KNOWN_TOKENS` and the native
+        coins, and are written at startup. `source: console` rows were added through Add a Known
+        Asset. A disabled asset is kept, so past payments in it still show their decimals.
+      security:
+        - apiToken: []
+        - operatorToken: []
+      parameters:
+        - name: chain
+          in: query
+          required: false
+          description: Only this chain's assets.
+          schema: { $ref: '#/components/schemas/Chain' }
+          examples:
+            baseAssets: { value: base }
+      responses:
+        '200':
+          description: The assets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [assets]
+                properties:
+                  assets:
+                    type: array
+                    items: { $ref: '#/components/schemas/KnownAsset' }
+              examples:
+                baseAssets:
+                  summary: Base, with two tokens added from the console
+                  value:
+                    assets:
+                      - id: 90f91669-f845-45bf-b44a-d571ac098032
+                        chain: base
+                        address: native
+                        symbol: ETH
+                        name: Ether
+                        decimals: 18
+                        kind: native
+                        source: config
+                        enabled: true
+                        addedBy: null
+                        addedAt: '2026-11-01T15:44:24.221Z'
+                      - id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                        chain: base
+                        address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                        symbol: LUSD
+                        name: Live Dollar
+                        decimals: 6
+                        kind: erc20
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T15:45:08.074Z'
+                      - id: 4dc99cb4-a219-4b81-9580-45146942c0a1
+                        chain: base
+                        address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+                        symbol: USDC
+                        name: USDC
+                        decimals: 6
+                        kind: erc20
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T15:47:12.358Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Assets]
+      operationId: addAsset
+      summary: Add a Known Asset
+      description: |
+        Makes a token payable on its chain, with no restart. The engine reads the mint or contract
+        from the chain: its decimals, name, symbol and supply (an ERC-20's `decimals()`, `name()`,
+        `symbol()` and `totalSupply()`; a Solana mint, with its name and symbol from the Token-2022
+        metadata extension or the Metaplex metadata account). Decimals are never typed in, since a
+        wrong value would scale every amount. Only the operator token can add, and every add is
+        written to the activity record, with the `reason` if you give one.
+
+        `symbol` is optional and replaces the chain's symbol: give one when the token publishes none,
+        or when its own is already used on the chain. Symbols are unique per chain among enabled
+        assets, ignoring case.
+
+        The engine refuses an address that is not a token (`NOT_A_TOKEN`), a Solana mint it can't
+        pay out correctly, such as one with a transfer fee or a transfer hook (`NOT_PAYABLE`), and
+        an address that is already a Known Asset (`ASSET_EXISTS`). A chain it could not read is a
+        `503` with `RPC_UNAVAILABLE`. Both the API and the worker see the new asset on their next
+        request.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetRequest'
+            examples:
+              addErc20:
+                summary: An ERC-20 that names itself
+                value: { chain: base, address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027' }
+              notAToken:
+                summary: A wallet, not a token
+                value: { chain: base, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
+              alreadyKnown:
+                summary: A token the engine already knows
+                value: { chain: base, address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027' }
+      responses:
+        '201':
+          description: The asset, enabled. Payments may name its `symbol` from now on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownAsset'
+              examples:
+                addErc20:
+                  summary: Added
+                  value:
+                    id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                    chain: base
+                    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                    symbol: LUSD
+                    name: Live Dollar
+                    decimals: 6
+                    kind: erc20
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T15:45:08.074Z'
+        '400':
+          description: The body is not an asset request, or the address is not a token the engine can pay out.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                notAToken:
+                  summary: No contract at the address
+                  value:
+                    code: NOT_A_TOKEN
+                    message: 0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A has no contract code on this chain
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: The address is already a Known Asset, or the symbol is taken on the chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyKnown:
+                  summary: Already known
+                  value:
+                    code: ASSET_EXISTS
+                    message: 0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027 is already a Known Asset on base, as LUSD
+
+  /v1/assets/preview:
+    post:
+      tags: [Assets]
+      operationId: previewAsset
+      summary: Preview a Known Asset
+      description: |
+        Reads the address from the chain and answers with what Add a Known Asset would store, plus
+        the chain's own name and symbol and the token's supply, or with the same refusal Add would
+        give. Nothing is stored or recorded. Takes the same body as Add and the operator token.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetRequest'
+            examples:
+              previewToken2022:
+                summary: A Token-2022 mint named in its metadata extension
+                value: { chain: solana, address: 4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ }
+              symbolRequired:
+                summary: A mint that publishes no symbol
+                value: { chain: solana, address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4 }
+              symbolGiven:
+                summary: The same mint, with a symbol
+                value: { chain: solana, address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4, symbol: LIVE }
+              walletNotToken:
+                summary: A wallet, not a mint
+                value: { chain: solana, address: 3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe }
+              symbolTaken:
+                summary: A symbol the chain already uses
+                value: { chain: solana, address: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU, symbol: sol }
+      responses:
+        '200':
+          description: What adding it would store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetPreview'
+              examples:
+                previewToken2022:
+                  summary: Name and symbol from the chain
+                  value:
+                    chain: solana
+                    kind: token-2022
+                    address: 4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ
+                    decimals: 6
+                    symbol: LEUR
+                    name: Live Euro
+                    onChain: { symbol: LEUR, name: Live Euro }
+                    supply: '1000000000'
+                symbolGiven:
+                  summary: The symbol given, the chain's empty
+                  value:
+                    chain: solana
+                    kind: spl
+                    address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4
+                    decimals: 6
+                    symbol: LIVE
+                    name: LIVE
+                    onChain: { symbol: '', name: '' }
+                    supply: '1000000000'
+        '400':
+          description: The body is not an asset request, the address is not a token the engine can pay out, or a symbol is needed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                symbolRequired:
+                  summary: No symbol on chain
+                  value:
+                    code: SYMBOL_REQUIRED
+                    message: 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4 publishes no symbol on chain: give one in symbol'
+                walletNotToken:
+                  summary: A wallet
+                  value:
+                    code: NOT_A_TOKEN
+                    message: 3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe is owned by 11111111111111111111111111111111, not a token program, so it is not a mint
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: The address is already a Known Asset, or the symbol is taken on the chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                symbolTaken:
+                  summary: The native coin's symbol
+                  value:
+                    code: SYMBOL_TAKEN
+                    message: "sol is already solana's native coin on solana: give another symbol in symbol"
+
+  /v1/assets/{id}:
+    patch:
+      tags: [Assets]
+      operationId: updateAsset
+      summary: Enable or disable a Known Asset
+      description: |
+        Disables an asset added from the console, so no new payment can name it, or enables it
+        again. Nothing is ever deleted, so past payments keep their decimals, and a payment already
+        accepted still goes out. A config row can't be changed here (`CONFIG_ASSET`): edit the
+        variable and restart. Enabling is refused while another enabled asset has the symbol
+        (`SYMBOL_TAKEN`). Only the operator token can change an asset, and each change is written to
+        the activity record, with the `reason` if you give one. Setting what it already is records
+        nothing.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: string, minLength: 1, description: Why, for the activity record. }
+            examples:
+              disableAsset:
+                summary: Pause payouts in a token
+                value: { enabled: false, reason: LUSD payouts paused while the treasury rebalances }
+              configAsset:
+                summary: A configured asset
+                value: { enabled: false }
+              notFound:
+                summary: No such asset
+                value: { enabled: false }
+      responses:
+        '200':
+          description: The asset as it now is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownAsset'
+              examples:
+                disableAsset:
+                  summary: Disabled
+                  value:
+                    id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                    chain: base
+                    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                    symbol: LUSD
+                    name: Live Dollar
+                    decimals: 6
+                    kind: erc20
+                    source: console
+                    enabled: false
+                    addedBy: operator
+                    addedAt: '2026-11-01T15:45:08.074Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '404':
+          description: No Known Asset has this id. An id that is not a UUID gets the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlainError'
+              examples:
+                notFound:
+                  summary: No such asset
+                  value: { error: not found }
+        '409':
+          description: A config row, or a symbol another enabled asset holds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                configAsset:
+                  summary: A configured asset
+                  value:
+                    code: CONFIG_ASSET
+                    message: 'this asset comes from the configuration (SOLANA_KNOWN_TOKENS, BASE_KNOWN_TOKENS or the native coin): change it there and restart'
+
   /v1/setup:
     get:
       tags: [Setup]
@@ -1483,7 +1844,8 @@ paths:
       summary: List operator actions
       description: |
         The operator action record, newest first, a page at a time. One entry for every cancel that
-        landed, by either token, every release, and every Flag Rule create, edit and delete. Each is
+        landed, by either token, every release, every Flag Rule create, edit and delete, and every
+        Known Asset added, disabled or enabled. Each is
         also written to the engine's log as an `operator action` line. Only the operator token can
         read it.
 
@@ -1691,7 +2053,7 @@ components:
       description: |
         The engine's operator token, `OPERATOR_TOKEN` in its environment. It does everything the API
         token does, and is the only token the operator-only routes accept: releasing a held
-        Dispatch, writing and previewing Flag Rules, and reading the activity record. The API token
+        Dispatch, writing and previewing Flag Rules and Known Assets, and reading the activity record. The API token
         gets `403` on those routes, and so does everyone when the operator has not set an operator
         token.
 
@@ -1760,6 +2122,19 @@ components:
         notFound: { value: 00000000-0000-4000-8000-000000000000 }
         unauthorized: { value: b3c1e0d2-5f4a-4c8e-9a71-2d6f0e8b9c13 }
         notOperator: { value: b3c1e0d2-5f4a-4c8e-9a71-2d6f0e8b9c13 }
+
+    AssetId:
+      name: id
+      in: path
+      required: true
+      description: The `id` of a Known Asset, from List Known Assets or Add a Known Asset.
+      schema: { type: string, format: uuid }
+      examples:
+        disableAsset: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
+        configAsset: { value: 90f91669-f845-45bf-b44a-d571ac098032 }
+        notFound: { value: 00000000-0000-4000-8000-000000000000 }
+        unauthorized: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
+        notOperator: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
 
   responses:
     Unauthorized:
@@ -1980,6 +2355,12 @@ components:
             - ALREADY_CLAIMED
             - NOT_HELD
             - RULE_DELETED
+            - NOT_A_TOKEN
+            - NOT_PAYABLE
+            - SYMBOL_REQUIRED
+            - SYMBOL_TAKEN
+            - ASSET_EXISTS
+            - CONFIG_ASSET
           description: What went wrong. Switch on this. [Errors](./errors.md) lists what to do about each.
         message: { type: string, description: The most specific reason available, for people. On Base it is often the node's own words. }
         chainDetail: { description: The raw detail from the chain or the check, such as a shortfall, a JSON-RPC code or revert data. Its shape depends on the code. }
@@ -2640,13 +3021,75 @@ components:
         at: { type: string, format: date-time }
         action:
           type: string
-          enum: [cancel, release, flag_rule_create, flag_rule_update, flag_rule_delete]
-        targetId: { type: string, format: uuid, description: The Dispatch or Flag Rule acted on. }
+          enum:
+            [
+              cancel,
+              release,
+              flag_rule_create,
+              flag_rule_update,
+              flag_rule_delete,
+              asset_add,
+              asset_disable,
+              asset_enable,
+            ]
+        targetId:
+          { type: string, format: uuid, description: The Dispatch, Flag Rule or Known Asset acted on. }
         tokenKind:
           type: string
           enum: [auth, operator]
           description: Which token made the request.
         reason: { type: [string, 'null'], description: What the caller gave, or `null`. }
+
+    KnownAsset:
+      type: object
+      additionalProperties: false
+      required: [id, chain, address, symbol, name, decimals, kind, source, enabled, addedBy, addedAt]
+      properties:
+        id: { type: string, format: uuid }
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: 'The mint (Solana) or contract (Base, checksummed). `native` for the native coin.' }
+        symbol: { type: string, description: What a payment item names in `asset`. Unique per chain among enabled assets, ignoring case. }
+        name: { type: string, description: The token's name as the chain gives it, or its symbol when it gives none. }
+        decimals: { type: integer, minimum: 0, maximum: 255, description: Read from the chain. }
+        kind: { type: string, enum: [native, spl, token-2022, erc20] }
+        source:
+          type: string
+          enum: [config, console]
+          description: '`config` rows come from the configuration and can''t be changed here; `console` rows were added through the API.'
+        enabled: { type: boolean, description: Whether a new payment may name it. }
+        addedBy: { type: [string, 'null'], enum: [auth, operator, null], description: 'Which token added it; `null` for a config row.' }
+        addedAt: { type: string, format: date-time }
+
+    AssetRequest:
+      type: object
+      additionalProperties: false
+      required: [chain, address]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The mint or contract address. }
+        symbol: { type: string, description: 'Replaces the chain''s symbol: 1 to 20 letters, digits, `.`, `_`, `$` or `-`.' }
+        reason: { type: string, minLength: 1, description: Why, for the activity record. Add only. }
+
+    AssetPreview:
+      type: object
+      additionalProperties: false
+      required: [chain, kind, address, decimals, symbol, name, onChain, supply]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        kind: { type: string, enum: [spl, token-2022, erc20] }
+        address: { type: string }
+        decimals: { type: integer, minimum: 0, maximum: 255 }
+        symbol: { type: string, description: The symbol it would be added under. }
+        name: { type: string }
+        onChain:
+          type: object
+          additionalProperties: false
+          required: [symbol, name]
+          description: The name and symbol the chain gives, empty when it gives none.
+          properties:
+            symbol: { type: string }
+            name: { type: string }
+        supply: { type: string, pattern: '^\d+$', description: The total supply, in the smallest unit. }
 
     ActivityPage:
       type: object

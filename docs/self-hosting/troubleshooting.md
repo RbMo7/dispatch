@@ -30,7 +30,7 @@ It prints `signer refused to start:` and the problem, then exits with code 1. [R
 | `401 { "error": "unauthorized" }` | The `Authorization` header is missing, or its token is not `AUTH_TOKEN` | Send `Authorization: Bearer <AUTH_TOKEN>` |
 | `400 { "error": "Idempotency-Key header is required" }` | No `Idempotency-Key` | Send one with every `POST /v1/dispatch` |
 | `400` with `CHAIN_NOT_ENABLED` | The chain is not in `ENABLED_CHAINS` | Enable it and restart the API and the worker |
-| `400` with `UNKNOWN_ASSET` | The token is not in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS` | Add it as `SYMBOL:address:decimals` and restart |
+| `400` with `UNKNOWN_ASSET` | The token is not an enabled Known Asset | Add it with `POST /v1/assets`, no restart needed, or list it in the variable as `SYMBOL:address:decimals` and restart |
 | `400 { "error": "items[0]: amount must be a non-negative integer string" }` | A decimal amount such as `"12.5"` | Send the amount in the asset's smallest unit: `"12500000"` for 12.5 USDC |
 | `413` with `FST_ERR_CTP_BODY_TOO_LARGE` | The body is over 1 MiB, about 9,000 payment items | Split the run into several Dispatches |
 | `404 { "error": "not found" }` | No Dispatch has this id | Check the id, and that you are asking the same engine |

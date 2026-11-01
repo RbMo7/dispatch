@@ -32,6 +32,7 @@ The operator can set a second token, `OPERATOR_TOKEN`. It does everything `AUTH_
 
 - [Release a held Dispatch](./openapi.yaml#release-a-held-dispatch).
 - Create, edit, delete and preview [Flag Rules](./guides/flag-rules.md).
+- Preview, add, disable and enable Known Assets (`POST /v1/assets`). Either token can list them.
 - [List operator actions](./openapi.yaml#list-operator-actions), the activity record.
 
 `AUTH_TOKEN` gets `403` on those routes, so a client that holds only the API token cannot release its own Dispatch:

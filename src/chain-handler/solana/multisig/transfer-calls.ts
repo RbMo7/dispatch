@@ -5,7 +5,8 @@ import type { SolanaCall } from '../../../domain/call.js';
 import type { DispatchError } from '../../../domain/errors.js';
 import { err, ok, type Result } from '../../../domain/result.js';
 import { isTokenProgram } from '../account-resolution.js';
-import { NATIVE_ASSET_SYMBOL, type SolanaTokenRegistry } from '../known-tokens.js';
+import type { AssetLookup } from '../../../asset-registry/asset-registry.js';
+import { NATIVE_ASSET_SYMBOL } from '../known-tokens.js';
 
 /** SPL Token's TransferChecked discriminant and its data length: 1 + u64 amount + u8 decimals. */
 const TRANSFER_CHECKED = 12;
@@ -37,7 +38,7 @@ const refuse = (message: string): Result<never, DispatchError> =>
 export function summarizeTransfer(
   call: SolanaCall,
   vault: string,
-  knownTokens: SolanaTokenRegistry,
+  assets: AssetLookup<'solana'>,
 ): Result<TransferSummary, DispatchError> {
   const stranger = call.accounts.find((a) => a.isSigner && a.pubkey !== vault);
   if (stranger) {
@@ -77,12 +78,11 @@ export function summarizeTransfer(
     }
     const mint = call.accounts[1]!.pubkey;
     const token2022 = call.programId === TOKEN_2022_PROGRAM_ID.toBase58();
-    const known = Object.entries(knownTokens).find(
-      ([, token]) => token.mint === mint && (token.tokenProgram === 'token-2022') === token2022,
-    );
+    const known = assets.byAddress(mint);
+    const sameProgram = known && (known.kind === 'token-2022') === token2022;
     return ok({
       recipient: (call.accounts[4] ?? call.accounts[2]!).pubkey,
-      asset: known ? known[0] : mint,
+      asset: sameProgram ? known.symbol : mint,
       amount: data.readBigUInt64LE(1),
     });
   }

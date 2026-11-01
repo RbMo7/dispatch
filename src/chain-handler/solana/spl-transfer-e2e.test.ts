@@ -19,6 +19,7 @@ import {
   testMintDecimals,
   type TestSignerHandle,
 } from './test-support/devnet-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 /**
  * issue 03's own real-devnet proof — every other end-to-end test in this
@@ -53,7 +54,9 @@ describe('SolanaChainHandler SPL token transfer (real devnet)', () => {
       connection,
       signerClient: new SignerClient(signer.url, signer.token),
       senderAddress: sender.publicKey.toBase58(),
-      knownTokens: { TEST: { mint: mint.toBase58(), decimals } },
+      assets: registryFromConfig({ solana: `TEST:${mint.toBase58()}:${decimals}` }).forChain(
+        'solana',
+      ),
     });
 
     const callResult = await handler.paymentToCall({

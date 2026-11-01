@@ -7,7 +7,7 @@ import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { sumAssetAmounts } from '../repository/committed.js';
 import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import { toWireDefinition } from './flag-rule-wire.js';
 import { buildTimeline } from './timeline.js';
 

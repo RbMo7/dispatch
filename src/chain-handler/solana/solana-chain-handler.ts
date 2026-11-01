@@ -1,11 +1,6 @@
 import { createPublicKey, randomUUID, verify as verifySignature } from 'node:crypto';
 
 import {
-  AccountState,
-  getDefaultAccountState,
-  getNonTransferable,
-  getTransferFeeConfig,
-  getTransferHook,
   getAccount,
   getMint,
   TOKEN_2022_PROGRAM_ID,
@@ -28,7 +23,9 @@ import {
 import type { Logger } from 'pino';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
+import { AssetRegistry, type AssetLookup } from '../../asset-registry/asset-registry.js';
 import type { DispatchError } from '../../domain/errors.js';
+import type { KnownAsset } from '../../domain/known-asset.js';
 import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
 import { SignerClient } from '../../signer/client.js';
@@ -51,12 +48,8 @@ import {
   isNativeTransferCall,
   toTransactionInstructions,
 } from './instruction-codec.js';
-import {
-  NATIVE_ASSET_SYMBOL,
-  resolveKnownToken,
-  type KnownToken,
-  type SolanaTokenRegistry,
-} from './known-tokens.js';
+import { NATIVE_ASSET_SYMBOL } from './known-tokens.js';
+import { payoutRefusal } from './token-reads.js';
 import {
   buildNativeTransferCall,
   parsePublicKey,
@@ -233,8 +226,8 @@ function isSolanaCallShape(call: unknown): call is SolanaCall {
 }
 
 /** #41: the program a known token's mint lives under. */
-function tokenProgramOf(token: KnownToken): PublicKey {
-  return token.tokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+function tokenProgramOf(token: KnownAsset<'solana'>): PublicKey {
+  return token.kind === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
 
 export function encodeInstruction(instruction: TransactionInstruction): EncodedInstruction {
@@ -281,8 +274,8 @@ export type SolanaChainHandlerDeps = {
   signerClient?: SignerClient;
   /** Single-Sender-per-chain (ADR-0016) — the wallet paymentToCall encodes transfers from, before the Coordinator is ever involved. */
   senderAddress: string;
-  /** Operator-configured symbol -> {mint, decimals} for SPL transfers (known-tokens.ts) — empty by default, never hardcoded. */
-  knownTokens?: SolanaTokenRegistry;
+  /** ADR-0061: the Known Assets a payment may name; without it, only SOL. */
+  assets?: AssetLookup<'solana'>;
   /**
    * #34: priority fee, in micro-lamports per compute unit, added to every
    * transaction this handler builds. 0 (the default) adds nothing: a
@@ -314,7 +307,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   private readonly connection: Connection;
   private readonly signerClient: SignerClient | undefined;
   private readonly senderAddress: string;
-  private readonly knownTokens: SolanaTokenRegistry;
+  private readonly assets: AssetLookup<'solana'>;
   /** The fixed price, or with `'auto'` its ceiling — what `prepare` reserves and `networkCost` budgets for. */
   private readonly computeUnitPriceMicroLamports: number;
   private readonly autoPrice: boolean;
@@ -344,7 +337,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
     if (deps.approval) this.approval = deps.approval;
     this.signerClient = deps.signerClient;
     this.senderAddress = deps.senderAddress;
-    this.knownTokens = deps.knownTokens ?? {};
+    this.assets = deps.assets ?? AssetRegistry.of([]).forChain('solana');
     this.autoPrice = deps.computeUnitPriceMicroLamports === 'auto';
     this.computeUnitPriceMicroLamports = this.autoPrice
       ? (deps.maxComputeUnitPriceMicroLamports ?? 0)
@@ -379,8 +372,8 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       );
     }
 
-    const token = resolveKnownToken(this.knownTokens, payment.asset);
-    if (!token) {
+    const token = this.assets.payable(payment.asset);
+    if (!token || token.kind === 'native') {
       return Promise.resolve(
         err({
           code: 'UNKNOWN_ASSET',
@@ -394,7 +387,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       buildSplTransferCall(
         this.senderAddress,
         payment.recipient,
-        token.mint,
+        token.address,
         token.decimals,
         BigInt(payment.amount),
         tokenProgramOf(token),
@@ -1078,46 +1071,33 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
   }
 
   /**
-   * Mainnet review: checks every configured token against its real mint,
-   * once at startup, so a token that can't be paid out correctly stops the
-   * process instead of failing (or underpaying) one payment at a time:
-   * wrong decimals, the wrong token program, and for Token-2022 a nonzero
-   * transfer fee (the recipient would get less than reported), an active
-   * transfer hook (needs accounts a payment doesn't carry), a
-   * non-transferable mint, or new accounts frozen by default. A fee set
-   * later still slips past this check; its transfers then land short.
+   * Mainnet review: checks every token the configuration lists against its
+   * real mint, once at startup, so a token that can't be paid out correctly
+   * stops the process instead of failing (or underpaying) one payment at a
+   * time: wrong decimals, the wrong token program, or `payoutRefusal`. A
+   * token added from the console was checked when it was added (ADR-0061).
    */
   async verifyKnownTokens(): Promise<void> {
-    for (const [symbol, token] of Object.entries(this.knownTokens)) {
+    const configured = this.assets
+      .all()
+      .filter((asset) => asset.source === 'config' && asset.enabled && asset.kind !== 'native');
+    for (const token of configured) {
       const program = tokenProgramOf(token);
       let mint: Awaited<ReturnType<typeof getMint>>;
       try {
-        mint = await getMint(this.connection, new PublicKey(token.mint), 'confirmed', program);
+        mint = await getMint(this.connection, new PublicKey(token.address), 'confirmed', program);
       } catch (cause) {
         throw new Error(
-          `known token ${symbol} (${token.mint}) is not a ${token.tokenProgram ?? 'classic Token'} mint on this cluster: ${extractMessage(cause)}`,
+          `known token ${token.symbol} (${token.address}) is not a ${token.kind === 'token-2022' ? 'token-2022' : 'classic Token'} mint on this cluster: ${extractMessage(cause)}`,
         );
       }
       const refuse = (why: string) => {
-        throw new Error(`known token ${symbol} (${token.mint}) can't be paid out: ${why}`);
+        throw new Error(`known token ${token.symbol} (${token.address}) can't be paid out: ${why}`);
       };
       if (mint.decimals !== token.decimals)
         refuse(`it has ${mint.decimals} decimals, configured ${token.decimals}`);
-      const fee = getTransferFeeConfig(mint);
-      if (
-        fee &&
-        (fee.olderTransferFee.transferFeeBasisPoints > 0 ||
-          fee.newerTransferFee.transferFeeBasisPoints > 0)
-      ) {
-        refuse('it charges a transfer fee, so recipients would get less than the amount paid');
-      }
-      if (getTransferHook(mint) && !getTransferHook(mint)!.programId.equals(PublicKey.default)) {
-        refuse('it has a transfer hook, which needs accounts a payment does not carry');
-      }
-      if (getNonTransferable(mint)) refuse('it is non-transferable');
-      if (getDefaultAccountState(mint)?.state === AccountState.Frozen) {
-        refuse("new token accounts start frozen, so new recipients couldn't receive it");
-      }
+      const refusal = payoutRefusal(mint);
+      if (refusal) refuse(refusal);
     }
   }
 
@@ -1132,8 +1112,8 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
         return ok({ asset, amount: lamports.toString() });
       }
 
-      const token = resolveKnownToken(this.knownTokens, asset);
-      if (!token) {
+      const token = this.assets.bySymbol(asset);
+      if (!token || token.kind === 'native') {
         return err({
           code: 'UNKNOWN_ASSET',
           message: `no known token configured for asset "${asset}"`,
@@ -1144,7 +1124,7 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
       const tokenProgram = tokenProgramOf(token);
       const ata = deriveAssociatedTokenAddress(
         owner.value,
-        new PublicKey(token.mint),
+        new PublicKey(token.address),
         tokenProgram,
       );
       try {

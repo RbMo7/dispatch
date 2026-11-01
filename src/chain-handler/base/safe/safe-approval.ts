@@ -6,7 +6,6 @@ import {
   encodePacked,
   getAddress,
   hashMessage,
-  isAddress,
   pad,
   parseEventLogs,
   parseAbi,
@@ -35,7 +34,8 @@ import type {
 import { validateEvmCall } from '../call-validation.js';
 import { ERC20_ABI } from '../erc20.js';
 import { isRpcOutage, mapBaseFailure } from '../error-mapping.js';
-import { NATIVE_ASSET_SYMBOL, type BaseTokenRegistry } from '../known-tokens.js';
+import type { AssetLookup } from '../../../asset-registry/asset-registry.js';
+import { NATIVE_ASSET_SYMBOL } from '../known-tokens.js';
 import { decodeUnsignedTransaction, encodeUnsignedTransaction } from '../transaction-codec.js';
 import {
   dummySignatures,
@@ -123,7 +123,7 @@ export type SafeApprovalDeps = {
   /** How long to wait before re-reading a stale block, ms. Default 250; tests use 0. */
   staleReadRetryDelayMs?: number;
   /** The same registry the Base handler resolves a Payment's asset against; an ERC-20 item must go to one of these. */
-  knownTokens: BaseTokenRegistry;
+  assets: AssetLookup<'base'>;
 };
 
 /**
@@ -733,9 +733,8 @@ export class SafeApproval implements ApprovalCapability<'base'> {
       return ok({ to, value, data, asset: NATIVE_ASSET_SYMBOL, recipient: to, amount: value });
     }
 
-    const token = Object.entries(this.deps.knownTokens).find(
-      ([, known]) => isAddress(known.contractAddress) && getAddress(known.contractAddress) === to,
-    );
+    const known = this.deps.assets.byAddress(to);
+    const token = known?.kind === 'erc20' ? known : undefined;
     const refuse = (why: string): Result<BundleItem, DispatchError> =>
       err({
         code: 'CHAIN_REJECTED',
@@ -764,7 +763,7 @@ export class SafeApproval implements ApprovalCapability<'base'> {
     } catch {
       return refuse('the call is not an ERC-20 transfer');
     }
-    return ok({ to, value: 0n, data, asset: token[0], recipient, amount });
+    return ok({ to, value: 0n, data, asset: token.symbol, recipient, amount });
   }
 }
 

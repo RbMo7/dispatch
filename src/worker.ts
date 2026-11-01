@@ -1,5 +1,6 @@
 import { approvalLoop as runApprovalLoop } from './approval-loop.js';
 import {
+  loadAssetRegistry,
   loadChainRegistry,
   coordinatorConfigFor,
   REORG_RECHECK_INTERVAL_MS,
@@ -44,12 +45,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const store = new PostgresDispatchStore(db);
 const signer = workerSignerClient();
-const chainRegistry = await loadChainRegistry(signer);
+const assets = await loadAssetRegistry(store);
+const chainRegistry = await loadChainRegistry(assets, signer);
 const { senders, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling } =
   coordinatorConfigFor(chainRegistry);
 
-const store = new PostgresDispatchStore(db);
 const coordinator = new Coordinator({
   store,
   chainHandlers: chainRegistry.handlers,
