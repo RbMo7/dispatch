@@ -1,19 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CheckContext, CheckResult } from './check.js';
 import { CHECKS } from './checks.js';
-import { planChecks, runPlanned, type CheckOutcome } from './run.js';
-import { fakeContext, goodEnv, healthyChain, token } from './test-support/fake-context.js';
-
-async function outcomes(context: CheckContext): Promise<CheckOutcome[]> {
-  return runPlanned(planChecks(CHECKS, context, { place: 'cli' }));
-}
-
-async function result(context: CheckContext, id: string): Promise<CheckResult> {
-  const found = (await outcomes(context)).find((outcome) => outcome.id === id);
-  if (!found) throw new Error(`no outcome for ${id}`);
-  return found.result;
-}
+import { planChecks, runPlanned } from './run.js';
+import {
+  fakeContext,
+  goodEnv,
+  healthyChain,
+  leakyContext,
+  outcomes,
+  result,
+  token,
+} from './test-support/fake-context.js';
 
 describe('setup checks', () => {
   it('pass on a healthy setup', async () => {
@@ -257,36 +254,7 @@ describe('setup checks', () => {
   });
 
   it('never puts a secret in a finding or a fix', async () => {
-    const secrets = Array.from({ length: 6 }, token);
-    const [auth, dbPassword, solanaKey, baseKey, signerToken, safeKey] = secrets as [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
-    const env = goodEnv({
-      AUTH_TOKEN: auth,
-      OPERATOR_TOKEN: auth,
-      SIGNER_AUTH_TOKEN: signerToken,
-      DATABASE_URL: `postgres://dispatch:${dbPassword}@db.internal:5432/dispatch`,
-      SOLANA_RPC_URL: `https://rpc.example.com/?api-key=${solanaKey}`,
-      BASE_RPC_URL: `https://base.example.com/v2/${baseKey}`,
-      BASE_SAFE_API_KEY: safeKey,
-    });
-    const leak = (url: string) => () => Promise.reject(new Error(`request to ${url} failed`));
-    const context = fakeContext(env, {
-      database: {
-        ping: leak(env.DATABASE_URL!),
-        pendingMigrations: leak(env.DATABASE_URL!),
-        recentTransactions: leak(env.DATABASE_URL!),
-      },
-      chain: (chain) => ({
-        ...healthyChain(chain),
-        network: leak(chain === 'solana' ? env.SOLANA_RPC_URL! : env.BASE_RPC_URL!),
-      }),
-    });
+    const { context, secrets } = leakyContext();
 
     const reported = JSON.stringify(await outcomes(context));
 

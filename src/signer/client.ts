@@ -44,7 +44,8 @@ export type PolicyRead =
   | { kind: 'pins'; pins: SignerPins }
   | { kind: 'no-key' }
   | { kind: 'old-signer' }
-  | { kind: 'unreachable'; message: string };
+  /** `status` is the Signer's HTTP status when it answered with an error, so a refused token (401) can be told from a Signer that is down. */
+  | { kind: 'unreachable'; message: string; status?: number };
 
 /**
  * The engine's only way to reach a Signer (ADR-0002): a single concrete
@@ -87,7 +88,11 @@ export class SignerClient {
         : { kind: 'old-signer' };
     }
     if (!response.ok) {
-      return { kind: 'unreachable', message: `signer responded with ${response.status}` };
+      return {
+        kind: 'unreachable',
+        message: `signer responded with ${response.status}`,
+        status: response.status,
+      };
     }
     const pins = parsePins(text);
     return pins

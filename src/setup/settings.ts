@@ -29,7 +29,7 @@ export type SenderSetup = {
   address: string;
   /** The key the Signer holds and that pays the fees: the Sender itself, or a Multisig Sender's engine key. */
   feePayer: string;
-  nativeAsset: string;
+  native: { symbol: string; decimals: number };
   tokens: { symbol: string; decimals: number }[];
 };
 
@@ -105,7 +105,7 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       sender: {
         address,
         feePayer: multisig?.memberAddress ?? address,
-        nativeAsset: SOLANA_NATIVE_ASSET,
+        native: { symbol: SOLANA_NATIVE_ASSET, decimals: 9 },
         tokens: tokenList(tokens),
       },
       ...(multisig ? { multisig: { kind: 'squads' as const, config: multisig } } : {}),
@@ -140,7 +140,7 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       sender: {
         address: safe?.safeAddress ?? executor,
         feePayer: executor,
-        nativeAsset: BASE_NATIVE_ASSET,
+        native: { symbol: BASE_NATIVE_ASSET, decimals: 18 },
         tokens: tokenList(tokens),
       },
       ...(safe ? { multisig: { kind: 'safe' as const, config: safe } } : {}),

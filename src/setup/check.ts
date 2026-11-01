@@ -3,6 +3,7 @@ import type { Chain } from '../domain/chain.js';
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Result } from '../domain/result.js';
+import type { PolicyRead } from '../signer/client.js';
 import type { ChainSetup, Settings } from './settings.js';
 
 export const AREAS = [
@@ -37,6 +38,15 @@ export type ChainReads = {
   feePaid: (hash: string) => Promise<bigint | undefined>;
 };
 
+/** A Multisig Sender's startup checks (ADR-0049, ADR-0051, ADR-0055), run as the worker runs them, but collected instead of thrown. */
+export type MultisigStartup = {
+  failures: { check: string; message: string }[];
+  warnings: string[];
+};
+
+/** The API process's environment, and where it was read: Compose's resolved `api` service, or the environment `doctor` runs in. */
+export type ApiEnvironment = { source: 'compose' | 'process'; env: Env };
+
 /** The engine's own Transactions on a chain since a time: how many, and the hashes of the latest few. */
 export type RecentTransactions = { count: number; latestHashes: string[] };
 
@@ -57,6 +67,10 @@ export type CheckContext = {
   settings: Settings;
   database: DatabaseReads;
   chain: (chain: Chain) => ChainReads;
+  /** Absent where the place has no Signer. */
+  signer?: { readPins: (address: string) => Promise<PolicyRead> };
+  multisigStartup: (chain: ChainSetup) => Promise<MultisigStartup>;
+  apiEnvironment: () => Promise<ApiEnvironment>;
   consoleBuilt: () => boolean;
   now: () => Date;
 };
