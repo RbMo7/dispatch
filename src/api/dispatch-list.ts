@@ -6,7 +6,7 @@ import type {
   DispatchStore,
 } from '../repository/dispatch-store.js';
 import type { AssetDecimals } from './asset-decimals.js';
-import { summarizeDispatch } from './dispatch-view.js';
+import { summarizeDispatch, type SenderNameOf } from './dispatch-view.js';
 import { isUuid } from './uuid.js';
 
 const LIST_STATUSES = [
@@ -32,6 +32,8 @@ export type RawListQuery = {
   status?: ListStatus;
   from?: string;
   to?: string;
+  /** ADR-0060: a Sender's name; resolved against the configured Senders by the route. */
+  sender?: string;
 };
 
 export const listQuerySchema = {
@@ -44,6 +46,7 @@ export const listQuerySchema = {
     status: { type: 'string', enum: LIST_STATUSES },
     from: { type: 'string' },
     to: { type: 'string' },
+    sender: { type: 'string', minLength: 1 },
   },
 };
 
@@ -123,6 +126,7 @@ export async function listDispatchPage(
   store: DispatchStore,
   filter: DispatchListFilter,
   decimalsOf: AssetDecimals,
+  nameOf?: SenderNameOf,
 ) {
   const { cursor, status, ...query } = filter;
   const dispatches: ReturnType<typeof summarizeDispatch>[] = [];
@@ -138,7 +142,7 @@ export async function listDispatchPage(
       ...(status ? { storedStatuses: storedStatusesFor(status) } : {}),
     });
     for (const listed of batch) {
-      const summary = summarizeDispatch(listed, decimalsOf);
+      const summary = summarizeDispatch(listed, decimalsOf, nameOf);
       if (status && summary.status !== status) continue;
       if (dispatches.length === filter.limit) {
         return { dispatches, nextCursor: lastReturned && encodeCursor(lastReturned) };

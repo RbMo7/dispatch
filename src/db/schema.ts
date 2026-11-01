@@ -39,10 +39,17 @@ export const dispatches = pgTable(
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * ADR-0060: the Sender that pays, its identity. Null only for a row stored
+     * without one (from before named Senders, or a caller that named none): its
+     * chain's default Sender takes it over, at startup and before each claim.
+     */
+    senderAddress: text('sender_address'),
   },
   (table) => [
     uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey),
     index('dispatches_created_at_id_idx').on(table.createdAt, table.id),
+    index('dispatches_chain_sender_status_idx').on(table.chain, table.senderAddress, table.status),
   ],
 );
 

@@ -65,6 +65,8 @@ const postDispatchSchema = {
         },
       },
       signedTransaction: { type: 'string' },
+      /** ADR-0060: the name of the Sender a Managed Dispatch pays from; omitted, its chain's default. */
+      sender: { type: 'string', minLength: 1 },
       /** #11 (ADR-0038): opt into Bulk Call through this caller-named aggregator. */
       bulkCall: {
         type: 'object',
@@ -86,6 +88,7 @@ type PostDispatchBody = {
   retryPolicy?: boolean;
   items?: Record<string, unknown>[];
   signedTransaction?: string;
+  sender?: string;
   bulkCall?: BulkCallRequest;
 };
 
@@ -143,6 +146,7 @@ async function translateItem(
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
   const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
   const auth = requireToken(tokens);
+  const nameOf = (chain: Chain, address: string) => chainRegistry.nameOf(chain, address);
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
@@ -159,10 +163,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (!registryResult.ok) {
         return reply.code(400).send(registryResult.error satisfies DispatchError);
       }
-      const handler = registryResult.value;
 
       if ((mode ?? 'managed') === 'relay') {
-        const { signedTransaction, items, retryPolicy, bulkCall } = request.body;
+        const handler = registryResult.value;
+        const { signedTransaction, items, retryPolicy, bulkCall, sender } = request.body;
         if (typeof signedTransaction !== 'string' || signedTransaction.length === 0) {
           return reply
             .code(400)
@@ -172,6 +176,12 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
           return reply.code(400).send({
             error:
               'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy, no bulkCall',
+          });
+        }
+        if (sender !== undefined) {
+          return reply.code(400).send({
+            error:
+              'a relay dispatch has no Sender: it arrives already signed by its own wallet, so it takes no sender',
           });
         }
 
@@ -196,6 +206,11 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (!Array.isArray(items) || items.length === 0) {
         return reply.code(400).send({ error: 'items must be a non-empty array' });
       }
+
+      // ADR-0060: the Sender it pays from, and so the handler that builds its Calls.
+      const sender = chainRegistry.resolveSender(chain, request.body.sender);
+      if (!sender.ok) return reply.code(400).send(sender.error satisfies DispatchError);
+      const { handler } = sender.value;
 
       const translated: DispatchItem[] = [];
       for (let i = 0; i < items.length; i++) {
@@ -256,6 +271,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         items: translated,
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
         bulkCall: bulkCallPlan?.bulkCall ?? null,
+        senderAddress: sender.value.address,
         hold: await findHoldMatches(store, chain, translated, new Date()),
       });
 
@@ -269,7 +285,25 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       const filter = parseListQuery(request.query);
       if (!filter.ok) return reply.code(400).send({ error: filter.error });
-      return reply.send(await listDispatchPage(store, filter.value, assetDecimals));
+      const { sender } = request.query;
+      if (sender === undefined) {
+        return reply.send(await listDispatchPage(store, filter.value, assetDecimals, nameOf));
+      }
+      // ADR-0060: names are unique per chain, so a name without `chain` covers every chain's Sender of that name.
+      const senders = chainRegistry.senders.flatMap((s) =>
+        s.name === sender && s.address && (!filter.value.chain || s.chain === filter.value.chain)
+          ? [{ chain: s.chain, address: s.address }]
+          : [],
+      );
+      if (senders.length === 0) {
+        return reply.code(400).send({
+          code: 'UNKNOWN_SENDER',
+          message: `no Sender named "${sender}"${filter.value.chain ? ` on ${filter.value.chain}` : ''}`,
+        } satisfies DispatchError);
+      }
+      return reply.send(
+        await listDispatchPage(store, { ...filter.value, senders }, assetDecimals, nameOf),
+      );
     },
   );
 
@@ -280,6 +314,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const view = await readDispatchView(store, request.params.id, assetDecimals, {
         timeline: request.query.include === 'timeline',
+        nameOf,
       });
       if (!view) return reply.code(404).send({ error: 'not found' });
       return reply.send(view);
@@ -303,7 +338,9 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
           message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
-      return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
+      return reply.send(
+        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+      );
     },
   );
 
@@ -329,7 +366,9 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         tokenKind: 'operator',
         reason: reason.value,
       });
-      return reply.send(await readDispatchView(store, request.params.id, assetDecimals));
+      return reply.send(
+        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+      );
     },
   );
 

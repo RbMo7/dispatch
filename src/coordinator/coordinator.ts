@@ -15,8 +15,12 @@ import { err, ok, type Result } from '../domain/result.js';
 import type { Transaction } from '../domain/transaction.js';
 import { logger as defaultLogger } from '../logger.js';
 import type { AssetAmount } from '../domain/proposal.js';
+import { senderKey, type SenderAddress, type SenderRef } from '../domain/sender.js';
 import type { CommittedHolder, DispatchStore } from '../repository/dispatch-store.js';
 import { ApprovalFlow, DEFAULT_APPROVAL_REWATCH_WINDOW_MS } from './approval-flow.js';
+import type { CoordinatorSender } from './coordinator-sender.js';
+
+export type { CoordinatorSender } from './coordinator-sender.js';
 
 /** relay-dispatch issue 01: a bounded retry of `broadcast`'s identical bytes on a transient send failure — never a fee-bump, never a new signature (ADR-0005). */
 const RELAY_BROADCAST_MAX_ATTEMPTS = 3;
@@ -74,7 +78,6 @@ function isTransientBroadcastFailure(error: DispatchError): boolean {
 type CallRef = { dispatch: Dispatch; callIndex: number };
 
 type FundingRequirement = {
-  chain: Chain;
   /** Who holds the funds, when not the Sender (#11). */
   fundedBy: string | null;
   asset: string;
@@ -88,10 +91,17 @@ export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
 
 export type CoordinatorDeps = {
   store: DispatchStore;
-  /** Populated by the chain registry (issue 07, `ChainRegistry.handlers`). Its keys are the enabled chains: the Coordinator only ever loads work for these (#57). */
+  /**
+   * Populated by the chain registry (issue 07, `ChainRegistry.handlers`). Its
+   * keys are the enabled chains: the Coordinator only ever loads work for these
+   * (#57). Each is also the handler for work that belongs to no configured
+   * Sender: a Relay Dispatch, or a Sender removed from the configuration.
+   */
   chainHandlers: ReadonlyMap<Chain, ChainHandler>;
-  /** Deployment config, one Sender wallet per chain (ADR-0016: Sender Pool is deferred — single-Sender ships first). */
-  senderAddresses: Map<Chain, string>;
+  /** ADR-0060: every Sender the engine executes for, each with its own handler. Takes precedence over `senderAddresses`. */
+  senders?: readonly CoordinatorSender[];
+  /** The single-Sender shape: one Sender per chain, paying from this address with that chain's `chainHandlers` handler. */
+  senderAddresses?: Map<Chain, string>;
   /** The chain-aware ABANDONED timeout (ADR-0004) — how long a still-PENDING transaction may wait, with Retry Policy off, before the Coordinator stops watching it. */
   abandonmentTimeoutMs: Map<Chain, number>;
   /** issue 10: how long after being marked ABANDONED a Transaction is still eligible for the low-frequency re-watch (see rewatchAbandonedTransactions). Defaults to DEFAULT_ABANDONED_REWATCH_WINDOW_MS. */
@@ -120,9 +130,9 @@ export type CoordinatorDeps = {
   approvalDeadlineMs?: number;
   /** ADR-0053: how long a timed-out Proposal still counts as committed in the Funding Check (the watch window). Defaults to 30 days; only read for a chain whose handler has an `approval` capability. */
   approvalRewatchWindowMs?: number;
-  /** Per-chain override of `approvalRewatchWindowMs` (`SOLANA_…` / `BASE_APPROVAL_REWATCH_WINDOW_MS`). */
+  /** Per-chain override of `approvalRewatchWindowMs` for the single-Sender shape (`SOLANA_…` / `BASE_APPROVAL_REWATCH_WINDOW_MS`). */
   approvalRewatchWindowMsByChain?: Map<Chain, number>;
-  /** Per-chain override of `approvalDeadlineMs` (the deadline is `SOLANA_…` / `BASE_APPROVAL_DEADLINE_MS`). */
+  /** Per-chain override of `approvalDeadlineMs` for the single-Sender shape (`SOLANA_…` / `BASE_APPROVAL_DEADLINE_MS`). */
   approvalDeadlineMsByChain?: Map<Chain, number>;
   /** Injectable so the ABANDONED timeout is testable without real sleeps. */
   now?: () => Date;
@@ -145,11 +155,13 @@ export class Coordinator {
   private readonly store: DispatchStore;
   private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
   private readonly enabledChains: Chain[];
-  private readonly senderAddresses: Map<Chain, string>;
+  /** ADR-0060: the units of execution. */
+  readonly senders: readonly CoordinatorSender[];
+  private readonly senderByKey: ReadonlyMap<string, CoordinatorSender>;
+  private readonly defaultSenders: ReadonlyMap<Chain, CoordinatorSender>;
   private readonly abandonmentTimeoutMs: Map<Chain, number>;
   private readonly abandonedRewatchWindowMs: number;
   private readonly approvalRewatchWindowMs: number;
-  private readonly approvalRewatchWindowMsByChain: Map<Chain, number>;
   private readonly reorgRecheckWindowMs: Map<Chain, number>;
   private readonly stuckHandling: Map<Chain, StuckHandlingConfig>;
   private readonly now: () => Date;
@@ -166,14 +178,18 @@ export class Coordinator {
     this.store = deps.store;
     this.chainHandlers = deps.chainHandlers;
     this.enabledChains = [...deps.chainHandlers.keys()];
-    this.senderAddresses = deps.senderAddresses;
+    this.senders = (deps.senders ?? singleSenders(deps)).filter((sender) =>
+      deps.chainHandlers.has(sender.ref.chain),
+    );
+    this.senderByKey = new Map(this.senders.map((sender) => [senderKey(sender.ref), sender]));
+    this.defaultSenders = new Map(
+      this.senders.filter((sender) => sender.isDefault).map((sender) => [sender.ref.chain, sender]),
+    );
     this.abandonmentTimeoutMs = deps.abandonmentTimeoutMs;
     this.abandonedRewatchWindowMs =
       deps.abandonedRewatchWindowMs ?? DEFAULT_ABANDONED_REWATCH_WINDOW_MS;
     this.approvalRewatchWindowMs =
       deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
-    this.approvalRewatchWindowMsByChain =
-      deps.approvalRewatchWindowMsByChain ?? new Map<Chain, number>();
     this.reorgRecheckWindowMs = deps.reorgRecheckWindowMs ?? new Map<Chain, number>();
     this.stuckHandling = deps.stuckHandling ?? new Map<Chain, StuckHandlingConfig>();
     this.now = deps.now ?? (() => new Date());
@@ -181,52 +197,66 @@ export class Coordinator {
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'coordinator' });
     this.approvalFlow = new ApprovalFlow({
       store: this.store,
-      chainHandlers: this.chainHandlers,
-      requireSenderAddress: (chain) => this.requireSenderAddress(chain),
+      senders: this.senders,
       now: this.now,
       logger: this.logger,
       approvalDeadlineMs: deps.approvalDeadlineMs,
-      approvalDeadlineMsByChain: deps.approvalDeadlineMsByChain,
       approvalRewatchWindowMs: this.approvalRewatchWindowMs,
-      approvalRewatchWindowMsByChain: this.approvalRewatchWindowMsByChain,
     });
   }
 
   /**
-   * Claims up to `limit` queued Dispatches, runs the Funding Check
-   * (ADR-0024) across the whole claimed batch, then drives each remaining
-   * Call through validate/prepare/sign/broadcast — grouped by chain (and so,
-   * per ADR-0016's single-Sender-per-chain, by Sender too) and bundled
-   * wherever the Chain Handler's own `prepare()` chooses to bundle them
-   * (issue 10/ADR-0006). Bundling here is same-tick opportunistic only
-   * (solana-chain-handler issue 13): only Calls this one claim already
-   * gathered are ever grouped together — nothing waits across ticks hoping
-   * more arrive. A `validateCall` failure only ever fails its own Call; once
-   * several Calls share one real transaction, a `prepare`/`sign`/`broadcast`
-   * failure fails all of them together, since they genuinely share one
-   * broadcast outcome (see `processChainBatch`). Every outcome is persisted
-   * either way.
+   * Claims up to `limit` queued Dispatches per Sender, every Sender at once
+   * (ADR-0060), and processes each Sender's claim on its own: see
+   * `processQueuedDispatchesFor`. The worker runs one loop per Sender
+   * instead, so a slow Sender never delays the next claim of another.
    */
   async processQueuedDispatches(limit: number): Promise<void> {
-    const dispatches = await this.store.claimQueued(this.enabledChains, limit);
-    if (dispatches.length === 0) {
-      this.logger.debug({ limit }, 'no queued dispatches to claim');
-      // ADR-0054: Calls left UNPROPOSED (a full slot, an unreachable Signer) are retried every tick.
-      await this.proposeUnproposed();
-      return;
-    }
-    this.logger.info(
-      { count: dispatches.length, dispatchIds: dispatches.map((d) => d.id) },
-      'claimed queued dispatches',
+    await Promise.all(
+      this.senders.map((sender) => this.processQueuedDispatchesFor(sender.ref, limit)),
     );
+  }
 
-    for (const dispatch of dispatches) this.inFlight.add(dispatch.id);
-    try {
-      await this.processClaimedDispatches(dispatches);
-    } finally {
-      for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+  /**
+   * Claims up to `limit` of `ref`'s queued Dispatches, runs the Funding Check
+   * (ADR-0024) across the whole claimed batch, then drives each remaining
+   * Call through validate/prepare/sign/broadcast — all of one Sender
+   * (ADR-0060), so a bundle never mixes Senders — bundled wherever the Chain
+   * Handler's own `prepare()` chooses to bundle them (issue 10/ADR-0006).
+   * Bundling here is same-tick opportunistic only (solana-chain-handler
+   * issue 13): only Calls this one claim already gathered are ever grouped
+   * together — nothing waits across ticks hoping more arrive. A
+   * `validateCall` failure only ever fails its own Call; once several Calls
+   * share one real transaction, a `prepare`/`sign`/`broadcast` failure fails
+   * all of them together, since they genuinely share one broadcast outcome
+   * (see `processSenderBatch`). Every outcome is persisted either way.
+   */
+  async processQueuedDispatchesFor(ref: SenderRef, limit: number): Promise<void> {
+    const sender = this.requireSender(ref);
+    // ADR-0060: a Dispatch stored with no Sender is the default Sender's before anyone claims it.
+    if (sender.isDefault) await this.store.assignUnassignedDispatches(sender.ref);
+    const dispatches = await this.store.claimQueuedFor(sender.ref, limit);
+    if (dispatches.length === 0) {
+      this.logger.debug({ limit, sender: ref.address }, 'no queued dispatches to claim');
+    } else {
+      this.logger.info(
+        {
+          count: dispatches.length,
+          chain: ref.chain,
+          sender: ref.address,
+          dispatchIds: dispatches.map((d) => d.id),
+        },
+        'claimed queued dispatches',
+      );
+      for (const dispatch of dispatches) this.inFlight.add(dispatch.id);
+      try {
+        await this.processClaimedDispatches(sender, dispatches);
+      } finally {
+        for (const dispatch of dispatches) this.inFlight.delete(dispatch.id);
+      }
     }
-    await this.proposeUnproposed();
+    // ADR-0054: Calls left UNPROPOSED (a full slot, an unreachable Signer) are retried every tick.
+    await this.approvalFlow.proposeUnproposed(sender);
   }
 
   /**
@@ -238,36 +268,39 @@ export class Coordinator {
     await this.approvalFlow.watch(limit);
   }
 
-  /** ADR-0054: proposes what is waiting on every chain with an approval capability; nothing at all for any other chain. */
-  private async proposeUnproposed(): Promise<void> {
-    for (const chain of this.approvalFlow.chains()) {
-      await this.approvalFlow.proposeUnproposed(chain);
+  /**
+   * ADR-0060: gives every Dispatch stored with no Sender (from before named
+   * Senders) to its chain's default Sender. Idempotent; the worker runs it
+   * once at startup, before anything in flight is restored or resumed.
+   */
+  async assignUnassignedDispatches(): Promise<void> {
+    for (const sender of this.defaultSenders.values()) {
+      const assigned = await this.store.assignUnassignedDispatches(sender.ref);
+      if (assigned > 0) {
+        this.logger.info(
+          { chain: sender.ref.chain, sender: sender.ref.address, assigned },
+          "assigned Dispatches stored with no Sender to their chain's default Sender",
+        );
+      }
     }
   }
 
-  private async processClaimedDispatches(dispatches: Dispatch[]): Promise<void> {
-    const fundingFailed = await this.runFundingCheck(dispatches);
+  private async processClaimedDispatches(
+    sender: CoordinatorSender,
+    dispatches: Dispatch[],
+  ): Promise<void> {
+    const fundingFailed = await this.runFundingCheck(sender, dispatches);
 
-    const itemsByChain = new Map<Chain, CallRef[]>();
+    const items: CallRef[] = [];
     for (const dispatch of dispatches) {
       for (let callIndex = 0; callIndex < dispatch.items.length; callIndex++) {
-        if (fundingFailed.has(callKey(dispatch.id, callIndex))) continue;
-        const group = itemsByChain.get(dispatch.chain);
-        const ref = { dispatch, callIndex };
-        if (group) group.push(ref);
-        else itemsByChain.set(dispatch.chain, [ref]);
+        if (!fundingFailed.has(callKey(dispatch.id, callIndex)))
+          items.push({ dispatch, callIndex });
       }
     }
-
-    for (const [chain, items] of itemsByChain) {
-      const handler = this.requireChainHandler(chain);
-      if (handler.approval) {
-        await this.approvalFlow.admit(chain, items);
-        continue;
-      }
-      const senderAddress = this.requireSenderAddress(chain);
-      await this.processChainBatch(handler, senderAddress, chain, items);
-    }
+    if (items.length === 0) return;
+    if (sender.handler.approval) await this.approvalFlow.admit(sender, items);
+    else await this.processSenderBatch(sender, items);
   }
 
   /**
@@ -282,12 +315,9 @@ export class Coordinator {
    * value — without ever decoding it — is exactly how the Coordinator
    * recovers which Calls ended up sharing one broadcast.
    */
-  private async processChainBatch(
-    handler: ChainHandler,
-    senderAddress: string,
-    chain: Chain,
-    items: CallRef[],
-  ): Promise<void> {
+  private async processSenderBatch(sender: CoordinatorSender, items: CallRef[]): Promise<void> {
+    const { handler } = sender;
+    const { chain } = sender.ref;
     const valid: (CallRef & { call: Call })[] = [];
     for (const { dispatch, callIndex } of items) {
       const item = dispatch.items[callIndex];
@@ -320,16 +350,16 @@ export class Coordinator {
       else groups.set(key, [v]);
     }
     for (const group of groups.values()) {
-      await this.prepareAndSend(handler, senderAddress, chain, group);
+      await this.prepareAndSend(sender, group);
     }
   }
 
   private async prepareAndSend(
-    handler: ChainHandler,
-    senderAddress: string,
-    chain: Chain,
+    sender: CoordinatorSender,
     valid: (CallRef & { call: Call })[],
   ): Promise<void> {
+    const { handler } = sender;
+    const { chain, address: senderAddress } = sender.ref;
     const bulkCall = valid[0]?.dispatch.bulkCall;
     const calls = valid.map((v) => v.call);
     const prepareResult = bulkCall
@@ -372,7 +402,7 @@ export class Coordinator {
     });
 
     await inPool([...chunks.values()], handler.maxConcurrentSends, (chunk) =>
-      this.processChunk(handler, senderAddress, chain, chunk.prepared, chunk.members),
+      this.processChunk(sender, chunk.prepared, chunk.members),
     );
   }
 
@@ -384,13 +414,13 @@ export class Coordinator {
    * about which Calls happened to ride along in it).
    */
   private async processChunk(
-    handler: ChainHandler,
-    senderAddress: string,
-    chain: Chain,
+    sender: CoordinatorSender,
     prepared: PreparedTransaction,
     members: CallRef[],
   ): Promise<void> {
-    const log = this.logger.child({ chain, bundleSize: members.length });
+    const { handler } = sender;
+    const { chain, address: senderAddress } = sender.ref;
+    const log = this.logger.child({ chain, sender: senderAddress, bundleSize: members.length });
     // #20 review: a heartbeat — this claim is alive, however slow the batch.
     await this.store.touchClaims([...new Set(members.map(({ dispatch }) => dispatch.id))]);
 
@@ -471,7 +501,13 @@ export class Coordinator {
    * recordCallFailure. Returns which (dispatchId, callIndex) pairs were
    * failed this way, so the caller skips them in the main processing loop.
    */
-  private async runFundingCheck(dispatches: Dispatch[]): Promise<Set<string>> {
+  private async runFundingCheck(
+    sender: CoordinatorSender,
+    dispatches: Dispatch[],
+  ): Promise<Set<string>> {
+    const { handler } = sender;
+    const { chain, address: senderAddress } = sender.ref;
+    const approval = handler.approval;
     const failedKeys = new Set<string>();
     const requirements = new Map<string, FundingRequirement>();
 
@@ -482,14 +518,13 @@ export class Coordinator {
         // #11: a Bulk Call ERC-20 item spends its aggregator's balance, not the Sender's.
         const fundedBy = item.fundedBy ?? null;
         // A control character, not a real asset symbol, so an asset name can never collide with the delimiter.
-        const key = `${dispatch.chain}\u0000${fundedBy ?? ''}\u0000${asset}`;
+        const key = `${fundedBy ?? ''}\u0000${asset}`;
         const existing = requirements.get(key);
         if (existing) {
           existing.required += BigInt(amount);
           existing.items.push({ dispatch, callIndex });
         } else {
           requirements.set(key, {
-            chain: dispatch.chain,
             fundedBy,
             asset,
             required: BigInt(amount),
@@ -501,67 +536,53 @@ export class Coordinator {
 
     // #40 (ADR-0043): what sending costs beyond the payments themselves
     // (fees, rent), paid by the Sender in the chain's native asset. Shared
-    // by every Call of the chain, so a shortfall fails them all.
-    const refsByChain = new Map<Chain, CallRef[]>();
-    for (const dispatch of dispatches) {
-      const refs = refsByChain.get(dispatch.chain) ?? [];
-      dispatch.items.forEach((_item, callIndex) => refs.push({ dispatch, callIndex }));
-      refsByChain.set(dispatch.chain, refs);
-    }
-    for (const [chain, refs] of refsByChain) {
-      const handler = this.requireChainHandler(chain);
-      const approval = handler.approval;
-      // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
-      if (!approval && !handler.networkCost) continue;
+    // by every Call of the batch, so a shortfall fails them all.
+    // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
+    if (approval || handler.networkCost) {
+      const refs = dispatches.flatMap((dispatch) =>
+        dispatch.items.map((_item, callIndex) => ({ dispatch, callIndex })),
+      );
       const calls = refs.flatMap(({ dispatch, callIndex }) => {
         const call = dispatch.items[callIndex]?.call;
         return call ? [call] : [];
       });
-      const senderAddress = this.requireSenderAddress(chain);
       const cost = approval
         ? await approval.estimateApprovalCost(calls, senderAddress)
         : await handler.networkCost?.(calls, senderAddress);
-      if (!cost) continue;
-      if (!cost.ok) {
+      if (cost && !cost.ok) {
         this.logger.warn(
-          { chain, error: cost.error },
+          { chain, sender: senderAddress, error: cost.error },
           'funding check: networkCost failed, failing affected calls',
         );
         await this.failFundingItems(refs, cost.error, failedKeys);
-        continue;
+      } else if (cost) {
+        const fundedBy = approval ? approval.proposerAddress : null;
+        const key = `${fundedBy ?? ''}\u0000${cost.value.asset}`;
+        const existing = requirements.get(key);
+        requirements.set(key, {
+          fundedBy,
+          asset: cost.value.asset,
+          required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
+          items: refs,
+          ...(approval ? { holder: 'proposer' as const } : {}),
+        });
       }
-      const fundedBy = approval ? approval.proposerAddress : null;
-      const key = `${chain}\u0000${fundedBy ?? ''}\u0000${cost.value.asset}`;
-      const existing = requirements.get(key);
-      requirements.set(key, {
-        chain,
-        fundedBy,
-        asset: cost.value.asset,
-        required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
-        items: refs,
-        ...(approval ? { holder: 'proposer' as const } : {}),
-      });
     }
 
-    // ADR-0053/0054: what open Proposals already hold back, read once per holder per check.
-    const committedCache = new Map<string, Promise<AssetAmount[]>>();
-    const committedFor = (chain: Chain, holder: CommittedHolder) => {
-      const key = `${chain}\u0000${holder}`;
-      let cached = committedCache.get(key);
+    // ADR-0053/0054: what this Sender's open Proposals already hold back, read once per holder per check.
+    const committedCache = new Map<CommittedHolder, Promise<AssetAmount[]>>();
+    const committedFor = (holder: CommittedHolder) => {
+      let cached = committedCache.get(holder);
       if (!cached) {
-        const window =
-          this.approvalRewatchWindowMsByChain.get(chain) ?? this.approvalRewatchWindowMs;
+        const window = sender.approvalRewatchWindowMs ?? this.approvalRewatchWindowMs;
         const timedOutSince = new Date(this.now().getTime() - window);
-        cached = this.store.listCommitted(chain, holder, timedOutSince);
-        committedCache.set(key, cached);
+        cached = this.store.listCommitted(chain, holder, timedOutSince, senderAddress);
+        committedCache.set(holder, cached);
       }
       return cached;
     };
 
-    for (const { chain, fundedBy, asset, required, items, holder } of requirements.values()) {
-      const handler = this.requireChainHandler(chain);
-      const senderAddress = this.requireSenderAddress(chain);
-      const approval = handler.approval;
+    for (const { fundedBy, asset, required, items, holder } of requirements.values()) {
       // A Multisig Sender's payments come out of the vault or Safe, less what open Proposals already hold.
       const committedHolder: CommittedHolder | null = approval
         ? (holder ?? (fundedBy === null ? 'sender' : null))
@@ -571,7 +592,7 @@ export class Coordinator {
       const balanceResult = await handler.getBalance(address, asset);
       if (!balanceResult.ok) {
         this.logger.warn(
-          { chain, asset, error: balanceResult.error },
+          { chain, sender: senderAddress, asset, error: balanceResult.error },
           'funding check: getBalance failed, failing affected calls',
         );
         await this.failFundingItems(items, balanceResult.error, failedKeys);
@@ -580,8 +601,7 @@ export class Coordinator {
 
       const committed = committedHolder
         ? BigInt(
-            (await committedFor(chain, committedHolder)).find((c) => c.asset === asset)?.amount ??
-              '0',
+            (await committedFor(committedHolder)).find((c) => c.asset === asset)?.amount ?? '0',
           )
         : 0n;
       const available = BigInt(balanceResult.value.amount) - committed;
@@ -590,6 +610,7 @@ export class Coordinator {
         this.logger.warn(
           {
             chain,
+            sender: senderAddress,
             asset,
             required: required.toString(),
             available: available.toString(),
@@ -660,6 +681,8 @@ export class Coordinator {
    */
   async reclaimStaleClaims(limit: number): Promise<void> {
     const claimedBefore = new Date(this.now().getTime() - STALE_CLAIM_MS);
+    // A claim from before named Senders (or by a store call that named none) still needs its Sender.
+    await this.assignUnassignedDispatches();
 
     for (const dispatch of await this.store.reclaimStaleDispatches(
       this.enabledChains,
@@ -667,6 +690,14 @@ export class Coordinator {
       limit,
     )) {
       if (this.inFlight.has(dispatch.id)) continue; // merely slow, not crashed: this Coordinator is still on it
+      const sender = this.senderOfDispatch(dispatch);
+      if (!sender) {
+        this.logger.warn(
+          { dispatchId: dispatch.id, chain: dispatch.chain, sender: dispatch.senderAddress },
+          'a stale claim belongs to a Sender that is no longer configured; it resumes once that Sender is configured again',
+        );
+        continue;
+      }
       const sent = new Set(
         (await this.store.listTransactions(dispatch.id)).map((t) => t.callIndex),
       );
@@ -679,17 +710,11 @@ export class Coordinator {
       );
       this.inFlight.add(dispatch.id);
       try {
-        const handler = this.requireChainHandler(dispatch.chain);
-        if (handler.approval) {
+        if (sender.handler.approval) {
           // ADR-0054: a multisig Call is never signed as the Sender; it is noted and proposed.
-          await this.approvalFlow.admit(dispatch.chain, unsent);
+          await this.approvalFlow.admit(sender, unsent);
         } else {
-          await this.processChainBatch(
-            handler,
-            this.requireSenderAddress(dispatch.chain),
-            dispatch.chain,
-            unsent,
-          );
+          await this.processSenderBatch(sender, unsent);
         }
       } finally {
         this.inFlight.delete(dispatch.id);
@@ -716,29 +741,47 @@ export class Coordinator {
    * a nonce one of them (possibly written down but never sent) holds.
    */
   async restoreReservations(): Promise<void> {
-    for (const [chain, handler] of this.chainHandlers) {
-      if (!handler.restoreInFlight) continue;
-      const unsettled = await this.store.listUnsettledTransactions(chain);
-      const signed = unsettled.flatMap((t) => (t.signedBytes ? [t.signedBytes] : []));
+    const signedByHandler = new Map<ChainHandler, string[]>();
+    const add = (handler: ChainHandler, signed: string): void => {
+      signedByHandler.set(handler, [...(signedByHandler.get(handler) ?? []), signed]);
+    };
+    for (const chain of this.enabledChains) {
+      const chainHandler = this.requireChainHandler(chain);
+      signedByHandler.set(chainHandler, signedByHandler.get(chainHandler) ?? []);
+      for (const sender of this.senders.filter((s) => s.ref.chain === chain)) {
+        signedByHandler.set(sender.handler, signedByHandler.get(sender.handler) ?? []);
+      }
+      // ADR-0060: each Sender's handler gets only its own Sender's transactions.
+      for (const transaction of await this.store.listUnsettledTransactions(chain)) {
+        if (transaction.signedBytes)
+          add(await this.handlerFor(transaction), transaction.signedBytes);
+      }
       // ADR-0054: a propose transaction written down but maybe never sent holds a nonce too.
-      if (handler.approval) signed.push(...(await this.unsettledProposeBytes(chain)));
+      for (const proposal of await this.unsettledProposals(chain)) {
+        const sender = this.senderByKey.get(
+          senderKey({ chain, address: proposal.senderAddress as SenderAddress }),
+        );
+        if (proposal.proposeSignedBytes)
+          add(sender?.handler ?? chainHandler, proposal.proposeSignedBytes);
+      }
+    }
+    for (const [handler, signed] of signedByHandler) {
+      if (!handler.restoreInFlight) continue;
       await handler.restoreInFlight(signed);
       this.logger.info(
-        { chain, restored: signed.length },
+        { chain: handler.chain, restored: signed.length },
         'restored handler state from in-flight transactions',
       );
     }
   }
 
-  /** The signed propose bytes of `chain`'s Proposals that are not yet settled (`noted`, `open` or `executing`). */
-  private async unsettledProposeBytes(chain: Chain): Promise<string[]> {
-    const farFuture = new Date(8.64e15);
+  /** `chain`'s Proposals that are not yet settled (`noted`, `open` or `executing`). */
+  private async unsettledProposals(chain: Chain) {
+    if (!this.senders.some((s) => s.ref.chain === chain && s.handler.approval)) return [];
+    // Postgres's timestamptz stops at year 294276; JavaScript's latest Date is past it.
+    const farFuture = new Date('9999-12-31T00:00:00.000Z');
     const proposals = await this.store.listProposalsDue([chain], farFuture, 10_000);
-    return proposals.flatMap((p) =>
-      p.proposeSignedBytes && ['noted', 'open', 'executing'].includes(p.phase)
-        ? [p.proposeSignedBytes]
-        : [],
-    );
+    return proposals.filter((p) => ['noted', 'open', 'executing'].includes(p.phase));
   }
 
   /**
@@ -862,26 +905,28 @@ export class Coordinator {
     // has been bumped/rebroadcast (for all of them), the rest of this
     // tick's stale copies must not act on that hash again.
     const handledHashes = new Set<string>();
-    const expired = new Map<Chain, Transaction[]>();
+    const expired = new Map<ChainHandler, Transaction[]>();
     for (const transaction of pending) {
       if (transaction.hash && handledHashes.has(transaction.hash)) continue;
       const outcome = await this.resolvePendingTransaction(transaction);
       if (outcome === 'expired') {
-        expired.set(transaction.chain, [...(expired.get(transaction.chain) ?? []), transaction]);
+        const handler = await this.handlerFor(transaction);
+        expired.set(handler, [...(expired.get(handler) ?? []), transaction]);
       }
       if (outcome && transaction.hash) handledHashes.add(transaction.hash);
     }
 
     // ADR-0042, mainnet review: each resubmission's send can wait out a
-    // whole validity window, so they share the chain's send pool (ADR-0044)
-    // rather than stalling the tick one by one.
-    for (const [chain, transactions] of expired) {
-      await inPool(
-        transactions,
-        this.requireChainHandler(chain).maxConcurrentSends,
-        (transaction) => this.resubmitExpired(transaction, this.transactionLogger(transaction)),
-      );
-    }
+    // whole validity window, so they share their Sender's send pool
+    // (ADR-0044, ADR-0060), every Sender's at once, rather than stalling the
+    // tick one by one.
+    await Promise.all(
+      [...expired].map(([handler, transactions]) =>
+        inPool(transactions, handler.maxConcurrentSends, (transaction) =>
+          this.resubmitExpired(transaction, this.transactionLogger(transaction)),
+        ),
+      ),
+    );
   }
 
   /**
@@ -961,7 +1006,7 @@ export class Coordinator {
       throw new Error(`Transaction ${transaction.id} is CONFIRMED but has no hash.`);
     }
     const log = this.transactionLogger(transaction).child({ reorgRecheck: true });
-    const handler = this.requireChainHandler(transaction.chain);
+    const handler = await this.handlerFor(transaction);
     const statusResult = await handler.getStatus(transaction.hash);
 
     if (!statusResult.ok) {
@@ -1031,36 +1076,46 @@ export class Coordinator {
     if (!config || !lastSentAt) return 'none';
     if (this.now().getTime() - lastSentAt.getTime() < config.stuckAfterMs) return 'none';
 
-    if (this.canStillBump(transaction) && (await this.retryPolicyFor(transaction))) {
-      const outcome = await this.bump(transaction, config, log);
+    const sender = await this.senderOfTransaction(transaction);
+    if (
+      sender &&
+      this.canStillBump(transaction, sender) &&
+      (await this.retryPolicyFor(transaction))
+    ) {
+      const outcome = await this.bump(transaction, sender, config, log);
       if (outcome !== 'failed') return outcome;
     }
     await this.rebroadcast(transaction, log);
     return 'handled';
   }
 
-  /** Whether this transaction's chain can bump it and its Call hasn't used up its bump attempts — Retry Policy aside. */
-  private canStillBump(transaction: Transaction): boolean {
+  /**
+   * Whether this transaction's chain can bump it, its Sender is configured
+   * (only its own key can sign a replacement) and its Call hasn't used up its
+   * bump attempts — Retry Policy aside.
+   */
+  private canStillBump(transaction: Transaction, sender: CoordinatorSender | undefined): boolean {
     const config = this.stuckHandling.get(transaction.chain);
     return (
       config !== undefined &&
-      this.requireChainHandler(transaction.chain).prepareReplacement !== undefined &&
+      sender?.handler.prepareReplacement !== undefined &&
       transaction.feeBumpAttempts < config.maxFeeBumps
     );
   }
 
   private async bump(
     transaction: Transaction,
+    sender: CoordinatorSender,
     config: StuckHandlingConfig,
     log: Logger,
   ): Promise<'bumped' | 'handled' | 'failed'> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
-    const handler = this.requireChainHandler(transaction.chain);
+    const { handler } = sender;
     // ADR-0054: a Proposal's execute is signed by the proposer, never the multisig Sender.
     const senderAddress =
       transaction.proposalId && handler.approval
         ? handler.approval.proposerAddress
-        : this.requireSenderAddress(transaction.chain);
+        : sender.ref.address;
     const members = await this.pendingMembersOf(hash);
     const recordAttempts = async (feeBumpAttempts: number) => {
       for (const member of members) await this.store.setFeeBumpAttempts(member.id, feeBumpAttempts);
@@ -1144,11 +1199,13 @@ export class Coordinator {
       await this.approvalFlow.resubmitExpiredExecution(members, MAX_EXPIRY_RESUBMISSIONS, log);
       return;
     }
+    // ADR-0060: a bundle never mixes Senders, so the first member's Sender re-signs them all.
+    const sender = await this.senderOfTransaction(transaction);
     const refs: { member: Transaction; call: Call }[] = [];
     for (const member of members) {
       const call = (await this.store.getDispatch(member.dispatchId))?.items[member.callIndex]?.call;
-      // No Dispatch: a Relay Dispatch — only its own signer could re-sign it.
-      if (!call || member.feeBumpAttempts >= MAX_EXPIRY_RESUBMISSIONS) {
+      // No Dispatch: a Relay Dispatch — only its own signer could re-sign it. No Sender: one no longer configured.
+      if (!call || !sender || member.feeBumpAttempts >= MAX_EXPIRY_RESUBMISSIONS) {
         log.warn(
           { transactionId: member.id, resubmissions: member.feeBumpAttempts },
           'expired transaction not resubmitted — failed',
@@ -1158,10 +1215,10 @@ export class Coordinator {
       }
       refs.push({ member, call });
     }
-    if (refs.length === 0) return;
+    if (refs.length === 0 || !sender) return;
 
-    const handler = this.requireChainHandler(chain);
-    const senderAddress = this.requireSenderAddress(chain);
+    const { handler } = sender;
+    const senderAddress = sender.ref.address;
     const prepared = await handler.prepare(
       refs.map((r) => r.call),
       senderAddress,
@@ -1233,7 +1290,7 @@ export class Coordinator {
 
   private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
-    const result = await this.requireChainHandler(transaction.chain).broadcast(signedBytes);
+    const result = await (await this.handlerFor(transaction)).broadcast(signedBytes);
     // A refused resend — e.g. "already known", or "nonce too low" once some
     // version landed — is never evidence against the transaction
     // (resolution/timeout decide), but it's still recorded as an Attempt:
@@ -1347,7 +1404,7 @@ export class Coordinator {
       );
     }
 
-    const handler = this.requireChainHandler(transaction.chain);
+    const handler = await this.handlerFor(transaction);
     const bundled = await this.bundleSlotStatus(handler, transaction, transaction.hash);
     if (bundled?.ok && bundled.value.slotStatus.status === 'FAILED') {
       const { slot, slotStatus } = bundled.value;
@@ -1476,7 +1533,12 @@ export class Coordinator {
     // a chain without fee-bump, or the cap reached — Retry Policy on means
     // nothing more than off does, so the normal timeout applies.
     const retryPolicy = await this.retryPolicyFor(transaction);
-    if (retryPolicy && this.canStillBump(transaction)) return;
+    if (
+      retryPolicy &&
+      this.canStillBump(transaction, await this.senderOfTransaction(transaction))
+    ) {
+      return;
+    }
 
     if (!transaction.broadcastAt) {
       throw new Error(
@@ -1509,13 +1571,56 @@ export class Coordinator {
     return handler;
   }
 
-  private requireSenderAddress(chain: Chain): string {
-    const senderAddress = this.senderAddresses.get(chain);
-    if (!senderAddress) {
-      throw new Error(`No Sender address configured for chain: ${chain}`);
-    }
-    return senderAddress;
+  private requireSender(ref: SenderRef): CoordinatorSender {
+    const sender = this.senderByKey.get(senderKey(ref));
+    if (!sender) throw new Error(`No Sender ${ref.address} configured on chain ${ref.chain}`);
+    return sender;
   }
+
+  /** ADR-0060: the configured Sender a Dispatch pays from (its chain's default when it names none), or undefined when it is no longer configured. */
+  private senderOfDispatch(dispatch: Dispatch): CoordinatorSender | undefined {
+    if (dispatch.senderAddress === null) return this.defaultSenders.get(dispatch.chain);
+    return this.senderByKey.get(
+      senderKey({ chain: dispatch.chain, address: dispatch.senderAddress }),
+    );
+  }
+
+  /** The Sender whose Dispatch a Transaction belongs to; undefined for a Relay Dispatch's, or a Sender no longer configured. */
+  private async senderOfTransaction(
+    transaction: Transaction,
+  ): Promise<CoordinatorSender | undefined> {
+    const dispatch = await this.store.getDispatch(transaction.dispatchId);
+    return dispatch ? this.senderOfDispatch(dispatch) : undefined;
+  }
+
+  /**
+   * The handler that sent a Transaction, and so the one that can tell what
+   * became of it (Solana proves expiry from what its own instance saw): its
+   * Sender's, else its chain's.
+   */
+  private async handlerFor(transaction: Transaction): Promise<ChainHandler> {
+    return (
+      (await this.senderOfTransaction(transaction))?.handler ??
+      this.requireChainHandler(transaction.chain)
+    );
+  }
+}
+
+/** The single-Sender shape (`senderAddresses`): one default Sender per chain that has an address. */
+function singleSenders(deps: CoordinatorDeps): CoordinatorSender[] {
+  return [...deps.chainHandlers].flatMap(([chain, handler]) => {
+    const address = deps.senderAddresses?.get(chain);
+    if (!address) return [];
+    return [
+      {
+        ref: { chain, address: address as SenderAddress },
+        handler,
+        isDefault: true,
+        approvalDeadlineMs: deps.approvalDeadlineMsByChain?.get(chain),
+        approvalRewatchWindowMs: deps.approvalRewatchWindowMsByChain?.get(chain),
+      },
+    ];
+  });
 }
 
 /** #42 (ADR-0044): runs `task` over `items`, at most `limit` at a time (one when unset). */

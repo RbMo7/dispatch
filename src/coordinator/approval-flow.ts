@@ -3,15 +3,16 @@ import type { Logger } from 'pino';
 import type {
   ApprovalCapability,
   BuiltProposal,
-  ChainHandler,
   ProposalSnapshot,
 } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Proposal } from '../domain/proposal.js';
+import { senderKey, type SenderAddress } from '../domain/sender.js';
 import type { Transaction } from '../domain/transaction.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+import type { CoordinatorSender } from './coordinator-sender.js';
 
 /** ADR-0054: how long Approvers have before the engine stops waiting and abandons the Calls (ADR-0053). */
 export const DEFAULT_APPROVAL_DEADLINE_MS = 72 * 60 * 60 * 1000;
@@ -42,21 +43,25 @@ export const DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS = 60 * 60 * 1000;
 /** A (Dispatch, callIndex) pointer to one Call, as the Coordinator groups claimed work. */
 export type ApprovalCallRef = { dispatch: Dispatch; callIndex: number };
 
+/** A Sender whose handler proposes through a multisig. */
+type MultisigSender = CoordinatorSender & {
+  handler: CoordinatorSender['handler'] & { approval: ApprovalCapability };
+};
+
+function isMultisig(sender: CoordinatorSender): sender is MultisigSender {
+  return sender.handler.approval !== undefined;
+}
+
 export type ApprovalFlowDeps = {
   store: DispatchStore;
-  chainHandlers: ReadonlyMap<Chain, ChainHandler>;
-  /** The multisig that is the Sender of `chain` (the vault or Safe). */
-  requireSenderAddress: (chain: Chain) => string;
+  /** ADR-0060: every Sender; only those whose handler has an approval capability are ever touched. */
+  senders: readonly CoordinatorSender[];
   now: () => Date;
   logger: Logger;
-  /** How long a new Proposal waits for approval before it times out. Defaults to 72 hours. */
+  /** How long a new Proposal waits for approval before it times out, for a Sender that does not say. Defaults to 72 hours. */
   approvalDeadlineMs?: number | undefined;
-  /** Per-chain deadlines, taking precedence over `approvalDeadlineMs`. */
-  approvalDeadlineMsByChain?: Map<Chain, number> | undefined;
-  /** ADR-0053: how long after timing out a Proposal is still watched. Defaults to 30 days. */
+  /** ADR-0053: how long after timing out a Proposal is still watched, for a Sender that does not say. Defaults to 30 days. */
   approvalRewatchWindowMs?: number | undefined;
-  /** Per-chain re-watch windows, taking precedence over `approvalRewatchWindowMs`. */
-  approvalRewatchWindowMsByChain?: Map<Chain, number> | undefined;
   /** How long a timed-out Proposal is read at the chain's normal cadence before going hourly (default 24 h). */
   rewatchFirstPeriodMs?: number | undefined;
   /** The gap between reads once past the first period (default 1 h). */
@@ -79,14 +84,12 @@ function isTransient(error: DispatchError): boolean {
  */
 export class ApprovalFlow {
   private readonly store: DispatchStore;
-  private readonly chainHandlers: ReadonlyMap<Chain, ChainHandler>;
-  private readonly requireSenderAddress: (chain: Chain) => string;
+  /** ADR-0060: keyed by `senderKey`, only Senders with an approval capability. */
+  private readonly multisigSenders: ReadonlyMap<string, MultisigSender>;
   private readonly now: () => Date;
   private readonly logger: Logger;
   private readonly approvalDeadlineMs: number;
-  private readonly approvalDeadlineMsByChain: Map<Chain, number>;
   private readonly approvalRewatchWindowMs: number;
-  private readonly approvalRewatchWindowMsByChain: Map<Chain, number>;
   private readonly rewatchFirstPeriodMs: number;
   private readonly rewatchLaterIntervalMs: number;
   private readonly lateApprovalLogIntervalMs: number;
@@ -94,8 +97,10 @@ export class ApprovalFlow {
   private readonly lateApprovalLoggedAt = new Map<string, number>();
   /** One creation at a time per Sender: the tail of each Sender's queue. */
   private readonly queues = new Map<string, Promise<void>>();
-  /** Per chain, in memory only: when proposing may be tried again after a transient failure. */
-  private readonly backoff = new Map<Chain, { until: number; failures: number }>();
+  /** Per Sender, in memory only: when proposing may be tried again after a transient failure. */
+  private readonly backoff = new Map<string, { until: number; failures: number }>();
+  /** Proposals of a Sender no longer configured, warned about once per process. */
+  private readonly orphanWarned = new Set<string>();
   /** Retry bookkeeping for Proposals whose close failed (#75). What still needs closing is durable (`closeState`, #88); only the attempt count and the wait are in memory. */
   private readonly pendingCloses = new Map<string, { attempts: number; nextAt: number }>();
   /** In memory only: how often a `noted` Proposal was re-signed for an expired blockhash. A restart allows a few more, still bounded by the deadline. */
@@ -103,25 +108,23 @@ export class ApprovalFlow {
 
   constructor(deps: ApprovalFlowDeps) {
     this.store = deps.store;
-    this.chainHandlers = deps.chainHandlers;
-    this.requireSenderAddress = deps.requireSenderAddress;
+    this.multisigSenders = new Map(
+      deps.senders.filter(isMultisig).map((sender) => [senderKey(sender.ref), sender]),
+    );
     this.now = deps.now;
     this.logger = deps.logger.child({ component: 'approval-flow' });
     this.approvalDeadlineMs = deps.approvalDeadlineMs ?? DEFAULT_APPROVAL_DEADLINE_MS;
-    this.approvalDeadlineMsByChain = deps.approvalDeadlineMsByChain ?? new Map<Chain, number>();
     this.approvalRewatchWindowMs =
       deps.approvalRewatchWindowMs ?? DEFAULT_APPROVAL_REWATCH_WINDOW_MS;
-    this.approvalRewatchWindowMsByChain =
-      deps.approvalRewatchWindowMsByChain ?? new Map<Chain, number>();
     this.rewatchFirstPeriodMs = deps.rewatchFirstPeriodMs ?? DEFAULT_REWATCH_FIRST_PERIOD_MS;
     this.rewatchLaterIntervalMs = deps.rewatchLaterIntervalMs ?? DEFAULT_REWATCH_LATER_INTERVAL_MS;
     this.lateApprovalLogIntervalMs =
       deps.lateApprovalLogIntervalMs ?? DEFAULT_LATE_APPROVAL_LOG_INTERVAL_MS;
   }
 
-  /** The chains whose handler has an approval capability. */
+  /** The chains with a Multisig Sender. */
   chains(): Chain[] {
-    return [...this.chainHandlers].flatMap(([chain, handler]) => (handler.approval ? [chain] : []));
+    return [...new Set([...this.multisigSenders.values()].map((sender) => sender.ref.chain))];
   }
 
   /**
@@ -129,8 +132,9 @@ export class ApprovalFlow {
    * (idempotent, so a reclaimed Dispatch never gets a duplicate row). An
    * invalid Call fails on its own, exactly as for a plain Sender.
    */
-  async admit(chain: Chain, refs: ApprovalCallRef[]): Promise<void> {
-    const handler = this.requireHandler(chain);
+  async admit(sender: CoordinatorSender, refs: ApprovalCallRef[]): Promise<void> {
+    const { handler } = sender;
+    const { chain } = sender.ref;
     const valid: ApprovalCallRef[] = [];
     for (const ref of refs) {
       const item = ref.dispatch.items[ref.callIndex];
@@ -157,13 +161,11 @@ export class ApprovalFlow {
     );
   }
 
-  /** Proposes whatever `UNPROPOSED` work `chain` has room for, serialized per Sender. */
-  proposeUnproposed(chain: Chain): Promise<void> {
-    const sender = this.requireSenderAddress(chain);
-    const key = `${chain}\u0000${sender}`;
-    const run = (this.queues.get(key) ?? Promise.resolve()).then(() =>
-      this.proposeAll(chain, sender),
-    );
+  /** Proposes whatever `UNPROPOSED` work `sender` has room for, serialized per Sender. */
+  proposeUnproposed(sender: CoordinatorSender): Promise<void> {
+    if (!isMultisig(sender)) return Promise.resolve();
+    const key = senderKey(sender.ref);
+    const run = (this.queues.get(key) ?? Promise.resolve()).then(() => this.proposeAll(sender));
     // The queue never rejects, so one failed pass cannot wedge the next.
     this.queues.set(
       key,
@@ -172,16 +174,17 @@ export class ApprovalFlow {
     return run;
   }
 
-  private async proposeAll(chain: Chain, sender: string): Promise<void> {
-    const approval = this.requireHandler(chain).approval;
-    if (!approval) return;
-    const log = this.logger.child({ chain });
+  private async proposeAll(multisig: MultisigSender): Promise<void> {
+    const { approval } = multisig.handler;
+    const { chain, address: sender } = multisig.ref;
+    const key = senderKey(multisig.ref);
+    const log = this.logger.child({ chain, sender });
 
     for (;;) {
-      if (this.isBackedOff(chain)) return;
+      if (this.isBackedOff(key)) return;
       if (!(await this.hasFreeSlot(approval, chain, sender))) return;
 
-      const rows = await this.store.listUnproposed(chain, UNPROPOSED_PAGE);
+      const rows = await this.store.listUnproposed(chain, UNPROPOSED_PAGE, sender);
       const first = rows[0];
       if (!first) return;
       // One Dispatch at a time (ADR-0054): the rows come first-claimed Dispatch first.
@@ -222,13 +225,7 @@ export class ApprovalFlow {
         if (!(await this.hasFreeSlot(approval, chain, sender))) return;
         const rowsOfBundle = positions.map((p) => group[p] as Transaction);
         const callsOfBundle = positions.map((p) => calls[p] as (typeof calls)[number]);
-        const proceed = await this.proposeBundle(
-          approval,
-          chain,
-          sender,
-          rowsOfBundle,
-          callsOfBundle,
-        );
+        const proceed = await this.proposeBundle(multisig, rowsOfBundle, callsOfBundle);
         if (!proceed) return;
       }
     }
@@ -236,14 +233,15 @@ export class ApprovalFlow {
 
   /** Builds, signs, writes down and submits one Proposal. Returns false when proposing should stop for now. */
   private async proposeBundle(
-    approval: ApprovalCapability,
-    chain: Chain,
-    sender: string,
+    multisig: MultisigSender,
     rows: Transaction[],
     calls: Parameters<ApprovalCapability['buildProposal']>[0]['calls'],
   ): Promise<boolean> {
+    const { approval } = multisig.handler;
+    const { chain, address: sender } = multisig.ref;
+    const key = senderKey(multisig.ref);
     const dispatchId = rows[0]?.dispatchId as string;
-    const log = this.logger.child({ chain, dispatchId, calls: rows.length });
+    const log = this.logger.child({ chain, sender, dispatchId, calls: rows.length });
 
     // #84: the chain's own sequence read can lag right after an execution; never build below what
     // this engine already knows was consumed (a CONFIRMED execution; a reverted one consumed nothing).
@@ -254,13 +252,13 @@ export class ApprovalFlow {
       ...(lastConfirmed === null ? {} : { minSequence: lastConfirmed + 1 }),
     });
     if (!built.ok) {
-      return this.handleFailure(chain, rows, built.error, 'buildProposal', log);
+      return this.handleFailure(key, rows, built.error, 'buildProposal', log);
     }
 
     // The Signer is asked as the proposer, never the Sender: a vault or Safe never signs here.
     const signed = await approval.signProposal(built.value);
     if (!signed.ok) {
-      return this.handleFailure(chain, rows, signed.error, 'signProposal', log);
+      return this.handleFailure(key, rows, signed.error, 'signProposal', log);
     }
 
     // ADR-0041: written down (and the Calls moved to AWAITING_APPROVAL) before anything is sent.
@@ -276,8 +274,7 @@ export class ApprovalFlow {
         sequence: built.value.sequence,
         threshold: built.value.threshold,
         deadlineAt: new Date(
-          this.now().getTime() +
-            (this.approvalDeadlineMsByChain.get(chain) ?? this.approvalDeadlineMs),
+          this.now().getTime() + (multisig.approvalDeadlineMs ?? this.approvalDeadlineMs),
         ),
         executeAfter: built.value.executeAfter,
         proposeSignedBytes: signed.value.signedBytes,
@@ -290,7 +287,7 @@ export class ApprovalFlow {
     } catch (error) {
       // Nothing was written (it is atomic), so the rows stay UNPROPOSED. Not sent, so nothing to lose.
       log.error({ err: error }, 'createProposal failed; calls stay UNPROPOSED');
-      this.noteTransientFailure(chain);
+      this.noteTransientFailure(key);
       return false;
     }
 
@@ -301,7 +298,7 @@ export class ApprovalFlow {
         { proposalId, stage: 'submitProposal', error: submitted.error },
         'proposal written down but not confirmed sent; left noted',
       );
-      this.noteTransientFailure(chain);
+      this.noteTransientFailure(key);
       return false;
     }
 
@@ -310,14 +307,14 @@ export class ApprovalFlow {
       phase: 'open',
       nextCheckAt: this.after(this.cadence(approval)),
     });
-    this.backoff.delete(chain);
+    this.backoff.delete(key);
     log.info({ proposalId, proposalRef: built.value.proposalRef }, 'proposal created');
     return true;
   }
 
-  /** A transient error leaves the rows `UNPROPOSED` and backs the chain off; a definite one fails them for good. */
+  /** A transient error leaves the rows `UNPROPOSED` and backs the Sender off; a definite one fails them for good. */
   private async handleFailure(
-    chain: Chain,
+    key: string,
     rows: Transaction[],
     error: DispatchError,
     stage: string,
@@ -328,7 +325,7 @@ export class ApprovalFlow {
         { stage, error },
         'proposing failed transiently; calls stay UNPROPOSED, backing off',
       );
-      this.noteTransientFailure(chain);
+      this.noteTransientFailure(key);
       return false;
     }
     log.warn({ stage, error }, 'proposing failed; failing calls');
@@ -350,15 +347,15 @@ export class ApprovalFlow {
     return (await this.store.countOpenProposals(chain, sender)) < approval.openProposalLimit;
   }
 
-  private isBackedOff(chain: Chain): boolean {
-    const state = this.backoff.get(chain);
+  private isBackedOff(key: string): boolean {
+    const state = this.backoff.get(key);
     return state !== undefined && this.now().getTime() < state.until;
   }
 
-  private noteTransientFailure(chain: Chain): void {
-    const failures = (this.backoff.get(chain)?.failures ?? 0) + 1;
+  private noteTransientFailure(key: string): void {
+    const failures = (this.backoff.get(key)?.failures ?? 0) + 1;
     const delay = Math.min(BACKOFF_BASE_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
-    this.backoff.set(chain, { until: this.now().getTime() + delay, failures });
+    this.backoff.set(key, { until: this.now().getTime() + delay, failures });
   }
 
   // ---------------------------------------------------------------------
@@ -384,8 +381,20 @@ export class ApprovalFlow {
   }
 
   private async watchOne(proposal: Proposal): Promise<void> {
-    const approval = this.requireHandler(proposal.chain).approval;
-    if (!approval) return;
+    const sender = this.senderOf(proposal);
+    if (!sender) {
+      // Its Sender was removed from the configuration: nothing here can read or execute the Proposal.
+      if (!this.orphanWarned.has(proposal.id)) {
+        this.orphanWarned.add(proposal.id);
+        this.logger.warn(
+          { proposalId: proposal.id, chain: proposal.chain, sender: proposal.senderAddress },
+          'a proposal belongs to a Sender that is no longer configured; it is not watched until that Sender is configured again',
+        );
+      }
+      await this.backOff(proposal, 'sender not configured');
+      return;
+    }
+    const { approval } = sender.handler;
     switch (proposal.phase) {
       case 'noted':
         return this.watchNoted(proposal, approval);
@@ -590,7 +599,7 @@ export class ApprovalFlow {
     });
     await this.store.updateProposal(proposal.id, {
       checkFailures: 0,
-      nextCheckAt: this.after(this.cadence(this.requireApproval(proposal.chain))),
+      nextCheckAt: this.after(this.cadence(this.requireSender(proposal).handler.approval)),
     });
   }
 
@@ -608,7 +617,7 @@ export class ApprovalFlow {
       chain: proposal.chain,
     });
     const windowMs =
-      this.approvalRewatchWindowMsByChain.get(proposal.chain) ?? this.approvalRewatchWindowMs;
+      this.requireSender(proposal).approvalRewatchWindowMs ?? this.approvalRewatchWindowMs;
     const since = (proposal.timedOutAt ?? proposal.deadlineAt).getTime();
     if (this.now().getTime() >= since + windowMs) {
       // The Calls stay ABANDONED: a late execution after this goes unseen (ADR-0053).
@@ -711,7 +720,7 @@ export class ApprovalFlow {
     approval: ApprovalCapability,
     snapshot: ProposalSnapshot,
   ): Promise<void> {
-    const handler = this.requireHandler(proposal.chain);
+    const { handler } = this.requireSender(proposal);
     const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
 
     const prepared = await approval.prepareExecution(proposal);
@@ -797,8 +806,9 @@ export class ApprovalFlow {
     if (!proposalId) throw new Error(`Transaction ${transaction.id} has no Proposal`);
     const proposal = await this.store.getProposal(proposalId);
     if (!proposal) throw new Error(`Unknown proposal ${proposalId}`);
-    const approval = this.requireHandler(proposal.chain).approval;
-    if (!approval) throw new Error(`Chain ${proposal.chain} has no approval capability`);
+    const sender = this.senderOf(proposal);
+    if (!sender) return false; // a Sender no longer configured: left PENDING, never decided here
+    const { approval } = sender.handler;
 
     const current = (await this.store.listProposalCalls(proposalId)).find(
       (c) => c.callIndex === transaction.callIndex,
@@ -899,9 +909,13 @@ export class ApprovalFlow {
     if (!first || !proposalId) return;
     const proposal = await this.store.getProposal(proposalId);
     if (!proposal) throw new Error(`Unknown proposal ${proposalId}`);
-    const handler = this.requireHandler(proposal.chain);
-    const approval = handler.approval;
-    if (!approval) throw new Error(`Chain ${proposal.chain} has no approval capability`);
+    const sender = this.senderOf(proposal);
+    if (!sender) {
+      log.warn({ proposalId }, 'expired execute of a Sender no longer configured; left pending');
+      return;
+    }
+    const { handler } = sender;
+    const { approval } = handler;
 
     // ADR-0053: the engine never executes after the deadline. An execute that expired is not sent again then;
     // the proposal is read instead (executed by someone else: CONFIRMED; still live: ABANDONED; dead: FAILED).
@@ -1038,7 +1052,7 @@ export class ApprovalFlow {
   }
 
   private async tryClose(proposal: Proposal, previousAttempts: number): Promise<void> {
-    const approval = this.chainHandlers.get(proposal.chain)?.approval;
+    const approval = this.senderOf(proposal)?.handler.approval;
     if (!approval?.closeProposal) return;
     const log = this.logger.child({ proposalId: proposal.id, chain: proposal.chain });
     let error: DispatchError | undefined;
@@ -1092,7 +1106,7 @@ export class ApprovalFlow {
 
   /** A read or send that could not be completed: the next try waits twice as long as the last, up to 5 minutes. */
   private async backOff(proposal: Proposal, reason: string): Promise<void> {
-    const approval = this.requireHandler(proposal.chain).approval;
+    const approval = this.senderOf(proposal)?.handler.approval;
     const base = approval ? this.cadence(approval) : DEFAULT_WATCH_INTERVAL_MS;
     const failures = proposal.checkFailures + 1;
     const delay = Math.min(base * 2 ** Math.min(failures, 16), BACKOFF_MAX_MS);
@@ -1103,16 +1117,21 @@ export class ApprovalFlow {
     });
   }
 
-  private requireApproval(chain: Chain): ApprovalCapability {
-    const approval = this.requireHandler(chain).approval;
-    if (!approval) throw new Error(`Chain ${chain} has no approval capability`);
-    return approval;
+  /** ADR-0060: the Multisig Sender a Proposal belongs to, or undefined when it is no longer configured. */
+  private senderOf(proposal: Proposal): MultisigSender | undefined {
+    return this.multisigSenders.get(
+      senderKey({ chain: proposal.chain, address: proposal.senderAddress as SenderAddress }),
+    );
   }
 
-  private requireHandler(chain: Chain): ChainHandler {
-    const handler = this.chainHandlers.get(chain);
-    if (!handler) throw new Error(`No ChainHandler registered for chain: ${chain}`);
-    return handler;
+  private requireSender(proposal: Proposal): MultisigSender {
+    const sender = this.senderOf(proposal);
+    if (!sender) {
+      throw new Error(
+        `Proposal ${proposal.id}'s Sender ${proposal.senderAddress} is not configured`,
+      );
+    }
+    return sender;
   }
 }
 

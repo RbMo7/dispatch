@@ -4,6 +4,7 @@ import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
 import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
+import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
@@ -23,6 +24,7 @@ describe('InMemoryDispatchStore', () => {
   });
 
   runChainScopeConformanceSuite(() => new InMemoryDispatchStore());
+  runSenderScopeConformanceSuite(() => new InMemoryDispatchStore());
   runCancelConformanceSuite(() => new InMemoryDispatchStore());
   runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
   runListConformanceSuite(() => new InMemoryDispatchStore());

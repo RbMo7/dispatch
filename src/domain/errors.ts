@@ -16,7 +16,11 @@ export type DispatchErrorCode =
   /** ADR-0049/0054: the multisig's Approvers rejected (or cancelled) the Proposal, or it went stale. Definite: the Call is FAILED. */
   | 'APPROVAL_REJECTED'
   /** ADR-0053: nobody decided on the Proposal by its deadline. The Call is ABANDONED, not FAILED: an Approver may still approve it and someone else execute it. */
-  | 'APPROVAL_TIMEOUT';
+  | 'APPROVAL_TIMEOUT'
+  /** ADR-0060: a Managed Dispatch names a Sender its chain does not have. */
+  | 'UNKNOWN_SENDER'
+  /** ADR-0060: a Managed Dispatch names no Sender, and its chain has no default. */
+  | 'SENDER_REQUIRED';
 
 export type DispatchError = {
   code: DispatchErrorCode;

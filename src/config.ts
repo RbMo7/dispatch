@@ -31,6 +31,8 @@ export const configFrom = (env: Env) => ({
   signerAuthToken: env.SIGNER_AUTH_TOKEN || undefined,
   /** Comma-separated chain names (ADR-0019), e.g. "solana,evm" — parsed via chain-registry's parseEnabledChains. */
   enabledChains: env.ENABLED_CHAINS ?? '',
+  /** ADR-0060: the senders file naming several Senders per chain (senders-config.ts). Unset: `senders.json` if it exists, else the per-chain variables below describe one Sender per chain. */
+  sendersFile: env.SENDERS_FILE ?? '',
   /** Operator-configured shared secret (ADR-0022) — override in any non-dev deployment. */
   authToken: env.AUTH_TOKEN ?? 'dev-secret',
   /** ADR-0057: release and Flag Rule edits. Unset leaves them off; set, it must be non-empty and differ from AUTH_TOKEN. */

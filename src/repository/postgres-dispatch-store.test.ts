@@ -25,6 +25,7 @@ import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
 import { runListConformanceSuite } from './list-conformance.js';
 import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
+import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
@@ -57,6 +58,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   });
 
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
+  runSenderScopeConformanceSuite(() => new PostgresDispatchStore(db));
   runCancelConformanceSuite(() => new PostgresDispatchStore(db));
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
   runListConformanceSuite(() => new PostgresDispatchStore(db));

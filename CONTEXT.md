@@ -17,7 +17,7 @@ A separate process, reachable only over a small network contract, that holds a w
 _Avoid_: SigningProvider (an earlier, in-process/library-coupled shape — deliberately not this), Custodian, Wallet
 
 **Sender**:
-The wallet a Managed Dispatch's transaction is signed and paid from — the address whose Signer the engine calls, and whose nonce it owns. Never the recipient's wallet; a recipient only ever needs a public address, no Signer involved.
+The wallet a Managed Dispatch's transaction is signed and paid from — the address whose Signer the engine calls, and whose nonce it owns. Never the recipient's wallet; a recipient only ever needs a public address, no Signer involved. A chain may have several Senders (ADR-0060), named in the senders file, each with its own key, mode (plain, Squads or Safe), balances and nonces; a Managed Dispatch names the one it pays from, or pays from the chain's default. A Dispatch records the Sender's address, its identity; the name is a label from configuration. The Sender is the unit of execution: claims, the Funding Check, nonces, bundling, Proposals and send concurrency are all per Sender, so one Sender's stuck transaction or open Proposal never delays another. Without a senders file, each chain has one Sender, named `default`, described by the per-chain variables.
 _Avoid_: Wallet (ambiguous — always say Sender or Recipient)
 
 **Call**:

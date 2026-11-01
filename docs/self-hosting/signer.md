@@ -280,7 +280,7 @@ Set these on the worker, and the two Signer settings on the worker only. The API
 
 - `SIGNER_URL`. The Signer's address on the private network, for example `http://dispatch-signer:8421`.
 - `SIGNER_AUTH_TOKEN`. The same token as the Signer's.
-- `BASE_SENDER_ADDRESS` and `SOLANA_SENDER_ADDRESS`. The Sender addresses in the Signer's config, one per enabled chain.
+- `BASE_SENDER_ADDRESS` and `SOLANA_SENDER_ADDRESS`. The Sender addresses in the Signer's config, one per enabled chain. With several Senders per chain, the senders file (`SENDERS_FILE`) names them instead, and the Signer holds the key of each: every plain Sender's, and every Multisig Sender's engine key. The worker reads every one of those keys' pins, and runs each Multisig Sender's pin check, at startup.
 - `BASE_CHAIN_ID`. `8453` for Base mainnet. The engine refuses to start if its RPC reports a different chain.
 
 [`.env.example`](../../.env.example) documents the rest of the engine's settings. If `SIGNER_AUTH_TOKEN` is unset, the engine still starts, logs a warning, and every signing request gets `401`.
