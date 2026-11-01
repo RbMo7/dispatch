@@ -608,8 +608,30 @@ describe('GET /v1/dispatch/:id', () => {
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
       mode: 'managed',
+      chain: 'base',
+      createdAt: dispatch.createdAt.toISOString(),
       status: 'queued',
       items: [{ type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null }],
+    });
+  });
+
+  it("reports the Dispatch's own chain and creation time", async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [{ call: { programId: 'Prog111', accounts: [], data: '' }, payment: null }],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json()).toMatchObject({
+      chain: 'solana',
+      createdAt: dispatch.createdAt.toISOString(),
     });
   });
 
@@ -720,6 +742,8 @@ describe('GET /v1/dispatch/:id', () => {
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
       mode: 'managed',
+      chain: 'base',
+      createdAt: dispatch.createdAt.toISOString(),
       status: 'confirmed',
       items: [
         { type: 'call', to: '0xabc', status: 'confirmed', transactionHash: 'hash-1', error: null },
@@ -898,6 +922,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'queued',
         transactionHash: null,
         error: null,
@@ -929,6 +955,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'broadcasting',
         transactionHash: 'relay-hash-1',
         error: null,
@@ -988,6 +1016,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'failed',
         transactionHash: null,
         error: { code: 'CHAIN_REJECTED', message: 'send failed' },
@@ -1070,6 +1100,8 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       status: 'broadcasting',
       dispatchId: expect.any(String) as string,
       mode: 'managed',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
       items: [
         { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
         { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
@@ -1210,6 +1242,8 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       JSON.stringify({
         dispatchId: dispatch.id,
         mode: 'managed',
+        chain: 'base',
+        createdAt: dispatch.createdAt,
         status: 'confirmed',
         items: [
           {
@@ -1267,6 +1301,8 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
     const cancelled = {
       dispatchId: id,
       mode: 'managed',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
       status: 'cancelled',
       items: [
         { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
@@ -1346,6 +1382,8 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
     expect(response.json()).toEqual({
       dispatchId: id,
       mode: 'relay',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
       status: 'cancelled',
       transactionHash: null,
       error: null,
@@ -1391,7 +1429,7 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
       hash: 'hash-1',
     });
     await store.markConfirmed(transaction.id);
-    return { app, store, id: dispatch.id };
+    return { app, store, id: dispatch.id, createdAt: dispatch.createdAt };
   }
 
   it('adds the timeline, oldest first, with ISO timestamps', async () => {
@@ -1415,7 +1453,7 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
   });
 
   it('leaves the body without the flag exactly as it was', async () => {
-    const { app, id } = await confirmedDispatch();
+    const { app, id, createdAt } = await confirmedDispatch();
 
     const response = await app.inject({
       method: 'GET',
@@ -1427,6 +1465,8 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
       JSON.stringify({
         dispatchId: id,
         mode: 'managed',
+        chain: 'base',
+        createdAt,
         status: 'confirmed',
         items: [
           {

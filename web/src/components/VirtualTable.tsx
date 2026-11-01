@@ -22,6 +22,8 @@ interface VirtualTableProps<Row> {
   /** The scroll area's height in px; without it the table fills its flex parent. */
   height?: number;
   empty?: ReactNode;
+  /** A row drawn across every column instead of cell by cell, such as a group heading. */
+  span?: (row: Row) => ReactNode | null;
 }
 
 export function VirtualTable<Row>({
@@ -31,6 +33,7 @@ export function VirtualTable<Row>({
   rowKey,
   height,
   empty,
+  span,
 }: VirtualTableProps<Row>) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -73,6 +76,22 @@ export function VirtualTable<Row>({
           <div role="rowgroup" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualizer.getVirtualItems().map((virtual) => {
               const row = rows[virtual.index]!;
+              const spanned = span?.(row) ?? null;
+              if (spanned !== null) {
+                return (
+                  <div
+                    key={rowKey(row)}
+                    role="row"
+                    aria-rowindex={virtual.index + 2}
+                    className={styles.spanRow}
+                    style={{ transform: `translateY(${virtual.start}px)` }}
+                  >
+                    <span role="cell" className={styles.span}>
+                      {spanned}
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <div
                   key={rowKey(row)}

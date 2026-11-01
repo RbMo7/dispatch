@@ -24,6 +24,7 @@ import type {
   NewUnproposedInput,
   ProposalOutcome,
   ProposalPatch,
+  SignerKeyRecord,
 } from './dispatch-store.js';
 
 /**
@@ -40,6 +41,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
+  private readonly signerKeys = new Map<string, SignerKeyRecord>();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -839,6 +841,16 @@ export class InMemoryDispatchStore implements DispatchStore {
         .filter((p) => p.dispatchId === dispatchId)
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
     );
+  }
+
+  recordSignerKey(record: SignerKeyRecord): Promise<void> {
+    this.signerKeys.set(`${record.chain}:${record.address}`, structuredClone(record));
+    return Promise.resolve();
+  }
+
+  getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null> {
+    const record = this.signerKeys.get(`${chain}:${address}`);
+    return Promise.resolve(record ? structuredClone(record) : null);
   }
 
   /** Test-only inspection — not part of DispatchStore. */

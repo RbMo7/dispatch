@@ -3,11 +3,14 @@ import {
   loadChainRegistry,
   coordinatorConfigFor,
   REORG_RECHECK_INTERVAL_MS,
+  signerKeysFor,
+  workerSignerClient,
 } from './chain-loaders.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
+import { signerKeysLoop as runSignerKeysLoop } from './signer-keys-loop.js';
 
 /**
  * How many queued/pending rows one tick claims or checks — a bounded batch
@@ -36,7 +39,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const chainRegistry = await loadChainRegistry();
+const signer = workerSignerClient();
+const chainRegistry = await loadChainRegistry(signer);
 const {
   senderAddresses,
   abandonmentTimeoutMs,
@@ -46,8 +50,9 @@ const {
   approvalRewatchWindowMsByChain,
 } = coordinatorConfigFor(chainRegistry);
 
+const store = new PostgresDispatchStore(db);
 const coordinator = new Coordinator({
-  store: new PostgresDispatchStore(db),
+  store,
   chainHandlers: chainRegistry.handlers,
   senderAddresses,
   abandonmentTimeoutMs,
@@ -171,13 +176,33 @@ function approvalLoop(): Promise<void> {
   });
 }
 
+/** ADR-0059: records each Sender key's pins for `GET /v1/senders`, so the API never calls the Signer. */
+function signerKeysLoop(): Promise<void> {
+  return runSignerKeysLoop({
+    keys: signerKeysFor(chainRegistry),
+    readPins: (address) => signer.readPins(address),
+    store,
+    now: () => new Date(),
+    logger,
+    isRunning: () => running,
+    sleep,
+  });
+}
+
 logger.info({ chains: [...chainRegistry.handlers.keys()] }, 'worker started');
 
-// All five are self-scheduling loops, not setInterval: each only
+// All six are self-scheduling loops, not setInterval: each only
 // schedules its own next tick once its current one (and everything it
 // awaited) has actually finished, so a slow tick can never overlap the
 // next one — and the loops run fully independently of each other.
-await Promise.all([mainLoop(), rewatchLoop(), reorgRecheckLoop(), reclaimLoop(), approvalLoop()]);
+await Promise.all([
+  mainLoop(),
+  rewatchLoop(),
+  reorgRecheckLoop(),
+  reclaimLoop(),
+  approvalLoop(),
+  signerKeysLoop(),
+]);
 
 logger.info('worker stopped');
 process.exit(0);

@@ -119,7 +119,7 @@ export type SquadsConnection = Pick<
 export type SquadsApprovalDeps = {
   connection: SquadsConnection;
   /** Signs as the member: the Signer's policy (`allowedMultisig`) only accepts the propose, execute and close instructions. */
-  signerClient: SignerClient;
+  signerClient: Pick<SignerClient, 'requestSignature'>;
   /** The validated #73 config: the multisig, its vault (the Sender) and the member key. */
   multisig: Pick<SolanaMultisigConfig, 'multisigAddress' | 'memberAddress' | 'vaultAddress'>;
   knownTokens?: SolanaTokenRegistry;
@@ -194,7 +194,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
   readonly holders = { sender: 'vault', proposer: 'memberKey' } as const;
 
   private readonly connection: SquadsConnection;
-  private readonly signerClient: SignerClient;
+  private readonly signerClient: Pick<SignerClient, 'requestSignature'>;
   private readonly multisig: PublicKey;
   private readonly member: PublicKey;
   private readonly vault: string;

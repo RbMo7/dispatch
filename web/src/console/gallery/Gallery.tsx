@@ -4,20 +4,29 @@ import { BalancesProvider } from '../../balances';
 import { Button } from '../../components/Button';
 import { ToastProvider, useToast } from '../../components/Toast';
 import { type DayRange, inRange, presetRange } from '../../domain/dateRange';
-import { itemTarget } from '../../domain/dispatch';
+import { type ItemFilter, itemTarget } from '../../domain/dispatch';
 import { dispatchColumns, ITEM_COLUMNS } from '../../export/columns';
 import { dispatchesFileName, download, exportFile, itemsFileName } from '../../export/download';
 import { Modal } from '../../motion/Overlay';
-import { DISPATCHES, FIXTURE_TODAY, type GalleryDispatch, type ShowItems } from '../fixtures';
+import { CHAINS, txLink } from '../../domain/chains';
+import { MonoValue } from '../../components/MonoValue';
+import { DispatchPane, type PaneTab } from '../dispatches/DispatchPane';
+import { BOARD_NETWORK, DISPATCHES, FIXTURE_TODAY, type GalleryDispatch } from '../fixtures';
 import { type ChainFilter, DispatchList } from './DispatchList';
-import { DispatchPane, type PaneTab } from './DispatchPane';
 import styles from './Gallery.module.css';
-import { type ItemFilter } from './ItemsTab';
 import { CancelSummary, Primitives } from './Primitives';
-import { Sidebar } from './Sidebar';
+import { GallerySidebar } from './Sidebar';
 
 const TABS: readonly PaneTab[] = ['flow', 'items', 'details'];
 const count = new Intl.NumberFormat('en-US');
+const clock = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
 
 function fromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -103,11 +112,6 @@ function Screen() {
     });
   }, []);
 
-  const showItems = useCallback<ShowItems>((filter) => {
-    setTab('items');
-    setItemFilter(filter ?? 'all');
-  }, []);
-
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -149,7 +153,7 @@ function Screen() {
   return (
     <div className={styles.page}>
       <div className={styles.screen}>
-        <Sidebar />
+        <GallerySidebar />
         <DispatchList
           rows={rows}
           selected={selected}
@@ -175,10 +179,41 @@ function Screen() {
         />
         {dispatch && (
           <DispatchPane
-            dispatch={dispatch}
+            head={{
+              id: dispatch.id,
+              mode: dispatch.mode,
+              name: dispatch.label,
+              when: dispatch.when,
+              totals: dispatch.totals,
+              status: dispatch.status,
+            }}
+            flow={dispatch.flow}
+            items={dispatch.items}
+            details={[
+              { label: 'Chain', value: CHAINS[dispatch.chain].label },
+              {
+                label: 'Sender',
+                value: dispatch.sender.includes(' ') ? (
+                  dispatch.sender
+                ) : (
+                  <MonoValue value={dispatch.sender} />
+                ),
+              },
+              { label: 'Items', value: count.format(dispatch.itemCount) },
+              { label: 'Retry policy', value: dispatch.retryPolicy },
+              { label: 'Bulk Call', value: dispatch.bulkCall },
+              { label: 'Created', value: clock.format(dispatch.createdAt) },
+              {
+                label: 'Claimed',
+                value: dispatch.claimedAt ? clock.format(dispatch.claimedAt) : 'Not yet',
+              },
+              {
+                label: 'Idempotency-Key',
+                value: <MonoValue value={dispatch.idempotencyKey} head={14} tail={6} />,
+              },
+            ]}
             tab={tab}
             onTab={setTab}
-            showItems={showItems}
             itemFilter={itemFilter}
             onItemFilter={setItemFilter}
             itemSearch={itemSearch}
@@ -191,8 +226,20 @@ function Screen() {
                 );
               });
             }}
+            explorerHref={(() => {
+              const hash = dispatch.items.find((item) => item.transactionHash)?.transactionHash;
+              return (hash && txLink(BOARD_NETWORK[dispatch.chain], hash)?.href) ?? null;
+            })()}
+            action={
+              <Button
+                variant="danger"
+                disabled={dispatch.claimedAt !== null || dispatch.status === 'cancelled'}
+                onClick={() => setConfirming(true)}
+              >
+                Cancel Dispatch
+              </Button>
+            }
             onClose={() => setSelected(null)}
-            onCancel={() => setConfirming(true)}
           />
         )}
       </div>

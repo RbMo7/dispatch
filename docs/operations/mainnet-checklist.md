@@ -15,7 +15,7 @@ Clear every item before the first mainnet transaction.
 - [ ] Every Privy wallet has an owner (`owner_id` set), `PRIVY_AUTHORIZATION_KEY` is set on the Signer, and the authorization key is a fresh one made for mainnet that has never been pasted into chat, a ticket, or a commit.
 - [ ] The KMS path is proven against real KMS. Today it is proven only against mocks (#61). Before mainnet, create a testnet key the same way (same key spec, same IAM policy), and run `RUN_AWS_KMS=1 pnpm test src/signer/aws-kms-e2e.test.ts` against Base Sepolia, and Solana devnet with `AWS_KMS_ED25519_KEY_ID`. The variables are listed in [`.env.example`](../../.env.example). Fix anything it finds before relying on the mainnet key.
 - [ ] Each KMS credential can call only `kms:GetPublicKey` and `kms:Sign`, on its own keys.
-- [ ] The Signer is reachable only from the worker. Its port is not published to the internet.
+- [ ] The Signer is reachable only from the worker. Its port is not published to the internet. The API's environment has no `SIGNER_URL` or `SIGNER_AUTH_TOKEN` (ADR-0059).
 - [ ] The audit log goes somewhere durable, with alerts on `refused`, `failed`, and `rejected` 401 and 404 lines.
 - [ ] A small mainnet smoke test has landed first: one small Payment per enabled chain, confirmed on-chain, with a matching `signed` audit line, before any real volume.
 - [ ] Every mainnet chain in `ENABLED_CHAINS` stays enabled while it has transactions in flight. Removing a chain with a `PENDING` transaction stops confirmation tracking for every chain until #57 is fixed.

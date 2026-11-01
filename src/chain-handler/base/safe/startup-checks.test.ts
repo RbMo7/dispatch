@@ -109,6 +109,13 @@ describe('runSafeStartupChecks', () => {
     expect(await runSafeStartupChecks(deps())).toEqual({ warnings: [] });
   });
 
+  it('leaves the pin check to the worker in the API, which has no Signer (ADR-0059)', async () => {
+    const withoutSigner = deps({ signer: NO_KEY });
+    delete withoutSigner.readSignerPins;
+
+    expect(await runSafeStartupChecks(withoutSigner)).toEqual({ warnings: [] });
+  });
+
   it('accepts both supported versions and a registered delegate with a future expiry', async () => {
     await expect(
       runSafeStartupChecks(deps({ chain: { version: '1.3.0' } })),

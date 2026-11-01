@@ -82,24 +82,26 @@ describe('FlowGraph', () => {
     expect(segments).toEqual(['done', 'current', 'todo']);
   });
 
-  it('runs a stage link that opens another view', async () => {
-    const onSelect = vi.fn();
+  it('opens the Items tab with the filter a stage link names', async () => {
+    const onShowItems = vi.fn();
     render(
       <FlowGraph
+        onShowItems={onShowItems}
         flow={{
           ...flow,
           stages: [
             {
               kind: 'branch-failed',
               title: 'Item failures, 3',
-              links: [{ label: 'Show in Items', onSelect }],
+              links: [{ label: 'Show in Items', items: 'failed' }],
             },
           ],
         }}
       />,
     );
     await userEvent.setup().click(screen.getByRole('button', { name: 'Show in Items ›' }));
-    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onShowItems).toHaveBeenCalledOnce();
+    expect(onShowItems).toHaveBeenCalledWith('failed');
   });
 });
 

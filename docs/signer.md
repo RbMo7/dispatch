@@ -214,8 +214,7 @@ While the two disagree, every signing request gets `401`, and each Call the work
 
 The Signer listens on every interface of its host, on `PORT` (8421 by default), and speaks plain HTTP. It has no TLS. The bearer token crosses the network in clear text, so the link between the worker and the Signer must be a network you trust.
 
-- Make the Signer reachable only from the worker. Put both on a private network, and allow port 8421 only from the worker, for example with a security group that admits only the worker's security group.
-- If you want `GET /v1/senders` and the console to show each key's pins, also admit the API process and give it the same `SIGNER_URL` and `SIGNER_AUTH_TOKEN`. It only calls the read-only `GET /keys/{address}/policy`. Without that access the rest of the answer still works, and `signerKey` reads `{ "error": "the Signer could not be reached" }`.
+- Make the Signer reachable only from the worker. Put both on a private network, and allow port 8421 only from the worker, for example with a security group that admits only the worker's security group. The API process never calls the Signer (ADR-0059): it needs no `SIGNER_URL` or `SIGNER_AUTH_TOKEN`, and should have neither, so a compromised API cannot ask for a signature. The console's view of a key's pins comes from the worker, which records what it read.
 - Never publish the Signer's port to the internet, and never put it behind a public load balancer.
 - Run one Signer per environment. A testnet engine and a mainnet engine each get their own Signer, config, token, and keys.
 
@@ -275,7 +274,7 @@ A line starting `WARNING: the keyfile backend holds raw private keys` means some
 
 ## 8. Point the engine at the Signer
 
-Set these on the worker:
+Set these on the worker, and the two Signer settings on the worker only. The API never calls the Signer (ADR-0059):
 
 - `SIGNER_URL`. The Signer's address on the private network, for example `http://dispatch-signer:8421`.
 - `SIGNER_AUTH_TOKEN`. The same token as the Signer's.
@@ -286,7 +285,7 @@ Set these on the worker:
 
 ### Reading a key's pins
 
-`GET /keys/{address}/policy`, with the same `Authorization: Bearer <SIGNER_AUTH_TOKEN>`, tells the engine what a key is pinned to (ADR-0055). The engine reads it at startup for a Multisig Sender, so a key with no pin, or pinned to the wrong multisig or Safe, stops the worker before the first Proposal.
+`GET /keys/{address}/policy`, with the same `Authorization: Bearer <SIGNER_AUTH_TOKEN>`, tells the engine what a key is pinned to (ADR-0055). The worker reads it at startup for a Multisig Sender, so a key with no pin, or pinned to the wrong multisig or Safe, stops the worker before the first Proposal. The worker also reads it for every Sender key at startup and every five minutes, and records the answer for `GET /v1/senders` (ADR-0059).
 
 ```json
 {"address":"0xYourExecutor…","curve":"secp256k1","chainIds":[8453],"allowedSafe":"0xyoursafe…"}

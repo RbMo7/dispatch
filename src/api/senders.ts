@@ -1,11 +1,12 @@
 import type { Balance } from '../chain-handler/chain-handler.js';
 import type { Chain } from '../domain/chain.js';
 import type { AssetDecimals } from './asset-decimals.js';
+import type { Network } from './network.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount } from '../domain/proposal.js';
 import type { Result } from '../domain/result.js';
-import type { CommittedHolder } from '../repository/dispatch-store.js';
-import type { PolicyRead, SignerPins } from '../signer/client.js';
+import type { CommittedHolder, SignerKeyRecord } from '../repository/dispatch-store.js';
+import type { SignerPins } from '../signer/client.js';
 
 /**
  * #111: what one enabled chain's Sender is, from config. `assets` lists the
@@ -14,6 +15,7 @@ import type { PolicyRead, SignerPins } from '../signer/client.js';
  */
 export type SenderConfig = {
   chain: Chain;
+  network: Network;
   /** What pays the payments: the plain key, the Squads vault, or the Safe. */
   address: string;
   assets: readonly string[];
@@ -33,7 +35,7 @@ export type SenderConfig = {
 
 export type SenderReads = {
   getBalance(chain: Chain, address: string, asset: string): Promise<Result<Balance, DispatchError>>;
-  readPins(address: string): Promise<PolicyRead>;
+  getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
   readThreshold(chain: Chain): Promise<Result<number, DispatchError>>;
   listCommitted(chain: Chain, holder: CommittedHolder, timedOutSince: Date): Promise<AssetAmount[]>;
   now(): Date;
@@ -58,6 +60,7 @@ export type HolderBalances = {
 
 export type SenderView = {
   chain: Chain;
+  network: Network;
   mode: 'single' | 'squads' | 'safe';
   address: string;
   multisig: {
@@ -66,15 +69,15 @@ export type SenderView = {
     engineKey: string;
   } | null;
   balances: HolderBalances[];
-  /** ADR-0055: what the Signer says the engine's signing key is pinned to. */
-  signerKey: SignerPins | FieldError;
+  /** ADR-0055: what the Signer says the engine's signing key is pinned to, as the worker last read it (ADR-0059). */
+  signerKey: ((SignerPins | FieldError) & { readAt: string }) | { status: 'not_read_yet' };
 };
 
-const POLICY_READ_ERRORS: Record<Exclude<PolicyRead['kind'], 'pins'>, string> = {
-  'no-key': 'the Signer has no key for this address',
-  'old-signer': 'the Signer is too old to report a key policy',
-  unreachable: 'the Signer could not be reached',
-};
+function signerKeyView(record: SignerKeyRecord | null): SenderView['signerKey'] {
+  if (!record) return { status: 'not_read_yet' };
+  const read = 'pins' in record.read ? record.read.pins : record.read;
+  return { ...read, readAt: record.readAt.toISOString() };
+}
 
 export async function readSender(config: SenderConfig, reads: SenderReads): Promise<SenderView> {
   const { chain, approval } = config;
@@ -104,7 +107,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
     };
   };
   const signingKey = approval?.engineKey ?? config.address;
-  const [balances, pins, threshold] = await Promise.all([
+  const [balances, signerKey, threshold] = await Promise.all([
     Promise.all(
       approval
         ? [
@@ -118,12 +121,13 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
           ]
         : [holderBalances('sender', 'sender', config.address, config.assets)],
     ),
-    reads.readPins(signingKey),
+    reads.getSignerKey(chain, signingKey),
     approval ? reads.readThreshold(chain) : undefined,
   ]);
 
   return {
     chain,
+    network: config.network,
     mode: approval?.mode ?? 'single',
     address: config.address,
     multisig:
@@ -135,7 +139,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
           }
         : null,
     balances,
-    signerKey: pins.kind === 'pins' ? pins.pins : { error: POLICY_READ_ERRORS[pins.kind] },
+    signerKey: signerKeyView(signerKey),
   };
 }
 
