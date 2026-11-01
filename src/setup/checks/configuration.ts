@@ -2,8 +2,8 @@ import { CHAINS } from '../../domain/chain.js';
 import { fail, pass, warn, type Check, type CheckResult, type Fix } from '../check.js';
 import { senderVariable } from '../settings.js';
 
-const DEV_AUTH_TOKEN = 'dev-secret';
-const MIN_TOKEN_LENGTH = 32;
+export const DEV_AUTH_TOKEN = 'dev-secret';
+export const MIN_TOKEN_LENGTH = 32;
 const TOKEN_VALUE = `a random value of at least ${MIN_TOKEN_LENGTH} characters, such as the output of \`openssl rand -hex 32\``;
 
 export const environmentParses: Check = {
