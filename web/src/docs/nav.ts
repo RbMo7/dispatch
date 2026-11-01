@@ -34,6 +34,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/guides/relay.md', slug: 'guides/relay' },
       { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
       { source: 'docs/guides/multisig.md', slug: 'guides/multisig' },
+      { source: 'docs/guides/multiple-senders.md', slug: 'guides/multiple-senders' },
       { source: 'docs/guides/cancel.md', slug: 'guides/cancel' },
       { source: 'docs/guides/flag-rules.md', slug: 'guides/flag-rules' },
       { source: 'docs/guides/track.md', slug: 'guides/track' },
