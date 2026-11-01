@@ -26,7 +26,7 @@ Each check ends in one of three statuses:
 
 A warning or a failure carries a fix: a command to run, a setting and its value, or a step to take outside this machine, such as funding an address. A finding names a variable, never its value, and a URL only by its host.
 
-Each check has a 10-second limit, and one that runs out fails with "did not finish within 10s". A chain check runs once per enabled chain. Its JSON `id` adds the chain, such as `sender.fees:solana`, and its title adds the chain's name:
+Each check has a 10-second limit, and one that runs out fails with "did not finish within 10s". A chain check runs once per enabled chain, and a Sender check once per Sender. Its JSON `id` adds the chain, such as `sender.fees:solana`, and its title adds the chain's name:
 
 ```json
 {
@@ -38,6 +38,23 @@ Each check has a 10-second limit, and one that runs out fails with "did not fini
   "finding": "33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf holds no USDC, so a payment in it fails its Funding Check",
   "fix": { "step": "Send USDC to 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf" }
 }
+```
+
+With a [senders file](./configuration.md#the-senders-file), a Sender check's `id` also adds the Sender's name, such as `sender.fees:solana:treasury`, and its title names the Sender. On an engine with two Solana Senders, `payouts` and a new, unfunded `treasury`, the Signer and Sender areas print:
+
+```text
+Signer
+  ✓ PASS  Reachable                            the Signer at SIGNER_URL (localhost:18621) answered and accepted SIGNER_AUTH_TOKEN
+  ✓ PASS  Key held (payouts on Solana)         the Signer holds the ed25519 key for 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
+  ✓ PASS  Key held (treasury on Solana)        the Signer holds the ed25519 key for Hd7W6MwuqSdmyNXvUnQGSQR9SKyevuY5fjs6jCVaMwPd
+  ✓ PASS  Not reachable from the API           neither SIGNER_URL nor SIGNER_AUTH_TOKEN is set in Compose's api service
+
+Sender
+  ✓ PASS  Fee balance (payouts on Solana)      33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf holds 8.993171623 SOL; no fees paid in the last 24 hours to compare with
+  ! WARN  Fee balance (treasury on Solana)     Hd7W6MwuqSdmyNXvUnQGSQR9SKyevuY5fjs6jCVaMwPd holds no SOL, so the first transaction cannot pay its fee
+          fix: run solana airdrop 1 Hd7W6MwuqSdmyNXvUnQGSQR9SKyevuY5fjs6jCVaMwPd --url devnet
+  ✓ PASS  Token balances (payouts on Solana)   no known tokens are configured
+  ✓ PASS  Token balances (treasury on Solana)  no known tokens are configured
 ```
 
 ## Where each check runs
@@ -78,7 +95,13 @@ Checks `ENABLED_CHAINS` against the Sender settings:
 - It fails when a chain is enabled but its Sender address, such as `SOLANA_SENDER_ADDRESS`, is empty.
 - It warns when a Sender address is set for a chain that is not enabled, which usually means a chain was left out of `ENABLED_CHAINS` by mistake.
 
-Fix: set `ENABLED_CHAINS` to `solana`, `base` or `solana,base`, and give each enabled chain its Sender.
+With a senders file, the per-chain Sender variables do not apply, and the check reads the file instead:
+
+- It fails when an enabled chain has no Sender in the file.
+- It warns when a per-chain Sender variable, such as `SOLANA_SENDER_ADDRESS`, is also set, because the engine ignores it.
+- It passes with each chain's Senders by name and address, and marks the default: `solana sends from payouts (33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf, the default), treasury (Hd7W6MwuqSdmyNXvUnQGSQR9SKyevuY5fjs6jCVaMwPd)`.
+
+Fix: set `ENABLED_CHAINS` to `solana`, `base` or `solana,base`, and give each enabled chain its Sender, in the per-chain variables or in the senders file.
 
 ## Database
 
@@ -123,13 +146,13 @@ Checks that the Signer at `SIGNER_URL` answers and accepts `SIGNER_AUTH_TOKEN`, 
 
 ### Key held
 
-Id `signer.key`. Runs in doctor and the worker, once per enabled chain with a Sender.
+Id `signer.key`. Runs in doctor and the worker, once per Sender.
 
 Checks that the Signer holds the key the engine signs with: the Sender's own key, or a Multisig Sender's member key or executor. It fails when the Signer has no key for that address, and warns when the Signer is too old to say. Fix: add the address to the Signer's config (`SIGNER_CONFIG`) with its backend and restart the Signer. [Set up a Signer](./signer.md#3-write-the-config-file) shows the config.
 
 ### Pinned
 
-Id `signer.pinned`. Runs in doctor and the worker, once per enabled chain with a Multisig Sender.
+Id `signer.pinned`. Runs in doctor and the worker, once per Multisig Sender.
 
 Checks that the Signer pins the engine's key to its multisig: `policy.allowedMultisig` on Squads, or `policy.allowedSafe` and `policy.chainIds` on Safe. An unpinned key could sign any transaction, not only that multisig's proposals and executions. The worker refuses to start for a Multisig Sender whose key is not pinned. Fix: set the pin in the Signer's config and restart the Signer. [Keys for a Multisig Sender](./signer.md#keys-for-a-multisig-sender) explains the pin.
 
@@ -143,7 +166,7 @@ Checks that the API process has neither `SIGNER_URL` nor `SIGNER_AUTH_TOKEN`. On
 
 ### Fee balance
 
-Id `sender.fees`. Runs in doctor and the worker, once per enabled chain with a Sender.
+Id `sender.fees`. Runs in doctor and the worker, once per Sender.
 
 Checks that the key that pays fees holds enough of the native asset, SOL or ETH. For a Multisig Sender that key is the member key or the executor. It compares the balance with the fees the engine paid on that chain in the last 24 hours, read from the chain for the latest 20 transactions and scaled to the day's count:
 
@@ -154,7 +177,7 @@ Fix: send the native asset to the address. On Solana devnet the fix is `solana a
 
 ### Token balances
 
-Id `sender.tokens`. Runs in doctor and the worker, once per enabled chain with a Sender.
+Id `sender.tokens`. Runs in doctor and the worker, once per Sender.
 
 Checks the Sender's balance of each token in `SOLANA_KNOWN_TOKENS` or `BASE_KNOWN_TOKENS`. It warns for each token the Sender holds none of, because every payment in that token fails its [Funding Check](../lifecycle.md#the-funding-check). It passes when no tokens are configured. Fix: send the token to the Sender, or remove the token from the known tokens if you do not pay in it.
 
@@ -162,13 +185,13 @@ Checks the Sender's balance of each token in `SOLANA_KNOWN_TOKENS` or `BASE_KNOW
 
 ### Account exists
 
-Id `multisig.account`. Runs in doctor and the worker, once per enabled chain with a Multisig Sender.
+Id `multisig.account`. Runs in doctor and the worker, once per Multisig Sender.
 
 Runs the multisig startup checks the worker runs, and reports the ones about the account. On Squads it fails when the multisig cannot be read, does not exist, is not owned by Squads v4, or when `SOLANA_SENDER_ADDRESS` is set to something other than its vault. On Safe it fails when the Safe Transaction Service does not answer or serves another chain, or when the Safe does not exist or is not version 1.3.0 or 1.4.1. It warns on the startup warnings, such as a Safe with a threshold of 1 or no `BASE_SAFE_API_KEY`. The worker refuses to start on the same failures. Fix: set `SOLANA_MULTISIG_ADDRESS` or `BASE_SAFE_ADDRESS` to a multisig on the network the RPC serves. [Set up a multisig Sender](./multisig.md) covers each one.
 
 ### Engine key is member or delegate
 
-Id `multisig.member`. Runs in doctor and the worker, once per enabled chain with a Multisig Sender.
+Id `multisig.member`. Runs in doctor and the worker, once per Multisig Sender.
 
 Checks the engine's own key against the multisig:
 
