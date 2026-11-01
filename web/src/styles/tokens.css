@@ -1,0 +1,106 @@
+/* Chrome resolves light-dark() in a custom property where it is declared, not where it is used, so the tokens are declared again on every [data-theme]. */
+:root,
+[data-theme] {
+  color-scheme: light;
+
+  --canvas: light-dark(#f5f7fa, #0e1117);
+  --surface: light-dark(#ffffff, #161a22);
+  --sunken: light-dark(#eef1f5, #1d222c);
+  --hover: light-dark(#f4f7fb, #1b2029);
+  --border: light-dark(#e5e9ef, #262c37);
+  --border-strong: light-dark(#d6dce5, #323946);
+  --ink: light-dark(#18202e, #e8ecf2);
+  --muted: light-dark(#5b6578, #98a2b5);
+  --faint: light-dark(#b4bcc9, #3a4250);
+  /* Disabled labels only: WCAG exempts inactive controls from 4.5:1. */
+  --faint-text: light-dark(#7a8496, #7c8699);
+
+  --accent: light-dark(#3468d6, #5b8def);
+  --accent-hover: light-dark(#2c5bc0, #6e9af1);
+  --accent-text: light-dark(#2f5fc4, #8fb0f5);
+  --accent-soft: light-dark(#eef3ff, #1b2740);
+  --accent-mid: light-dark(#a9c1f2, #3b5c9c);
+  /* White is 3.2:1 on the dark accent, so dark mode labels it in canvas ink. */
+  --on-accent: light-dark(#ffffff, #0e1117);
+
+  --ok: light-dark(#1e9a5c, #3cc384);
+  --ok-text: light-dark(#127a47, #6fd39e);
+  --warn: light-dark(#d08a0e, #e6a43a);
+  --warn-text: light-dark(#8f5600, #f2c066);
+  --danger: light-dark(#c4321f, #f06a6a);
+  --danger-soft: light-dark(#fdebec, #2a1617);
+  --danger-line: light-dark(#f3c4c0, #4a2224);
+  --on-danger: light-dark(#ffffff, #0e1117);
+
+  --shadow: light-dark(rgb(24 32 46 / 0.06), rgb(0 0 0 / 0.35));
+  --shadow-lg: light-dark(rgb(24 32 46 / 0.14), rgb(0 0 0 / 0.55));
+  --scrim: light-dark(rgb(24 32 46 / 0.34), rgb(5 7 10 / 0.6));
+
+  --pill-queued-fg: light-dark(#48546a, #a9b3c6);
+  --pill-queued-bg: light-dark(#eceff4, #222834);
+  --pill-broadcasting-fg: light-dark(#2f5fc4, #8fb0f5);
+  --pill-broadcasting-bg: light-dark(#e9f0fe, #18243b);
+  --pill-awaiting_approval-fg: light-dark(#6a3fc8, #b9a0f2);
+  --pill-awaiting_approval-bg: light-dark(#f1ecfd, #241c38);
+  --pill-held-fg: light-dark(#b02266, #f08dba);
+  --pill-held-bg: light-dark(#fceaf2, #331726);
+  --pill-confirmed-fg: light-dark(#127a47, #6fd39e);
+  --pill-confirmed-bg: light-dark(#e4f5eb, #12281d);
+  --pill-partial-fg: light-dark(#8f5600, #f2c066);
+  --pill-partial-bg: light-dark(#fff2d6, #2e2412);
+  --pill-failed-fg: light-dark(#c0262d, #f59a9a);
+  --pill-failed-bg: light-dark(#fdebec, #331819);
+  --pill-abandoned-fg: light-dark(#a8450c, #f5a877);
+  --pill-abandoned-bg: light-dark(#ffede2, #331f13);
+  --pill-cancelled-fg: light-dark(#5f697c, #a2abbd);
+  --pill-cancelled-bg: light-dark(#f1f3f6, #20252e);
+
+  --chain-solana: #8b5cf6;
+  --chain-base: #3b82f6;
+
+  --font-sans: 'Hanken Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-10-5: 10.5px;
+  --text-11: 11px;
+  --text-11-5: 11.5px;
+  --text-12: 12px;
+  --text-12-5: 12.5px;
+  --text-13: 13px;
+  --text-13-5: 13.5px;
+  --text-14: 14px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-18: 18px;
+  --text-20: 20px;
+  --text-22: 22px;
+  --text-28: 28px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --radius-segment: 6px;
+  --radius-control: 8px;
+  --radius-stage: 10px;
+  --radius-tile: 12px;
+  --radius-card: 16px;
+  --radius-full: 9999px;
+
+  --layer-sticky: 10;
+  --layer-popover: 50;
+  --layer-overlay: 100;
+  --layer-toast: 110;
+}
+
+:root[data-theme='dark'],
+[data-theme='dark'] {
+  color-scheme: dark;
+}

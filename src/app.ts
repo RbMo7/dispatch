@@ -6,6 +6,7 @@ import { registerFlagRuleRoutes } from './api/flag-rule-routes.js';
 import { parseApiTokens } from './api/operator-auth.js';
 import { registerSenderRoutes, type SenderRouteDeps } from './api/sender-routes.js';
 import { logger } from './logger.js';
+import { webStatic } from './web-static.js';
 
 export type AppDeps = Omit<DispatchRouteDeps, 'tokens'> &
   Pick<SenderRouteDeps, 'listSenders'> & {
@@ -29,6 +30,7 @@ export function buildApp({ authToken, operatorToken, ...deps }: AppDeps) {
     store: deps.store,
     assetDecimals: deps.assetDecimals,
   });
+  app.register(webStatic);
 
   return app;
 }

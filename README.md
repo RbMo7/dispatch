@@ -59,6 +59,10 @@ pnpm dev:worker     # in another
 
 Configuration is environment variables, documented in [`.env.example`](./.env.example). A local `.env` is loaded automatically, and real environment variables win. Chains are switched on by `ENABLED_CHAINS` (ADR-0019); `BASE_TRACE_RPC_URL` (a tracing-capable RPC) is only needed for Bulk Call's `allowFailure: true`. On Solana mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`.
 
+## Console
+
+`web/` holds the operator console, the docs site and the landing page ([`web/README.md`](./web/README.md)). Build it with `pnpm --dir web install && pnpm --dir web build`, and the API serves the console at `/console` and the docs at `/docs`, redirecting `/` to the console. Without a build the API serves only the API. The console's pages are not built yet; `/console/_primitives` shows the design system they will use.
+
 ## Demos
 
 - [`demo/base/`](./demo/base/README.md): native ETH, a deployed ERC-20, and 15 contract calls, each sent through the real HTTP API against Base Sepolia and checked on-chain.
@@ -67,6 +71,7 @@ Configuration is environment variables, documented in [`.env.example`](./.env.ex
 ## Tests
 
 - `pnpm --dir signer test`: the Signer's own tests, all offline. Install its dependencies first (`pnpm --dir signer install`); the root `pnpm typecheck` and `pnpm lint` check `signer/` too and need them.
+- `pnpm --dir web test`: the pill contrast check (`web/scripts/check-contrast.ts`) and the web component tests. Install first with `pnpm --dir web install`; the root `pnpm lint` checks `web/` too and needs it.
 - `pnpm test:offline`: unit tests, the Coordinator against an in-memory store, and the real-Postgres tier (ADR-0034). This is what CI runs on every PR (`.github/workflows/ci.yml`). It needs a Postgres at `DATABASE_URL`.
 - `pnpm test`: everything, **including the live-chain tests** against real Solana devnet and Base Sepolia (ADR-0013). They spend testnet funds from dev wallets and use RPC URLs from `.env` (`SOLANA_DEVNET_RPC_URL`, `BASE_SEPOLIA_RPC_URL`; public endpoints are the fallback, but they rate-limit). A test counts as live exactly when it imports a chain's `test-support/*-fixtures`.
 - `RUN_BASE_VOLUME=1 pnpm test src/chain-handler/base/base-sepolia-volume.test.ts`: the opt-in Base volume run (100+ real transactions, a fee-bump, and a nonce audit against the chain, ADR-0040).

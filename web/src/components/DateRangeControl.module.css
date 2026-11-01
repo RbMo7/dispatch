@@ -1,0 +1,185 @@
+.root {
+  position: relative;
+  flex: none;
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--layer-popover);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+  box-shadow:
+    0 1px 2px var(--shadow),
+    0 12px 32px var(--shadow-lg);
+}
+
+.calendar {
+  position: relative;
+  font-size: var(--text-12-5);
+}
+
+.months {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.month {
+  width: 238px;
+}
+
+.caption {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+
+.captionLabel {
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.nav {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.navButton {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.navButton:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.navButton:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.grid {
+  width: 100%;
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+}
+
+.weekday {
+  height: 28px;
+  color: var(--muted);
+  font-size: var(--text-11-5);
+  font-weight: 500;
+}
+
+.day {
+  width: 34px;
+  height: 32px;
+  padding: 1px 0;
+  text-align: center;
+}
+
+.dayButton {
+  width: 32px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.day:not(.selected):not(.disabled) .dayButton:hover {
+  background: var(--hover);
+}
+
+.today .dayButton {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.outside .dayButton {
+  color: var(--muted);
+}
+
+.disabled .dayButton {
+  color: var(--faint-text);
+  cursor: default;
+}
+
+.hidden {
+  visibility: hidden;
+}
+
+.rangeMiddle {
+  background: var(--accent-soft);
+}
+
+.rangeMiddle .dayButton {
+  border-radius: 0;
+  color: var(--accent-text);
+}
+
+.rangeStart {
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+  background: var(--accent-soft);
+}
+
+.rangeEnd {
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  background: var(--accent-soft);
+}
+
+.rangeStart.rangeEnd {
+  border-radius: var(--radius-control);
+}
+
+.rangeStart .dayButton,
+.rangeEnd .dayButton {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.focused .dayButton {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.selection {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: var(--text-12-5);
+}
+
+.selected {
+  font-weight: 500;
+}
