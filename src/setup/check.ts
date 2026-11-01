@@ -4,7 +4,7 @@ import type { Balance } from '../chain-handler/chain-handler.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { Result } from '../domain/result.js';
 import type { PolicyRead } from '../signer/client.js';
-import type { ChainSetup, Settings } from './settings.js';
+import type { SenderSetup, Settings } from './settings.js';
 
 export const AREAS = [
   'configuration',
@@ -73,7 +73,7 @@ export type CheckContext = {
   chain: (chain: Chain) => ChainReads;
   /** Absent where the place has no Signer. */
   signer?: { readPins: (address: string) => Promise<PolicyRead> };
-  multisigStartup: (chain: ChainSetup) => Promise<MultisigStartup>;
+  multisigStartup: (sender: SenderSetup) => Promise<MultisigStartup>;
   apiEnvironment: () => Promise<ApiEnvironment>;
   consoleBuilt: () => boolean;
   now: () => Date;
@@ -83,13 +83,17 @@ type Awaitable<T> = T | Promise<T>;
 
 type CheckHeader = { id: string; area: Area; title: string; runsIn: readonly Place[] };
 
-/** An engine check runs once; a chain check runs once per enabled chain it applies to. */
+/** An engine check runs once, a chain check once per enabled chain, and a Sender check once per Sender it applies to (ADR-0060). */
 export type Check =
   | (CheckHeader & { scope: 'engine'; run(context: CheckContext): Awaitable<CheckResult> })
   | (CheckHeader & {
       scope: 'chain';
-      appliesTo(chain: ChainSetup): boolean;
-      run(context: CheckContext, chain: ChainSetup): Awaitable<CheckResult>;
+      run(context: CheckContext, chain: Chain): Awaitable<CheckResult>;
+    })
+  | (CheckHeader & {
+      scope: 'sender';
+      appliesTo(sender: SenderSetup): boolean;
+      run(context: CheckContext, sender: SenderSetup): Awaitable<CheckResult>;
     });
 
 export const pass = (finding: string): CheckResult => ({ status: 'pass', finding });

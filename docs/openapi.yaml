@@ -1365,8 +1365,10 @@ paths:
         API runs its own on every request: the database is reachable and migrated, and the console
         is built. The API never calls the Signer, so the Signer checks are always the worker's.
 
-        `checks` are in `doctor`'s order. A check that runs once per enabled chain has `chain`, and
-        its `id` ends in `:<chain>`. A recorded check for a chain the engine no longer enables is
+        `checks` are in `doctor`'s order. A check that runs once per enabled chain, or once per
+        Sender, has `chain`, and its `id` ends in `:<chain>`. With a senders file, a Sender check's
+        `id` ends in `:<chain>:<sender>` and its title names the Sender, such as
+        `Fee balance (refunds on Solana)`. A recorded check for a chain the engine no longer enables is
         left out. No finding holds a secret: a URL is cut down to its host, and a token is named,
         never shown.
       responses:

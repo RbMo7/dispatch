@@ -4,8 +4,8 @@ import { parsePublicKey } from '../chain-handler/solana/multisig/multisig-config
 import { configFrom, type Env } from '../config.js';
 import type { Chain } from '../domain/chain.js';
 import { DEV_AUTH_TOKEN, MIN_TOKEN_LENGTH } from './checks/configuration.js';
-import { readSettings } from './settings.js';
-import { CHAIN_NAMES } from './wording.js';
+import type { SenderName } from '../domain/sender.js';
+import { senderLabel, type Settings } from './settings.js';
 
 export type Network = 'test' | 'main';
 export type Backend = 'local' | 'privy' | 'aws-kms' | 'keyfile';
@@ -20,11 +20,16 @@ export type Signing =
 export type SenderShape =
   { kind: 'plain' } | { kind: 'squads'; multisig: string } | { kind: 'safe'; safe: string };
 
-/** One chain as the operator set it up in this run. */
+/**
+ * One Sender as the operator set it up in this run. `name` is the Sender's
+ * name in the senders file (ADR-0060); undefined for the one Sender today's
+ * variables describe.
+ */
 export type ChainChoice = {
   chain: Chain;
   network: Network;
   rpcUrl: string;
+  name?: SenderName;
   signing: Signing;
   sender: SenderShape;
 };
@@ -102,6 +107,25 @@ export function chainEnv(choice: ChainChoice, key: HeldKey): Record<string, stri
     BASE_SAFE_ADDRESS: safe ? sender.safe : '',
     BASE_SAFE_EXECUTOR_ADDRESS: safe ? key.address : '',
   };
+}
+
+/** With a senders file the engine ignores a chain's Sender variables, so init clears them rather than leave a second, stale description. */
+export function clearedSenderVariables(chain: Chain): Record<string, string> {
+  const names =
+    chain === 'solana'
+      ? [
+          'SOLANA_SENDER_MODE',
+          'SOLANA_SENDER_ADDRESS',
+          'SOLANA_MULTISIG_ADDRESS',
+          'SOLANA_MULTISIG_MEMBER_ADDRESS',
+        ]
+      : [
+          'BASE_SENDER_MODE',
+          'BASE_SENDER_ADDRESS',
+          'BASE_SAFE_ADDRESS',
+          'BASE_SAFE_EXECUTOR_ADDRESS',
+        ];
+  return Object.fromEntries(names.map((name) => [name, '']));
 }
 
 export function databaseEnv(database: Database): Record<string, string> {
@@ -206,6 +230,8 @@ export function networkOf(chain: Chain, env: Env): Network | undefined {
 }
 
 export type Funding = {
+  /** The Sender it belongs to: "Solana", or "refunds on Solana" for a named one. */
+  label: string;
   chain: Chain;
   address: string;
   pays: string;
@@ -213,40 +239,51 @@ export type Funding = {
 };
 
 /** Each address to fund, read back from the settings as the engine parses them. */
-export function addressesToFund(env: Env): Funding[] {
-  return readSettings(configFrom(env)).chains.flatMap(({ chain, sender, multisig }) => {
-    if (!sender) return [];
+export function addressesToFund(env: Env, settings: Settings): Funding[] {
+  return settings.senders.flatMap(({ chain, name, accounts, multisig }) => {
+    if (!accounts) return [];
     const network = networkOf(chain, env);
-    const symbol = sender.native.symbol;
+    const symbol = accounts.native.symbol;
+    const label = senderLabel({ chain, name });
     if (!multisig) {
-      return [{ chain, address: sender.address, pays: `payments and fees (${symbol})`, network }];
+      return [
+        { label, address: accounts.address, pays: `payments and fees (${symbol})`, chain, network },
+      ];
     }
     const holder = multisig.kind === 'squads' ? 'Squads vault' : 'Safe';
     return [
-      { chain, address: sender.address, pays: `payments, from the ${holder}`, network },
-      { chain, address: sender.feePayer, pays: `the engine key's fees (${symbol})`, network },
+      { label, address: accounts.address, pays: `payments, from the ${holder}`, chain, network },
+      {
+        label,
+        address: accounts.feePayer,
+        pays: `the engine key's fees (${symbol})`,
+        chain,
+        network,
+      },
     ];
   });
 }
 
-/** One line per configured chain, for the "current setup" summary on a re-run. */
+/** One line per configured Sender, for the "current setup" summary on a re-run. */
 export function describeChains(
   env: Env,
+  settings: Settings,
   signerConfig: Readonly<Record<string, unknown>>,
 ): string[] {
-  return readSettings(configFrom(env)).chains.flatMap(({ chain, sender, multisig }) => {
-    if (!sender) return [];
+  return settings.senders.flatMap(({ chain, name, accounts, multisig, isDefault }) => {
+    if (!accounts) return [];
     const network = networkOf(chain, env);
     const where = network ? NETWORK_NAMES[chain][network] : 'a custom RPC';
     const shape =
       multisig?.kind === 'squads'
-        ? `Squads vault ${sender.address}, engine key ${sender.feePayer}`
+        ? `Squads vault ${accounts.address}, engine key ${accounts.feePayer}`
         : multisig?.kind === 'safe'
-          ? `Safe ${sender.address}, executor ${sender.feePayer}`
-          : `plain Sender ${sender.address}`;
-    const entryKey = Object.keys(signerConfig).find((key) => sameAddress(key, sender.feePayer));
+          ? `Safe ${accounts.address}, executor ${accounts.feePayer}`
+          : `plain Sender ${accounts.address}`;
+    const entryKey = Object.keys(signerConfig).find((key) => sameAddress(key, accounts.feePayer));
     const entry = entryKey === undefined ? undefined : (signerConfig[entryKey] as SignerEntry);
     const held = entry ? `${entry.backend} key ${entry.keyRef}` : 'no key in the Signer config';
-    return [`${CHAIN_NAMES[chain]}: ${where}, ${shape}, ${held}`];
+    const marked = name !== null && isDefault ? ' (default)' : '';
+    return [`${senderLabel({ chain, name })}${marked}: ${where}, ${shape}, ${held}`];
   });
 }

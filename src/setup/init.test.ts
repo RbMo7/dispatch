@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { Env } from '../config.js';
+import { configFrom, type Env } from '../config.js';
+import { parseSendersConfig } from '../senders-config.js';
 import { parseEnvText } from './env-file.js';
 import { init, INIT_EXIT, type InitIo } from './init.js';
 import { startServices, type Readiness, type Runner } from './init-services.js';
@@ -25,6 +26,7 @@ import { findMissing, type Machine, type Probe } from './prerequisites.js';
 const SIGNER_PACKAGE = fileURLToPath(new URL('../../signer', import.meta.url));
 const SAFE = '0x1111111111111111111111111111111111111111';
 const DEV_BASE_KEY = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A';
+const DEV_SOLANA_KEY = '3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe';
 const MAC: Machine = { platform: 'darwin', nodeVersion: 'v22.15.0' };
 
 const realRun: Runner = (command, args, options = {}) =>
@@ -103,6 +105,7 @@ function harness(env: Env = {}, probe: Probe = probeWithout()) {
         { backend: string; keyRef: string; curve: string; policy: Record<string, unknown> }
       >,
     backups: () => readdirSync(root).filter((name) => name.startsWith('.env.backup-')),
+    senders: () => JSON.parse(readFileSync(path.join(root, 'senders.json'), 'utf8')) as unknown,
   };
 }
 
@@ -228,6 +231,102 @@ describe('pnpm dispatch init --yes', () => {
     );
     expect(t.output()).toContain(`registers ${DEV_BASE_KEY} as a delegate`);
     expect(t.backups().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('adds a named Sender to a set-up chain without touching the first, then a third as the default', async () => {
+    const passphrase = `pass-${randomBytes(12).toString('hex')}`;
+    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: passphrase });
+    await init(['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'], t.io);
+    expect(existsSync(path.join(t.root, 'senders.json'))).toBe(false);
+    const first = t.env();
+    const firstKey = first.SOLANA_SENDER_ADDRESS!;
+    const firstKeystore = t.file('signer/local/keystore/solana-sender.json');
+    const firstEntry = t.signerConfig()[firstKey];
+
+    const addRefunds = [
+      '--yes',
+      '--solana-sender-name',
+      'refunds',
+      '--solana-signer',
+      'local',
+      '--no-start',
+    ];
+    const code = await init(addRefunds, t.io);
+
+    expect(code, t.output()).toBe(INIT_EXIT.ok);
+    const refundsKey = Object.keys(t.signerConfig()).find((key) => key !== firstKey)!;
+    expect(t.senders()).toEqual({
+      solana: {
+        default: 'default',
+        senders: { default: { address: firstKey }, refunds: { address: refundsKey } },
+      },
+    });
+    expect(t.mode('senders.json')).toBe(0o600);
+    expect(t.signerConfig()[firstKey]).toEqual(firstEntry);
+    expect(t.signerConfig()[refundsKey]).toMatchObject({
+      backend: 'local',
+      keyRef: 'solana-refunds',
+    });
+    expect(t.file('signer/local/keystore/solana-sender.json')).toBe(firstKeystore);
+    const second = t.env();
+    expect(second.SOLANA_SENDER_ADDRESS ?? '').toBe('');
+    expect(second.SOLANA_RPC_URL).toBe(first.SOLANA_RPC_URL);
+    for (const token of ['AUTH_TOKEN', 'OPERATOR_TOKEN', 'SIGNER_AUTH_TOKEN']) {
+      expect(second[token]).toBe(first[token]);
+    }
+    expect(t.output()).toMatch(new RegExp(`refunds on Solana ${refundsKey}\\n\\s+pays`));
+
+    const before = t.senders();
+    const keys = readdirSync(path.join(t.root, 'signer/local/keystore')).sort();
+    expect(await init(addRefunds, t.io)).toBe(INIT_EXIT.ok);
+    expect(t.senders()).toEqual(before);
+    expect(readdirSync(path.join(t.root, 'signer/local/keystore')).sort()).toEqual(keys);
+
+    const third = await init(
+      [
+        '--yes',
+        '--solana-sender-name',
+        'payroll',
+        '--solana-signer',
+        'keyfile',
+        '--solana-default',
+        'payroll',
+        '--no-start',
+      ],
+      t.io,
+    );
+
+    expect(third, t.output()).toBe(INIT_EXIT.ok);
+    expect(t.senders()).toEqual({
+      solana: {
+        default: 'payroll',
+        senders: {
+          default: { address: firstKey },
+          refunds: { address: refundsKey },
+          payroll: { address: DEV_SOLANA_KEY },
+        },
+      },
+    });
+    const backups = readdirSync(t.root).filter((name) => name.startsWith('senders.json.backup-'));
+    expect(backups.map((name) => JSON.parse(t.file(name)) as unknown)).toContainEqual(before);
+    expect(t.output()).toContain(
+      `default on Solana (default): devnet, plain Sender ${firstKey}, local key solana-sender`,
+    );
+    expect(t.output()).toContain(`refunds on Solana: devnet, plain Sender ${refundsKey}`);
+    expect(t.output()).toContain('pnpm dev:worker');
+
+    const config = configFrom(t.env());
+    const engineReads = parseSendersConfig({
+      source: { kind: 'file', path: 'senders.json', text: t.file('senders.json') },
+      enabledChains: ['solana'],
+      variables: { solana: config.solana.multisig, base: config.base.safe },
+    });
+    expect(engineReads.warnings).toEqual([]);
+    expect(engineReads.chains[0]?.senders.map((sender) => sender.address)).toEqual([
+      firstKey,
+      refundsKey,
+      DEV_SOLANA_KEY,
+    ]);
   });
 
   it('stops before writing when a new key would not share the keystore passphrase', async () => {

@@ -20,11 +20,22 @@ import {
 import { parseEnabledChains } from '../chain-registry/chain-registry.js';
 import type { Config } from '../config.js';
 import type { Chain } from '../domain/chain.js';
+import type { SenderName } from '../domain/sender.js';
+import {
+  parseSendersConfig,
+  readSendersSource,
+  type BaseSenderSpec,
+  type SenderSpec,
+  type SendersConfig,
+  type SendersSource,
+  type SolanaSenderSpec,
+} from '../senders-config.js';
+import { CHAIN_NAMES } from './wording.js';
 
 export type MultisigSetup =
   { kind: 'squads'; config: SolanaMultisigConfig } | { kind: 'safe'; config: BaseSafeConfig };
 
-export type SenderSetup = {
+export type SenderAccounts = {
   /** The address payments come from: a plain Sender, a Squads vault or a Safe. */
   address: string;
   /** The key the Signer holds and that pays the fees: the Sender itself, or a Multisig Sender's engine key. */
@@ -33,14 +44,32 @@ export type SenderSetup = {
   tokens: { symbol: string; decimals: number }[];
 };
 
-/** One enabled chain. `sender` and `multisig` are absent while the chain's configuration has problems, so no check reads a half-parsed address. */
-export type ChainSetup = { chain: Chain; sender?: SenderSetup; multisig?: MultisigSetup };
+/**
+ * One configured Sender (ADR-0060). `name` is null for the one Sender
+ * today's variables describe when there is no senders file, so its checks
+ * read exactly as they did before Senders had names. `accounts` and
+ * `multisig` are absent while its configuration has problems, so no check
+ * reads a half-parsed address.
+ */
+export type SenderSetup = {
+  chain: Chain;
+  name: SenderName | null;
+  /** A Dispatch that names no Sender pays from this one. */
+  isDefault: boolean;
+  accounts?: SenderAccounts;
+  multisig?: MultisigSetup;
+};
 
 export type Settings = {
   /** Every configuration problem, each naming its variable and never a secret's value. */
   problems: string[];
+  /** Settings the senders file makes the engine ignore. */
+  warnings: string[];
+  /** The senders file the Senders come from; undefined when today's variables describe them. */
+  sendersFile: string | undefined;
   enabledChains: Chain[];
-  chains: ChainSetup[];
+  /** Every Sender of every enabled chain, by chain in `ENABLED_CHAINS` order. */
+  senders: SenderSetup[];
 };
 
 const SENDER_VARIABLE: Record<Chain, string> = {
@@ -52,8 +81,20 @@ export function senderVariable(chain: Chain): string {
   return SENDER_VARIABLE[chain];
 }
 
-/** Runs the engine's own parsers over `config` and collects what each rejects. */
-export function readSettings(config: Config): Settings {
+/** "Solana" for the single Sender of today's variables, "refunds on Solana" for a named one. */
+export function senderLabel({ chain, name }: Pick<SenderSetup, 'chain' | 'name'>): string {
+  return name === null ? CHAIN_NAMES[chain] : `${name} on ${CHAIN_NAMES[chain]}`;
+}
+
+/**
+ * Runs the engine's own parsers over `config` and collects what each
+ * rejects. The Senders come from the senders-file parser the engine starts
+ * with, so every Sender it would load is checked, and only those.
+ */
+export function readSettings(
+  config: Config,
+  readSource: () => SendersSource = () => readSendersSource(config.sendersFile),
+): Settings {
   const problems: string[] = [];
   const enabledChains = config.enabledChains
     .split(',')
@@ -64,17 +105,89 @@ export function readSettings(config: Config): Settings {
   checkWholeNumber(problems, 'PORT', config.port, 1);
   checkWholeNumber(problems, 'RPC_TIMEOUT_MS', config.rpcTimeoutMs, 1);
 
-  const chains = enabledChains.map((chain): ChainSetup => {
-    const chainProblems: string[] = [];
-    const sender = CHAIN_READERS[chain](config, chainProblems);
-    problems.push(...chainProblems);
-    return chainProblems.length === 0 && sender ? { chain, ...sender } : { chain };
-  });
+  const basics = new Map(
+    enabledChains.map((chain) => {
+      const chainProblems: string[] = [];
+      const read = CHAIN_READERS[chain](config, chainProblems);
+      problems.push(...chainProblems);
+      return [chain, chainProblems.length === 0 ? read : undefined] as const;
+    }),
+  );
 
-  return { problems, enabledChains, chains };
+  const source = attempt(problems, readSource);
+  const parsed = source && parseSenders(problems, source, enabledChains, config);
+  const senders = (parsed?.chains ?? []).flatMap(({ default: defaultName, senders: specs }) =>
+    specs.map((spec) => ({
+      ...readSender(problems, config, spec, parsed!.source, basics),
+      isDefault: spec.name === defaultName,
+    })),
+  );
+  return {
+    problems,
+    warnings: parsed?.warnings ?? [],
+    sendersFile: source?.kind === 'file' ? source.path : undefined,
+    enabledChains,
+    senders,
+  };
 }
 
-type ChainReader = (config: Config, problems: string[]) => Omit<ChainSetup, 'chain'> | undefined;
+/** The engine's senders-file parser; each problem in a file is one problem here, naming SENDERS_FILE. */
+function parseSenders(
+  problems: string[],
+  source: SendersSource,
+  enabledChains: readonly Chain[],
+  config: Config,
+): SendersConfig | undefined {
+  try {
+    return parseSendersConfig({
+      source,
+      enabledChains,
+      variables: { solana: config.solana.multisig, base: config.base.safe },
+    });
+  } catch (cause) {
+    const where = source.kind === 'file' ? source.path : 'the variables';
+    const [first = '', ...listed] = (cause instanceof Error ? cause.message : String(cause)).split(
+      '\n',
+    );
+    const lines = listed.length > 0 ? listed : [first];
+    problems.push(
+      ...lines.map((line) => `SENDERS_FILE (${where}): ${line.replace(/^\s*-\s*/, '').trim()}`),
+    );
+    return undefined;
+  }
+}
+
+function readSender(
+  problems: string[],
+  config: Config,
+  spec: SenderSpec,
+  source: SendersConfig['source'],
+  basics: ReadonlyMap<Chain, ChainBasics | undefined>,
+): Omit<SenderSetup, 'isDefault'> {
+  const { chain } = spec;
+  const name = source === 'file' ? spec.name : null;
+  const senderProblems: string[] = [];
+  const read =
+    spec.chain === 'solana'
+      ? readSolanaSender(spec, senderProblems)
+      : readBaseSender(config, spec, senderProblems);
+  problems.push(
+    ...(name === null
+      ? senderProblems
+      : senderProblems.map((problem) => `${chain} sender "${name}": ${problem}`)),
+  );
+  const chainBasics = basics.get(chain);
+  if (senderProblems.length > 0 || !read || !chainBasics) return { chain, name };
+  return {
+    chain,
+    name,
+    accounts: { address: read.address, feePayer: read.feePayer, ...chainBasics },
+    ...(read.multisig ? { multisig: read.multisig } : {}),
+  };
+}
+
+type ChainBasics = Pick<SenderAccounts, 'native' | 'tokens'>;
+type ChainReader = (config: Config, problems: string[]) => ChainBasics | undefined;
 
 const CHAIN_READERS: Record<Chain, ChainReader> = {
   solana: (config, problems) => {
@@ -93,23 +206,12 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       );
     }
     const tokens = attempt(problems, () => parseSolanaKnownTokens(config.solana.knownTokens));
-    const multisig = attempt(problems, () => resolveSolanaMultisigConfig(config.solana.multisig), {
-      splitLines: true,
-    });
-    const address = config.solana.senderAddress.trim();
-    if (multisig === undefined && address !== '' && !parsePublicKey(address)) {
-      problems.push(`SOLANA_SENDER_ADDRESS is not a base58 Solana address`);
-    }
-    if (address === '' || tokens === undefined) return undefined;
-    return {
-      sender: {
-        address,
-        feePayer: multisig?.memberAddress ?? address,
+    return (
+      tokens && {
         native: { symbol: SOLANA_NATIVE_ASSET, decimals: 9 },
         tokens: tokenList(tokens),
-      },
-      ...(multisig ? { multisig: { kind: 'squads' as const, config: multisig } } : {}),
-    };
+      }
+    );
   },
   base: (config, problems) => {
     checkUrl(problems, 'BASE_RPC_URL', config.base.rpcUrl);
@@ -126,27 +228,54 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       1,
     );
     const tokens = attempt(problems, () => parseBaseKnownTokens(config.base.knownTokens));
-    const safe = attempt(
-      problems,
-      () => resolveBaseSafeConfig(config.base.safe, config.base.chainId),
-      { splitLines: true },
-    );
-    const executor = config.base.senderAddress.trim();
-    if (safe === undefined && executor !== '' && !isAddress(executor, { strict: false })) {
-      problems.push('BASE_SENDER_ADDRESS is not an EVM address');
-    }
-    if (executor === '' || tokens === undefined) return undefined;
-    return {
-      sender: {
-        address: safe?.safeAddress ?? executor,
-        feePayer: executor,
+    return (
+      tokens && {
         native: { symbol: BASE_NATIVE_ASSET, decimals: 18 },
         tokens: tokenList(tokens),
-      },
-      ...(safe ? { multisig: { kind: 'safe' as const, config: safe } } : {}),
-    };
+      }
+    );
   },
 };
+
+type SenderRead = { address: string; feePayer: string; multisig?: MultisigSetup };
+
+/** A Sender through the Squads resolver the engine builds it with. */
+function readSolanaSender(spec: SolanaSenderSpec, problems: string[]): SenderRead | undefined {
+  const multisig = attempt(problems, () => resolveSolanaMultisigConfig(spec.settings), {
+    splitLines: true,
+  });
+  const address = spec.address.trim();
+  if (multisig === undefined && address !== '' && !parsePublicKey(address)) {
+    problems.push(`SOLANA_SENDER_ADDRESS is not a base58 Solana address`);
+  }
+  if (address === '') return undefined;
+  return {
+    address,
+    feePayer: multisig?.memberAddress ?? address,
+    ...(multisig ? { multisig: { kind: 'squads' as const, config: multisig } } : {}),
+  };
+}
+
+/** A Sender through the Safe resolver the engine builds it with. */
+function readBaseSender(
+  config: Config,
+  spec: BaseSenderSpec,
+  problems: string[],
+): SenderRead | undefined {
+  const safe = attempt(problems, () => resolveBaseSafeConfig(spec.settings, config.base.chainId), {
+    splitLines: true,
+  });
+  const executor = spec.handlerAddress.trim();
+  if (safe === undefined && executor !== '' && !isAddress(executor, { strict: false })) {
+    problems.push('BASE_SENDER_ADDRESS is not an EVM address');
+  }
+  if (executor === '') return undefined;
+  return {
+    address: safe?.safeAddress ?? executor,
+    feePayer: executor,
+    ...(safe ? { multisig: { kind: 'safe' as const, config: safe } } : {}),
+  };
+}
 
 /** Runs one of the engine's throwing parsers, turning its error into problems. A multi-line error lists one problem per line. */
 function attempt<T>(
@@ -178,6 +307,6 @@ function checkWholeNumber(problems: string[], variable: string, value: number, m
 
 function tokenList(
   registry: Readonly<Record<string, { decimals: number }>>,
-): SenderSetup['tokens'] {
+): SenderAccounts['tokens'] {
   return Object.entries(registry).map(([symbol, { decimals }]) => ({ symbol, decimals }));
 }

@@ -58,11 +58,11 @@ function squads({
   const readPins = () => Promise.resolve(pins);
   return fakeContext(squadsEnv, {
     signer: { readPins },
-    multisigStartup: ({ multisig: setup, sender }) => {
-      if (setup?.kind !== 'squads' || !sender) throw new Error('not a Squads Sender');
+    multisigStartup: ({ multisig: setup, accounts }) => {
+      if (setup?.kind !== 'squads' || !accounts) throw new Error('not a Squads Sender');
       return squadsStartup({
         config: setup.config,
-        senderAddress: sender.address,
+        senderAddress: accounts.address,
         readMultisig: () => (read instanceof Error ? Promise.reject(read) : Promise.resolve(read)),
         readSignerPins: readPins,
       });

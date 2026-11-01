@@ -1,6 +1,14 @@
 import type { Config } from '../../config.js';
-import { fail, pass, warn, type Check, type Fix, type MultisigStartup } from '../check.js';
-import type { MultisigSetup } from '../settings.js';
+import {
+  fail,
+  pass,
+  warn,
+  type Check,
+  type CheckContext,
+  type Fix,
+  type MultisigStartup,
+} from '../check.js';
+import type { MultisigSetup, SenderSetup } from '../settings.js';
 import { notCheckedFinding, redactUrls } from '../wording.js';
 
 /** Which setup check reports a startup check's failure. `signer` failures belong to Signer: Key held. */
@@ -126,8 +134,23 @@ export function multisigFailures(
   return startup.failures.filter((failure) => entryFor(failure.check).home === home);
 }
 
-export function multisigFix(check: string, multisig: MultisigSetup, config: Config): Fix {
-  return entryFor(check).fix(multisig, config);
+/** A senders-file Sender's field for each variable a fix names (ADR-0060). */
+const FILE_FIELDS: Record<string, string> = {
+  SOLANA_SENDER_ADDRESS: 'address',
+  SOLANA_MULTISIG_ADDRESS: 'multisig',
+  BASE_SAFE_ADDRESS: 'safe',
+  BASE_SAFE_TX_SERVICE_URL: 'txServiceUrl',
+};
+
+/** The fix for a startup check's failure, naming the senders file's field when the Sender comes from one. */
+export function multisigFix(check: string, sender: SenderSetup, context: CheckContext): Fix {
+  const fix = entryFor(check).fix(sender.multisig!, context.config);
+  const field = 'setting' in fix ? FILE_FIELDS[fix.setting] : undefined;
+  if (sender.name === null || field === undefined) return fix;
+  return {
+    ...fix,
+    setting: `${sender.chain}.senders.${sender.name}.${field} in ${context.settings.sendersFile}`,
+  };
 }
 
 export const multisigAccount: Check = {
@@ -135,7 +158,7 @@ export const multisigAccount: Check = {
   area: 'multisig',
   title: 'Account exists',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
+  scope: 'sender',
   appliesTo: (setup) => setup.multisig !== undefined,
   run: async (context, setup) => {
     const multisig = setup.multisig!;
@@ -145,7 +168,7 @@ export const multisigAccount: Check = {
     if (first) {
       return fail(
         redactUrls(failures.map((f) => f.message).join('; ')),
-        multisigFix(first.check, multisig, context.config),
+        multisigFix(first.check, setup, context),
       );
     }
     if (startup.warnings.length > 0) {
@@ -155,7 +178,7 @@ export const multisigAccount: Check = {
     }
     return pass(
       multisig.kind === 'squads'
-        ? `the Squads multisig ${multisig.config.multisigAddress} exists, and its vault ${setup.sender!.address} is the Sender`
+        ? `the Squads multisig ${multisig.config.multisigAddress} exists, and its vault ${setup.accounts!.address} is the Sender`
         : `the Safe ${multisig.config.safeAddress} exists on chain ${context.config.base.chainId}`,
     );
   },
@@ -166,7 +189,7 @@ export const multisigMember: Check = {
   area: 'multisig',
   title: 'Engine key is member or delegate',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
+  scope: 'sender',
   appliesTo: (setup) => setup.multisig !== undefined,
   run: async (context, setup) => {
     const multisig = setup.multisig!;
@@ -176,14 +199,14 @@ export const multisigMember: Check = {
     if (first) {
       return fail(
         redactUrls(failures.map((f) => f.message).join('; ')),
-        multisigFix(first.check, multisig, context.config),
+        multisigFix(first.check, setup, context),
       );
     }
     const [unread] = multisigFailures(startup, 'account');
     if (unread) {
       return warn(
         notCheckedFinding('the multisig could not be read (see Multisig: Account exists)'),
-        multisigFix(unread.check, multisig, context.config),
+        multisigFix(unread.check, setup, context),
       );
     }
     return pass(

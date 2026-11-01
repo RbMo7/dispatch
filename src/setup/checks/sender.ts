@@ -61,10 +61,10 @@ export const feeBalance: Check = {
   area: 'sender',
   title: 'Fee balance',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
-  appliesTo: (setup) => setup.sender !== undefined,
-  run: async (context, { chain, sender }) => {
-    const { feePayer, native } = sender!;
+  scope: 'sender',
+  appliesTo: (setup) => setup.accounts !== undefined,
+  run: async (context, { chain, accounts }) => {
+    const { feePayer, native } = accounts!;
     const amount = (value: bigint) => `${formatUnits(value, native.decimals)} ${native.symbol}`;
 
     const balance = await context.chain(chain).balance(feePayer, native.symbol);
@@ -137,10 +137,10 @@ export const tokenBalances: Check = {
   area: 'sender',
   title: 'Token balances',
   runsIn: ['cli', 'worker'],
-  scope: 'chain',
-  appliesTo: (setup) => setup.sender !== undefined,
-  run: async (context, { chain, sender }) => {
-    const { address, tokens } = sender!;
+  scope: 'sender',
+  appliesTo: (setup) => setup.accounts !== undefined,
+  run: async (context, { chain, accounts }) => {
+    const { address, tokens } = accounts!;
     if (tokens.length === 0) return pass('no known tokens are configured');
     const reads = await Promise.all(
       tokens.map(async (token) => ({

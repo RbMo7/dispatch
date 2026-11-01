@@ -46,16 +46,25 @@ export function healthyChain(chain: Chain): ChainReads {
   };
 }
 
-/** A context whose every read succeeds; a test overrides the one it is about. */
+/**
+ * A context whose every read succeeds; a test overrides the one it is about.
+ * `senders` is a senders file's JSON (ADR-0060); without it, the variables
+ * describe the Senders, whatever files the working directory holds.
+ */
 export function fakeContext(
   env: Env = goodEnv(),
   overrides: Partial<Omit<CheckContext, 'env' | 'config' | 'settings'>> = {},
+  senders?: unknown,
 ): CheckContext {
   const config = configFrom(env);
   return {
     env,
     config,
-    settings: readSettings(config),
+    settings: readSettings(config, () =>
+      senders === undefined
+        ? { kind: 'variables' }
+        : { kind: 'file', path: 'senders.json', text: JSON.stringify(senders) },
+    ),
     database: {
       ping: () => Promise.resolve(),
       pendingMigrations: () => Promise.resolve([]),
