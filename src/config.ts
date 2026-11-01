@@ -28,6 +28,8 @@ export const config = {
   signerAuthToken: process.env.SIGNER_AUTH_TOKEN || undefined,
   /** Comma-separated chain names (ADR-0019), e.g. "solana,evm" — parsed via chain-registry's parseEnabledChains. */
   enabledChains: process.env.ENABLED_CHAINS ?? '',
+  /** ADR-0060: the senders file naming several Senders per chain (senders-config.ts). Unset: `senders.json` if it exists, else the per-chain variables below describe one Sender per chain. */
+  sendersFile: process.env.SENDERS_FILE ?? '',
   /** Operator-configured shared secret (ADR-0022) — override in any non-dev deployment. */
   authToken: process.env.AUTH_TOKEN ?? 'dev-secret',
   /** Global Retry Policy default (ADR-0003) when a Dispatch request omits its own — off unless the operator opts in. */

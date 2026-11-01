@@ -12,3 +12,6 @@ dist/
 # — persists on-chain forever once deployed, cached here so re-running the
 # suite doesn't redeploy (and re-spend real Base Sepolia ETH) every time.
 .base-fixtures/
+
+# A deployment's own senders file (ADR-0060) may hold a Safe API key; senders.example.json is the template.
+senders.json
