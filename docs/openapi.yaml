@@ -1550,6 +1550,38 @@ paths:
         '403':
           $ref: '#/components/responses/OperatorOnly'
 
+  /v1/token:
+    get:
+      tags: [Activity]
+      operationId: getTokenKind
+      summary: Name the token
+      description: |
+        Says which of the engine's two tokens the request carries: `auth` for `AUTH_TOKEN`,
+        `operator` for `OPERATOR_TOKEN`. The console reads it at sign-in, so a session with
+        `AUTH_TOKEN` hides the operator pages without calling an operator-only route.
+      security:
+        - apiToken: []
+        - operatorToken: []
+      responses:
+        '200':
+          description: The token's kind.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [kind]
+                properties:
+                  kind:
+                    type: string
+                    enum: [auth, operator]
+              examples:
+                apiToken:
+                  summary: Signed in with AUTH_TOKEN
+                  value: { kind: auth }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /v1/senders:
     get:
       tags: [Senders]

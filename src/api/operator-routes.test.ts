@@ -102,6 +102,24 @@ describe('OPERATOR_TOKEN (ADR-0057)', () => {
   });
 });
 
+describe('GET /v1/token', () => {
+  it('names the token a request carries, and refuses an unknown one', async () => {
+    const { app } = await buildTestApp();
+    const kindFor = async (authorization: string) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/token',
+        headers: { authorization },
+      });
+      return [response.statusCode, response.json<unknown>()];
+    };
+
+    expect(await kindFor(CLIENT.authorization)).toEqual([200, { kind: 'auth' }]);
+    expect(await kindFor(OPERATOR.authorization)).toEqual([200, { kind: 'operator' }]);
+    expect(await kindFor('Bearer someone-else')).toEqual([401, { error: 'unauthorized' }]);
+  });
+});
+
 describe('GET /v1/activity (ADR-0057)', () => {
   type ActivityBody = {
     actions: { action: string; targetId: string; tokenKind: string; reason: string | null }[];
