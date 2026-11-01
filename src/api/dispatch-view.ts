@@ -9,6 +9,23 @@ import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store
 import type { AssetDecimals } from './asset-decimals.js';
 import { buildTimeline } from './timeline.js';
 
+/** ADR-0060: the configured name of the Sender at an address, or null when no Sender has it any more. */
+export type SenderNameOf = (chain: Chain, address: string) => string | null;
+
+/**
+ * ADR-0060: who pays, by address (its identity) and by name. Absent only for
+ * a Dispatch stored with no Sender, which its chain's default takes over.
+ */
+function senderView(dispatch: Dispatch, nameOf: SenderNameOf | undefined) {
+  if (dispatch.senderAddress === null) return {};
+  return {
+    sender: {
+      name: nameOf?.(dispatch.chain, dispatch.senderAddress) ?? null,
+      address: dispatch.senderAddress,
+    },
+  };
+}
+
 function deriveRelayStatus(relayDispatch: RelayDispatch, transactions: Transaction[]): ItemStatus {
   const [transaction] = transactions;
   if (transaction) return toWireItemStatus(transaction.status);
@@ -101,7 +118,7 @@ export async function readDispatchView(
   store: DispatchStore,
   id: string,
   decimalsOf: AssetDecimals,
-  options: { timeline: boolean } = { timeline: false },
+  options: { timeline?: boolean; nameOf?: SenderNameOf } = {},
 ) {
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
@@ -139,6 +156,7 @@ export async function readDispatchView(
       dispatchId: dispatch.id,
       mode: 'managed',
       chain: dispatch.chain,
+      ...senderView(dispatch, options.nameOf),
       createdAt: dispatch.createdAt,
       status: deriveDispatchStatus(dispatch, transactions),
       items,
@@ -187,7 +205,11 @@ export async function readDispatchView(
   return null;
 }
 
-export function summarizeDispatch(listed: ListedDispatch, decimalsOf: AssetDecimals) {
+export function summarizeDispatch(
+  listed: ListedDispatch,
+  decimalsOf: AssetDecimals,
+  nameOf?: SenderNameOf,
+) {
   if (listed.mode === 'relay') {
     const [transaction] = listed.transactions;
     return {
@@ -207,6 +229,7 @@ export function summarizeDispatch(listed: ListedDispatch, decimalsOf: AssetDecim
     dispatchId: dispatch.id,
     mode: 'managed' as const,
     chain: dispatch.chain,
+    ...senderView(dispatch, nameOf),
     status: deriveDispatchStatus(dispatch, listed.transactions.filter(isCurrentVersion)),
     createdAt: dispatch.createdAt,
     itemCount: dispatch.items.length,

@@ -523,17 +523,24 @@ export class InMemoryDispatchStore implements DispatchStore {
       createdAt: d.createdAt.toISOString(),
       id: d.id,
     });
+    const paidBy = (dispatch: Dispatch) =>
+      !query.senders ||
+      query.senders.some((s) => s.chain === dispatch.chain && s.address === dispatch.senderAddress);
     const listed = [
-      ...(query.mode === 'relay' ? [] : [...this.dispatches.values()]).map((dispatch) => ({
-        mode: 'managed' as const,
-        dispatch,
-        cursor: cursorOf(dispatch),
-      })),
-      ...(query.mode === 'managed' ? [] : [...this.relayDispatches.values()]).map((dispatch) => ({
-        mode: 'relay' as const,
-        dispatch,
-        cursor: cursorOf(dispatch),
-      })),
+      ...(query.mode === 'relay' ? [] : [...this.dispatches.values()].filter(paidBy)).map(
+        (dispatch) => ({
+          mode: 'managed' as const,
+          dispatch,
+          cursor: cursorOf(dispatch),
+        }),
+      ),
+      ...(query.mode === 'managed' || query.senders ? [] : [...this.relayDispatches.values()]).map(
+        (dispatch) => ({
+          mode: 'relay' as const,
+          dispatch,
+          cursor: cursorOf(dispatch),
+        }),
+      ),
     ]
       .filter((l) => matches(l.dispatch, l.cursor))
       .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))

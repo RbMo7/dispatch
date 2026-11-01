@@ -15,6 +15,9 @@ import type { SignerPins } from '../signer/client.js';
  */
 export type SenderConfig = {
   chain: Chain;
+  /** ADR-0060: the configured name, and whether a Dispatch that names no Sender pays from it. */
+  name?: string;
+  isDefault?: boolean;
   network: Network;
   /** What pays the payments: the plain key, the Squads vault, or the Safe. */
   address: string;
@@ -60,6 +63,8 @@ export type HolderBalances = {
 
 export type SenderView = {
   chain: Chain;
+  name?: string;
+  default?: boolean;
   network: Network;
   mode: 'single' | 'squads' | 'safe';
   address: string;
@@ -127,6 +132,8 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
 
   return {
     chain,
+    ...(config.name === undefined ? {} : { name: config.name }),
+    ...(config.isDefault === undefined ? {} : { default: config.isDefault }),
     network: config.network,
     mode: approval?.mode ?? 'single',
     address: config.address,

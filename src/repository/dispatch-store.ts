@@ -133,6 +133,8 @@ export type DispatchListQuery = {
   storedStatuses?: readonly ('queued' | 'broadcasting' | 'cancelled')[];
   from?: Date;
   to?: Date;
+  /** ADR-0060: only Managed Dispatches paid by one of these Senders (so never a Relay Dispatch). */
+  senders?: readonly SenderRef[];
 };
 
 export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (

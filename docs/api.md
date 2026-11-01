@@ -14,6 +14,7 @@ Body:
 ```json
 {
   "chain": "solana",
+  "sender": "payouts",
   "retryPolicy": false,
   "items": [
     { "type": "payment", "recipient": "<address>", "asset": "USDC", "amount": "10" },
@@ -29,6 +30,8 @@ Body:
 
 A `call` item's fields beyond `type` mirror the target chain's `Call` primitive exactly (CONTEXT.md, ADR-0018) — `{ programId, accounts, data }` for a `solana` Dispatch as shown above, `{ to, data, value }` for a `base` one. `items` mixes `payment` (ADR-0018's convenience shape) and `call` (the primitive) freely in one Dispatch. A `call` item gets the chain's cheap shape check at submission, so a malformed one is a `400`, never queued. Resubmitting the same `Idempotency-Key` returns the original Dispatch's current state (202, same body shape as below) rather than creating a second one.
 
+`sender` (ADR-0060) is optional: the name of the configured Sender the Dispatch pays from, as the operator's senders file names it (each chain may have several, each with its own key, mode, balances and nonces). Omitted, the chain's default Sender pays, so a request without it behaves exactly as before; a deployment without a senders file has one Sender per chain, named `default`. A name the chain does not have is a `400` with `UNKNOWN_SENDER`; omitting it on a chain that has no default is a `400` with `SENDER_REQUIRED`. Either way nothing is stored and the `Idempotency-Key` is not consumed. A repeat of an `Idempotency-Key` returns the original Dispatch whatever `sender` it names.
+
 `retryPolicy` (ADR-0003/0004) is optional; omitting it falls back to the operator's configured global default (itself off unless the operator opts in) — a Dispatch never silently costs more than what was explicitly authorized for it. Once resolved (request value or the global default) it's fixed for that Dispatch's whole lifetime.
 
 Response (`202 Accepted` — this is always async, never a synchronous chain result):
@@ -43,6 +46,7 @@ Response (`202 Accepted` — this is always async, never a synchronous chain res
   "dispatchId": "<id>",
   "mode": "managed",
   "chain": "base",
+  "sender": { "name": "payouts", "address": "<address>" },
   "createdAt": "2026-10-31T10:00:00.000Z",
   "status": "queued | broadcasting | confirmed | failed | partial | cancelled",
   "items": [
@@ -65,6 +69,8 @@ With `retryPolicy: true`, a stuck EVM item may be fee-bumped: replaced by a new 
 An item stays `broadcasting` while its transaction is unresolved. That includes a send whose outcome is unknown, such as a timeout: the transaction may have reached the chain, so it is checked (and, on Base, rebroadcast) rather than reported `failed`. It becomes `abandoned` only after the chain's timeout (15 minutes on Base) with no answer (ADR-0041, ADR-0004).
 
 Every `GET /v1/dispatch/:id` response, Managed or Relay alike, includes a top-level `mode: "managed" | "relay"` field (ADR-0031) — added here too, not just below, so a caller can tell which shape it's looking at from the body alone without having to remember which mode it submitted. Both also carry `chain` (`base` or `solana`, as submitted) and `createdAt` (ISO 8601, when the engine accepted the Dispatch), the same values its `GET /v1/dispatches` row shows.
+
+A Managed Dispatch also carries `sender` (ADR-0060): `address` is the Sender that pays (the plain key, the Squads vault or the Safe), recorded when the Dispatch was accepted, and `name` is its name in the current configuration, so renaming a Sender keeps its history. `name` is `null` when no configured Sender has that address any more: the Dispatch stays readable, and its unfinished work is still tracked to the end. `sender` is absent only for a Dispatch stored before named Senders existed, until the engine gives it to its chain's default Sender, which it does when it starts. A Relay Dispatch has no Sender and no `sender` field.
 
 ### `?include=timeline`
 
@@ -114,6 +120,7 @@ Query parameters, all optional:
 - `mode`: `managed` or `relay`.
 - `status`: the top-level status as `GET /v1/dispatch/:id` reports it, derived ones included: `queued | broadcasting | confirmed | failed | partial | abandoned | cancelled` (`abandoned` only for a Relay Dispatch).
 - `from`, `to`: ISO 8601 timestamps on `createdAt`, `from` inclusive and `to` exclusive.
+- `sender`: a Sender's name (ADR-0060). Only Managed Dispatches paid by that Sender, so never a Relay Dispatch. Names are unique per chain, so without `chain` it matches every chain's Sender of that name. A name no configured Sender has is a `400` with `UNKNOWN_SENDER`.
 
 A value outside these is a `400`; parameters not listed here are ignored.
 
@@ -124,6 +131,7 @@ A value outside these is a `400`; parameters not listed here are ignored.
       "dispatchId": "<id>",
       "mode": "managed",
       "chain": "base",
+      "sender": { "name": "payouts", "address": "<address>" },
       "status": "partial",
       "createdAt": "2026-10-31T10:00:00.000Z",
       "itemCount": 3,
@@ -159,13 +167,15 @@ Withdraws a Managed or Relay Dispatch the engine has not yet claimed (ADR-0056).
 
 ## `GET /v1/senders`
 
-One entry per enabled chain: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain itself, so a browser never talks to it, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC reads per 15 seconds. The API never calls the Signer (ADR-0059): `signerKey` is what the worker last read, so it can be up to five minutes behind a change to the Signer's policy.
+One entry per Sender (ADR-0060), each chain's in the order the senders file lists them: who pays, what it holds, and what the Signer says about the engine's key. Same `Authorization` header as above. The engine reads the chain itself, so a browser never talks to it, and keeps the answer for 15 seconds: a console polling it costs at most one round of RPC reads per 15 seconds. The API never calls the Signer (ADR-0059): `signerKey` is what the worker last read, so it can be up to five minutes behind a change to the Signer's policy.
 
 ```json
 {
   "senders": [
     {
       "chain": "solana",
+      "name": "treasury",
+      "default": false,
       "network": "devnet",
       "mode": "squads",
       "address": "<vault>",
@@ -197,6 +207,7 @@ One entry per enabled chain: who pays, what it holds, and what the Signer says a
 ```
 
 - `network` is the network the engine talks to for that chain, so a reader can link to the right explorer. On `base` it comes from `BASE_CHAIN_ID`: `"base"` for 8453, `"base-sepolia"` for 84532, and `{ "chainId": <n> }` for any other. On `solana` it comes from the RPC's genesis hash, read once at startup: `"mainnet-beta"`, `"devnet"`, `"testnet"`, or `"unknown"` for any other hash. A failed read also gives `"unknown"` and a line in the engine's log; the engine still starts.
+- `name` is the Sender's configured name, the one `sender` takes on `POST /v1/dispatch`, and `default` says whether a Dispatch that names no Sender pays from it. Without a senders file each chain has one Sender, `default`, and it is the default.
 - `mode` is `single`, `squads` or `safe`. `address` is the Sender: the plain key, the Squads vault, or the Safe. `multisig` is `null` for `single`; otherwise it names the Squads multisig account or the Safe, its approval `threshold` as the chain reports it, and `engineKey`, the engine's own key (the Squads member key or the Safe executor).
 - `balances` are the balances the Funding Check looks at (ADR-0043, ADR-0054), with the same names `INSUFFICIENT_FUNDS` reports in `chainDetail.holder`: `sender` for a plain Sender; `vault` and `memberKey` on Squads; `safe` and `executor` on Safe. Each lists the native asset and every known token (the engine's key only its native asset, which pays the network cost), in the smallest unit; `decimals` is the asset's, as on a `payment` item. `committed` is what open Proposals and Calls waiting to be proposed already hold back from that balance, the amount the Funding Check subtracts; always `"0"` for a plain Sender.
 - `signerKey` is what the Signer answered on `GET /keys/{address}/policy` (ADR-0055) for the key the engine signs with (the Sender for `single`, `engineKey` otherwise): `address`, `curve`, and each pin that is set (`chainIds`, `allowedSafe`, `allowedMultisig`). The worker reads it when it starts and every five minutes after, and `readAt` is when it last did. Before the worker's first read, `signerKey` is `{ "status": "not_read_yet" }`.
@@ -277,7 +288,7 @@ A Managed Dispatch on Base can opt into Bulk Call (ADR-0006, ADR-0038). Its item
 
 `.scratch/relay-dispatch/spec.md` and ADR-0031 record the design; this pins the shipped wire shape.
 
-`POST /v1/dispatch` gains an optional `mode: "managed" | "relay"` field, defaulting to `"managed"` when omitted — every existing Managed Dispatch request keeps working unchanged. A `mode: "relay"` body is `{ chain, signedTransaction }` — never `items`, never `retryPolicy` (there's no key for the engine to fee-bump with); sending either alongside `mode: "relay"` is a `400`, not a silently-ignored field. `signedTransaction` is a base64-encoded, already-signed transaction the caller produced entirely outside the engine — the same headers (`Authorization`, `Idempotency-Key`) apply, and the same create-once idempotency semantics (ADR-0021). On Solana it may be a legacy or a versioned (v0) transaction, and every required signature must verify. On Base it must be an EIP-1559 (type `0x02`) transaction for the configured chain ID, with a low-s (EIP-2) signature; the usual `0x`-hex raw transaction is accepted there too.
+`POST /v1/dispatch` gains an optional `mode: "managed" | "relay"` field, defaulting to `"managed"` when omitted — every existing Managed Dispatch request keeps working unchanged. A `mode: "relay"` body is `{ chain, signedTransaction }` — never `items`, never `retryPolicy` (there's no key for the engine to fee-bump with), never `sender` (the engine holds no key for it, ADR-0060); sending any of them alongside `mode: "relay"` is a `400`, not a silently-ignored field. `signedTransaction` is a base64-encoded, already-signed transaction the caller produced entirely outside the engine — the same headers (`Authorization`, `Idempotency-Key`) apply, and the same create-once idempotency semantics (ADR-0021). On Solana it may be a legacy or a versioned (v0) transaction, and every required signature must verify. On Base it must be an EIP-1559 (type `0x02`) transaction for the configured chain ID, with a low-s (EIP-2) signature; the usual `0x`-hex raw transaction is accepted there too.
 
 Response (`202 Accepted`, same shape as Managed's): `{ "dispatchId": "<id>", "status": "queued" }`.
 
@@ -311,6 +322,8 @@ Every `error` is `{ code, message, chainDetail? }` (ADR-0010). `message` is the 
 | `SIGNER_UNREACHABLE` | The Signer couldn't be reached or returned an unusable signature |
 | `SIGNER_REFUSED` | The Signer refused to sign it under its policy (ADR-0046). Definite: the Call is `FAILED` and never retried; `message` carries the Signer's reason |
 | `CHAIN_NOT_ENABLED` | The request names a chain this deployment hasn't enabled (ADR-0019) |
+| `UNKNOWN_SENDER` | The request (or a list's `sender` filter) names a Sender the chain does not have (ADR-0060) |
+| `SENDER_REQUIRED` | A Managed Dispatch names no `sender` on a chain whose senders file names no default (ADR-0060) |
 | `NONCE_ALREADY_USED` | The transaction's nonce was already consumed on-chain (Base) |
 | `APPROVAL_REJECTED` | A Multisig Sender's Proposal was rejected or cancelled by its Approvers before its deadline, or went stale (Safe: its nonce was taken by a different transaction). Definite: the item is `failed`, with `transactionHash: null` (ADR-0049, ADR-0054) |
 | `APPROVAL_TIMEOUT` | Nobody decided on the Proposal by its `deadline`. The item is `abandoned`, not `failed` (ADR-0053): the Proposal may still be approved and executed by someone else, so a caller must check before re-sending |

@@ -508,44 +508,49 @@ export async function senderConfigsFor(
   registry: ChainRegistry,
   assetDecimals: AssetDecimals,
 ): Promise<SenderConfig[]> {
-  const { senderAddresses, approvalRewatchWindowMsByChain } = coordinatorConfigFor(registry);
-  const networks: Record<Chain, () => Promise<Network>> = {
+  const { senders } = coordinatorConfigFor(registry);
+  const readNetwork: Record<Chain, () => Promise<Network>> = {
     base: () => Promise.resolve(baseNetwork(config.base.chainId)),
     solana: readSolanaNetwork,
   };
-  const multisigAddresses: Partial<Record<Chain, string | undefined>> = {
-    solana: resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress,
-    base: resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress,
-  };
-  return Promise.all(
-    [...registry.handlers].map(async ([chain, handler]): Promise<SenderConfig> => {
-      const address = senderAddresses.get(chain);
-      if (!address) {
-        throw new Error(
-          `Chain "${chain}" is enabled but has no Sender address: set ${chain.toUpperCase()}_SENDER_ADDRESS, or the multisig settings that imply it.`,
-        );
-      }
-      const approval = handler.approval;
-      return {
-        chain,
-        network: await networks[chain](),
-        address,
-        assets: assetsByChain[chain](),
-        assetDecimals,
-        ...(approval
-          ? {
-              approval: {
-                mode: approval.holders.sender === 'vault' ? ('squads' as const) : ('safe' as const),
-                multisigAddress: multisigAddresses[chain] ?? address,
-                engineKey: approval.proposerAddress,
-                holders: approval.holders,
-                rewatchWindowMs: approvalRewatchWindowMsByChain.get(chain) ?? 0,
-              },
-            }
-          : {}),
-      };
-    }),
+  const networks = new Map(
+    await Promise.all(
+      [...registry.handlers.keys()].map(
+        async (chain) => [chain, await readNetwork[chain]()] as const,
+      ),
+    ),
   );
+  // A registry built from bare handlers knows no multisig: today's variables describe it.
+  const variablesMultisig: Record<Chain, () => string | undefined> = {
+    solana: () => resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress,
+    base: () => resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress,
+  };
+  // ADR-0060: one entry per Sender, in configuration order.
+  return registry.senders.map((sender, index): SenderConfig => {
+    const { chain, handler } = sender;
+    const { address } = (senders[index] as CoordinatorSender).ref;
+    const approval = handler.approval;
+    return {
+      chain,
+      name: sender.name,
+      isDefault: sender.isDefault,
+      network: networks.get(chain) ?? 'unknown',
+      address,
+      assets: assetsByChain[chain](),
+      assetDecimals,
+      ...(approval
+        ? {
+            approval: {
+              mode: approval.holders.sender === 'vault' ? ('squads' as const) : ('safe' as const),
+              multisigAddress: sender.multisig?.address ?? variablesMultisig[chain]() ?? address,
+              engineKey: approval.proposerAddress,
+              holders: approval.holders,
+              rewatchWindowMs: sender.multisig?.approvalRewatchWindowMs ?? 0,
+            },
+          }
+        : {}),
+    };
+  });
 }
 
 export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): SenderReads {

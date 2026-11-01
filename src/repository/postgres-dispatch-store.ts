@@ -1094,10 +1094,21 @@ export class PostgresDispatchStore implements DispatchStore {
         : this.db
             .select({ row: dispatches, exactCreatedAt: exactCreatedAt(dispatches) })
             .from(dispatches)
-            .where(where(dispatches))
+            .where(
+              and(
+                where(dispatches),
+                query.senders
+                  ? or(
+                      ...query.senders.map((s) =>
+                        and(eq(dispatches.chain, s.chain), eq(dispatches.senderAddress, s.address)),
+                      ),
+                    )
+                  : undefined,
+              ),
+            )
             .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
             .limit(query.limit),
-      query.mode === 'managed'
+      query.mode === 'managed' || query.senders
         ? []
         : this.db
             .select({ row: relayDispatches, exactCreatedAt: exactCreatedAt(relayDispatches) })
