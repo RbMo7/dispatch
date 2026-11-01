@@ -15,12 +15,65 @@ Restart a process after you change one of its variables. Nothing is reloaded whi
 | `AUTH_TOKEN` | `dev-secret` | The bearer token every `/v1` request must carry, and the console's sign-in token. There is one per engine, with no users or scopes. | Always. Use `openssl rand -hex 32`. |
 | `OPERATOR_TOKEN` | unset | API only. A second bearer token that can do everything `AUTH_TOKEN` can, plus release held Dispatches, write Flag Rules and read the activity record. Unset, those routes answer `403`. The API refuses to start when it is set but empty, or equal to `AUTH_TOKEN`. | When you use Flag Rules. A different random value from `AUTH_TOKEN`. |
 | `ENABLED_CHAINS` | empty, no chains | Comma-separated chains to serve: `base`, `solana`, or `base,solana`. A chain that is not listed is refused with `CHAIN_NOT_ENABLED`, and none of its other settings are read. | To add or remove a chain. Never remove one with transactions in flight (issue #57). |
-| `SENDERS_FILE` | `senders.json` if it exists | A JSON file naming several Senders per chain, each with its own mode (`single`, `squads` or `safe`) and keys, and an optional default per chain. [`senders.example.json`](../../senders.example.json) shows the shape. With a senders file, the per-chain Sender variables below are ignored. Without one, they describe one Sender per chain, named `default`. | To pay from more than one Sender on a chain, such as a hot `payouts` Sender beside a multisig `treasury` |
+| `SENDERS_FILE` | `senders.json` if it exists | A JSON file naming several Senders per chain, each with its own mode (`single`, `squads` or `safe`) and keys, and an optional default per chain. [The senders file](#the-senders-file) describes it. A path that does not exist is a startup error. With a senders file, the per-chain Sender variables below are ignored. Without one, they describe one Sender per chain, named `default`. | To pay from more than one Sender on a chain, such as a hot `payouts` Sender beside a multisig `treasury` |
 | `SIGNER_URL` | `http://localhost:8421` | Worker only. Where the worker reaches the Signer. The API never calls the Signer, so leave it unset in the API's environment. | Always, in a deployment: the Signer's address on your private network |
 | `SIGNER_AUTH_TOKEN` | unset | Worker only. The bearer token the worker sends to the Signer. Must equal the Signer's own. Unset, the worker starts, logs a warning, and every signing request gets `401`. Leave it unset in the API's environment. | Always on the worker, except for a Relay-only engine |
 | `DEFAULT_RETRY_POLICY` | `false` | The [Retry Policy](../lifecycle.md#retry-policy-and-stuck-transactions) for a Dispatch whose request does not set `retryPolicy`. Only the exact value `true` turns it on. | To let the engine fee-bump stuck Base transactions by default |
 | `RPC_TIMEOUT_MS` | `15000` | The deadline, in milliseconds, for each outbound RPC or Signer call. A slower answer counts as unreachable. | When your RPC or Signer is slow and you see timeouts |
 | `LOG_LEVEL` | `info` | The engine's log level: `trace`, `debug`, `info`, `warn`, `error` or `fatal`. Logs are JSON lines on stdout. | `debug` while you investigate |
+
+## The senders file
+
+The senders file names the Senders of each chain. The API and the worker both read it at startup, from `SENDERS_FILE`, or from `senders.json` in the folder they start in. Without the file, the per-chain Sender variables describe one Sender per chain, named `default`, and nothing else changes. [Send from more than one Sender](../guides/multiple-senders.md) walks through a setup, and [`senders.example.json`](../../senders.example.json) has one of each mode.
+
+The file is a JSON object keyed by chain. Each chain has `senders`, an object keyed by Sender name, and an optional `default`:
+
+```json
+{
+  "solana": {
+    "default": "payouts",
+    "senders": {
+      "payouts": { "address": "33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf" },
+      "treasury": {
+        "mode": "squads",
+        "multisig": "4AzEDD9wGkvTs4hpRNGZ44tgt2xCZbwoFWNKZs28UkuC",
+        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV"
+      }
+    }
+  },
+  "base": {
+    "default": "payouts",
+    "senders": {
+      "payouts": { "address": "0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A" },
+      "treasury": {
+        "mode": "safe",
+        "safe": "0x5afe000000000000000000000000000000005afe",
+        "executor": "0x1Dd9661FAb2d82731E033c21C46BA009633bf558"
+      }
+    }
+  }
+}
+```
+
+Each Sender takes the fields of its `mode`, and any other field is a startup error:
+
+| `mode` | Chain | Required | Optional |
+| --- | --- | --- | --- |
+| `single`, or left out | both | `address`: the Sender, whose key the Signer holds | none |
+| `squads` | `solana` | `multisig`: the Squads multisig account, not its vault. `memberKey`: the engine's own key, which proposes and executes. | `approvalDeadlineMs`, `approvalRewatchWindowMs` |
+| `safe` | `base` | `safe`: the Safe. `executor`: the engine's own key, a registered delegate and never an owner. | `txServiceUrl`, `apiKey`, `approvalDeadlineMs`, `approvalRewatchWindowMs`, `bundleLimit` |
+
+The optional fields mean what the matching variables mean in [Solana Multisig Sender](#solana-multisig-sender) and [Base Safe Sender](#base-safe-sender), with the same defaults. The durations and `bundleLimit` are positive whole numbers, not strings. A Safe Sender without `apiKey` uses `BASE_SAFE_API_KEY`. A Squads Sender pays from its multisig's vault (index 0), and a Safe Sender from its Safe.
+
+The engine refuses to start, and lists every problem at once, when:
+
+- a Sender name is not 1 to 40 lowercase letters, digits or hyphens, or appears twice on a chain;
+- a chain in `ENABLED_CHAINS` has no Senders in the file;
+- `default` names no Sender of its chain;
+- two Senders on a chain share an address, including a Multisig Sender's engine key;
+- an address is not valid on its chain, or a mixed-case Base address has a wrong checksum.
+
+A chain in the file but not in `ENABLED_CHAINS` is not read. Without `default`, every Dispatch on the chain must name its Sender, or it is refused with `SENDER_REQUIRED`. If any per-chain Sender variable, such as `SOLANA_SENDER_ADDRESS` or `BASE_SAFE_ADDRESS`, is set for a chain the file describes, the engine logs a warning that it ignores it.
 
 ## Solana
 

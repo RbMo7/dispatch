@@ -34,6 +34,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/guides/relay.md', slug: 'guides/relay' },
       { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
       { source: 'docs/guides/multisig.md', slug: 'guides/multisig' },
+      { source: 'docs/guides/multiple-senders.md', slug: 'guides/multiple-senders' },
       { source: 'docs/guides/cancel.md', slug: 'guides/cancel' },
       { source: 'docs/guides/flag-rules.md', slug: 'guides/flag-rules' },
       { source: 'docs/guides/track.md', slug: 'guides/track' },
@@ -56,6 +57,7 @@ export const NAV: readonly NavSection[] = [
     title: 'Self-hosting',
     pages: [
       { source: 'docs/self-hosting/install.md', slug: 'self-hosting/install' },
+      { source: 'docs/self-hosting/doctor.md', slug: 'self-hosting/doctor' },
       { source: 'docs/self-hosting/configuration.md', slug: 'self-hosting/configuration' },
       { source: 'docs/self-hosting/signer.md', slug: 'self-hosting/signer' },
       { source: 'docs/self-hosting/multisig.md', slug: 'self-hosting/multisig' },
