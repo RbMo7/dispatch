@@ -227,3 +227,185 @@ describe('Coordinator with two Senders on one chain (ADR-0060)', () => {
     expect(payouts.getStatus).not.toHaveBeenCalled();
   });
 });
+
+const SAFE_1: SenderRef = { chain: 'base', address: '0xsafe1' as SenderAddress };
+const SAFE_2: SenderRef = { chain: 'base', address: '0xsafe2' as SenderAddress };
+
+const pay = (n: number, amount: string): DispatchItem<'base'> => ({
+  call: call(n),
+  payment: { recipient: `0x${n}`, asset: 'USDC', amount },
+});
+
+/** A Safe-like Multisig Sender whose Proposal refs never collide with another's. */
+function multisigHandler(prefix: string, openProposalLimit: number): SenderHandler {
+  const handler = new SenderHandler(prefix);
+  const approval = new FakeApproval<'base'>();
+  approval.holders = { sender: 'safe', proposer: 'executor' };
+  approval.openProposalLimit = openProposalLimit;
+  const build = approval.buildImpl;
+  approval.buildImpl = async (input) => {
+    const built = await build(input);
+    if (!built.ok) return built;
+    const proposalRef = `${prefix}-${built.value.proposalRef}`;
+    return ok({
+      ...built.value,
+      proposalRef,
+      chainRef: { kind: 'safe', safe: input.sender, safeTxHash: proposalRef, nonce: 0 },
+    });
+  };
+  handler.approval = approval;
+  return handler;
+}
+
+function coordinatorWith(store: InMemoryDispatchStore, senders: CoordinatorSender[]) {
+  const [first] = senders;
+  if (!first) throw new Error('no senders');
+  return new Coordinator({
+    store,
+    chainHandlers: new Map([['base', first.handler]]),
+    senders,
+    abandonmentTimeoutMs: new Map([['base', 600_000]]),
+    sleep: () => Promise.resolve(),
+    logger: pino({ level: 'silent' }),
+  });
+}
+
+describe('per-Sender state with two Senders on one chain (ADR-0060)', () => {
+  it("runs the Funding Check on each Sender's own balance: one Sender short never fails another", async () => {
+    const { coordinator, dispatch, payouts, refunds, store, sentOf } = setup();
+    payouts.getBalance.mockImplementation((_address, asset) =>
+      Promise.resolve(ok({ asset, amount: '0' })),
+    );
+    const short = await dispatch(PAYOUTS, [item(1)]);
+    const funded = await dispatch(REFUNDS, [item(2)]);
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(payouts.getBalance).toHaveBeenCalledWith(PAYOUTS.address, 'ETH');
+    expect(refunds.getBalance).toHaveBeenCalledWith(REFUNDS.address, 'ETH');
+    expect((await store.listTransactions(short.id)).map((t) => t.error?.code)).toEqual([
+      'INSUFFICIENT_FUNDS',
+    ]);
+    expect(await sentOf(funded.id)).toEqual([{ status: 'PENDING', sent: true }]);
+  });
+
+  it("subtracts only a Multisig Sender's own committed amounts", async () => {
+    const store = new InMemoryDispatchStore();
+    const first = multisigHandler('one', 0);
+    const second = multisigHandler('two', 0);
+    const coordinator = coordinatorWith(store, [
+      { ref: SAFE_1, handler: first, isDefault: true },
+      { ref: SAFE_2, handler: second, isDefault: false },
+    ]);
+    let keys = 0;
+    const dispatch = (sender: SenderRef, items: DispatchItem<'base'>[]) =>
+      store.createDispatch({
+        chain: 'base',
+        idempotencyKey: `k-${keys++}`,
+        items,
+        retryPolicy: false,
+        senderAddress: sender.address,
+      });
+    const statuses = async (id: string) => (await store.listTransactions(id)).map((t) => t.status);
+
+    const held = await dispatch(SAFE_1, [pay(1, '900')]);
+    await coordinator.processQueuedDispatchesFor(SAFE_1, 10);
+    const other = await dispatch(SAFE_2, [pay(2, '500')]);
+    await coordinator.processQueuedDispatchesFor(SAFE_2, 10);
+    const over = await dispatch(SAFE_1, [pay(3, '200')]);
+    await coordinator.processQueuedDispatchesFor(SAFE_1, 10);
+
+    expect(await statuses(held.id)).toEqual(['UNPROPOSED']);
+    expect(await statuses(other.id)).toEqual(['UNPROPOSED']);
+    const [failed] = await store.listTransactions(over.id);
+    expect(failed?.error).toMatchObject({
+      code: 'INSUFFICIENT_FUNDS',
+      chainDetail: { holder: 'safe', address: SAFE_1.address, committed: '900', short: '100' },
+    });
+  });
+
+  it("holds each Safe Sender to its own one open Proposal, never another Safe's", async () => {
+    const store = new InMemoryDispatchStore();
+    const first = multisigHandler('one', 1);
+    const second = multisigHandler('two', 1);
+    const coordinator = coordinatorWith(store, [
+      { ref: SAFE_1, handler: first, isDefault: true },
+      { ref: SAFE_2, handler: second, isDefault: false },
+    ]);
+    let keys = 0;
+    const dispatch = (sender: SenderRef, n: number) =>
+      store.createDispatch({
+        chain: 'base',
+        idempotencyKey: `k-${keys++}`,
+        items: [pay(n, '1')],
+        retryPolicy: false,
+        senderAddress: sender.address,
+      });
+    const statuses = async (id: string) => (await store.listTransactions(id)).map((t) => t.status);
+    const a = await dispatch(SAFE_1, 1);
+    const b = await dispatch(SAFE_1, 2);
+    const c = await dispatch(SAFE_2, 3);
+
+    await coordinator.processQueuedDispatches(10);
+
+    expect(await statuses(a.id)).toEqual(['AWAITING_APPROVAL']);
+    expect(await statuses(b.id)).toEqual(['UNPROPOSED']);
+    expect(await statuses(c.id)).toEqual(['AWAITING_APPROVAL']);
+    expect(first.approval?.built.map((x) => x.sender)).toEqual([SAFE_1.address]);
+    expect(second.approval?.built.map((x) => x.sender)).toEqual([SAFE_2.address]);
+  });
+
+  it("limits concurrent sends per Sender, so each Sender's limit is its own", async () => {
+    const { coordinator, dispatch, payouts, refunds } = setup();
+    let inFlight = 0;
+    let most = 0;
+    const release = deferred();
+    const both = deferred();
+    for (const handler of [payouts, refunds]) {
+      Object.assign(handler, { maxConcurrentSends: 1 });
+      handler.broadcastGate = async () => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        if (inFlight === 2) both.resolve();
+        await release.promise;
+        inFlight--;
+      };
+    }
+    await dispatch(PAYOUTS, [item(1)]);
+    await dispatch(REFUNDS, [item(2)]);
+
+    const tick = coordinator.processQueuedDispatches(10);
+    await both.promise;
+    release.resolve();
+    await tick;
+
+    expect(most).toBe(2);
+  });
+
+  it("gives each Sender's handler only its own in-flight transactions at restart", async () => {
+    const { store, coordinator, dispatch, payouts, refunds } = setup();
+    await dispatch(PAYOUTS, [item(1)]);
+    await dispatch(REFUNDS, [item(2)]);
+    await coordinator.processQueuedDispatches(10);
+    const restored = new Map<string, string[]>();
+    for (const handler of [payouts, refunds]) {
+      Object.assign(handler, {
+        restoreInFlight: (signed: string[]) => {
+          restored.set(handler.name, signed);
+          return Promise.resolve();
+        },
+      });
+    }
+    const signedBy = async (sender: SenderRef) =>
+      (await store.listUnsettledTransactions('base')).filter((t) =>
+        t.signedBytes?.includes(sender.address),
+      );
+    expect(await signedBy(PAYOUTS)).toHaveLength(1);
+    expect(await signedBy(REFUNDS)).toHaveLength(1);
+
+    await coordinator.restoreReservations();
+
+    expect(restored.get('payouts')?.map((s) => s.includes(PAYOUTS.address))).toEqual([true]);
+    expect(restored.get('refunds')?.map((s) => s.includes(REFUNDS.address))).toEqual([true]);
+  });
+});

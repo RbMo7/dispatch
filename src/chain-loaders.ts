@@ -559,24 +559,29 @@ export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): S
     logger.warn({ chain, err: cause }, 'senders: multisig threshold read failed');
     return err({ code: 'RPC_UNAVAILABLE', message: 'multisig threshold read failed' });
   };
-  const thresholdReaders: Partial<Record<Chain, () => Promise<number>>> = {
-    solana: async () => {
-      const multisig = resolveSolanaMultisigConfig(config.solana.multisig);
+  // ADR-0060: each Multisig Sender's own multisig; without one named, today's variables'.
+  const thresholdReaders: Partial<
+    Record<Chain, (multisig: string | undefined) => Promise<number>>
+  > = {
+    solana: async (named) => {
+      const multisig =
+        named ?? resolveSolanaMultisigConfig(config.solana.multisig)?.multisigAddress;
       if (!multisig) throw new Error('not a multisig Sender');
       const connection = new Connection(config.solana.rpcUrl, {
         commitment: 'confirmed',
         fetch: fetchFn,
       });
-      const state = await readMultisigState(connection, multisig.multisigAddress);
+      const state = await readMultisigState(connection, multisig);
       const account = state.account?.multisig;
       if (!account || 'undecodable' in account) throw new Error('multisig account unreadable');
       return account.threshold;
     },
-    base: async () => {
-      const safe = resolveBaseSafeConfig(config.base.safe, config.base.chainId);
+    base: async (named) => {
+      const safe =
+        named ?? resolveBaseSafeConfig(config.base.safe, config.base.chainId)?.safeAddress;
       if (!safe) throw new Error('not a Safe Sender');
       const client = createPublicClient({ transport: http(config.base.rpcUrl, { fetchFn }) });
-      return (await readSafeState(client, safe.safeAddress)).threshold;
+      return (await readSafeState(client, safe as Address)).threshold;
     },
   };
   return {
@@ -589,17 +594,17 @@ export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): S
       return balance;
     },
     getSignerKey: (chain, address) => store.getSignerKey(chain, address),
-    readThreshold: async (chain) => {
+    readThreshold: async (chain, multisigAddress) => {
       const reader = thresholdReaders[chain];
       if (!reader) return unavailable(chain, new Error('no threshold reader'));
       try {
-        return ok(await reader());
+        return ok(await reader(multisigAddress));
       } catch (cause) {
         return unavailable(chain, cause);
       }
     },
-    listCommitted: (chain, holder, timedOutSince) =>
-      store.listCommitted(chain, holder, timedOutSince),
+    listCommitted: (chain, holder, timedOutSince, senderAddress) =>
+      store.listCommitted(chain, holder, timedOutSince, senderAddress),
     now: () => new Date(),
   };
 }

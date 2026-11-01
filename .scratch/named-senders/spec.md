@@ -59,7 +59,7 @@ A Dispatch without `sender` pays from the chain's default Sender, so every exist
   - names are unique per chain and match `[a-z0-9-]{1,40}`;
   - every enabled chain has at least one Sender;
   - `default` names an existing Sender;
-  - no two Senders share an address.
+  - no two Senders share an address. As built, this covers each Multisig Sender's engine key (member key or executor) too: two Senders signing with one key would share its nonces and balance.
 
 ### Identity
 
@@ -72,7 +72,7 @@ A Dispatch without `sender` pays from the chain's default Sender, so every exist
   - Unknown name: `400 UNKNOWN_SENDER`.
   - Omitted on a chain with no default: `400 SENDER_REQUIRED`.
   - The Idempotency-Key rules are unchanged.
-- **`GET /v1/dispatch/:id` and `GET /v1/dispatches`:** each Dispatch gains `sender: { name, address }`. `name` is null when the Sender is no longer configured. The list gains a `sender` filter.
+- **`GET /v1/dispatch/:id` and `GET /v1/dispatches`:** each Dispatch gains `sender: { name, address }`. `name` is null when the Sender is no longer configured. The list gains a `sender` filter. As built, `sender` is absent only on a Dispatch stored before named Senders, until the engine gives it to its chain's default Sender at startup; a Relay Dispatch has none.
 - **`GET /v1/senders`:** each entry gains `name` and `default: true|false`, with one entry per Sender rather than per chain.
 - **Errors:** an `INSUFFICIENT_FUNDS` `chainDetail` already names the address, so it is unchanged.
 
@@ -87,7 +87,7 @@ A Dispatch without `sender` pays from the chain's default Sender, so every exist
   - Concurrency limits: per Sender.
   - So a stuck transaction or an open Proposal on one Sender never blocks another.
 - **Startup and Signer:** the startup checks, the Signer pin reads (ADR-0055, ADR-0059) and the setup checks (`setup-tooling`) run per Sender.
-- **Persistence:** one migration adds `sender_address` to `dispatches`, with existing rows backfilled from the current single Sender of their chain, and an index on `(chain, sender_address, status)` for the claim.
+- **Persistence:** one migration adds `sender_address` to `dispatches`, with existing rows backfilled from the current single Sender of their chain, and an index on `(chain, sender_address, status)` for the claim. As built, the migration only adds the nullable column and the index, because each chain's Sender lives in configuration, not in the database: the engine does the backfill itself, giving every row with no Sender to its chain's default Sender when the API or worker starts, and again before each of the default Sender's claims. It is idempotent and leaves in-flight rows as they are, so it is safe on a database with Dispatches in flight. The column landed with the per-Sender claim (#143), which needs it.
 
 ### Console
 

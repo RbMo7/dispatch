@@ -25,7 +25,7 @@ Contents:
 | --- | --- | --- |
 | Where the funds sit | Most in the multisig, a working balance in a hot Sender | All in the multisig |
 | Who approves | M-of-N approve each top-up | M-of-N approve every payment run |
-| Engine settings | None. The Sender is configured as usual. | `SOLANA_SENDER_MODE=multisig` or `BASE_SENDER_MODE=safe`, and more |
+| Engine settings | None. The Sender is configured as usual. | `SOLANA_SENDER_MODE=multisig` or `BASE_SENDER_MODE=safe`, and more, or a `squads` or `safe` Sender in the senders file |
 | A stolen Sender key loses | The working balance | The engine's key can only propose and execute, so nothing, if the Signer's policy holds |
 | Throughput | As fast as a plain Sender | One approval round per proposal. On Base, one proposal in flight per Safe at a time. |
 | Failure when short | `INSUFFICIENT_FUNDS`, naming the top-up | `INSUFFICIENT_FUNDS`, naming which balance is short |
@@ -33,6 +33,8 @@ Contents:
 Choose a **Treasury** when you can accept a hot wallet with a bounded balance, and you want speed. Choose a **Multisig Sender** when no single key or host may move a payment run on its own. They are independent: you may use either, both or neither.
 
 If your callers send many small Dispatches, a Multisig Sender produces many small proposals and so many approvals (see [section 6](#many-small-dispatches-mean-many-small-proposals)). Use a Treasury with a hot Sender for that traffic.
+
+You do not have to choose per chain. A senders file (ADR-0060, [`senders.example.json`](../senders.example.json), `SENDERS_FILE`) names several Senders per chain, each in its own mode: a hot `payouts` Sender for routine traffic and a `squads` or `safe` `treasury` Sender beside it, for instance. A Managed Dispatch names the one it pays from with `sender` ([`docs/api.md`](./api.md)), or pays from the chain's default. Each Sender has its own key, Funding Check, nonces, Proposals and startup checks, so an open Proposal on the multisig Sender never holds up the hot one. In the file, a Squads Sender is `{ "mode": "squads", "multisig", "memberKey" }` and a Safe Sender `{ "mode": "safe", "safe", "executor" }`, with the optional `approvalDeadlineMs`, `approvalRewatchWindowMs`, and for Safe `txServiceUrl`, `apiKey` and `bundleLimit`, which mirror the variables below. With a senders file, the per-chain Sender variables below are ignored.
 
 ### Treasury
 
@@ -388,7 +390,7 @@ The Safe's nonce is sequential, so the engine keeps **one open proposal per Safe
 
 If a proposal times out, the next one reuses the Safe's current nonce. The Safe app then shows both at that nonce as alternatives, and only one can ever execute.
 
-For throughput on Base, use a Treasury Safe funding a hot Sender, run as a second engine instance (one Sender per chain, ADR-0016).
+For throughput on Base, use a Treasury Safe funding a hot Sender, as a second Sender in the senders file (ADR-0060). The one-open-proposal rule is per Safe Sender: it never holds up a plain Sender, or another Safe Sender, on the same chain.
 
 ### Worked example
 

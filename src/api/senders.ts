@@ -39,8 +39,15 @@ export type SenderConfig = {
 export type SenderReads = {
   getBalance(chain: Chain, address: string, asset: string): Promise<Result<Balance, DispatchError>>;
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
-  readThreshold(chain: Chain): Promise<Result<number, DispatchError>>;
-  listCommitted(chain: Chain, holder: CommittedHolder, timedOutSince: Date): Promise<AssetAmount[]>;
+  /** ADR-0060: the threshold of `multisigAddress`, the Sender's own multisig. */
+  readThreshold(chain: Chain, multisigAddress?: string): Promise<Result<number, DispatchError>>;
+  /** ADR-0060: what `senderAddress`'s own Proposals and Calls hold back. */
+  listCommitted(
+    chain: Chain,
+    holder: CommittedHolder,
+    timedOutSince: Date,
+    senderAddress?: string,
+  ): Promise<AssetAmount[]>;
   now(): Date;
 };
 
@@ -93,7 +100,12 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
     address: string,
     assets: readonly string[],
   ): Promise<HolderBalances> => {
-    const committed = await reads.listCommitted(chain, committedHolder, timedOutSince);
+    const committed = await reads.listCommitted(
+      chain,
+      committedHolder,
+      timedOutSince,
+      config.address,
+    );
     return {
       holder,
       address,
@@ -127,7 +139,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
         : [holderBalances('sender', 'sender', config.address, config.assets)],
     ),
     reads.getSignerKey(chain, signingKey),
-    approval ? reads.readThreshold(chain) : undefined,
+    approval ? reads.readThreshold(chain, approval.multisigAddress) : undefined,
   ]);
 
   return {
