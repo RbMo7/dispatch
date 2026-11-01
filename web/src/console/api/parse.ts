@@ -11,6 +11,7 @@ import type {
   TimelineEntry,
 } from '../../domain/dispatch';
 import type { AssetBalance, Holding, Read, Sender, SignerKey } from '../../domain/sender';
+import { AREAS, type Fix, type Setup, type SetupCheck, type WorkerRun } from '../../domain/setup';
 import { type Status, STATUSES } from '../../domain/status';
 
 /** The engine answered with a shape this console does not understand. */
@@ -415,6 +416,53 @@ function sender(value: unknown, path: string): Sender {
 /** `GET /v1/senders`. */
 export function parseSenders(value: unknown): Sender[] {
   return list(object(value, 'body').senders, 'senders', sender);
+}
+
+function fix(value: unknown, path: string): Fix {
+  const json = object(value, path);
+  if ('command' in json) return { command: string(json.command, `${path}.command`) };
+  if ('setting' in json) {
+    return {
+      setting: string(json.setting, `${path}.setting`),
+      value: string(json.value, `${path}.value`),
+    };
+  }
+  return { step: string(json.step, `${path}.step`) };
+}
+
+function setupCheck(value: unknown, path: string): SetupCheck {
+  const json = object(value, path);
+  const status = oneOf(json.status, ['pass', 'warn', 'fail'] as const, `${path}.status`);
+  return {
+    id: string(json.id, `${path}.id`),
+    area: oneOf(json.area, AREAS, `${path}.area`),
+    title: string(json.title, `${path}.title`),
+    chain: json.chain === undefined ? null : oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    ranIn: oneOf(json.ranIn, ['worker', 'api'] as const, `${path}.ranIn`),
+    ranAt: date(json.ranAt, `${path}.ranAt`),
+    status,
+    finding: string(json.finding, `${path}.finding`),
+    fix: status === 'pass' ? null : fix(json.fix, `${path}.fix`),
+  };
+}
+
+function workerRun(value: unknown, path: string): WorkerRun {
+  const json = object(value, path);
+  const status = oneOf(
+    json.status,
+    ['ran', 'not_run_yet', 'unreadable'] as const,
+    `${path}.status`,
+  );
+  return status === 'ran' ? { status, ranAt: date(json.ranAt, `${path}.ranAt`) } : { status };
+}
+
+/** `GET /v1/setup`. */
+export function parseSetup(value: unknown): Setup {
+  const json = object(value, 'body');
+  return {
+    worker: workerRun(json.worker, 'worker'),
+    checks: list(json.checks, 'checks', setupCheck),
+  };
 }
 
 /** A refusal with an error code, such as `409 ALREADY_CLAIMED`. */

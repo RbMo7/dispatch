@@ -10,9 +10,10 @@ There is no separate console password. Anyone holding `AUTH_TOKEN` can submit Di
 
 ## Pages
 
-- **Overview**: Dispatches in flight, Dispatches created over the last hour, day or week against the period before, each Sender's balance with what is committed, and what needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, and abandoned items, which may still land.
+- **Overview**: Dispatches in flight, Dispatches created over the last hour, day or week against the period before, each Sender's balance with what is committed, and what needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, abandoned items, which may still land, and any failing setup check.
 - **Dispatches**: every Dispatch, newest first, by day. Filter by date range, chain, status and mode; type an id or the start of one and press Enter to open it. Selecting a row opens its Flow (what happened, stage by stage, down to fee bumps and Solana resubmissions), its Items and its Details. The URL holds the selection, tab and filters, so a link opens the same view.
 - **Senders & Keys**: each enabled chain's Sender, its balances and what is committed, the multisig and its threshold, and what the Signer reports about the engine's key, including whether it is pinned to the multisig (ADR-0055).
+- **Setup**: the same checks as `pnpm dispatch doctor`, from `GET /v1/setup`. A summary says "All good" or how many things need you, then one card per area lists each check with its status, what it found, how to fix it, and when it last ran. The worker runs its checks at start and every five minutes; the database and console checks run when the page loads. A failing check also shows in the Overview's Needs attention. The page is read-only: configuration lives in files on the server.
 
 A field the engine could not read, such as a balance while the RPC is down, shows its error in place; the rest of the page still loads.
 

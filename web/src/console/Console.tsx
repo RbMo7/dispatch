@@ -6,6 +6,7 @@ import { Overview } from './overview/Overview';
 import { RouterProvider, useRouter } from './router';
 import { SendersPage } from './senders/SendersPage';
 import { SendersProvider } from './senderData';
+import { SetupPage } from './setup/SetupPage';
 import { SessionProvider } from './session';
 import { Shell } from './Shell';
 import { SignIn } from './SignIn';
@@ -39,5 +40,7 @@ function CurrentPage() {
       return <DispatchesPage />;
     case 'senders':
       return <SendersPage />;
+    case 'setup':
+      return <SetupPage />;
   }
 }

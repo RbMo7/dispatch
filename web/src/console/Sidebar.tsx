@@ -1,4 +1,12 @@
-import { ArrowClockwise, FileText, Key, Rows, SignOut, SquaresFour } from '@phosphor-icons/react';
+import {
+  ArrowClockwise,
+  FileText,
+  Key,
+  ListChecks,
+  Rows,
+  SignOut,
+  SquaresFour,
+} from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 
 import { Button } from '../components/Button';
@@ -12,6 +20,7 @@ const NAV = [
   { page: 'overview', label: 'Overview', Icon: SquaresFour },
   { page: 'dispatches', label: 'Dispatches', Icon: Rows },
   { page: 'senders', label: 'Senders & Keys', Icon: Key },
+  { page: 'setup', label: 'Setup', Icon: ListChecks },
 ] as const satisfies readonly { page: Page; label: string; Icon: unknown }[];
 
 interface SidebarProps {

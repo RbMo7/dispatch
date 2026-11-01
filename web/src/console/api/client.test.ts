@@ -184,6 +184,93 @@ describe('the API client', () => {
     });
   });
 
+  it("reads the setup checks: the worker's run, each check's fix, and where it ran", async () => {
+    const { fetcher, calls } = engine({
+      '/v1/setup': {
+        status: 200,
+        body: {
+          worker: { status: 'ran', ranAt: '2026-11-01T10:05:00.000Z' },
+          summary: { passed: 1, warnings: 0, problems: 1 },
+          checks: [
+            {
+              id: 'signer.reachable',
+              area: 'signer',
+              title: 'Reachable',
+              ranIn: 'worker',
+              ranAt: '2026-11-01T10:05:00.000Z',
+              status: 'fail',
+              finding: 'no Signer answered at SIGNER_URL (signer:8421)',
+              fix: { command: 'docker compose up -d signer' },
+            },
+            {
+              id: 'sender.fees:solana',
+              area: 'sender',
+              title: 'Fee balance (Solana)',
+              chain: 'solana',
+              ranIn: 'worker',
+              ranAt: '2026-11-01T10:05:00.000Z',
+              status: 'pass',
+              finding: '2.1500 SOL covers the fees paid in the last 24 hours',
+            },
+          ],
+        },
+      },
+    });
+    const setup = await createApiClient('t', () => {}, fetcher).getSetup();
+    expect(calls[0]!.url).toBe('/v1/setup');
+    expect(setup.worker).toEqual({ status: 'ran', ranAt: new Date('2026-11-01T10:05:00.000Z') });
+    expect(setup.checks).toEqual([
+      {
+        id: 'signer.reachable',
+        area: 'signer',
+        title: 'Reachable',
+        chain: null,
+        ranIn: 'worker',
+        ranAt: new Date('2026-11-01T10:05:00.000Z'),
+        status: 'fail',
+        finding: 'no Signer answered at SIGNER_URL (signer:8421)',
+        fix: { command: 'docker compose up -d signer' },
+      },
+      {
+        id: 'sender.fees:solana',
+        area: 'sender',
+        title: 'Fee balance (Solana)',
+        chain: 'solana',
+        ranIn: 'worker',
+        ranAt: new Date('2026-11-01T10:05:00.000Z'),
+        status: 'pass',
+        finding: '2.1500 SOL covers the fees paid in the last 24 hours',
+        fix: null,
+      },
+    ]);
+  });
+
+  it('refuses a setup check that does not say how to fix it', async () => {
+    const { fetcher } = engine({
+      '/v1/setup': {
+        status: 200,
+        body: {
+          worker: { status: 'not_run_yet' },
+          checks: [
+            {
+              id: 'database.migrated',
+              area: 'database',
+              title: 'Migrated',
+              ranIn: 'api',
+              ranAt: '2026-11-01T10:05:00.000Z',
+              status: 'fail',
+              finding: '1 migration not applied: 0019_setup_checks',
+            },
+          ],
+        },
+      },
+    });
+    expect(await failure(createApiClient('t', () => {}, fetcher).getSetup())).toEqual({
+      kind: 'malformed',
+      message: 'checks[0].fix is not an object',
+    });
+  });
+
   it("reads a Dispatch's chain and creation time from its own detail, in one request", async () => {
     const { fetcher, calls } = engine({
       [`/v1/dispatch/${ID}`]: {

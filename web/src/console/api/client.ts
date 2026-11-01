@@ -1,6 +1,7 @@
 import type { Chain } from '../../domain/chains';
 import type { DispatchDetail, Mode } from '../../domain/dispatch';
 import type { Sender } from '../../domain/sender';
+import type { Setup } from '../../domain/setup';
 import type { Status } from '../../domain/status';
 import {
   type DispatchPage,
@@ -9,6 +10,7 @@ import {
   parsePage,
   parseRefusal,
   parseSenders,
+  parseSetup,
 } from './parse';
 
 /**
@@ -60,12 +62,13 @@ export interface ApiClient {
   ): Promise<DispatchPage>;
   getDispatch(id: string, signal?: AbortSignal): Promise<DispatchDetail>;
   listSenders(signal?: AbortSignal): Promise<Sender[]>;
+  getSetup(signal?: AbortSignal): Promise<Setup>;
   cancelDispatch(id: string): Promise<DispatchDetail>;
 }
 
 export const PAGE_LIMIT = 100;
 
-/** The four `/v1` routes the console reads, with the viewer's bearer token. */
+/** The `/v1` routes the console reads, with the viewer's bearer token. */
 export function createApiClient(
   token: string,
   onUnauthorized: () => void,
@@ -125,6 +128,9 @@ export function createApiClient(
     },
     listSenders(signal) {
       return request('/v1/senders', parseSenders, { signal: signal ?? null });
+    },
+    getSetup(signal) {
+      return request('/v1/setup', parseSetup, { signal: signal ?? null });
     },
     cancelDispatch(id) {
       return request(`/v1/dispatch/${encodeURIComponent(id)}/cancel`, parseDetail, {
