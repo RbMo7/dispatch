@@ -8,6 +8,7 @@ import { SearchField } from '../../components/SearchField';
 import { StatusPill } from '../../components/StatusPill';
 import { type Column, VirtualTable } from '../../components/VirtualTable';
 import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
+import { type ErrorContext, explainError } from '../../domain/errors';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
@@ -15,7 +16,22 @@ import { filterItems, type ItemRow, itemRows, statusCounts } from './itemRows';
 
 const count = new Intl.NumberFormat('en-US');
 
-const COLUMNS: readonly Column<ItemRow>[] = [
+/** The recipient, and for an item that failed, the error catalogue's one line on why. */
+function TargetCell({ item, errors }: { item: Item; errors: ErrorContext }) {
+  const target = <MonoValue value={itemTarget(item)} head={5} tail={4} />;
+  if (!item.error) return target;
+  const explained = explainError(item.error, errors);
+  return (
+    <span className={styles.itemTarget}>
+      {target}
+      <span className={styles.itemError} title={`${explained.line}. ${explained.next}`}>
+        {explained.line}
+      </span>
+    </span>
+  );
+}
+
+const columns = (errors: ErrorContext): readonly Column<ItemRow>[] => [
   {
     id: 'index',
     header: '#',
@@ -27,8 +43,7 @@ const COLUMNS: readonly Column<ItemRow>[] = [
     id: 'target',
     header: 'Recipient',
     width: 'minmax(0, 1fr)',
-    render: (row) =>
-      row.kind === 'item' && <MonoValue value={itemTarget(row.item)} head={5} tail={4} />,
+    render: (row) => row.kind === 'item' && <TargetCell item={row.item} errors={errors} />,
   },
   {
     id: 'amount',
@@ -76,6 +91,8 @@ interface ItemsTabProps {
   onExport: (format: ExportFormat, items: readonly Item[]) => void;
   /** The Proposals these items sit in, with their Approvers. */
   approvals?: ReactNode;
+  /** Where an item's error happened, so its row can say why in plain words. */
+  errors: ErrorContext;
 }
 
 export function ItemsTab({
@@ -86,7 +103,9 @@ export function ItemsTab({
   onSearch,
   onExport,
   approvals,
+  errors,
 }: ItemsTabProps) {
+  const cols = useMemo(() => columns(errors), [errors]);
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const counts = useMemo(() => statusCounts(items), [items]);
   const shown = useMemo(() => filterItems(items, filter, search), [items, filter, search]);
@@ -143,7 +162,7 @@ export function ItemsTab({
       <VirtualTable
         label={`Items, ${count.format(shown.length)} shown`}
         rows={rows}
-        columns={COLUMNS}
+        columns={cols}
         rowKey={(row) => (row.kind === 'bundle' ? `bundle-${row.hash}` : row.item.index)}
         span={(row) =>
           row.kind === 'bundle' ? (

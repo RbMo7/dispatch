@@ -7,6 +7,7 @@ import type { Status } from '../../domain/status';
 import {
   type ActivityPage,
   type DispatchPage,
+  type RejectedPage,
   MalformedResponse,
   parseActivity,
   parseDetail,
@@ -15,6 +16,7 @@ import {
   parsePage,
   parsePreview,
   parseRefusal,
+  parseRejected,
   parseSenders,
   parseSetup,
   parseTokenKind,
@@ -81,6 +83,8 @@ export interface ApiClient {
   updateFlagRule(id: string, body: Record<string, unknown>): Promise<FlagRule>;
   previewFlagRule(body: Record<string, unknown>, signal?: AbortSignal): Promise<Preview>;
   listActivity(cursor: string | null, signal?: AbortSignal): Promise<ActivityPage>;
+  /** ADR-0062: refused `POST /v1/dispatch` requests, newest first, with the count of the last 24 hours. */
+  listRejected(cursor: string | null, signal?: AbortSignal, limit?: number): Promise<RejectedPage>;
 }
 
 export const PAGE_LIMIT = 100;
@@ -194,6 +198,11 @@ export function createApiClient(
       const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
       if (cursor) query.set('cursor', cursor);
       return request(`/v1/activity?${query}`, parseActivity, { signal: signal ?? null });
+    },
+    listRejected(cursor, signal, limit = PAGE_LIMIT) {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (cursor) query.set('cursor', cursor);
+      return request(`/v1/rejected?${query}`, parseRejected, { signal: signal ?? null });
     },
   };
 }

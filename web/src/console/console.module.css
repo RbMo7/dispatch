@@ -1041,3 +1041,20 @@
   font-size: var(--text-13);
   font-weight: 400;
 }
+
+/* An item's error beside its recipient, in the Items table. */
+.itemTarget {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.itemError {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: var(--text-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

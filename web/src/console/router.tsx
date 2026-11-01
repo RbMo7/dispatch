@@ -7,13 +7,19 @@ export const PAGES = {
   rules: '/console/rules',
   senders: '/console/senders',
   activity: '/console/activity',
+  rejected: '/console/rejected',
   setup: '/console/setup',
 } as const;
 
 export type Page = keyof typeof PAGES;
 
 /** ADR-0057: shown, and their routes called, only in an OPERATOR_TOKEN session. */
-export const OPERATOR_PAGES: ReadonlySet<Page> = new Set<Page>(['held', 'rules', 'activity']);
+export const OPERATOR_PAGES: ReadonlySet<Page> = new Set<Page>([
+  'held',
+  'rules',
+  'activity',
+  'rejected',
+]);
 
 interface Location {
   page: Page;

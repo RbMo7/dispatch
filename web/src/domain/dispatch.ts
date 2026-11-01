@@ -1,5 +1,6 @@
 import type { Money } from './assets';
 import type { Chain } from './chains';
+import type { ErrorDetail } from './errors';
 import type { Hold } from './flagRules';
 import type { Status } from './status';
 
@@ -57,6 +58,8 @@ export interface DispatchError {
   message: string;
   /** `INSUFFICIENT_FUNDS`'s shortfall, in the asset's smallest unit. */
   short?: { asset: string; raw: string };
+  /** What the error catalogue explains from `chainDetail`. */
+  detail?: ErrorDetail;
 }
 
 export type ChainRef =
@@ -173,6 +176,7 @@ export interface ManagedDetail {
   timeline: TimelineEntry[];
   /** Why it was held, on a Dispatch that ever was: it stays after a release or a cancel. */
   hold: Hold | null;
+  cancellation?: Cancellation | null;
 }
 
 export interface RelayDetail {
@@ -184,6 +188,14 @@ export interface RelayDetail {
   transactionHash: string | null;
   error: DispatchError | null;
   timeline: TimelineEntry[];
+  cancellation?: Cancellation | null;
+}
+
+/** Who cancelled a cancelled Dispatch, when and why. */
+export interface Cancellation {
+  at: Date;
+  tokenKind: 'auth' | 'operator';
+  reason: string | null;
 }
 
 export type DispatchDetail = ManagedDetail | RelayDetail;

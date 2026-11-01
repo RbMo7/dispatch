@@ -427,7 +427,7 @@ describe('the flow of one Dispatch', () => {
         kind: 'branch-failed',
         title: 'Item failures, 1',
         at: '10:00:01',
-        detail: 'INVALID_RECIPIENT: The address is the zero address.',
+        detail: 'The address is the zero address. Fix the address and send it again.',
         links: [{ label: 'Show in Items', items: 'failed' }],
       },
     ]);
@@ -519,12 +519,20 @@ describe('the flow of one Dispatch', () => {
             { at: '2026-10-30T10:04:51.000Z', kind: 'created' },
             { at: '2026-10-30T10:06:10.000Z', kind: 'cancelled' },
           ],
+          cancellation: {
+            at: '2026-10-30T10:06:10.000Z',
+            tokenKind: 'operator',
+            reason: 'duplicate of refund 7730',
+          },
         },
       ),
       clock('2026-10-31T11:00:00Z'),
     );
     expect(main(flow)).toEqual(['done Submitted', 'end-cancelled Cancelled']);
     expect(flow.elapsed).toBe('Ended at 10:06:10');
+    expect(titled(flow, 'Cancelled').detail).toBe(
+      'Withdrawn before the engine claimed it, so nothing was signed or sent. Cancelled with the operator token: duplicate of refund 7730.',
+    );
   });
 
   it('abandons a Proposal nobody decided on, and says it may still be executed', () => {
@@ -683,9 +691,12 @@ describe('the flow of one Dispatch', () => {
     ]);
     expect(branches(flow)).toEqual([]);
     expect(titled(flow, 'Failed').detail).toEqual([
-      'The Funding Check found the Sender short by ',
+      'The Sender is short ',
       { asset: 'SOL', raw: '11115845377', decimals: 9 },
       '. Nothing was signed.',
+    ]);
+    expect(titled(flow, 'Failed').links).toEqual([
+      { label: 'Open Senders & Keys', href: '/console/senders' },
     ]);
   });
 

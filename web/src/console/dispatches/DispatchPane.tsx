@@ -10,6 +10,7 @@ import { StatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
 import type { Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
+import type { ErrorContext } from '../../domain/errors';
 import type { Flow } from '../../domain/flow';
 import type { Status } from '../../domain/status';
 import type { ExportFormat } from '../../export/download';
@@ -38,6 +39,8 @@ interface DispatchPaneProps {
   flow: Flow | null;
   /** Null for a Relay Dispatch, which has no items: its tab is left out. */
   items: readonly Item[] | null;
+  /** Where the items' errors happened, for the error catalogue. */
+  errors: ErrorContext;
   details: readonly { label: string; value: ReactNode }[];
   /** Shown in place of the tabs while loading or after a failed load. */
   body?: ReactNode;
@@ -137,6 +140,7 @@ export function DispatchPane(props: DispatchPaneProps) {
                   search={props.itemSearch}
                   onSearch={props.onItemSearch}
                   onExport={props.onExportItems}
+                  errors={props.errors}
                 />
               )}
               {tab === 'details' && (

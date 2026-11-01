@@ -18,6 +18,7 @@ import {
   type Item,
   type LoadedDispatch,
 } from '../../domain/dispatch';
+import { errorContext } from '../../domain/errors';
 import { dispatchFlow } from '../../domain/dispatchFlow';
 import { senderChoices } from '../../domain/sender';
 import { STATUSES } from '../../domain/status';
@@ -486,6 +487,15 @@ function Pane({
 
   const detail = loaded?.detail;
   const items = detail?.mode === 'managed' ? detail.items : null;
+  const errors = useMemo(
+    () =>
+      errorContext(
+        loaded?.summary.chain ?? 'base',
+        detail?.mode === 'managed' ? detail.sender : null,
+        items ?? [],
+      ),
+    [loaded, detail, items],
+  );
   const claimed = detail?.timeline.findLast((e): e is EntryOf<'claimed'> => e.kind === 'claimed');
   // ADR-0056: a held Dispatch was never claimed, so either token can cancel it.
   const cancellable =
@@ -530,6 +540,7 @@ function Pane({
         head={head}
         flow={flow}
         items={items}
+        errors={errors}
         details={details}
         body={
           !loaded ? (
