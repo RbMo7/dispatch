@@ -40,6 +40,8 @@
     "@eslint/js": "^9.37.0",
     "@noble/curves": "^2.4.0",
     "@types/node": "^22.15.29",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "drizzle-kit": "^0.31.5",
     "eslint": "^9.37.0",
     "eslint-config-prettier": "^10.1.8",
@@ -48,6 +50,7 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.1"
   }
 }
