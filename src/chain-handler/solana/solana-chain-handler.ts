@@ -24,6 +24,7 @@ import type { Logger } from 'pino';
 
 import type { CallForChain, Payment, SolanaAccountMeta, SolanaCall } from '../../domain/call.js';
 import { AssetRegistry, type AssetLookup } from '../../asset-registry/asset-registry.js';
+import type { SolanaEffects } from '../../domain/effects.js';
 import type { DispatchError } from '../../domain/errors.js';
 import type { KnownAsset } from '../../domain/known-asset.js';
 import { err, ok, type Result } from '../../domain/result.js';
@@ -40,6 +41,7 @@ import type {
   UnsignedTransaction,
 } from '../chain-handler.js';
 import { deriveAssociatedTokenAddress } from './account-resolution.js';
+import { solanaEffectsFrom } from './effects.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from './error-mapping.js';
 import { tokenAccountRent } from './token-account-rent.js';
 import { validateGenericCall } from './contract-call.js';
@@ -980,6 +982,25 @@ export class SolanaChainHandler implements ChainHandler<'solana'> {
    * record (a durable-nonce transaction) it stays PENDING, and the
    * Coordinator's abandonment timeout is the fallback.
    */
+  async readEffects(hash: string): Promise<Result<SolanaEffects, DispatchError>> {
+    try {
+      const response = await this.connection.getTransaction(hash, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!response) {
+        return err({ code: 'RPC_UNAVAILABLE', message: `${hash} is not on this node` });
+      }
+      return ok(solanaEffectsFrom(response));
+    } catch (cause) {
+      return err({
+        code: 'RPC_UNAVAILABLE',
+        message: `failed to read ${hash}`,
+        chainDetail: extractMessage(cause),
+      });
+    }
+  }
+
   async getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>> {
     const settle = (status: SignatureStatus): ChainStatus => {
       if (status.err) return 'FAILED';

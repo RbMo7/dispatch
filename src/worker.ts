@@ -10,6 +10,7 @@ import {
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
 import type { SenderRef } from './domain/sender.js';
+import { effectsLoop as runEffectsLoop } from './effects/record-effects.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
 import { cliContext } from './setup/cli-context.js';
@@ -233,6 +234,19 @@ function setupChecksLoop(): Promise<void> {
   });
 }
 
+/** ADR-0063: reads each confirmed transaction's effects once, for item reads to decode. */
+function effectsLoop(): Promise<void> {
+  return runEffectsLoop({
+    store,
+    handlers: chainRegistry.handlers,
+    limit: BATCH_LIMIT,
+    now: () => new Date(),
+    logger,
+    isRunning: () => running,
+    sleep,
+  });
+}
+
 logger.info(
   {
     chains: [...chainRegistry.handlers.keys()],
@@ -256,6 +270,7 @@ await Promise.all([
   approvalLoop(),
   signerKeysLoop(),
   setupChecksLoop(),
+  effectsLoop(),
 ]);
 
 logger.info('worker stopped');

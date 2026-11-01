@@ -20,6 +20,7 @@ import {
 import { type ApproverLabelOf, readDispatchView } from './dispatch-view.js';
 import { findHoldMatches } from './hold-check.js';
 import type { AssetDecimals } from '../asset-registry/asset-registry.js';
+import type { AssetAt } from '../effects/view.js';
 import {
   type ApiTokens,
   authedTokenKind,
@@ -37,6 +38,8 @@ export type DispatchRouteDeps = {
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
   assetDecimals: AssetDecimals;
+  /** ADR-0063: names and decimals for the amounts a decoded call or its effects carry. */
+  assetAt: AssetAt;
 };
 
 type RouteError = { status: number; body: Record<string, unknown> };
@@ -144,7 +147,7 @@ async function translateItem(
 }
 
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
-  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
+  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals, assetAt } = deps;
   const auth = requireToken(tokens);
   const nameOf = (chain: Chain, address: string) => chainRegistry.nameOf(chain, address);
   const approverLabelOf: ApproverLabelOf = (chain, sender, approver) =>
@@ -319,6 +322,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const view = await readDispatchView(store, request.params.id, assetDecimals, {
+        assetAt,
         timeline: request.query.include === 'timeline',
         nameOf,
         approverLabelOf,
@@ -347,6 +351,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       }
       return reply.send(
         await readDispatchView(store, request.params.id, assetDecimals, {
+          assetAt,
           nameOf,
           approverLabelOf,
         }),
@@ -378,6 +383,7 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       });
       return reply.send(
         await readDispatchView(store, request.params.id, assetDecimals, {
+          assetAt,
           nameOf,
           approverLabelOf,
         }),

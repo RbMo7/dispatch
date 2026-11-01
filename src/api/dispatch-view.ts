@@ -8,6 +8,9 @@ import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { sumAssetAmounts } from '../repository/committed.js';
 import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store.js';
 import type { AssetDecimals } from '../asset-registry/asset-registry.js';
+import type { TransactionEffects } from '../domain/effects.js';
+import { decodeCall, decodeEffects } from '../effects/decode.js';
+import type { AssetAt, EffectsView } from '../effects/view.js';
 import { toWireDefinition } from './flag-rule-wire.js';
 import { buildTimeline } from './timeline.js';
 
@@ -101,7 +104,13 @@ function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): 
   return 'partial';
 }
 
-function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf: AssetDecimals) {
+function toWireRequest(
+  chain: Chain,
+  { call, payment }: DispatchItem,
+  decimalsOf: AssetDecimals,
+  assetAt: AssetAt,
+  effects: TransactionEffects | undefined,
+) {
   if (payment) {
     const { recipient, asset, amount } = payment;
     const decimals = decimalsOf(chain, asset);
@@ -113,9 +122,37 @@ function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf
       amount,
     };
   }
+  const decoded = decodeCall(chain, call, assetAt, effects);
   return 'to' in call
-    ? { type: 'call' as const, to: call.to }
-    : { type: 'call' as const, programId: call.programId };
+    ? { type: 'call' as const, to: call.to, call: decoded }
+    : { type: 'call' as const, programId: call.programId, call: decoded };
+}
+
+/** ADR-0063: each confirmed transaction's stored effects, decoded once per read however many items share it. */
+async function effectsOf(
+  store: DispatchStore,
+  chain: Chain,
+  transactions: Transaction[],
+  assetAt: AssetAt,
+) {
+  const confirmedHash = (t: Transaction | undefined) =>
+    t?.status === 'CONFIRMED' && t.hash ? t.hash : undefined;
+  const stored = await store.listEffects(chain, [
+    ...new Set(transactions.flatMap((t) => confirmedHash(t) ?? [])),
+  ]);
+  const decoded = new Map<string, EffectsView>();
+  const raw = (t: Transaction | undefined) => {
+    const hash = confirmedHash(t);
+    return hash === undefined ? undefined : stored.get(hash);
+  };
+  const view = (t: Transaction | undefined): { effects?: EffectsView } => {
+    const hash = confirmedHash(t);
+    const effects = hash === undefined ? undefined : stored.get(hash);
+    if (hash === undefined || !effects) return {};
+    if (!decoded.has(hash)) decoded.set(hash, decodeEffects(effects, assetAt));
+    return { effects: decoded.get(hash)! };
+  };
+  return { raw, view };
 }
 
 function toWireApproval(proposal: Proposal, labelOf: ApproverLabelOf | undefined) {
@@ -154,8 +191,14 @@ export async function readDispatchView(
   store: DispatchStore,
   id: string,
   decimalsOf: AssetDecimals,
-  options: { timeline?: boolean; nameOf?: SenderNameOf; approverLabelOf?: ApproverLabelOf } = {},
+  options: {
+    assetAt: AssetAt;
+    timeline?: boolean;
+    nameOf?: SenderNameOf;
+    approverLabelOf?: ApproverLabelOf;
+  },
 ) {
+  const { assetAt } = options;
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
     const allVersions = await store.listTransactions(dispatch.id);
@@ -167,13 +210,20 @@ export async function readDispatchView(
       : [];
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
     const hold = await store.getHold(dispatch.id);
+    const effects = await effectsOf(store, dispatch.chain, transactions, assetAt);
 
     const items = dispatch.items.map((item, index) => {
-      const request = toWireRequest(dispatch.chain, item, decimalsOf);
+      const transaction = transactionByCallIndex.get(index);
+      const request = toWireRequest(
+        dispatch.chain,
+        item,
+        decimalsOf,
+        assetAt,
+        effects.raw(transaction),
+      );
       if (dispatch.status === 'cancelled' || dispatch.status === 'held') {
         return { ...request, status: dispatch.status, transactionHash: null, error: null };
       }
-      const transaction = transactionByCallIndex.get(index);
       if (!transaction) {
         return { ...request, status: 'queued', transactionHash: null, error: null };
       }
@@ -186,6 +236,7 @@ export async function readDispatchView(
         transactionHash: transaction.hash,
         error: transaction.error,
         ...(proposal ? { approval: toWireApproval(proposal, options.approverLabelOf) } : {}),
+        ...effects.view(transaction),
       };
     });
 
@@ -219,6 +270,7 @@ export async function readDispatchView(
   if (relayDispatch) {
     const relayTransactions = await store.listTransactions(relayDispatch.id);
     const [transaction] = relayTransactions;
+    const effects = await effectsOf(store, relayDispatch.chain, relayTransactions, assetAt);
     return {
       dispatchId: relayDispatch.id,
       mode: 'relay',
@@ -227,6 +279,7 @@ export async function readDispatchView(
       status: deriveRelayStatus(relayDispatch, relayTransactions),
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,
+      ...effects.view(transaction),
       ...(options.timeline
         ? {
             timeline: buildTimeline({

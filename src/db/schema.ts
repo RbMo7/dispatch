@@ -17,6 +17,7 @@ import {
 
 import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
+import type { TransactionEffects } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
 import type {
@@ -108,7 +109,28 @@ export const transactions = pgTable(
   },
   (table) => [
     index('transactions_dispatch_id_call_index_idx').on(table.dispatchId, table.callIndex),
+    index('transactions_confirmed_at_idx')
+      .on(table.confirmedAt)
+      .where(sql`${table.status} = 'CONFIRMED'`),
   ],
+);
+
+/**
+ * ADR-0063: what each confirmed transaction changed, read once by the worker
+ * and kept raw. One row per transaction, which every Call bundled into it
+ * shares. `effects` is null while the read keeps failing.
+ */
+export const transactionEffects = pgTable(
+  'transaction_effects',
+  {
+    chain: text('chain').notNull(),
+    hash: text('hash').notNull(),
+    effects: jsonb('effects').$type<TransactionEffects>(),
+    readFailures: integer('read_failures').notNull().default(0),
+    lastError: text('last_error'),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chain, table.hash] })],
 );
 
 /**

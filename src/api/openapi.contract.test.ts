@@ -18,6 +18,7 @@ import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history
 import { AssetRegistry } from '../asset-registry/asset-registry.js';
 import { configuredAssets, registryFromConfig } from '../asset-registry/configured-assets.js';
 import type { ReadToken, TokenRead } from '../chain-handler/chain-handler.js';
+import { FLOW, FSPL, readRecorded, recorded } from '../effects/test-support/recorded.js';
 import { readSender, type SenderConfig, type SenderReads } from './senders.js';
 import { setupReader } from './setup-routes.js';
 
@@ -328,7 +329,11 @@ const readToken: ReadToken = (address) =>
 async function buildContractApp() {
   const store = new InMemoryDispatchStore();
   await store.seedConfigAssets(
-    configuredAssets({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6', solana: '' }),
+    configuredAssets({
+      // FLOW and FSPL are the test tokens of the live run the timeline and call examples come from.
+      base: `USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6,FLOW:${FLOW}:6`,
+      solana: `FSPL:${FSPL}:6`,
+    }),
   );
   const known = new AssetRegistry(() => store.listKnownAssets());
   await known.refresh();
@@ -635,4 +640,68 @@ describe('docs/openapi.yaml against the real routes', () => {
     });
     expect(body.items[0]?.approval).not.toHaveProperty(['approvers', 1, 'label']);
   });
+  it.each([
+    ['callExplainedSolana', 'memo-and-spl-call'],
+    ['callUndecodedBase', 'base-call-with-value'],
+  ])(
+    'answers the %s example exactly, once its recorded transaction confirmed and the worker read it',
+    async (example, transaction) => {
+      const get = (SPEC.paths as Record<string, Record<string, Operation>>)['/v1/dispatch/{id}']!
+        .get!;
+      const documented = resolve(get.responses['200']!).content!['application/json'].examples![
+        example
+      ]!.value as { chain: 'base' | 'solana'; items: { status: string }[] };
+      const request = (SPEC.paths as Record<string, Record<string, Operation>>)['/v1/dispatch']!
+        .post!.requestBody!.content['application/json'].examples![example]!.value as {
+        items: Record<string, unknown>[];
+      };
+      const { hash } = recorded(transaction);
+      const dispatch = await store.createDispatch({
+        chain: documented.chain,
+        idempotencyKey: `effects-${example}`,
+        items: request.items.map(({ type: _type, ...call }) => ({ call, payment: null })) as never,
+        retryPolicy: false,
+      });
+      await store.claimQueued(CHAINS, 100);
+      const rows = await store.createTransactions(
+        documented.items.map((_, callIndex) => ({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: documented.chain,
+          signedBytes: 'signed',
+          hash,
+        })),
+      );
+      for (const row of rows) await store.markConfirmed(row.id);
+      await store.recordEffects(
+        { chain: documented.chain, hash },
+        await readRecorded(transaction),
+        new Date(),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${dispatch.id}`,
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      const body = response.json<{ items: unknown[] }>();
+
+      expect(
+        validate(
+          pointer(
+            'paths',
+            '/v1/dispatch/{id}',
+            'get',
+            'responses',
+            '200',
+            'content',
+            'application/json',
+            'schema',
+          ),
+          body,
+        ),
+      ).toEqual([]);
+      expect(body.items).toEqual(documented.items);
+    },
+  );
 });

@@ -2,6 +2,7 @@ import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import type { TransactionEffects, TransactionRef } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
   FlagRule,
@@ -442,5 +443,22 @@ export interface DispatchStore {
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
   /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
   recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+
+  /**
+   * ADR-0063: CONFIRMED transactions on `chains` whose effects the worker
+   * should read now, oldest confirmation first, each once however many Calls
+   * share it (`EFFECTS_READ` says which are due).
+   */
+  listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]>;
+  /** Stores a transaction's effects. Effects already stored are kept, so a second read changes nothing. */
+  recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void>;
+  /** Counts one failed read, so the next waits longer and the reads stop after `EFFECTS_READ.maxFailures`. */
+  recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void>;
+  /** The stored effects of these transactions on `chain`, by hash; a hash with none is left out. */
+  listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>>;
   listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

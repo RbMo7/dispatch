@@ -131,6 +131,53 @@ paths:
                       to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
                       data: 0x
                       value: '20000000000000'
+              callExplainedSolana:
+                summary: A Memo and an SPL transferChecked on Solana, as call items
+                value:
+                  chain: solana
+                  items:
+                    - type: call
+                      programId: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                      accounts: []
+                      data: Zmxvd3Mgcm93IDU=
+                    - type: call
+                      programId: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                      accounts:
+                        - pubkey: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                          isSigner: false
+                          isWritable: true
+                        - pubkey: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                          isSigner: false
+                          isWritable: false
+                        - pubkey: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                          isSigner: false
+                          isWritable: true
+                        - pubkey: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          isSigner: true
+                          isWritable: false
+                      data: DJDQAwAAAAAABg==
+              callUndecodedBase:
+                summary: A call to a contract no built-in decoder knows, with value
+                value:
+                  chain: base
+                  items:
+                    - type: call
+                      to: '0x79bb95aef7f032144a9a5c6933b8d13a98e6d793'
+                      data: '0xa26e11860000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b666c6f777320726f772034000000000000000000000000000000000000000000'
+                      value: '1000000000000'
+              payShortfallBase:
+                summary: Pay two recipients on Base, one in a token the Sender holds too little of
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '50000000000000'
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: FLOW
+                      amount: '2000000000000'
               bulkCallBase:
                 summary: Two payments in one Bulk Call on Base
                 value:
@@ -300,6 +347,15 @@ paths:
                 callBase:
                   summary: A contract call on Base
                   value: { dispatchId: e9dd9112-3da8-40e7-98e3-2bc34fb11a40, status: queued }
+                callExplainedSolana:
+                  summary: A Memo and an SPL transferChecked on Solana, as call items
+                  value: { dispatchId: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9, status: queued }
+                callUndecodedBase:
+                  summary: A call to a contract no built-in decoder knows, with value
+                  value: { dispatchId: dafa9a9b-2759-45b9-9585-70890a2ec7bf, status: queued }
+                payShortfallBase:
+                  summary: Pay two recipients on Base, one in a token the Sender holds too little of
+                  value: { dispatchId: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0, status: queued }
                 bulkCallBase:
                   summary: Two payments in one Bulk Call on Base
                   value: { dispatchId: 66d96716-22fe-4a3c-bc18-a08b1646fd40, status: queued }
@@ -461,13 +517,15 @@ paths:
                           message: insufficient USDC balance
                           chainDetail: { asset: USDC, short: '40000000' }
                 managedWithTimeline:
-                  summary: The same Dispatch with its timeline
+                  summary: A Managed Dispatch with its timeline, one item paid and one failed by the Funding Check
                   value:
-                    dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
+                    dispatchId: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0
                     mode: managed
                     chain: base
-                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
-                    createdAt: '2026-11-01T02:12:17.619Z'
+                    sender:
+                      name: payouts
+                      address: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                    createdAt: 2026-11-01T16:44:48.033Z
                     status: partial
                     items:
                       - type: payment
@@ -476,43 +534,87 @@ paths:
                         decimals: 18
                         amount: '50000000000000'
                         status: confirmed
-                        transactionHash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        transactionHash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
                         error: null
+                        effects:
+                          transfers:
+                            - standard: native
+                              token: native
+                              from: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                              to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                              amount: '50000000000000'
+                              asset:
+                                address: native
+                                symbol: ETH
+                                name: Ether
+                                decimals: 18
+                              formatted: '0.00005'
+                          value:
+                            amount: '50000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.00005'
+                          fee:
+                            amount: '126000000092'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000000126000000092'
+                            payer: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                          events: []
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
                       - type: payment
                         recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
-                        asset: USDC
+                        asset: FLOW
                         decimals: 6
-                        amount: '40000000'
+                        amount: '2000000000000'
                         status: failed
                         transactionHash: null
                         error:
                           code: INSUFFICIENT_FUNDS
-                          message: insufficient USDC balance
-                          chainDetail: { asset: USDC, short: '40000000' }
+                          message: insufficient FLOW balance
+                          chainDetail:
+                            asset: FLOW
+                            short: '1001001500000'
                     timeline:
-                      - { kind: created, at: '2026-11-01T02:12:17.619Z' }
+                      - kind: created
+                        at: 2026-11-01T16:44:48.033Z
+                      - kind: claimed
+                        at: 2026-11-01T16:44:48.290Z
                       - kind: failed
-                        at: '2026-11-01T02:12:18.695Z'
+                        at: 2026-11-01T16:44:48.786Z
                         hash: null
-                        items: [1]
+                        items:
+                          - 1
                         error:
                           code: INSUFFICIENT_FUNDS
-                          message: insufficient USDC balance
-                          chainDetail: { asset: USDC, short: '40000000' }
-                      - { kind: claimed, at: '2026-11-01T02:12:22.042Z' }
+                          message: insufficient FLOW balance
+                          chainDetail:
+                            asset: FLOW
+                            short: '1001001500000'
                       - kind: written
-                        at: '2026-11-01T02:12:22.050Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:49.275Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                         replaces: null
                       - kind: sent
-                        at: '2026-11-01T02:12:22.320Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:49.558Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                       - kind: confirmed
-                        at: '2026-11-01T02:12:27.324Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:51.329Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                 relay:
                   summary: A Relay Dispatch on Solana
                   value:
@@ -523,6 +625,260 @@ paths:
                     status: confirmed
                     transactionHash: 5suMQ69pdMQgSMWUaHQBcrJ8ydto3tUFhfQPN4VXiWSPFvrjvkM2TVGUjfePRxQ1pxe1LWqgFkEXXQnTU5Z8KJkh
                     error: null
+                callExplainedSolana:
+                  summary: Two decoded Solana calls and what their transaction changed
+                  value:
+                    dispatchId: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9
+                    mode: managed
+                    chain: solana
+                    sender:
+                      name: payouts
+                      address: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                    createdAt: 2026-11-01T16:36:30.148Z
+                    status: confirmed
+                    items:
+                      - type: call
+                        programId: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                        call:
+                          target: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                          decoded: true
+                          decoder: memo
+                          function: memo
+                          args:
+                            - name: text
+                              type: string
+                              value: flows row 5
+                        status: confirmed
+                        transactionHash: 4nuKdyGGwxnF3Mr5fMacBYqXpEMqjKgy1sWz5DFayg2L2AqSDHoGYtWhEcK8Ce9nqSFPZa4izJ91dU5t8GJyQtpw
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: spl
+                              token: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                              from: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                              to: GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd
+                              amount: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                          fee:
+                            amount: '5000'
+                            asset:
+                              address: native
+                              symbol: SOL
+                              name: Solana
+                              decimals: 9
+                            formatted: '0.000005'
+                            payer: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          events:
+                            - kind: instruction
+                              source: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                              decoder: memo
+                              name: memo
+                              args:
+                                - name: text
+                                  type: string
+                                  value: flows row 5
+                            - kind: instruction
+                              source: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                              decoder: spl-token
+                              name: transferChecked
+                              args:
+                                - name: source
+                                  type: pubkey
+                                  value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                                - name: mint
+                                  type: pubkey
+                                  value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                - name: destination
+                                  type: pubkey
+                                  value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                                - name: authority
+                                  type: pubkey
+                                  value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                                - name: amount
+                                  type: u64
+                                  value: '250000'
+                                  asset:
+                                    address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                    symbol: FSPL
+                                    name: FSPL
+                                    decimals: 6
+                                  formatted: '0.25'
+                                - name: decimals
+                                  type: u8
+                                  value: '6'
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
+                      - type: call
+                        programId: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                        call:
+                          target: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                          decoded: true
+                          decoder: spl-token
+                          function: transferChecked
+                          args:
+                            - name: source
+                              type: pubkey
+                              value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                            - name: mint
+                              type: pubkey
+                              value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                            - name: destination
+                              type: pubkey
+                              value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                            - name: authority
+                              type: pubkey
+                              value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                            - name: amount
+                              type: u64
+                              value: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                            - name: decimals
+                              type: u8
+                              value: '6'
+                          selector: 0c
+                        status: confirmed
+                        transactionHash: 4nuKdyGGwxnF3Mr5fMacBYqXpEMqjKgy1sWz5DFayg2L2AqSDHoGYtWhEcK8Ce9nqSFPZa4izJ91dU5t8GJyQtpw
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: spl
+                              token: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                              from: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                              to: GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd
+                              amount: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                          fee:
+                            amount: '5000'
+                            asset:
+                              address: native
+                              symbol: SOL
+                              name: Solana
+                              decimals: 9
+                            formatted: '0.000005'
+                            payer: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          events:
+                            - kind: instruction
+                              source: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                              decoder: memo
+                              name: memo
+                              args:
+                                - name: text
+                                  type: string
+                                  value: flows row 5
+                            - kind: instruction
+                              source: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                              decoder: spl-token
+                              name: transferChecked
+                              args:
+                                - name: source
+                                  type: pubkey
+                                  value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                                - name: mint
+                                  type: pubkey
+                                  value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                - name: destination
+                                  type: pubkey
+                                  value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                                - name: authority
+                                  type: pubkey
+                                  value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                                - name: amount
+                                  type: u64
+                                  value: '250000'
+                                  asset:
+                                    address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                    symbol: FSPL
+                                    name: FSPL
+                                    decimals: 6
+                                  formatted: '0.25'
+                                - name: decimals
+                                  type: u8
+                                  value: '6'
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
+                callUndecodedBase:
+                  summary: A Base call shown by its selector, and its effects
+                  value:
+                    dispatchId: dafa9a9b-2759-45b9-9585-70890a2ec7bf
+                    mode: managed
+                    chain: base
+                    sender:
+                      name: payouts
+                      address: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                    createdAt: 2026-11-01T16:36:20.882Z
+                    status: confirmed
+                    items:
+                      - type: call
+                        to: '0x79bb95aef7f032144a9a5c6933b8d13a98e6d793'
+                        call:
+                          target: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                          value:
+                            amount: '1000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000001'
+                          decoded: false
+                          selector: '0xa26e1186'
+                          data: '0xa26e11860000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b666c6f777320726f772034000000000000000000000000000000000000000000'
+                        status: confirmed
+                        transactionHash: '0x0c11df6a960dc8d1d39387345104cbda5a83b92992fa36d720fbc37fce1a1e74'
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: native
+                              token: native
+                              from: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                              to: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                              amount: '1000000000000'
+                              asset:
+                                address: native
+                                symbol: ETH
+                                name: Ether
+                                decimals: 18
+                              formatted: '0.000001'
+                          value:
+                            amount: '1000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000001'
+                          fee:
+                            amount: '148302000092'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000000148302000092'
+                            payer: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                          events: []
+                          undecodedEvents: 1
+                          undecodedEventSources:
+                            - source: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                              count: 1
+                          truncated: false
                 held:
                   summary: A Dispatch held by a Flag Rule
                   value:
@@ -2071,6 +2427,9 @@ components:
         payBase: { value: payroll-2026-11-01 }
         callAndPaySolana: { value: invoice-4471 }
         callBase: { value: call-base-2026-11-01 }
+        callExplainedSolana: { value: flows-row-5 }
+        callUndecodedBase: { value: flows-row-4 }
+        payShortfallBase: { value: payroll-2026-11-01-shortfall }
         bulkCallBase: { value: bulk-base-2026-11-01 }
         relayBase: { value: relay-order-8841 }
         relaySolana: { value: relay-order-8842 }
@@ -2095,7 +2454,9 @@ components:
       schema: { type: string, format: uuid }
       examples:
         managed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
-        managedWithTimeline: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+        managedWithTimeline: { value: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0 }
+        callExplainedSolana: { value: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9 }
+        callUndecodedBase: { value: dafa9a9b-2759-45b9-9585-70890a2ec7bf }
         relay: { value: 78dbeb88-ec45-4e73-bf74-f71434302ba4 }
         cancelled: { value: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2 }
         alreadyClaimed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
@@ -2476,6 +2837,7 @@ components:
             - $ref: '#/components/schemas/Error'
           description: '`null` unless the item failed or was abandoned.'
         approval: { $ref: '#/components/schemas/Approval' }
+        effects: { $ref: '#/components/schemas/Effects' }
 
     PaymentItem:
       title: A payment item
@@ -2497,15 +2859,140 @@ components:
         - $ref: '#/components/schemas/ItemOutcome'
       type: object
       unevaluatedProperties: false
-      required: [type]
-      description: A call item shows only its target, `to` on Base or `programId` on Solana. Its data, value and accounts are left out.
+      required: [type, call]
+      description: A call item shows its target, `to` on Base or `programId` on Solana, and in `call` what the call does, decoded when a built-in decoder knows it. Its raw data, value and accounts are not repeated.
       properties:
         type: { const: call }
         to: { type: string }
         programId: { type: string }
+        call: { $ref: '#/components/schemas/DecodedCall' }
       oneOf:
         - required: [to]
         - required: [programId]
+
+    AssetRef:
+      type: object
+      additionalProperties: false
+      required: [address, symbol, name, decimals]
+      description: A Known Asset. `address` is its mint or contract, or `native` for the chain's own coin.
+      properties:
+        address: { type: string }
+        symbol: { type: string }
+        name: { type: string }
+        decimals: { type: integer }
+
+    AmountView:
+      type: object
+      required: [amount]
+      description: An amount in the asset's smallest unit. `asset` and `formatted` (the amount in whole units, such as `1.5`) are there when the asset is a Known Asset.
+      properties:
+        amount: { $ref: '#/components/schemas/Amount' }
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        formatted: { type: string }
+
+    CallArg:
+      type: object
+      additionalProperties: false
+      required: [name, type, value]
+      description: One argument, named and typed as its decoder defines it. Numbers are strings. An amount of a Known Asset also has `asset` and `formatted`.
+      properties:
+        name: { type: string }
+        type: { type: string, description: 'The ABI type on Base (`address`, `uint256`, `bytes`, ...). On Solana `pubkey` for an account, or `u8`, `u32`, `u64`, `string`.' }
+        value: { description: A string, a boolean, or an array or object of them. }
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        formatted: { type: string }
+
+    DecodedCall:
+      type: object
+      required: [target, decoded]
+      description: |
+        What a call does, read by the engine's built-in decoders: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana.
+        When none knows it, `decoded` is `false` and the call shows its `selector` and raw `data`. The engine never asks a third-party service to guess a function.
+      properties:
+        target: { type: string, description: The contract (Base) or program (Solana) called. }
+        decoded: { type: boolean, description: '`true` when a decoder named the function, or when the call carries no data. `function` is left out then.' }
+        decoder:
+          type: string
+          enum: [erc20, erc721, erc1155, weth, multicall3, system, spl-token, token-2022, associated-token-account, memo, compute-budget]
+        function: { type: string }
+        args:
+          type: array
+          description: Solana lists the instruction's accounts first, then its data.
+          items: { $ref: '#/components/schemas/CallArg' }
+        selector: { type: string, description: 'Base: the 4-byte function selector. Solana: the instruction discriminator in hex, up to 8 bytes for a program no decoder knows.' }
+        data: { type: string, description: 'The raw data, only when `decoded` is `false`: hex on Base, base64 on Solana.' }
+        value:
+          description: 'Base: the ETH sent with the call, when not zero.'
+          $ref: '#/components/schemas/AmountView'
+        calls:
+          type: array
+          description: Multicall3 only. Each call it makes, decoded the same way, with its own `allowFailure`.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/DecodedCall'
+            type: object
+            required: [allowFailure]
+            properties:
+              allowFailure: { type: boolean }
+
+    Transfer:
+      allOf:
+        - $ref: '#/components/schemas/AmountView'
+      type: object
+      required: [standard, token, from, to]
+      description: Value that moved. `from` is `null` for a mint and `to` is `null` for a burn. On Solana `from` and `to` are the wallets that own the token accounts, when the transaction says.
+      properties:
+        standard: { type: string, enum: [native, erc20, erc721, erc1155, spl, token-2022] }
+        token: { type: string, description: The contract or mint, or `native`. }
+        from: { type: [string, 'null'] }
+        to: { type: [string, 'null'] }
+        tokenId: { type: string, description: ERC-721 and ERC-1155 only. }
+
+    Event:
+      type: object
+      additionalProperties: false
+      required: [kind, source, decoder, name, args]
+      description: A decoded receipt log on Base, or an instruction the transaction ran on Solana, inner ones included.
+      properties:
+        kind: { type: string, enum: [log, instruction] }
+        source: { type: string, description: The contract that emitted the log, or the program that ran. }
+        decoder: { type: string }
+        name: { type: string }
+        args: { type: array, items: { $ref: '#/components/schemas/CallArg' } }
+
+    Effects:
+      type: object
+      additionalProperties: false
+      required: [transfers, fee, events, undecodedEvents, undecodedEventSources, truncated]
+      description: |
+        What the item's transaction changed on chain, once it is confirmed and the worker has read it (a few seconds later). Items that share one transaction show the same effects.
+        Transfers come from decoded logs on Base, so ETH a contract forwards inside the call is not among them; on Solana they come from System and token instructions, inner ones included.
+      properties:
+        transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        value:
+          description: 'Base: the ETH the transaction itself sent, when not zero.'
+          $ref: '#/components/schemas/AmountView'
+        fee:
+          description: What the transaction cost and who paid it. On Base it includes the L1 data fee.
+          allOf:
+            - $ref: '#/components/schemas/AmountView'
+          type: object
+          required: [payer]
+          properties:
+            payer: { type: string }
+        events: { type: array, items: { $ref: '#/components/schemas/Event' } }
+        undecodedEvents: { type: integer, description: Logs or instructions no built-in decoder knows. }
+        undecodedEventSources:
+          type: array
+          description: Where the undecoded ones came from, most first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [source, count]
+            properties:
+              source: { type: string }
+              count: { type: integer }
+        truncated: { type: boolean, description: 'Part of what the transaction did was too large to store: past 128 logs or instructions, 2 KiB of data each, or 100 log lines.' }
 
     TimelineEntry:
       description: One step, oldest first. `items` are the positions of the items the step is about. `hash` names one version of a transaction.
@@ -2662,6 +3149,7 @@ components:
           enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled]
         transactionHash: { type: [string, 'null'] }
         error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        effects: { $ref: '#/components/schemas/Effects' }
         timeline:
           type: array
           description: Only with `include=timeline`. The one transaction is item `0`.

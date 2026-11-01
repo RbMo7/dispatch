@@ -93,22 +93,22 @@ Both items carry the same `transactionHash`. Open it in an explorer: `https://ex
 
 ## When an item fails before signing
 
-The timeline of [the batch in Send a batch of payments](./send-payments.md) shows a `failed` entry with `hash: null`: the Funding Check failed the USDC item before anything was signed. Its `claimed` entry comes after the `failed` one, because the worker re-stamps its claim as it works through a Dispatch.
+This Dispatch paid ETH and a test token, `FLOW`, of which the Sender held too little. Its timeline shows a `failed` entry with `hash: null`: the Funding Check failed the `FLOW` item right after the claim, before anything was signed.
 
 ```json
 "timeline": [
-  { "kind": "created", "at": "2026-11-01T02:12:17.619Z" },
+  { "kind": "created", "at": "2026-11-01T16:44:48.033Z" },
+  { "kind": "claimed", "at": "2026-11-01T16:44:48.290Z" },
   {
     "kind": "failed",
-    "at": "2026-11-01T02:12:18.695Z",
+    "at": "2026-11-01T16:44:48.786Z",
     "hash": null,
     "items": [1],
-    "error": { "code": "INSUFFICIENT_FUNDS", "message": "insufficient USDC balance", "chainDetail": { "asset": "USDC", "short": "40000000" } }
+    "error": { "code": "INSUFFICIENT_FUNDS", "message": "insufficient FLOW balance", "chainDetail": { "asset": "FLOW", "short": "1001001500000" } }
   },
-  { "kind": "claimed", "at": "2026-11-01T02:12:22.042Z" },
-  { "kind": "written", "at": "2026-11-01T02:12:22.050Z", "hash": "0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896", "items": [0], "replaces": null },
-  { "kind": "sent", "at": "2026-11-01T02:12:22.320Z", "hash": "0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896", "items": [0] },
-  { "kind": "confirmed", "at": "2026-11-01T02:12:27.324Z", "hash": "0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896", "items": [0] }
+  { "kind": "written", "at": "2026-11-01T16:44:49.275Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0], "replaces": null },
+  { "kind": "sent", "at": "2026-11-01T16:44:49.558Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0] },
+  { "kind": "confirmed", "at": "2026-11-01T16:44:51.329Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0] }
 ]
 ```
 
@@ -131,6 +131,45 @@ A fee bump on Base, or a resubmission after a Solana blockhash expired, makes a 
 ```
 
 The first version was resent once (`attempt`), replaced by a higher-fee version a minute later, and the replacement confirmed, which dropped the original. While this happens, the item's `transactionHash` is the latest version, and it can change between polls. Once a version lands, `transactionHash` is the one that landed, which may be the original. [Retry Policy and stuck transactions](../lifecycle.md#retry-policy-and-stuck-transactions) explains when the engine does this.
+
+## What a call did
+
+A `call` item carries `call`, what the call does, read by the engine's built-in decoders: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana. Once an item's transaction is confirmed, the worker reads it from the chain once, and the item gains `effects`: what moved, the fee and who paid it, and every log or instruction a decoder knows. A Relay Dispatch gets `effects` too, at the top level.
+
+This is the raw SPL `transferChecked` of a Dispatch with a Memo and a transfer, trimmed (each `asset` and the `events` left out):
+
+```json
+"call": {
+  "target": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "decoded": true,
+  "decoder": "spl-token",
+  "function": "transferChecked",
+  "args": [
+    { "name": "source", "type": "pubkey", "value": "H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA" },
+    { "name": "mint", "type": "pubkey", "value": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P" },
+    { "name": "destination", "type": "pubkey", "value": "9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM" },
+    { "name": "authority", "type": "pubkey", "value": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH" },
+    { "name": "amount", "type": "u64", "value": "250000", "asset": { "address": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P", "symbol": "FSPL", "name": "FSPL", "decimals": 6 }, "formatted": "0.25" },
+    { "name": "decimals", "type": "u8", "value": "6" }
+  ],
+  "selector": "0c"
+},
+"effects": {
+  "transfers": [
+    { "standard": "spl", "token": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P", "from": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH", "to": "GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd", "amount": "250000", "formatted": "0.25" }
+  ],
+  "fee": { "amount": "5000", "formatted": "0.000005", "payer": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH" },
+  "undecodedEvents": 0,
+  "undecodedEventSources": [],
+  "truncated": false
+}
+```
+
+- An amount in a Known Asset carries the asset and `formatted`, the amount in whole units.
+- A call no decoder knows has `decoded: false`, its `selector` (the 4-byte function selector on Base, the first bytes of the instruction on Solana) and its raw `data`. The engine never asks a third-party service to guess what a function is.
+- A log from a contract no decoder knows is counted in `undecodedEvents`, by contract in `undecodedEventSources`.
+- Items that share one transaction, such as a Solana bundle or a Bulk Call, show the same `effects`. On Base, ETH a contract forwards inside the call does not show as a transfer, because no log records it.
+- The engine stores at most 128 logs or instructions per transaction, each cut to 2 KiB, and 100 log lines. `truncated: true` says something was cut.
 
 ## Every kind of entry
 

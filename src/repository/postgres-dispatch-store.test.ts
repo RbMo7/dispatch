@@ -28,6 +28,7 @@ import { runListConformanceSuite } from './list-conformance.js';
 import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
 import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
+import { runEffectsConformanceSuite } from './effects-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
@@ -65,6 +66,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
   runListConformanceSuite(() => new PostgresDispatchStore(db));
   runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
+  runEffectsConformanceSuite(() => new PostgresDispatchStore(db));
   runFlagRuleConformanceSuite(() => new PostgresDispatchStore(db));
   runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
   runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));

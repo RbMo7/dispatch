@@ -23,6 +23,7 @@ import type { Logger } from 'pino';
 import { AssetRegistry, type AssetLookup } from '../../asset-registry/asset-registry.js';
 import type { CallForChain, DispatchItem, EvmCall, Payment } from '../../domain/call.js';
 import type { BulkCall } from '../../domain/dispatch.js';
+import type { BaseEffects } from '../../domain/effects.js';
 import type { DispatchError } from '../../domain/errors.js';
 import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
@@ -50,6 +51,7 @@ import {
   type CallTrace,
 } from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
+import { baseEffectsFrom } from './effects.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
 import {
   extractMessage,
@@ -980,6 +982,27 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         this.logger.debug({ hash }, 'getStatus: PENDING (no receipt yet)');
         return ok('PENDING');
       }
+      return err(mapBaseFailure(cause));
+    }
+  }
+
+  async readEffects(hash: string): Promise<Result<BaseEffects, DispatchError>> {
+    try {
+      const [receipt, transaction] = await Promise.all([
+        this.client.request({
+          method: 'eth_getTransactionReceipt',
+          params: [hash as `0x${string}`],
+        }),
+        this.client.request({
+          method: 'eth_getTransactionByHash',
+          params: [hash as `0x${string}`],
+        }),
+      ]);
+      if (!receipt || !transaction) {
+        return err({ code: 'RPC_UNAVAILABLE', message: `${hash} has no receipt on this node` });
+      }
+      return ok(baseEffectsFrom(receipt, transaction));
+    } catch (cause) {
       return err(mapBaseFailure(cause));
     }
   }

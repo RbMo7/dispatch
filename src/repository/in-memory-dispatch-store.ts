@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import { EFFECTS_READ, type TransactionEffects, type TransactionRef } from '../domain/effects.js';
 import {
   applyConfigSeed,
   planConfigSeed,
@@ -72,6 +73,10 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
   private setupChecks: SetupCheckRecord[] = [];
+  private readonly effects = new Map<
+    string,
+    { effects: TransactionEffects | null; readFailures: number; readAt: Date }
+  >();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -1246,4 +1251,71 @@ export class InMemoryDispatchStore implements DispatchStore {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
   }
+
+  listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]> {
+    const due = new Map<string, { ref: TransactionRef; confirmedAt: Date }>();
+    for (const t of this.transactions.values()) {
+      if (t.status !== 'CONFIRMED' || !t.hash || !t.confirmedAt) continue;
+      if (!chains.includes(t.chain)) continue;
+      if (t.confirmedAt.getTime() < now.getTime() - EFFECTS_READ.windowMs) continue;
+      const read = this.effects.get(effectsKey(t.chain, t.hash));
+      const waiting =
+        !read ||
+        (read.effects === null &&
+          read.readFailures < EFFECTS_READ.maxFailures &&
+          read.readAt.getTime() + read.readFailures * EFFECTS_READ.retryAfterMs <= now.getTime());
+      if (!waiting) continue;
+      const key = effectsKey(t.chain, t.hash);
+      const held = due.get(key);
+      if (!held || t.confirmedAt < held.confirmedAt) {
+        due.set(key, { ref: { chain: t.chain, hash: t.hash }, confirmedAt: t.confirmedAt });
+      }
+    }
+    return Promise.resolve(
+      [...due.values()]
+        .sort((a, b) => a.confirmedAt.getTime() - b.confirmedAt.getTime())
+        .slice(0, limit)
+        .map(({ ref }) => ref),
+    );
+  }
+
+  recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void> {
+    const key = effectsKey(ref.chain, ref.hash);
+    const held = this.effects.get(key);
+    if (!held?.effects)
+      this.effects.set(key, { effects, readFailures: held?.readFailures ?? 0, readAt: at });
+    return Promise.resolve();
+  }
+
+  recordEffectsReadFailure(ref: TransactionRef, _error: string, at: Date): Promise<void> {
+    const key = effectsKey(ref.chain, ref.hash);
+    const held = this.effects.get(key);
+    if (!held?.effects) {
+      this.effects.set(key, {
+        effects: null,
+        readFailures: (held?.readFailures ?? 0) + 1,
+        readAt: at,
+      });
+    }
+    return Promise.resolve();
+  }
+
+  listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>> {
+    return Promise.resolve(
+      new Map(
+        hashes.flatMap((hash) => {
+          const effects = this.effects.get(effectsKey(chain, hash))?.effects;
+          return effects ? [[hash, effects] as const] : [];
+        }),
+      ),
+    );
+  }
+}
+
+function effectsKey(chain: Chain, hash: string): string {
+  return `${chain}\u0000${hash}`;
 }
