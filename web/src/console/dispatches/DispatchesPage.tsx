@@ -144,9 +144,7 @@ export function DispatchesPage() {
             id: 'chain',
             label: 'Chain',
             value: query.chain,
-            options: chains.map((o) =>
-              o.value === 'all' ? { ...o, label: 'Any chain' } : o,
-            ),
+            options: chains.map((o) => (o.value === 'all' ? { ...o, label: 'Any chain' } : o)),
             onChange: (chain: string) => set({ chain: chain as DispatchesQuery['chain'] }),
           },
         ]
