@@ -1,0 +1,29 @@
+.screen {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+.listCrop {
+  display: flex;
+  height: 100%;
+  background: var(--canvas);
+}
+
+.sidebar {
+  display: flex;
+  height: 100%;
+}
+
+/* Flag Rules are not shipped, so the console's Held page stays out of the picture. */
+.screen a[href='#held'],
+.sidebar a[href='#held'] {
+  display: none;
+}
+
+.flow {
+  padding: var(--space-5);
+  background: var(--surface);
+}

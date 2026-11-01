@@ -44,6 +44,7 @@ The design pattern is `.scratch/web-console/design.md`; the approved board is `.
 - `src/balances.tsx`: hidden balances, one context remembered per viewer in local storage. Every `Amount` reads it, so balances, totals and item amounts all mask together; units, ids, hashes, counts and bars stay.
 - `src/export/`: CSV and Excel writers over typed columns (`columns.ts` has the Dispatches list and the items of one Dispatch), the file names from design.md, and the browser download.
 - `src/motion/transitions.ts`: the shared spring and durations. `MotionConfig reducedMotion="user"` (in `src/mount.tsx`) drops every transform under `prefers-reduced-motion` and keeps the fades. Nothing in the console loops.
+- `src/landing/`: the landing page at `/` in the public build. Its product frame and feature pictures are the real console components (`console.tsx`) rendering the gallery's recorded Dispatches, laid out at console size and scaled to fit (`Scaled.tsx`), inert. The hero marks are `@web3icons/core` logos (Solana, Base, Squads, Safe); Privy and AWS KMS have no maintained logo package, so they appear as their names. Reveals, the mark swap and the one row that confirms in the frame all stop under `prefers-reduced-motion`.
 
 ## Amounts
 
