@@ -2,6 +2,8 @@
 
 Find the symptom you see, then the cause and the fix. Messages in `code font` are what the engine, the worker or the Signer actually prints.
 
+Start with `pnpm dispatch doctor`. It checks the configuration, the database, each chain's RPC, the Signer, the balances and any multisig at once, and prints the fix for each problem. [Setup checks](./doctor.md) lists every check.
+
 ## The engine will not start
 
 The API and the worker read the same settings and load the same chains, so both fail the same way. The error is the last line before the stack trace.

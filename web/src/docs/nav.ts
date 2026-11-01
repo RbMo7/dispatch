@@ -57,6 +57,7 @@ export const NAV: readonly NavSection[] = [
     title: 'Self-hosting',
     pages: [
       { source: 'docs/self-hosting/install.md', slug: 'self-hosting/install' },
+      { source: 'docs/self-hosting/doctor.md', slug: 'self-hosting/doctor' },
       { source: 'docs/self-hosting/configuration.md', slug: 'self-hosting/configuration' },
       { source: 'docs/self-hosting/signer.md', slug: 'self-hosting/signer' },
       { source: 'docs/self-hosting/multisig.md', slug: 'self-hosting/multisig' },

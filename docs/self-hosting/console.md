@@ -33,7 +33,7 @@ Selecting a row opens its detail pane, with three tabs:
 
 **Senders & Keys.** Every Sender, grouped by enabled chain, with the chain's default marked: the Sender's address and mode, the multisig and its threshold, the engine's own key, a table of balances with committed and free amounts, and what the Signer reports about the key: its curve, its pins and its chain IDs, and when the worker last read them. A line says plainly whether the key is pinned to this Safe or multisig. The Signer's backend is never shown, because the Signer does not report it.
 
-**Setup.** The same checks as `pnpm dispatch doctor`, from [Get the setup checks](../openapi.yaml#get-the-setup-checks). A summary says "All good" or how many things need you, then one card per area lists each check with its status, what it found, how to fix it, and when it last ran. The worker runs its checks at start and every five minutes. The database and console checks run when the page loads. A failing check also shows in the Overview's Needs attention. The page is read-only: configuration lives in files on the server.
+**Setup.** The same checks as `pnpm dispatch doctor`, from [Get the setup checks](../openapi.yaml#get-the-setup-checks). A summary says "All good" or how many things need you, then one card per area lists each check with its status, what it found, how to fix it, and when it last ran. The worker runs its checks at start and every five minutes. The database and console checks run when the page loads. A failing check also shows in the Overview's Needs attention. The page is read-only: configuration lives in files on the server. [Setup checks](./doctor.md) explains each check and its fix.
 
 The sidebar has one card per Sender, titled with its name, with its chain and signing mode.
 
