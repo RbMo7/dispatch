@@ -8,7 +8,12 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import pino from 'pino';
+
+import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
+import { FakeApproval } from '../chain-handler/test-support/fake-approval.js';
 import { config } from '../config.js';
+import { Coordinator } from '../coordinator/coordinator.js';
 import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import { PostgresDispatchStore } from '../repository/postgres-dispatch-store.js';
 import * as schema from './schema.js';
@@ -103,5 +108,41 @@ describe('named Senders on a database from before them (Postgres)', () => {
 
     const claimed = await store.claimQueuedFor(SOLANA, 10);
     expect(claimed.map((d) => d.id)).toEqual([seeded.queued]);
+  });
+  it("restores a Multisig Sender's unsettled propose bytes at worker start", async () => {
+    const store = new PostgresDispatchStore(drizzle(client, { schema }));
+    const handler = new StubChainHandler();
+    const approval = new FakeApproval<'base'>();
+    const restored: string[][] = [];
+    Object.assign(handler, {
+      approval,
+      restoreInFlight: (signed: string[]) => {
+        restored.push(signed);
+        return Promise.resolve();
+      },
+    });
+    const safe: SenderRef = { chain: 'base', address: '0xSafe' as SenderAddress };
+    const coordinator = new Coordinator({
+      store,
+      chainHandlers: new Map([['base', handler]]),
+      senders: [{ ref: safe, handler, isDefault: false }],
+      abandonmentTimeoutMs: new Map([['base', 600_000]]),
+      logger: pino({ level: 'silent' }),
+    });
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'multisig-restore',
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+      senderAddress: safe.address,
+    });
+    approval.submitImpl = () =>
+      Promise.resolve({ ok: false, error: { code: 'RPC_UNAVAILABLE', message: 'down' } });
+    await coordinator.processQueuedDispatchesFor(safe, 10);
+
+    // Postgres's timestamptz stops short of JavaScript's latest Date: the open-ended read must still work.
+    await coordinator.restoreReservations();
+
+    expect(restored).toEqual([['signed-prop-1']]);
   });
 });

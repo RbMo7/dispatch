@@ -777,7 +777,9 @@ export class Coordinator {
 
   /** `chain`'s Proposals that are not yet settled (`noted`, `open` or `executing`). */
   private async unsettledProposals(chain: Chain) {
-    const farFuture = new Date(8.64e15);
+    if (!this.senders.some((s) => s.ref.chain === chain && s.handler.approval)) return [];
+    // Postgres's timestamptz stops at year 294276; JavaScript's latest Date is past it.
+    const farFuture = new Date('9999-12-31T00:00:00.000Z');
     const proposals = await this.store.listProposalsDue([chain], farFuture, 10_000);
     return proposals.filter((p) => ['noted', 'open', 'executing'].includes(p.phase));
   }
