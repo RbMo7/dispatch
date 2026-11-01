@@ -324,6 +324,22 @@ export interface ChainHandler<C extends Chain = Chain> {
   ): Promise<Result<PreparedTransaction, DispatchError>>;
 
   /**
+   * #171 (ADR-0064), optional: only a chain with account nonces implements
+   * it. The same Calls as `signed`, unsigned and with no nonce, so `sign`
+   * gives them a fresh one: the resend after another sender took the nonce.
+   * Keeps `signed`'s fees, or prices them afresh when `reprice` (Retry
+   * Policy on). Must never mutate `signed`.
+   */
+  prepareResend?(
+    signed: SignedTransaction,
+    senderAddress: string,
+    options: { reprice: boolean },
+  ): Promise<Result<PreparedTransaction, DispatchError>>;
+
+  /** #171 (ADR-0064), optional: the account nonce `signed` carries. No RPC. */
+  nonceOf?(signed: SignedTransaction): number | undefined;
+
+  /**
    * #11 (ADR-0038), optional: only a chain with Bulk Call implements it —
    * its presence is the capability. Checks a request's `bulkCall` against
    * its items before anything is persisted, resolving the batch size and

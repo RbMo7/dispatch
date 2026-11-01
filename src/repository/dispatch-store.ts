@@ -330,8 +330,8 @@ export interface DispatchStore {
     claimedBefore: Date,
     limit: number,
   ): Promise<RelayDispatch[]>;
-  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
-  markDropped(transactionId: string): Promise<void>;
+  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. ADR-0064: `reason` says why when nothing settled it (another sender took its nonce). */
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void>;
   /** `error` (ADR-0053's APPROVAL_TIMEOUT) is recorded when given; omitted leaves the row's error untouched, as before. */
   markAbandoned(transactionId: string, error?: DispatchError): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;

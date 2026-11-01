@@ -1000,10 +1000,10 @@ export class PostgresDispatchStore implements DispatchStore {
     return counts;
   }
 
-  async markDropped(transactionId: string): Promise<void> {
+  async markDropped(transactionId: string, reason?: DispatchError): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'DROPPED' })
+      .set({ status: 'DROPPED', ...(reason ? { error: reason } : {}) })
       .where(eq(transactions.id, transactionId));
   }
 

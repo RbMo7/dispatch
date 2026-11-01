@@ -259,25 +259,24 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   }
 
   /**
-   * issue 02: re-reads this Sender's confirmed nonce from the chain and
-   * corrects the in-process counter if it's drifted (e.g. a broadcast
-   * failed with a nonce-mismatch-shaped RPC error, or this process
-   * restarted). Never called on the happy path — `nonceCounter.assignNext`
-   * is.
+   * #10, ADR-0064: moves the counter to the chain's pending nonce, so the
+   * next one handed out is past whatever another sender has pooled too.
+   * Never back (NonceCounter.advanceTo): nonces this engine has in flight
+   * stay its own.
    */
-  /** #10: moves the counter forward to the chain's confirmed nonce, never back (NonceCounter.advanceTo). */
   private async catchUpNonce(): Promise<void> {
-    const latest = await this.client.getTransactionCount({
-      address: this.senderAddress,
-      blockTag: 'latest',
-    });
-    if (latest > this.nonceCounter.peek()) {
+    const [latest, pending] = await Promise.all([
+      this.client.getTransactionCount({ address: this.senderAddress, blockTag: 'latest' }),
+      this.client.getTransactionCount({ address: this.senderAddress, blockTag: 'pending' }),
+    ]);
+    const chainNext = Math.max(latest, pending);
+    if (chainNext > this.nonceCounter.peek()) {
       this.logger.warn(
-        { previousNextNonce: this.nonceCounter.peek(), advancedTo: latest },
+        { previousNextNonce: this.nonceCounter.peek(), advancedTo: chainNext },
         'advancing nonce counter to the chain',
       );
     }
-    this.nonceCounter.advanceTo(latest);
+    this.nonceCounter.advanceTo(chainNext);
   }
 
   private async resyncNonce(): Promise<void> {
@@ -593,6 +592,61 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       preparedId: randomUUID(),
     };
     return ok({ callIndex: 0, unsignedTransaction: encodeUnsignedTransaction(encoded) });
+  }
+
+  /**
+   * #171 (ADR-0064): the same recipient, value, data and gas as `signed`,
+   * with no nonce, so `sign` assigns the next free one. The fees stay
+   * `signed`'s unless `reprice` asks for a fresh estimate.
+   */
+  async prepareResend(
+    signed: SignedTransaction,
+    senderAddress: string,
+    { reprice }: { reprice: boolean },
+  ): Promise<Result<PreparedTransaction, DispatchError>> {
+    const sender = requireAddressResult(senderAddress);
+    if (!sender.ok) return sender;
+    const decodedSigned = this.decodeSigned(signed);
+    if (!decodedSigned.ok) return decodedSigned;
+    const { to, gas, maxFeePerGas, maxPriorityFeePerGas, value, data } = decodedSigned.value.tx;
+    if (
+      !to ||
+      gas === undefined ||
+      maxFeePerGas === undefined ||
+      maxPriorityFeePerGas === undefined
+    ) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'cannot resend: not a complete EIP-1559 transaction',
+      });
+    }
+
+    let fees = { maxFeePerGas, maxPriorityFeePerGas };
+    if (reprice) {
+      const baseFee = await this.latestBaseFeePerGas();
+      if (!baseFee.ok) return baseFee;
+      fees = estimateFeeFields(baseFee.value);
+    }
+    return ok({
+      callIndex: 0,
+      unsignedTransaction: encodeUnsignedTransaction({
+        senderAddress: sender.value,
+        chainId: this.chainId,
+        nonce: null,
+        to,
+        value: (value ?? 0n).toString(),
+        data: data ?? '0x',
+        gas: gas.toString(),
+        maxFeePerGas: fees.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+        preparedId: randomUUID(),
+      }),
+    });
+  }
+
+  nonceOf(signed: SignedTransaction): number | undefined {
+    const decoded = this.decodeSigned(signed);
+    return decoded.ok ? decoded.value.tx.nonce : undefined;
   }
 
   /** The latest block's `baseFeePerGas` — what both `prepare` and `prepareReplacement` estimate fees from. */
@@ -931,6 +985,10 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         await this.catchUpNonce().catch((catchUpCause: unknown) =>
           this.logger.error({ error: extractMessage(catchUpCause) }, 'nonce catch-up failed'),
         );
+      }
+      if (error.code === 'NONCE_ALREADY_USED') {
+        const detail = typeof error.chainDetail === 'object' ? error.chainDetail : {};
+        return err({ ...error, chainDetail: { ...detail, nonce } });
       }
       return err(error);
     }

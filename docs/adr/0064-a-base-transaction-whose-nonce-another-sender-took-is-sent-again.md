@@ -8,6 +8,7 @@ When something other than this engine sends from a Base Sender's wallet, the cha
 
 - "Nonce too low" for a transaction whose own hash (and every earlier version of the same Call) has no receipt means that transaction can never land. The engine marks it dropped, moves the Sender's counter to the chain's pending nonce, and sends the same Calls again as a new Transaction, written down first (ADR-0041).
 - A receipt read that fails is ambiguous, and the item stays broadcasting; only a definite "no receipt" allows the resend.
+- Bytes refused on their first send cannot have landed, so they are resent at once. A version that may already have reached a node (a rebroadcast of a stuck transaction, or one with fee-bump versions) is resent only after the second "nonce too low", a stuck interval later, with still no receipt: an RPC can route the receipt read to a node a block behind the one that refused the send, and resending a payment that landed would pay it twice.
 - At most 3 resends per Call; then the item fails with `NONCE_ALREADY_USED`, saying another sender keeps taking the nonces.
 - The worker also records nonces the chain shows were used by someone else, and reports them; one engine per Sender remains the rule.
 

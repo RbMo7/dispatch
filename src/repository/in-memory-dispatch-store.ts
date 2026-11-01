@@ -676,10 +676,14 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(counts);
   }
 
-  markDropped(transactionId: string): Promise<void> {
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'DROPPED' });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'DROPPED',
+        ...(reason ? { error: reason } : {}),
+      });
     });
   }
 

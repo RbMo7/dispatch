@@ -2564,6 +2564,13 @@ components:
             hash: { type: string }
             items: { type: array, items: { type: integer } }
             by: { type: [string, 'null'] }
+            error:
+              $ref: '#/components/schemas/Error'
+              description: |
+                `dropped` only, and only when nothing else settled the item: on Base,
+                `NONCE_ALREADY_USED` when another sender took the version's nonce and the engine sent
+                the item again (`by`). Its `chainDetail` holds `reason: nonce_taken`, `nonce` and
+                `resentNonce`.
         - title: confirmed
           type: object
           additionalProperties: false
