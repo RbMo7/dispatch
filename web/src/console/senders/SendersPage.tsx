@@ -3,6 +3,8 @@ import { Card } from '../../components/Card';
 import { MonoValue } from '../../components/MonoValue';
 import { type Chain, CHAINS } from '../../domain/chains';
 import {
+  type ForeignActivity,
+  foreignNonces,
   free,
   HOLDER_LABEL,
   type Holding,
@@ -115,12 +117,45 @@ function SenderPanel({ sender }: { sender: Sender }) {
         )}
       </dl>
 
+      {sender.foreignActivity && <ForeignActivityNote activity={sender.foreignActivity} />}
+
       {sender.balances.map((holding) => (
         <BalanceTable key={holding.holder} holding={holding} />
       ))}
 
       <SignerBlock sender={sender} />
     </Card>
+  );
+}
+
+/** ADR-0064: what the worker found another sender doing with this wallet, and what to do about it. */
+function ForeignActivityNote({ activity }: { activity: ForeignActivity }) {
+  return (
+    <div className={styles.holding} role="note">
+      <div className={styles.holdingHead}>
+        <span className={styles.foreignTitle}>Another sender is using this wallet</span>
+      </div>
+      <p className={styles.foreignText}>
+        Something other than this engine sent from this address in the last 24 hours. It used{' '}
+        {foreignNonces(activity)}, the latest seen {activity.lastSeenAt.toLocaleString()}.
+      </p>
+      <p className={styles.foreignText}>
+        When another sender takes a payment&apos;s nonce, the engine sends the payment again with a
+        fresh nonce. Payments can then land out of order, and a payment fails with{' '}
+        <code className={styles.code}>NONCE_ALREADY_USED</code> after 3 tries.
+      </p>
+      <p className={styles.foreignText}>
+        Stop whatever else sends from this address, such as another engine, a wallet app or a
+        script, or give this engine a Sender of its own. To split work, use named Senders in one
+        engine.{' '}
+        <a
+          className={styles.proposalLink}
+          href="/docs/self-hosting/configuration#one-engine-per-sender"
+        >
+          One engine per Sender ›
+        </a>
+      </p>
+    </div>
   );
 }
 
@@ -145,7 +180,12 @@ function BalanceTable({ holding }: { holding: Holding }) {
             const short = asset.balance.ok && isShort(asset.balance.value, asset.committed);
             return (
               <tr key={asset.asset} data-short={short || undefined}>
-                <th scope="row">{asset.asset}</th>
+                <th scope="row">
+                  {asset.asset}
+                  {asset.committed.name !== asset.asset && (
+                    <span className={styles.assetName}> {asset.committed.name}</span>
+                  )}
+                </th>
                 <td>
                   {asset.balance.ok ? (
                     <Amount {...asset.balance.value} variant="plain" />

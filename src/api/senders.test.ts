@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type { Chain } from '../domain/chain.js';
+import type { ForeignActivity } from '../domain/sender.js';
 import { err, ok } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import type { SignerKeyRecord } from '../repository/dispatch-store.js';
 import type { SignerPins } from '../signer/client.js';
 import { cachedSenders, type SenderConfig, type SenderReads } from './senders.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const SECRET = 'rpc-key-0123456789';
 const READ_AT = new Date('2026-11-01T10:00:00.000Z');
@@ -16,22 +18,22 @@ function pinned(chain: Chain, pins: SignerPins): SignerKeyRecord {
   return { chain, address: pins.address, read: { pins }, readAt: READ_AT };
 }
 
-const assetDecimals: SenderConfig['assetDecimals'] = (_chain, asset) =>
-  ({ ETH: 18, USDC: 6 })[asset as 'ETH' | 'USDC'];
+const withUsdc = registryFromConfig({
+  base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6',
+  solana: 'USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
+});
 
 const plain: SenderConfig = {
   chain: 'base',
   network: 'base-sepolia',
   address: '0xSender',
-  assets: ['ETH', 'USDC'],
-  assetDecimals,
+  assets: withUsdc,
 };
 const squads: SenderConfig = {
   chain: 'solana',
   network: 'devnet',
   address: 'Vault111',
-  assets: ['SOL', 'USDC'],
-  assetDecimals,
+  assets: withUsdc,
   approval: {
     mode: 'squads',
     multisigAddress: 'Multisig111',
@@ -44,8 +46,7 @@ const safe: SenderConfig = {
   chain: 'base',
   network: { chainId: 31337 },
   address: '0xSafe',
-  assets: ['ETH'],
-  assetDecimals,
+  assets: registryFromConfig(),
   approval: {
     mode: 'safe',
     multisigAddress: '0xSafe',
@@ -60,6 +61,7 @@ function fakeReads(options: {
   signerKeys?: Record<string, SignerKeyRecord>;
   threshold?: Partial<Record<Chain, number>>;
   committed?: Record<string, { asset: string; amount: string }[]>;
+  foreign?: Record<string, ForeignActivity>;
   clock?: { now: number };
 }) {
   const calls = { getBalance: 0, getSignerKey: 0 };
@@ -85,6 +87,10 @@ function fakeReads(options: {
     },
     listCommitted: (chain, holder) =>
       Promise.resolve(options.committed?.[`${chain}:${holder}`] ?? []),
+    foreignActivity: (_chain, address, since) => {
+      const activity = options.foreign?.[address];
+      return Promise.resolve(activity && activity.lastSeenAt >= since ? activity : null);
+    },
     now: () => new Date(options.clock?.now ?? 0),
   };
   return { reads, calls };
@@ -96,7 +102,8 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: cachedSenders(configs, reads),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });
@@ -108,6 +115,35 @@ async function getSenders(configs: SenderConfig[], reads: SenderReads, token = '
 }
 
 describe('GET /v1/senders (#111)', () => {
+  it('reports the nonces another sender used in the last 24 hours (ADR-0064)', async () => {
+    const now = Date.parse('2026-11-02T12:00:00Z');
+    const { reads } = fakeReads({
+      clock: { now },
+      foreign: {
+        '0xSender': {
+          lastSeenAt: new Date('2026-11-02T11:59:00Z'),
+          nonces: [3124, 3126],
+          count: 3,
+        },
+        '0xSafe': {
+          lastSeenAt: new Date('2026-11-01T11:00:00Z'),
+          nonces: [7, 7],
+          count: 1,
+        },
+      },
+    });
+
+    const response = await getSenders([plain, safe], reads);
+
+    const [single, multisig] = response.json<{ senders: { foreignActivity: unknown }[] }>().senders;
+    expect(single?.foreignActivity).toEqual({
+      lastSeenAt: '2026-11-02T11:59:00.000Z',
+      nonces: [3124, 3126],
+      count: 3,
+    });
+    expect(multisig?.foreignActivity).toBeNull();
+  });
+
   it('rejects a request without a valid bearer token', async () => {
     const { reads } = fakeReads({});
 
@@ -151,6 +187,7 @@ describe('GET /v1/senders (#111)', () => {
             chainIds: [84532],
             readAt: '2026-11-01T10:00:00.000Z',
           },
+          foreignActivity: null,
         },
       ],
     });
@@ -188,14 +225,14 @@ describe('GET /v1/senders (#111)', () => {
               holder: 'vault',
               address: 'Vault111',
               assets: [
-                { asset: 'SOL', balance: '9', committed: '0' },
+                { asset: 'SOL', decimals: 9, balance: '9', committed: '0' },
                 { asset: 'USDC', decimals: 6, balance: '500', committed: '120' },
               ],
             },
             {
               holder: 'memberKey',
               address: 'Member111',
-              assets: [{ asset: 'SOL', balance: '3', committed: '2' }],
+              assets: [{ asset: 'SOL', decimals: 9, balance: '3', committed: '2' }],
             },
           ],
           signerKey: {
@@ -204,6 +241,7 @@ describe('GET /v1/senders (#111)', () => {
             allowedMultisig: 'Multisig111',
             readAt: '2026-11-01T10:00:00.000Z',
           },
+          foreignActivity: null,
         },
       ],
     });

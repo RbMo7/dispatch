@@ -1,5 +1,7 @@
 # A single configured bearer token secures the API — no per-tenant key management
 
+Amended by ADR-0057 (an operator token for release and Flag Rule edits).
+
 There is no Tenant concept in this project (that was SaaS-specific scaffolding, dropped along with the rest of the old repo's multi-tenancy). `POST /v1/dispatch` and `GET /v1/dispatch/:id` are protected by one operator-configured shared secret, checked as a plain bearer token on every request — not a multi-tenant key-issuance/rotation system, since there's no tenant to issue keys to.
 
 ## Consequences

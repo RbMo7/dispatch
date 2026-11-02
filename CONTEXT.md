@@ -43,10 +43,11 @@ One Chain Handler implementation per Chain. A Chain is the unit that actually ne
 _Avoid_: Network, Environment, Tier, Sandbox/Live (config values within a Chain, not concepts the engine's own code branches on), `evm` (not a Chain here — there is no single EVM-family Chain Handler; `base` and any future Ethereum-L1 handler are each their own Chain)
 
 **Sender Pool** (roadmap — not yet built):
-Several Sender wallets under one logical operator, each with its own independent nonce sequence, that a large Managed Dispatch batch spreads across — inspired by Stellar SDP's channel accounts. The purpose is fault isolation, not raw throughput: a transaction stuck in one Sender's sequence only blocks that Sender's own remaining queue, not the whole batch. Requires pre-funding/allocation across the pool and each member registered with a Signer — deferred out of the first phase; single-Sender sequential dispatch (already safe via the atomic nonce counter and the `ABANDONED`/Retry Policy handling) ships first.
+A group of Senders on one chain that a large Managed Dispatch is spread across automatically, each with its own nonce sequence, inspired by Stellar SDP's channel accounts. The purpose is fault isolation, not raw throughput: a transaction stuck in one Sender's sequence blocks only that Sender's share, not the whole batch. Deferred (ADR-0016). Named Senders (ADR-0060) are different: a caller chooses one per Dispatch, and nothing is spread. A pool could later be built as a group of named Senders.
+_Avoid_: Named Senders (a per-Dispatch choice, not a pool), Channel accounts
 
 **Approver**:
-One member of a multisig wallet whose vote counts toward its threshold. A human holding their own key, outside the engine and outside any Signer — the engine never holds a key that can approve, so no single host can reach a threshold alone.
+One member of a multisig wallet whose vote counts toward its threshold. A human holding their own key, outside the engine and outside any Signer — the engine never holds a key that can approve, so no single host can reach a threshold alone. On each Proposal, an Approver's decision is approved, rejected or still pending, as read from the chain.
 _Avoid_: Signer (that is the key-holding service, not a multisig member), Cosigner, Owner
 
 **Treasury**:
@@ -62,7 +63,7 @@ A Sender whose address is a multisig wallet, so its Managed Dispatch transaction
 _Avoid_: Approval Sender, Multisig Wallet (ambiguous with a Treasury)
 
 **Transaction**:
-One broadcastable, chain-native unit with its own hash/signature. Always written down, hash included, *before* it is sent (ADR-0041), so a crash or an ambiguous send can never lose track of one that may land. Its status is `PENDING`, `CONFIRMED`, `FAILED` or `ABANDONED`, or, for a Multisig Sender's Call, `UNPROPOSED` (claimed, in no Proposal yet) or `AWAITING_APPROVAL` (inside a Proposal), which hold no hash until the Proposal is executed (ADR-0054). A fee-bumped Call also has `REPLACED` versions (superseded, still watched) and `DROPPED` ones (another version settled the Call, or, for a Solana Call resubmitted after its blockhash expired, the version provably can never land, ADR-0042). Those two are never a Call's reported status.
+One broadcastable, chain-native unit with its own hash/signature. Always written down, hash included, *before* it is sent (ADR-0041), so a crash or an ambiguous send can never lose track of one that may land. Its status is `PENDING`, `CONFIRMED`, `FAILED` or `ABANDONED`, or, for a Multisig Sender's Call, `UNPROPOSED` (claimed, in no Proposal yet) or `AWAITING_APPROVAL` (inside a Proposal), which hold no hash until the Proposal is executed (ADR-0054). A fee-bumped Call also has `REPLACED` versions (superseded, still watched) and `DROPPED` ones (another version settled the Call, or the version provably can never land: a Solana Call resubmitted after its blockhash expired, ADR-0042, or a Base Call sent again after another sender took its nonce, ADR-0064). Those two are never a Call's reported status.
 
 **Attempt**:
 One broadcast/confirmation-check of a Transaction's exact signed bytes. Resubmitting identical bytes (e.g. after an RPC timeout, or a Stuck Transaction's rebroadcast) is a new Attempt of the same Transaction, recorded even when the node answers "already known". Anything that changes the signed bytes (a fee-bump replacement, a refreshed Solana blockhash) is a new Transaction, not a new Attempt of the old one.
@@ -76,7 +77,7 @@ The terminal status for a transaction the engine has stopped actively tracking w
 _Avoid_: FAILED (reserved for a definitive on-chain outcome only), CANCELLED (an operator's action — see **Cancelled**; nothing stopped an abandoned transaction)
 
 **Cancelled**:
-The terminal status of a Dispatch an operator withdrew before the engine claimed it, so nothing was ever signed, proposed or sent (ADR-0056). Only a Dispatch can be cancelled, never a single item, and never once claimed: a signed transaction cannot be safely unsent, and an open Proposal is the Approvers' to reject.
+The terminal status of a Dispatch that a client or an operator withdrew before the engine claimed it, so nothing was ever signed, proposed or sent (ADR-0056). Only a Dispatch can be cancelled, never a single item, and never once claimed: a signed transaction cannot be safely unsent, and an open Proposal is the Approvers' to reject.
 _Avoid_: Abandoned (nobody acted), Failed (the chain refused it), Revoked
 
 **Bulk Call**:
@@ -87,17 +88,45 @@ _Avoid_: Multicall (that's the caller's contract pattern, not the engine's conce
 A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`, 60s on Base) after its latest send (ADR-0037). Stuck handling rebroadcasts its identical bytes, or fee-bumps it when Retry Policy allows. Only chains that opt in get stuck handling. Solana has none: `broadcast` resends the identical bytes while the blockhash is valid, and once it has provably expired the Coordinator resubmits the Calls as a new Transaction (ADR-0042, ADR-0045).
 _Avoid_: Dropped (a mempool eviction is one possible cause, not the state), Failed
 
-**Flag Rule** (planned — `flag-rules` spec):
-An operator-set condition, edited in the web console, that a Managed Dispatch is checked against before anything is signed or proposed — an amount or total over a limit, a first-time or non-allowlisted recipient, a `call` to an unlisted contract, a rolling daily volume. A Dispatch that matches one is held for an operator to release or cancel. A mistake-catcher, not a security control: it lives in the engine's own database, so the hard limits stay in the Signer's policy (ADR-0046). Never applies to Relay Dispatch.
+**Flag Rule**:
+An operator-set condition on one chain, optionally scoped to one Sender, that a Managed Dispatch is checked against when it is submitted: an item or a Dispatch total over a limit, a first-time or non-allowlisted recipient, a `call` to an unlisted contract, or a rolling daily volume over a limit. A Dispatch that matches one is Held. A mistake-catcher, not a security control: it lives in the engine's own database, so the hard limits stay in the Signer's policy (ADR-0046, ADR-0058). Never applies to Relay Dispatch.
 _Avoid_: Policy (that's the Signer's), Rule (ambiguous), Compliance check
 
-**Held** (planned — `flag-rules` spec):
-The status of a whole Managed Dispatch that matched a Flag Rule when it was submitted: stored but never claimed, so nothing is signed or proposed, until an operator releases or cancels it. A hold has no deadline (ADR-0058).
+**Held**:
+The status of a whole Managed Dispatch that matched a Flag Rule when it was submitted: stored but never claimed, so nothing is signed or proposed, until it is released or cancelled. A hold has no deadline (ADR-0058).
 _Avoid_: Flagged (describes why, not the state), Paused, Pending review
 
 **Release**:
-An operator's decision to let a Held Dispatch go ahead, recorded with a reason; it becomes `queued` and runs as if it had never been held. Needs the operator token, never the API token a client submits with (ADR-0057).
+An operator's decision to let a Held Dispatch go ahead, recorded with a reason; it becomes `queued` and runs as if it had never been held. Needs the Operator Token, never the API token a client submits with (ADR-0057).
 _Avoid_: Approve (that's an Approver's vote on a Proposal), Unflag
+
+**Operator Token**:
+The second, optional bearer token, for whoever reviews holds. It can do everything the API token can, and also release a Held Dispatch, change Flag Rules and Known Assets, and read Rejected Requests and Operator Actions. The API token is the one clients submit with. Both are shared secrets, not identities (ADR-0057).
+_Avoid_: Admin token, Operator account, API key (the client's token)
+
+**Operator Action**:
+A recorded cancel, release, Flag Rule change or Known Asset change: when it happened, which kind of token made it, and the reason given. The console lists them as Activity.
+_Avoid_: Audit log (that's the Signer's record of signing requests), Event
+
+**Known Asset**:
+An asset a chain's Senders can pay in: the chain's native coin, or a token identified by its mint or contract, with its symbol, name and decimals. Kept in a registry: the `*_KNOWN_TOKENS` settings seed read-only entries, and operators add tokens from the console, whose name, symbol and decimals are read from the chain, never typed in (ADR-0061). A Known Asset is disabled, never deleted. A payment in any other asset is refused with `UNKNOWN_ASSET`.
+_Avoid_: Token (ambiguous with an API token), Custom asset
+
+**Effects**:
+What a confirmed Transaction changed on chain, as the chain reports it: tokens and native value moved, the fee paid, and the events or log messages it produced. Recorded once at confirmation and decoded when read, so they describe what happened, never what a Call was meant to do (ADR-0063).
+_Avoid_: Result, Outcome (that's a Call's status), Simulation
+
+**Known Contract**:
+A contract (Base) or program (Solana) an operator registered with its ABI or Anchor IDL and a label, so the engine can name the function, arguments and events of a Call to it. Decoding happens when a Dispatch is read, so a registration also explains Calls sent before it. An address has at most one enabled registration; a wrong one is disabled, never deleted or edited, and a new one added. Standard contracts and programs are decoded by built-in decoders without one (ADR-0063).
+_Avoid_: ABI (that's what a Known Contract holds), Verified contract
+
+**Setup Check**:
+One check of an engine's setup (configuration, database, chain, Signer, Sender, multisig or console) that passes, warns or fails, with a fix for anything but a pass. The same checks run in `doctor`, in the worker, and behind the console's Setup page. A failing one is reported, never a reason to stop the engine (ADR-0067).
+_Avoid_: Startup check (a refusal to start, which only an unsafe state causes), Health check
+
+**Rejected Request**:
+A `POST /v1/dispatch` the engine refused before storing anything, kept for 30 days so an operator can see and fix what a client is getting wrong (ADR-0062). Never a Dispatch, and never has a status.
+_Avoid_: Failed Dispatch (it never existed)
 
 **Durable Nonce Execution**:
 An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Deferred (ADR-0048): without expiry, safe resubmission would first have to cancel the original by advancing the nonce, and no Sender needs the mode yet.

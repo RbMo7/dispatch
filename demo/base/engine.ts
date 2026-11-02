@@ -16,7 +16,7 @@ import { createPublicClient, createWalletClient, http, type Abi, type Chain } fr
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { buildApp } from '../../src/app.js';
-import type { BaseTokenRegistry } from '../../src/chain-handler/base/known-tokens.js';
+import { registryFromConfig } from '../../src/asset-registry/configured-assets.js';
 import {
   BASE_ABANDONMENT_TIMEOUT_MS,
   BaseChainHandler,
@@ -104,7 +104,9 @@ type DispatchBody = {
  * Postgres (in-memory store, one process), and returns a function that
  * submits a Managed Dispatch over real HTTP and drives it to a terminal state.
  */
-export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
+/** `knownTokens` is a `BASE_KNOWN_TOKENS` value. */
+export async function startEngine(knownTokens = '') {
+  const assets = registryFromConfig({ base: knownTokens });
   const signer = await startTestSigner([sender]);
   const store = new InMemoryDispatchStore();
   const chainRegistry = await ChainRegistry.load(['base'], {
@@ -115,7 +117,7 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
         senderAddress: sender.address,
         signerClient: new SignerClient(signer.url, signer.token),
         nonceHistoryStore: new InMemoryNonceHistoryStore(),
-        knownTokens,
+        assets: assets.forChain('base'),
       }),
   });
   const app = buildApp({
@@ -123,7 +125,8 @@ export async function startEngine(knownTokens: BaseTokenRegistry = {}) {
     chainRegistry,
     authToken: AUTH_TOKEN,
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets,
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('this demo serves no setup checks')),
   });

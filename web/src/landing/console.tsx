@@ -7,6 +7,7 @@ import { DispatchPane } from '../console/dispatches/DispatchPane';
 import { GallerySidebar } from '../console/gallery/Sidebar';
 import { presetRange } from '../domain/dateRange';
 import styles from './console.module.css';
+import { errorContext } from '../domain/errors';
 
 const RANGE = presetRange('7d', FIXTURE_TODAY);
 const NONE: ReadonlySet<string> = new Set();
@@ -57,6 +58,7 @@ export function ConsoleScreen({ landed }: { landed: boolean }) {
       <GallerySidebar operator />
       <List landed={landed} selected={LARGE} />
       <DispatchPane
+        chain={dispatch.chain}
         head={{
           id: dispatch.id,
           mode: dispatch.mode,
@@ -67,6 +69,7 @@ export function ConsoleScreen({ landed }: { landed: boolean }) {
         }}
         flow={dispatch.flow}
         items={dispatch.items}
+        errors={errorContext(dispatch.chain, dispatch.sender ?? null, dispatch.items ?? [])}
         details={[]}
         tab="flow"
         onTab={ignore}

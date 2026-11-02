@@ -20,8 +20,10 @@ import {
 } from 'viem';
 import type { Logger } from 'pino';
 
+import { AssetRegistry, type AssetLookup } from '../../asset-registry/asset-registry.js';
 import type { CallForChain, DispatchItem, EvmCall, Payment } from '../../domain/call.js';
 import type { BulkCall } from '../../domain/dispatch.js';
+import type { BaseEffects } from '../../domain/effects.js';
 import type { DispatchError } from '../../domain/errors.js';
 import { err, ok, type Result } from '../../domain/result.js';
 import { logger as defaultLogger } from '../../logger.js';
@@ -49,6 +51,8 @@ import {
   type CallTrace,
 } from './bulk-call.js';
 import { validateEvmCall } from './call-validation.js';
+import { revertDataOf, revertReason } from './revert-reason.js';
+import { baseEffectsFrom } from './effects.js';
 import { ERC20_ABI, buildErc20TransferCall } from './erc20.js';
 import {
   extractMessage,
@@ -57,7 +61,7 @@ import {
   mapBaseFailure,
 } from './error-mapping.js';
 import { bumpFeeFields, estimateFeeFields } from './fee-estimation.js';
-import { NATIVE_ASSET_SYMBOL, resolveKnownToken, type BaseTokenRegistry } from './known-tokens.js';
+import { NATIVE_ASSET_SYMBOL } from './known-tokens.js';
 import { buildNativeTransferCall } from './native-transfer.js';
 import { NonceCounter } from './nonce-authority.js';
 import {
@@ -86,8 +90,8 @@ export type BaseChainHandlerDeps = {
    * can omit this, mirroring SolanaChainHandlerDeps.
    */
   signerClient?: SignerClient;
-  /** Operator-configured symbol -> {contractAddress, decimals} for ERC-20 transfers (known-tokens.ts) — empty by default. */
-  knownTokens?: BaseTokenRegistry;
+  /** ADR-0061: the Known Assets a payment may name; without it, only ETH. */
+  assets?: AssetLookup<'base'>;
   /** issue 02: persisted per-Sender nonce->hash history — populated once broadcast exists (issue 03), consumed by no logic yet. */
   nonceHistoryStore: NonceHistoryStore;
   /** issue 09: minimum percentage both fee fields must be bumped by on a Retry Policy fee-bump replacement. */
@@ -181,7 +185,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   private readonly chainId: number;
   private readonly senderAddress: Address;
   private readonly signerClient: SignerClient | undefined;
-  private readonly knownTokens: BaseTokenRegistry;
+  private readonly assets: AssetLookup<'base'>;
   private readonly nonceHistoryStore: NonceHistoryStore;
   private readonly feeBumpPercent: number;
   private readonly bulkCallMaxBatchSize: number;
@@ -199,15 +203,19 @@ export class BaseChainHandler implements ChainHandler<'base'> {
   /** issue 02: the single next-nonce authority for `senderAddress` (nonce-authority.ts) — assigned in-process, never via a per-request `eth_getTransactionCount("pending")` read, so concurrent Managed Dispatch submissions can't collide or skip (ADR-0002's single-nonce-authority requirement). */
   private readonly nonceCounter: NonceCounter;
 
+  /** #172: every nonce below this has been checked for another sender's use. */
+  private foreignCheckedTo: number;
+
   private constructor(
     deps: BaseChainHandlerDeps & { client: PublicClient; senderAddress: Address },
     initialNonce: number,
+    confirmedNonce: number,
   ) {
     this.client = deps.client;
     this.chainId = deps.chainId;
     this.senderAddress = deps.senderAddress;
     this.signerClient = deps.signerClient;
-    this.knownTokens = deps.knownTokens ?? {};
+    this.assets = deps.assets ?? AssetRegistry.of([]).forChain('base');
     if (deps.approval) this.approval = deps.approval;
     this.nonceHistoryStore = deps.nonceHistoryStore;
     this.feeBumpPercent = deps.feeBumpPercent ?? 15;
@@ -221,6 +229,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
     this.logger = (deps.logger ?? defaultLogger).child({ component: 'base-chain-handler' });
     this.nonceCounter = new NonceCounter(initialNonce);
+    this.foreignCheckedTo = confirmedNonce;
   }
 
   /**
@@ -254,29 +263,28 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     ]);
     const initialNonce = Math.max(confirmed, pending);
 
-    return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce);
+    return new BaseChainHandler({ ...deps, client, senderAddress }, initialNonce, confirmed);
   }
 
   /**
-   * issue 02: re-reads this Sender's confirmed nonce from the chain and
-   * corrects the in-process counter if it's drifted (e.g. a broadcast
-   * failed with a nonce-mismatch-shaped RPC error, or this process
-   * restarted). Never called on the happy path — `nonceCounter.assignNext`
-   * is.
+   * #10, ADR-0064: moves the counter to the chain's pending nonce, so the
+   * next one handed out is past whatever another sender has pooled too.
+   * Never back (NonceCounter.advanceTo): nonces this engine has in flight
+   * stay its own.
    */
-  /** #10: moves the counter forward to the chain's confirmed nonce, never back (NonceCounter.advanceTo). */
   private async catchUpNonce(): Promise<void> {
-    const latest = await this.client.getTransactionCount({
-      address: this.senderAddress,
-      blockTag: 'latest',
-    });
-    if (latest > this.nonceCounter.peek()) {
+    const [latest, pending] = await Promise.all([
+      this.client.getTransactionCount({ address: this.senderAddress, blockTag: 'latest' }),
+      this.client.getTransactionCount({ address: this.senderAddress, blockTag: 'pending' }),
+    ]);
+    const chainNext = Math.max(latest, pending);
+    if (chainNext > this.nonceCounter.peek()) {
       this.logger.warn(
-        { previousNextNonce: this.nonceCounter.peek(), advancedTo: latest },
+        { previousNextNonce: this.nonceCounter.peek(), advancedTo: chainNext },
         'advancing nonce counter to the chain',
       );
     }
-    this.nonceCounter.advanceTo(latest);
+    this.nonceCounter.advanceTo(chainNext);
   }
 
   private async resyncNonce(): Promise<void> {
@@ -297,8 +305,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       return Promise.resolve(buildNativeTransferCall(payment.recipient, payment.amount));
     }
 
-    const token = resolveKnownToken(this.knownTokens, payment.asset);
-    if (!token) {
+    const token = this.assets.payable(payment.asset);
+    if (!token || token.kind === 'native') {
       return Promise.resolve(
         err({
           code: 'UNKNOWN_ASSET',
@@ -309,7 +317,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
 
     return Promise.resolve(
-      buildErc20TransferCall(token.contractAddress, payment.recipient, BigInt(payment.amount)),
+      buildErc20TransferCall(token.address, payment.recipient, BigInt(payment.amount)),
     );
   }
 
@@ -592,6 +600,61 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       preparedId: randomUUID(),
     };
     return ok({ callIndex: 0, unsignedTransaction: encodeUnsignedTransaction(encoded) });
+  }
+
+  /**
+   * #171 (ADR-0064): the same recipient, value, data and gas as `signed`,
+   * with no nonce, so `sign` assigns the next free one. The fees stay
+   * `signed`'s unless `reprice` asks for a fresh estimate.
+   */
+  async prepareResend(
+    signed: SignedTransaction,
+    senderAddress: string,
+    { reprice }: { reprice: boolean },
+  ): Promise<Result<PreparedTransaction, DispatchError>> {
+    const sender = requireAddressResult(senderAddress);
+    if (!sender.ok) return sender;
+    const decodedSigned = this.decodeSigned(signed);
+    if (!decodedSigned.ok) return decodedSigned;
+    const { to, gas, maxFeePerGas, maxPriorityFeePerGas, value, data } = decodedSigned.value.tx;
+    if (
+      !to ||
+      gas === undefined ||
+      maxFeePerGas === undefined ||
+      maxPriorityFeePerGas === undefined
+    ) {
+      return err({
+        code: 'CHAIN_REJECTED',
+        message: 'cannot resend: not a complete EIP-1559 transaction',
+      });
+    }
+
+    let fees = { maxFeePerGas, maxPriorityFeePerGas };
+    if (reprice) {
+      const baseFee = await this.latestBaseFeePerGas();
+      if (!baseFee.ok) return baseFee;
+      fees = estimateFeeFields(baseFee.value);
+    }
+    return ok({
+      callIndex: 0,
+      unsignedTransaction: encodeUnsignedTransaction({
+        senderAddress: sender.value,
+        chainId: this.chainId,
+        nonce: null,
+        to,
+        value: (value ?? 0n).toString(),
+        data: data ?? '0x',
+        gas: gas.toString(),
+        maxFeePerGas: fees.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+        preparedId: randomUUID(),
+      }),
+    });
+  }
+
+  nonceOf(signed: SignedTransaction): number | undefined {
+    const decoded = this.decodeSigned(signed);
+    return decoded.ok ? decoded.value.tx.nonce : undefined;
   }
 
   /** The latest block's `baseFeePerGas` — what both `prepare` and `prepareReplacement` estimate fees from. */
@@ -931,29 +994,70 @@ export class BaseChainHandler implements ChainHandler<'base'> {
           this.logger.error({ error: extractMessage(catchUpCause) }, 'nonce catch-up failed'),
         );
       }
+      if (error.code === 'NONCE_ALREADY_USED') {
+        const detail = typeof error.chainDetail === 'object' ? error.chainDetail : {};
+        return err({ ...error, chainDetail: { ...detail, nonce } });
+      }
+      // It may have reached the node, so the nonce may be this engine's (#172).
+      if (error.code === 'RPC_UNAVAILABLE' || error.code === 'ALREADY_KNOWN') {
+        await this.recordNonceHistory(sender.value, nonce, keccak256(hex));
+      }
       return err(error);
     }
 
     this.unsentNonces.delete(nonce);
-    // #10: the transaction is already on-chain at this point — a failed
-    // history write must never turn that into an error, or the Coordinator
-    // would lose the hash of a transaction that may land. Logged loudly
-    // instead (ADR-0010: surfaced, not swallowed).
+    await this.recordNonceHistory(sender.value, nonce, hash);
+    this.logger.info({ hash, nonce }, 'transaction broadcast');
+    return ok({ hash });
+  }
+
+  /**
+   * #10: the transaction may be on-chain at this point — a failed history
+   * write must never turn that into an error, or the Coordinator would lose
+   * the hash of a transaction that may land. Logged loudly instead
+   * (ADR-0010: surfaced, not swallowed).
+   */
+  private async recordNonceHistory(senderAddress: Address, nonce: number, hash: string) {
     try {
-      await this.nonceHistoryStore.recordNonce({
-        chain: 'base',
-        senderAddress: sender.value,
-        nonce,
-        hash,
-      });
+      await this.nonceHistoryStore.recordNonce({ chain: 'base', senderAddress, nonce, hash });
     } catch (cause) {
       this.logger.error(
         { hash, nonce, error: extractMessage(cause) },
-        'broadcast succeeded but recording its nonce history failed',
+        'recording a sent nonce in the nonce history failed',
       );
     }
-    this.logger.info({ hash, nonce }, 'transaction broadcast');
-    return ok({ hash });
+  }
+
+  /**
+   * #172 (ADR-0064): the nonces between the last check and the chain's
+   * confirmed count that this engine never sent, by its nonce history. Only
+   * nonces confirmed since this handler started are checked: anything older
+   * is history from before it.
+   */
+  async foreignNonces(): Promise<Result<number[], DispatchError>> {
+    let confirmed: number;
+    try {
+      confirmed = await this.client.getTransactionCount({
+        address: this.senderAddress,
+        blockTag: 'latest',
+      });
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+    const from = this.foreignCheckedTo;
+    if (confirmed <= from) return ok([]);
+    const ours = new Set(
+      (
+        await this.nonceHistoryStore.listNonceHistory('base', getAddress(this.senderAddress), {
+          from,
+          to: confirmed,
+        })
+      ).map((record) => record.nonce),
+    );
+    this.foreignCheckedTo = confirmed;
+    const foreign: number[] = [];
+    for (let nonce = from; nonce < confirmed; nonce++) if (!ours.has(nonce)) foreign.push(nonce);
+    return ok(foreign);
   }
 
   /**
@@ -983,6 +1087,81 @@ export class BaseChainHandler implements ChainHandler<'base'> {
     }
   }
 
+  /**
+   * #169: replays a reverted transaction with `eth_call` at its block to read
+   * the revert reason. A transaction that used all its gas ran out of it. Null
+   * when the chain cannot be read, so a missing reason never delays the failure.
+   */
+  async failureReason(hash: string): Promise<DispatchError | null> {
+    try {
+      const [transaction, receipt] = await Promise.all([
+        this.client.getTransaction({ hash: hash as `0x${string}` }),
+        this.client.getTransactionReceipt({ hash: hash as `0x${string}` }),
+      ]);
+      if (receipt.status === 'success') return null;
+      const detail = {
+        block: receipt.blockNumber.toString(),
+        gasUsed: receipt.gasUsed.toString(),
+        gasLimit: transaction.gas.toString(),
+      };
+      if (receipt.gasUsed >= transaction.gas) {
+        return {
+          code: 'CHAIN_REJECTED',
+          message: `reverted: ran out of gas (used all ${transaction.gas} of its gas limit)`,
+          chainDetail: { ...detail, reason: 'out of gas' },
+        };
+      }
+      try {
+        await this.client.call({
+          account: transaction.from,
+          ...(transaction.to ? { to: transaction.to } : {}),
+          data: transaction.input,
+          value: transaction.value,
+          gas: transaction.gas,
+          blockNumber: receipt.blockNumber,
+        });
+      } catch (cause) {
+        if (isRpcOutage(cause)) return null;
+        const { reason, revertData } = revertReason(revertDataOf(cause));
+        return {
+          code: 'CHAIN_REJECTED',
+          message: `reverted: ${reason}`,
+          chainDetail: { ...detail, reason, revertData },
+        };
+      }
+      return {
+        code: 'CHAIN_REJECTED',
+        message:
+          'reverted on chain, but replaying it at its block did not revert, so the chain gives no reason',
+        chainDetail: detail,
+      };
+    } catch (cause) {
+      this.logger.warn({ hash, err: cause }, 'could not read why a transaction failed');
+      return null;
+    }
+  }
+
+  async readEffects(hash: string): Promise<Result<BaseEffects, DispatchError>> {
+    try {
+      const [receipt, transaction] = await Promise.all([
+        this.client.request({
+          method: 'eth_getTransactionReceipt',
+          params: [hash as `0x${string}`],
+        }),
+        this.client.request({
+          method: 'eth_getTransactionByHash',
+          params: [hash as `0x${string}`],
+        }),
+      ]);
+      if (!receipt || !transaction) {
+        return err({ code: 'RPC_UNAVAILABLE', message: `${hash} has no receipt on this node` });
+      }
+      return ok(baseEffectsFrom(receipt, transaction));
+    } catch (cause) {
+      return err(mapBaseFailure(cause));
+    }
+  }
+
   /** issue 04: native ETH via eth_getBalance; a known ERC-20 token via a balanceOf eth_call — feeds the Funding Check (ADR-0024) unchanged. */
   async getBalance(address: string, asset: string): Promise<Result<Balance, DispatchError>> {
     const owner = requireAddressResult(address);
@@ -994,8 +1173,8 @@ export class BaseChainHandler implements ChainHandler<'base'> {
         return ok({ asset, amount: wei.toString() });
       }
 
-      const token = resolveKnownToken(this.knownTokens, asset);
-      if (!token) {
+      const token = this.assets.bySymbol(asset);
+      if (!token || token.kind === 'native') {
         return err({
           code: 'UNKNOWN_ASSET',
           message: `no known token configured for asset "${asset}"`,
@@ -1004,7 +1183,7 @@ export class BaseChainHandler implements ChainHandler<'base'> {
       }
 
       const balance = await this.client.readContract({
-        address: requireAddress(token.contractAddress),
+        address: requireAddress(token.address),
         abi: ERC20_ABI,
         functionName: 'balanceOf',
         args: [owner.value],

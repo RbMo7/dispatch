@@ -2,6 +2,7 @@ import { formatUnits } from 'viem';
 
 import { solanaNetwork } from '../../api/network.js';
 import type { Chain } from '../../domain/chain.js';
+import { FOREIGN_ACTIVITY_WINDOW_MS } from '../../domain/sender.js';
 import {
   fail,
   pass,
@@ -132,6 +133,43 @@ export const feeBalance: Check = {
   },
 };
 
+/**
+ * ADR-0064: a Sender belongs to one engine. The worker records each nonce of
+ * the wallet that something else used; this warns while any is recent.
+ */
+export const exclusiveSender: Check = {
+  id: 'sender.exclusive',
+  area: 'sender',
+  title: 'Used only by this engine',
+  runsIn: ['cli', 'worker'],
+  scope: 'sender',
+  appliesTo: (setup) =>
+    setup.chain === 'base' && setup.accounts !== undefined && setup.multisig === undefined,
+  run: async (context, { chain, accounts }) => {
+    const { address } = accounts!;
+    const since = new Date(context.now().getTime() - FOREIGN_ACTIVITY_WINDOW_MS);
+    let activity: Awaited<ReturnType<CheckContext['database']['foreignActivity']>>;
+    try {
+      activity = await context.database.foreignActivity(chain, address, since);
+    } catch (cause) {
+      return warn(
+        notCheckedFinding(`the nonces the worker recorded could not be read: ${errorText(cause)}`),
+        { setting: 'DATABASE_URL', value: 'the URL of a Postgres the engine can sign in to' },
+      );
+    }
+    if (!activity) return pass(`nothing but this engine sent from ${address} in the last 24 hours`);
+    const [first, last] = activity.nonces;
+    const nonces =
+      activity.count === 1 ? `nonce ${first}` : `${activity.count} nonces, ${first} to ${last}`;
+    return warn(
+      `something other than this engine sent from ${address} in the last 24 hours (${nonces}, the latest seen ${activity.lastSeenAt.toISOString()}); a payment whose nonce it took is sent again, but only one engine may send from a Sender`,
+      {
+        step: `Stop whatever else sends from ${address} (another engine, a wallet app or a script), or give this engine a Sender of its own`,
+      },
+    );
+  },
+};
+
 export const tokenBalances: Check = {
   id: 'sender.tokens',
   area: 'sender',
@@ -140,7 +178,8 @@ export const tokenBalances: Check = {
   scope: 'sender',
   appliesTo: (setup) => setup.accounts !== undefined,
   run: async (context, { chain, accounts }) => {
-    const { address, tokens } = accounts!;
+    const { address } = accounts!;
+    const tokens = await context.chain(chain).tokens();
     if (tokens.length === 0) return pass('no known tokens are configured');
     const reads = await Promise.all(
       tokens.map(async (token) => ({

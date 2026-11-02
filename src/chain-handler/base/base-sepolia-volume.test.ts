@@ -30,6 +30,7 @@ import {
 } from './test-support/base-fixtures.js';
 import { decodeUnsignedTransaction, encodeUnsignedTransaction } from './transaction-codec.js';
 import { CHAINS } from '../../domain/chain.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 /**
  * #15 — the actual proof base-chain-handler is done, mirroring
@@ -100,7 +101,9 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       senderAddress: sender.address,
       signerClient: new SignerClient(testSigner.url, testSigner.token),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
-      knownTokens: { TEST: { contractAddress: token.address, decimals: token.decimals } },
+      assets: registryFromConfig({ base: `TEST:${token.address}:${token.decimals}` }).forChain(
+        'base',
+      ),
       ...(TRACE_RPC_URL ? { traceRpcUrl: TRACE_RPC_URL } : {}),
     });
     store = new InMemoryDispatchStore();
@@ -112,7 +115,8 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

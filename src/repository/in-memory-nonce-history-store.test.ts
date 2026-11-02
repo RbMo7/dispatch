@@ -25,6 +25,22 @@ describe('InMemoryNonceHistoryStore', () => {
     ]);
   });
 
+  it('lists only the nonces in a range [from, to) when given one (#172)', async () => {
+    const store = new InMemoryNonceHistoryStore();
+    for (const nonce of [3, 4, 5, 6]) {
+      await store.recordNonce({
+        chain: 'base',
+        senderAddress: '0xsender',
+        nonce,
+        hash: `0xhash${nonce}`,
+      });
+    }
+
+    const listed = await store.listNonceHistory('base', '0xsender', { from: 4, to: 6 });
+
+    expect(listed.map((r) => r.nonce)).toEqual([4, 5]);
+  });
+
   it('keeps different Senders’ histories separate', async () => {
     const store = new InMemoryNonceHistoryStore();
 

@@ -119,12 +119,13 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
     vi.resetModules();
     const loaders = await import('../../../chain-loaders.js');
     coordinatorConfigFor = loaders.coordinatorConfigFor;
-    // Runs the real multisig startup checks against the real RPC and the real Signer.
-    registry = await loaders.loadChainRegistry();
     ({ db } = await import('../../../db/client.js'));
     const { PostgresDispatchStore } =
       await import('../../../repository/postgres-dispatch-store.js');
     store = new PostgresDispatchStore(db as never);
+    const assets = await loaders.loadAssetRegistry(store as never);
+    // Runs the real multisig startup checks against the real RPC and the real Signer.
+    registry = await loaders.loadChainRegistry(assets);
     ({ Coordinator: CoordinatorClass } = await import('../../../coordinator/coordinator.js'));
     const { buildApp } = await import('../../../app.js');
     app = buildApp({
@@ -132,7 +133,8 @@ describe.runIf(RUN_SQUADS)('Squads Multisig Sender through the whole engine (rea
       chainRegistry: registry,
       authToken: API_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets,
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

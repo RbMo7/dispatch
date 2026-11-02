@@ -534,6 +534,7 @@ export class ApprovalFlow {
     const current = await this.store.updateProposal(proposal.id, {
       approvals: snapshot.approvals,
       threshold: snapshot.threshold,
+      ...(snapshot.approvers && { approvers: snapshot.approvers }),
       approvalState: snapshot.status === 'approved' ? 'approved' : 'awaiting',
       executeAfter: snapshot.executeAfter ?? proposal.executeAfter,
       checkFailures: 0,
@@ -634,6 +635,10 @@ export class ApprovalFlow {
       return;
     }
     const snapshot = read.value;
+    // Recorded before any outcome, so a rejection after the deadline still shows who rejected.
+    if (snapshot.approvers) {
+      await this.store.updateProposal(proposal.id, { approvers: snapshot.approvers });
+    }
 
     if (snapshot.status === 'executed') {
       log.warn(
@@ -761,7 +766,8 @@ export class ApprovalFlow {
 
     const sent = await handler.broadcast(signed.value);
     if (sent.ok) {
-      for (const row of rows) await this.store.recordSent(row.id, sent.value.hash);
+      for (const row of rows)
+        await this.store.recordSent(row.id, sent.value.hash, sent.value.sentAt);
       return;
     }
     if (sent.error.code === 'RPC_UNAVAILABLE' || sent.error.code === 'ALREADY_KNOWN') {
@@ -984,7 +990,7 @@ export class ApprovalFlow {
     if (broadcast.ok) {
       log.info({ resubmittedHash: broadcast.value.hash }, 'expired execute resubmitted');
       for (const replacement of replacements) {
-        await this.store.recordSent(replacement.id, broadcast.value.hash);
+        await this.store.recordSent(replacement.id, broadcast.value.hash, broadcast.value.sentAt);
       }
     } else if (
       broadcast.error.code === 'RPC_UNAVAILABLE' ||

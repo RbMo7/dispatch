@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 import { ChainRegistry } from './chain-registry/chain-registry.js';
 import { InMemoryDispatchStore } from './repository/in-memory-dispatch-store.js';
+import { registryFromConfig } from './asset-registry/configured-assets.js';
 
 async function testApp() {
   return buildApp({
@@ -10,7 +11,8 @@ async function testApp() {
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });

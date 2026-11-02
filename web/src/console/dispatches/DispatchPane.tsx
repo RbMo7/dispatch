@@ -9,12 +9,15 @@ import { MonoValue } from '../../components/MonoValue';
 import { StatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
-import type { Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
+import type { Chain } from '../../domain/chains';
+import type { BulkCallSettings, Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
+import type { ErrorContext } from '../../domain/errors';
 import type { Flow } from '../../domain/flow';
 import type { Status } from '../../domain/status';
 import type { ExportFormat } from '../../export/download';
 import { fade } from '../../motion/transitions';
 import styles from '../console.module.css';
+import { CallDetails } from './CallView';
 import { ItemsTab } from './ItemsTab';
 
 export type PaneTab = 'flow' | 'items' | 'details';
@@ -34,10 +37,15 @@ export interface PaneHead {
 
 interface DispatchPaneProps {
   head: PaneHead;
+  chain: Chain;
   /** Null while the first load is out, or when it failed: `body` says which. */
   flow: Flow | null;
-  /** Null for a Relay Dispatch, which has no items: its tab is left out. */
+  /** A Relay Dispatch's one transaction as its item; null when there is nothing to list, and its tab is left out. */
   items: readonly Item[] | null;
+  /** What items sharing a hash went out as: "Bulk Call" on a Bulk Call, else "transaction". */
+  bundled?: string;
+  /** Where the items' errors happened, for the error catalogue. */
+  errors: ErrorContext;
   details: readonly { label: string; value: ReactNode }[];
   /** Shown in place of the tabs while loading or after a failed load. */
   body?: ReactNode;
@@ -51,6 +59,8 @@ interface DispatchPaneProps {
   explorerHref: string | null;
   /** The footer's right side: Cancel while unclaimed, or where to reject an open Proposal. */
   action?: ReactNode;
+  /** A Multisig Sender's Proposals and their Approvers, shown in Items and Details. */
+  approvals?: ReactNode;
   onClose: () => void;
 }
 
@@ -128,29 +138,71 @@ export function DispatchPane(props: DispatchPaneProps) {
               )}
               {tab === 'items' && items && (
                 <ItemsTab
+                  chain={props.chain}
+                  approvals={props.approvals}
                   items={items}
+                  bundled={props.bundled}
                   filter={props.itemFilter}
                   onFilter={props.onItemFilter}
                   search={props.itemSearch}
                   onSearch={props.onItemSearch}
                   onExport={props.onExportItems}
+                  errors={props.errors}
                 />
               )}
               {tab === 'details' && (
-                <dl className={`${styles.kv} ${styles.tabBody}`}>
-                  {props.details.map(({ label, value }) => (
-                    <div key={label} className={styles.kvRow}>
-                      <dt>{label}</dt>
-                      <dd>{value}</dd>
+                <div className={styles.tabBody}>
+                  <dl className={styles.kv}>
+                    {props.details.map(({ label, value }) => (
+                      <div key={label} className={styles.kvRow}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {items && head.mode === 'managed' && (
+                    <CallDetails items={items} chain={props.chain} />
+                  )}
+                  {props.approvals && (
+                    <div className={styles.detailsApprovals}>
+                      <h3 className={styles.detailsHeading}>Approval</h3>
+                      {props.approvals}
                     </div>
-                  ))}
-                </dl>
+                  )}
+                </div>
               )}
             </Tabs>
           )}
         </motion.div>
       </AnimatePresence>
     </DockedPane>
+  );
+}
+
+/** The Details tab's totals: each asset's amount with its symbol, then its name. */
+export function TotalsDetail({ totals }: { totals: readonly Money[] }) {
+  return (
+    <span className={styles.totalsDetail}>
+      {totals.map((total) => (
+        <span key={total.asset}>
+          <Amount {...total} variant="plain" unit tip={false} />
+          {total.name !== total.asset && <span className={styles.muted}> {total.name}</span>}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** The Details tab's Bulk Call: the aggregator by label and address, then its settings (ADR-0038). */
+export function BulkCallDetail({ bulk }: { bulk: BulkCallSettings }) {
+  return (
+    <span className={styles.senderDetail}>
+      {bulk.label ?? 'Through an aggregator'}
+      <MonoValue value={bulk.aggregator} />
+      <span className={styles.muted}>
+        allowFailure {String(bulk.allowFailure)}, up to {bulk.maxBatchSize} items per transaction
+      </span>
+    </span>
   );
 }
 

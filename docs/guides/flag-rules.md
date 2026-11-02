@@ -476,9 +476,13 @@ Put the limits that must never be crossed in the Signer's policy instead. The Si
 
 Use both. The Signer's policy is the hard limit that nothing may exceed. Flag Rules hold, below that limit, what a person should look at first.
 
+## Do the same from the console
+
+Sign in to the [console](../self-hosting/console.md) with the operator token. **Flag Rules** lists every rule with a switch to turn it on or off, and **New rule** opens an editor that previews the last 30 days as you type. **Held** lists every held Dispatch, oldest first, shows which rule matched which items, and has **Release**, which asks for the reason, and **Cancel**. **Activity** shows the activity record below.
+
 ## The activity record
 
-Every cancel that lands, every release, and every rule create, edit and delete is written to the activity record, with the token kind and the `reason`. Read it with [List operator actions](../openapi.yaml#list-operator-actions):
+Every cancel that lands, every release, every rule create, edit and delete, and every Known Asset add, disable and enable is written to the activity record, with the token kind and the `reason`. Read it with [List operator actions](../openapi.yaml#list-operator-actions):
 
 ```sh
 curl -s "$DISPATCH_URL/v1/activity?limit=3" -H "Authorization: Bearer $OPERATOR_TOKEN"

@@ -11,6 +11,7 @@ import {
   type Text,
 } from '../domain/flow';
 import { Amount } from './Amount';
+import { ApproverList } from './ApproverList';
 import styles from './FlowGraph.module.css';
 import { MonoValue } from './MonoValue';
 import { StackedBar } from './StackedBar';
@@ -102,11 +103,27 @@ function StageNode({
             <MonoValue value={stage.hash} full />
           </div>
         )}
+        {stage.hashes && (
+          <ul className={styles.hashes}>
+            {stage.hashes.map((sent) => (
+              <li key={sent.hash} className={styles.hashRow}>
+                <MonoValue value={sent.hash} head={10} tail={8} />
+                <span className={sent.failed ? styles.hashFailed : styles.hashOutcome}>
+                  {sent.outcome}
+                </span>
+                {sent.links.map((link) => (
+                  <StageLinkView key={link.label} link={link} onShowItems={onShowItems} />
+                ))}
+              </li>
+            ))}
+          </ul>
+        )}
         {stage.detail && (
           <div className={styles.detail}>
             <TextView text={stage.detail} />
           </div>
         )}
+        {stage.approvers && <ApproverList approvers={stage.approvers} />}
         {stage.links && stage.links.length > 0 && (
           <div className={styles.links}>
             {stage.links.map((link) => (
@@ -119,7 +136,8 @@ function StageNode({
   );
 }
 
-function TextView({ text }: { text: Text }) {
+/** Stage prose, its amounts drawn as amounts so hidden balances mask them. */
+export function TextView({ text }: { text: Text }) {
   if (typeof text === 'string') return text;
   return text.map((part, index) =>
     typeof part === 'string' ? part : <Amount key={index} {...part} variant="plain" unit />,
@@ -135,7 +153,11 @@ function StageLinkView({
 }) {
   if ('href' in link) {
     return (
-      <a className={styles.link} href={link.href} target="_blank" rel="noreferrer">
+      <a
+        className={styles.link}
+        href={link.href}
+        {...(link.href.startsWith('/') ? {} : { target: '_blank', rel: 'noreferrer' })}
+      >
         {link.label} ›
       </a>
     );

@@ -15,6 +15,7 @@ import { InMemoryDispatchStore } from '../../repository/in-memory-dispatch-store
 import { SignerClient } from '../../signer/client.js';
 import { SOLANA_ABANDONMENT_TIMEOUT_MS, SolanaChainHandler } from './solana-chain-handler.js';
 import { getDevnetConnection, getFundedSenderKeypair } from './test-support/devnet-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 /**
  * relay-dispatch issue 01's primary acceptance seam (its own Testing
@@ -129,7 +130,8 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
         chainRegistry,
         authToken: AUTH_TOKEN,
         defaultRetryPolicy: false,
-        assetDecimals: () => undefined,
+        assets: registryFromConfig(),
+        readToken: {},
         listSenders: () => Promise.resolve([]),
         readSetup: () => Promise.reject(new Error('not read in this test')),
       });
@@ -188,7 +190,8 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

@@ -1,5 +1,7 @@
 import type { Money } from './assets';
+import type { DecodedCall, Effects } from './calls';
 import type { Chain } from './chains';
+import type { ErrorDetail } from './errors';
 import type { Hold } from './flagRules';
 import type { Status } from './status';
 
@@ -24,8 +26,12 @@ export interface DispatchSummary {
   status: Status;
   createdAt: Date;
   itemCount: number;
+  /** How many items are calls; the rest are payments. Absent from an engine too old to say. */
+  callCount?: number;
   /** Per asset, summed over `payment` items. Empty for a Relay Dispatch. */
   totals: Money[];
+  /** On a held row: the names of the rules holding it. */
+  heldBy?: string[];
 }
 
 /** docs/openapi.yaml's per-item status, also a Relay Dispatch's top-level one. */
@@ -57,6 +63,8 @@ export interface DispatchError {
   message: string;
   /** `INSUFFICIENT_FUNDS`'s shortfall, in the asset's smallest unit. */
   short?: { asset: string; raw: string };
+  /** What the error catalogue explains from `chainDetail`. */
+  detail?: ErrorDetail;
 }
 
 export type ChainRef =
@@ -65,10 +73,24 @@ export type ChainRef =
 
 export type ApprovalState = 'awaiting' | 'approved' | 'approved_after_deadline';
 
+/** Safe has no per-owner rejection, so a Safe owner is only ever approved or pending. */
+export type ApproverDecision = 'approved' | 'rejected' | 'pending';
+
+export interface Approver {
+  address: string;
+  /** The senders file's name for this Approver, or null when it gives none. */
+  label: string | null;
+  decision: ApproverDecision;
+}
+
 export interface Approval {
   state: ApprovalState;
   approvals: number;
   threshold: number;
+  /** Approvals still needed. */
+  remaining: number;
+  /** Everyone who can approve, in the multisig's order. Empty until the engine first reads the Proposal. */
+  approvers: Approver[];
   deadline: Date;
   chainRef: ChainRef;
 }
@@ -80,6 +102,8 @@ interface ItemBase {
   error: DispatchError | null;
   /** Present whenever the item's Call belongs to a multisig Proposal. */
   approval: Approval | null;
+  /** What its transaction changed, once it confirmed and the worker read it (ADR-0063). */
+  effects: Effects | null;
 }
 
 export interface PaymentItem extends ItemBase {
@@ -94,6 +118,8 @@ export interface CallItem extends ItemBase {
   type: 'call';
   /** `to` on Base, `programId` on Solana. */
   target: string;
+  /** What it does, decoded when the engine read the Dispatch. */
+  call: DecodedCall;
 }
 
 export type Item = PaymentItem | CallItem;
@@ -112,13 +138,51 @@ export function itemAsset(item: Item): string | null {
 
 export type ItemFilter = 'all' | ItemStatus;
 
+/** A Base nonce another sender used first, and the one the engine sent the Call again with; null where the engine did not say. */
+export interface TakenNonce {
+  nonce: number | null;
+  resentNonce: number | null;
+}
+
+/** A Base version's EIP-1559 fees, in wei. */
+export interface Fee {
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+}
+
+/** A Bulk Call's aggregator and settings (ADR-0038). */
+export interface BulkCallSettings {
+  aggregator: string;
+  /** The contract registry's label for the aggregator, if it has one. */
+  label: string | null;
+  maxBatchSize: number;
+  allowFailure: boolean;
+}
+
 /** `GET /v1/dispatch/:id?include=timeline`'s entries, oldest first (docs/openapi.yaml). */
 export type TimelineEntry =
   | { kind: 'created' | 'claimed' | 'cancelled'; at: Date }
-  | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }
+  | {
+      kind: 'written';
+      at: Date;
+      hash: string;
+      items: number[];
+      replaces: string | null;
+      /** Base: the fees this version was signed with; null where the engine did not say. */
+      fee?: Fee | null;
+    }
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
-  | { kind: 'replaced' | 'dropped'; at: Date; hash: string; items: number[]; by: string | null }
+  | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
+  | {
+      kind: 'dropped';
+      at: Date;
+      hash: string;
+      items: number[];
+      by: string | null;
+      /** Set when another sender used this version's nonce, so the engine sent it again as `by` (ADR-0064). */
+      taken: TakenNonce | null;
+    }
   | { kind: 'confirmed'; at: Date; hash: string | null; items: number[] }
   | {
       kind: 'failed' | 'abandoned';
@@ -159,6 +223,11 @@ export interface ManagedDetail {
   timeline: TimelineEntry[];
   /** Why it was held, on a Dispatch that ever was: it stays after a release or a cancel. */
   hold: Hold | null;
+  cancellation?: Cancellation | null;
+  /** Whether the engine may fee-bump a stuck transaction; absent from an engine too old to say. */
+  retryPolicy?: boolean;
+  /** Only on a Bulk Call. */
+  bulkCall?: BulkCallSettings | null;
 }
 
 export interface RelayDetail {
@@ -170,6 +239,18 @@ export interface RelayDetail {
   transactionHash: string | null;
   error: DispatchError | null;
   timeline: TimelineEntry[];
+  cancellation?: Cancellation | null;
+  /** Read from the signed bytes: who signed, what it calls or pays, and the native value it moves. */
+  signer?: string | null;
+  target?: string | null;
+  value?: Money | null;
+}
+
+/** Who cancelled a cancelled Dispatch, when and why. */
+export interface Cancellation {
+  at: Date;
+  tokenKind: 'auth' | 'operator';
+  reason: string | null;
 }
 
 export type DispatchDetail = ManagedDetail | RelayDetail;
@@ -178,6 +259,53 @@ export type DispatchDetail = ManagedDetail | RelayDetail;
 export interface LoadedDispatch {
   summary: DispatchSummary;
   detail: DispatchDetail;
+}
+
+/** Marks the call a Relay item stands for: its caller signed it, and the engine reads only its target. */
+export const RELAY_DECODER = 'relay';
+
+/**
+ * A Relay Dispatch's one transaction as an item, for the Items tab: a payment
+ * of its native value when it moves any, else a call to its target. Null when
+ * the engine did not read the bytes (one from before it did).
+ */
+export function relayItem(detail: RelayDetail): Item | null {
+  if (!detail.target) return null;
+  const base = {
+    index: 0,
+    status: detail.status,
+    transactionHash: detail.transactionHash,
+    error: detail.error,
+    approval: null,
+    effects: null,
+  };
+  const value = detail.value;
+  if (value && BigInt(value.raw) > 0n) {
+    return {
+      ...base,
+      type: 'payment',
+      recipient: detail.target,
+      asset: value.asset,
+      amount: value,
+    };
+  }
+  return {
+    ...base,
+    type: 'call',
+    target: detail.target,
+    call: {
+      target: detail.target,
+      label: null,
+      decoded: true,
+      decoder: RELAY_DECODER,
+      function: null,
+      args: [],
+      selector: null,
+      data: null,
+      value: null,
+      calls: [],
+    },
+  };
 }
 
 /** The list row for a Dispatch, from its detail: `totals` sums the `payment` items the engine reports decimals for. */
@@ -203,18 +331,32 @@ export function summaryOf(detail: DispatchDetail): DispatchSummary {
     status,
     createdAt,
     itemCount: detail.items.length,
+    callCount: detail.items.filter((item) => item.type === 'call').length,
     totals: [...totals.values()],
   };
 }
 
 const count = new Intl.NumberFormat('en-US');
 
-/** The engine stores no label, so a Dispatch is named by what it carries: "37 payments". */
-export function dispatchName(summary: Pick<DispatchSummary, 'mode' | 'itemCount' | 'totals'>) {
+const counted = (n: number, noun: string) => `${count.format(n)} ${noun}${n === 1 ? '' : 's'}`;
+
+/**
+ * The engine stores no label, so a Dispatch is named by what it carries:
+ * "37 payments", "3 calls", "1 payment, 1 call".
+ */
+export function dispatchName(
+  summary: Pick<DispatchSummary, 'mode' | 'itemCount' | 'totals' | 'callCount'>,
+) {
   if (summary.mode === 'relay') return 'Relay transaction';
   const n = summary.itemCount;
-  const noun = summary.totals.length > 0 ? 'payment' : 'item';
-  return `${count.format(n)} ${noun}${n === 1 ? '' : 's'}`;
+  if (summary.callCount === undefined) {
+    return counted(n, summary.totals.length > 0 ? 'payment' : 'item');
+  }
+  const calls = summary.callCount;
+  const payments = n - calls;
+  if (payments === 0) return counted(calls, 'call');
+  if (calls === 0) return counted(payments, 'payment');
+  return `${counted(payments, 'payment')}, ${counted(calls, 'call')}`;
 }
 
 /** Ids are UUIDs; the list and pane show the first block, as the board does. */

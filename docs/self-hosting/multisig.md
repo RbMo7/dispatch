@@ -113,7 +113,7 @@ These go on the worker, next to your other Solana settings. [`.env.example`](../
 
 In single mode, setting `SOLANA_MULTISIG_ADDRESS` or `SOLANA_MULTISIG_MEMBER_ADDRESS` is an error, so a half-edited config never starts quietly.
 
-`SOLANA_KNOWN_TOKENS` is read as usual: a token Payment needs its mint configured. A fixed `SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` is applied to the proposal's create transaction. An `auto` price is not applied to proposals. The execute transaction asks for a 256 KB heap and a compute-unit limit from a simulation, and carries no price instruction.
+Known Assets work as usual: a token Payment needs its mint to be an enabled Known Asset, from `SOLANA_KNOWN_TOKENS` or added through the API. A fixed `SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` is applied to the proposal's create transaction. An `auto` price is not applied to proposals. The execute transaction asks for a 256 KB heap and a compute-unit limit from a simulation, and carries no price instruction.
 
 ```
 SOLANA_SENDER_MODE=multisig
@@ -292,7 +292,7 @@ The hosted service is `https://api.safe.global/tx-service/base` for Base and `..
 | `BASE_APPROVAL_REWATCH_WINDOW_MS` | `2592000000` (30 days) | How long, counted from the timeout, the engine keeps reading a timed-out proposal ([after a timeout](#what-the-engine-does-and-does-not-do-after-a-timeout)). |
 | `BASE_SAFE_BUNDLE_LIMIT` | `50` | The most payments in one proposal (one MultiSend). A whole number from 1 to 300. |
 
-The Safe settings are an error in single mode, as on Solana. `BASE_KNOWN_TOKENS` is read as usual, and an ERC-20 Payment needs its token configured.
+The Safe settings are an error in single mode, as on Solana. Known Assets work as usual: an ERC-20 Payment needs its token to be a Known Asset.
 
 ```
 BASE_SENDER_MODE=safe
@@ -304,7 +304,7 @@ BASE_APPROVAL_DEADLINE_MS=259200000
 
 The engine bundles payments with **MultiSendCallOnly**, a delegatecall from the Safe, so ERC-20 payments come out of the Safe. It chooses the contract by the Safe's `VERSION()`: `0x9641d764fc13c8B624c04430C7356C1C7C8102e2` for 1.4.1 and `0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B` for 1.3.0 (the Signer also allows `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D`, the 1.3.0 canonical deployment). Their code was checked on Base Sepolia only. The mainnet check is in the checklist.
 
-A Safe Sender proposes **only** native transfers and ERC-20 `transfer` calls of tokens in `BASE_KNOWN_TOKENS`. Any other `call` item is refused at `POST /v1/dispatch` with a 400 naming the item (#94). If one still reached the engine, planning the proposals would refuse it with `CHAIN_REJECTED` and fail every Call of its Dispatch claimed with it. Bulk Call is not how a Safe Sender bundles: a request that sets `bulkCall` for a Multisig Sender is a 400.
+A Safe Sender proposes **only** native transfers and ERC-20 `transfer` calls of Known Assets. Any other `call` item is refused at `POST /v1/dispatch` with a 400 naming the item (#94). If one still reached the engine, planning the proposals would refuse it with `CHAIN_REJECTED` and fail every Call of its Dispatch claimed with it. Bulk Call is not how a Safe Sender bundles: a request that sets `bulkCall` for a Multisig Sender is a 400.
 
 ### Fund the Safe and the executor
 
@@ -370,6 +370,12 @@ The caller can read the proposal's state from [Get a Dispatch](../openapi.yaml#g
   "state": "awaiting",
   "approvals": 1,
   "threshold": 2,
+  "remaining": 1,
+  "approvers": [
+    { "address": "<member 1>", "label": "Priya, finance", "decision": "approved" },
+    { "address": "<member 2>", "decision": "pending" },
+    { "address": "<member 3>", "decision": "pending" }
+  ],
   "deadline": "2026-10-25T09:00:00.000Z",
   "expected": { "recipients": 120, "totals": [{ "asset": "USDC", "amount": "125000000" }] },
   "chainRef": { "kind": "squads", "multisig": "<multisig>", "proposal": "<proposal>", "transactionIndex": 42 }
@@ -377,7 +383,8 @@ The caller can read the proposal's state from [Get a Dispatch](../openapi.yaml#g
 ```
 
 - `state` is `awaiting` (not yet at the threshold), `approved` (at the threshold, waiting for any time lock, or being executed) or `approved_after_deadline` (the proposal was approved after its deadline, so the engine will not execute it: execute or reject it in the app).
-- `approvals` and `threshold` are the votes so far and the votes needed.
+- `approvals` and `threshold` are the votes so far and the votes needed. `remaining` is how many more approvals it needs.
+- `approvers` is everyone who can vote, as the engine last read the chain: on Squads the members with the Vote permission, and on Safe the owners. Each has a `decision`: `approved`, `rejected` or `pending`. On Squads a vote to reject, or to cancel an approved proposal, reads `rejected`. A Safe owner cannot reject one proposal, only replace it at the same nonce, so on Safe it is `approved` or `pending`. The list is empty until the engine first reads the proposal, and a Squads proposal that has been executed and closed keeps the list from the last read. `label` comes from the Sender's `approvers` in the senders file ([configuration](./configuration.md#the-senders-file)).
 - `deadline` is when the engine stops waiting. Vote before it. After it the engine never executes the proposal, even if it is approved ([after a timeout](#what-the-engine-does-and-does-not-do-after-a-timeout)).
 - `chainRef` is what to open in the app. On Base it is `{ "kind": "safe", "safe", "safeTxHash", "nonce" }`.
 - `expected` is the number of distinct recipients and the total per asset, in the smallest unit, that the engine says the proposal pays. Several proposals for one Dispatch each carry their own share, so your own total will be larger than any one `expected`.

@@ -94,6 +94,29 @@ export interface Hold {
   reason: string | null;
 }
 
+/** "Item 3", "Items 1 and 2", "All 4 items" or "6 of 40 items": which items a rule matched. */
+export function matchedItemsText(items: readonly number[], total: number): string {
+  if (items.length === total && total > 1) return `All ${whole.format(total)} items`;
+  if (items.length > 4) return `${whole.format(items.length)} of ${whole.format(total)} items`;
+  const positions = items.map((i) => whole.format(i + 1));
+  const list =
+    positions.length === 1
+      ? positions[0]
+      : `${positions.slice(0, -1).join(', ')} and ${positions.at(-1)}`;
+  return `Item${items.length === 1 ? '' : 's'} ${list}`;
+}
+
+/** 'Rule "Big USDC" matched item 1: a payment over 5,000 USDC.', one sentence per rule. */
+export function holdReason(hold: Hold, chain: Chain, total: number): string {
+  return hold.matched
+    .map((match) => {
+      const items = matchedItemsText(match.items, total);
+      const check = describeCheck(match.check, chain);
+      return `Rule "${match.name}" matched ${items.charAt(0).toLowerCase()}${items.slice(1)}: ${check.charAt(0).toLowerCase()}${check.slice(1)}.`;
+    })
+    .join(' ');
+}
+
 /** Each item's position, with the names of the rules that matched it. */
 export function matchedItems(hold: Hold): Map<number, string[]> {
   const byItem = new Map<number, string[]>();
@@ -116,25 +139,44 @@ export interface Preview {
 }
 
 export type ActionKind =
-  'cancel' | 'release' | 'flag_rule_create' | 'flag_rule_update' | 'flag_rule_delete';
+  | 'cancel'
+  | 'release'
+  | 'flag_rule_create'
+  | 'flag_rule_update'
+  | 'flag_rule_delete'
+  | 'asset_add'
+  | 'asset_disable'
+  | 'asset_enable'
+  | 'contract_add'
+  | 'contract_disable'
+  | 'contract_enable';
 
 /** One entry of the activity record (ADR-0057). */
 export interface OperatorAction {
   id: string;
   at: Date;
   action: ActionKind;
-  /** The Dispatch or Flag Rule acted on. */
+  /** The Dispatch, Flag Rule, Known Asset or registered contract acted on. */
   targetId: string;
   tokenKind: TokenKind;
   reason: string | null;
 }
 
-export const ACTIONS: Record<ActionKind, { label: string; target: 'dispatch' | 'rule' }> = {
+export const ACTIONS: Record<
+  ActionKind,
+  { label: string; target: 'dispatch' | 'rule' | 'asset' | 'contract' }
+> = {
   cancel: { label: 'Cancelled', target: 'dispatch' },
   release: { label: 'Released', target: 'dispatch' },
   flag_rule_create: { label: 'Rule created', target: 'rule' },
   flag_rule_update: { label: 'Rule edited', target: 'rule' },
   flag_rule_delete: { label: 'Rule deleted', target: 'rule' },
+  asset_add: { label: 'Asset added', target: 'asset' },
+  asset_disable: { label: 'Asset disabled', target: 'asset' },
+  asset_enable: { label: 'Asset enabled', target: 'asset' },
+  contract_add: { label: 'Contract added', target: 'contract' },
+  contract_disable: { label: 'Contract disabled', target: 'contract' },
+  contract_enable: { label: 'Contract enabled', target: 'contract' },
 };
 
 /** The editor's fields, as typed: what the operator sees, before it is a request body. */

@@ -59,6 +59,8 @@ export type Transaction = {
   lastCheckedAt: Date | null;
   /** #9: when these exact signed bytes were last sent — first broadcast or a later rebroadcast Attempt. What the stuck timer (ADR-0037) measures against. */
   lastBroadcastAt: Date | null;
+  /** #169: when a node first accepted these bytes. Null until then, or for a row from before it was recorded. */
+  sentAt: Date | null;
   /** #9: the fee-bumped predecessor this Transaction replaced, at the same nonce — null for an original. */
   replacesTransactionId: string | null;
   /** #9: fee-bump attempts made for this Call so far, failed ones included — carried onto each replacement; bumping stops at the chain's cap. Set straight to the cap once the nonce is known to be consumed (NONCE_ALREADY_USED), since no replacement could ever land. */

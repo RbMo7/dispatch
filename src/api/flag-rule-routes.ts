@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import type { FlagRule } from '../domain/flag-rule.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import {
   type FlagRuleSenders,
   parseFlagRuleCheck,

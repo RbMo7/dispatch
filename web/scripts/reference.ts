@@ -10,6 +10,7 @@ import {
   type Json,
   SAMPLE_LANGUAGES,
   type Schema,
+  schemaName,
 } from './openapi.ts';
 
 /** What the reference builder borrows from the Markdown renderer, so both render alike. */
@@ -176,6 +177,7 @@ function propertyRows(schema: Schema): Row[] {
 }
 
 export function typeName(schema: Schema): string {
+  if (typeof schema.$ref === 'string') return schemaName(schema.$ref);
   if (Array.isArray(schema.oneOf)) {
     return [...new Set((schema.oneOf as Schema[]).map(typeName))].join(' or ');
   }

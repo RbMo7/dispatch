@@ -17,9 +17,15 @@ import {
 
 import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
+import type { TransactionEffects } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
-import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type {
+  Approver,
+  ChainProposalRef,
+  CommittedAmounts,
+  ExpectedTotals,
+} from '../domain/proposal.js';
 import type { Fix } from '../setup/check.js';
 import type { SignerPins } from '../signer/client.js';
 
@@ -36,6 +42,8 @@ export const dispatches = pgTable(
     bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
     /** #20 (ADR-0041): when a worker last claimed this row — a claim still `broadcasting` long after is reclaimed. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** #169: when a worker first claimed this row; `claimed_at` is re-stamped as a heartbeat. */
+    firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }),
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -88,6 +96,8 @@ export const transactions = pgTable(
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
     /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
     lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+    /** #169: when a node first accepted these bytes; a Solana send returns only once it confirms, so this is not when the row was marked sent. */
+    sentAt: timestamp('sent_at', { withTimezone: true }),
     /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
     replacesTransactionId: uuid('replaces_transaction_id'),
     /** #9: fee-bump attempts made for this Call so far, failed ones included. */
@@ -99,7 +109,28 @@ export const transactions = pgTable(
   },
   (table) => [
     index('transactions_dispatch_id_call_index_idx').on(table.dispatchId, table.callIndex),
+    index('transactions_confirmed_at_idx')
+      .on(table.confirmedAt)
+      .where(sql`${table.status} = 'CONFIRMED'`),
   ],
+);
+
+/**
+ * ADR-0063: what each confirmed transaction changed, read once by the worker
+ * and kept raw. One row per transaction, which every Call bundled into it
+ * shares. `effects` is null while the read keeps failing.
+ */
+export const transactionEffects = pgTable(
+  'transaction_effects',
+  {
+    chain: text('chain').notNull(),
+    hash: text('hash').notNull(),
+    effects: jsonb('effects').$type<TransactionEffects>(),
+    readFailures: integer('read_failures').notNull().default(0),
+    lastError: text('last_error'),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chain, table.hash] })],
 );
 
 /**
@@ -128,6 +159,7 @@ export const proposals = pgTable(
     approvalState: text('approval_state').notNull().default('awaiting'),
     approvals: integer('approvals').notNull().default(0),
     threshold: integer('threshold').notNull(),
+    approvers: jsonb('approvers').notNull().default([]).$type<Approver[]>(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
     /** The multisig's time lock. */
     executeAfter: timestamp('execute_after', { withTimezone: true }),
@@ -196,6 +228,21 @@ export const nonceHistory = pgTable(
   ],
 );
 
+/** ADR-0064 (#172): a nonce of a Sender's wallet the chain shows used by something other than this engine, and when the worker first saw it. */
+export const senderForeignNonces = pgTable(
+  'sender_foreign_nonces',
+  {
+    chain: text('chain').notNull(),
+    senderAddress: text('sender_address').notNull(),
+    nonce: integer('nonce').notNull(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chain, table.senderAddress, table.nonce] }),
+    index('sender_foreign_nonces_seen_idx').on(table.chain, table.senderAddress, table.firstSeenAt),
+  ],
+);
+
 /** ADR-0031: Relay Dispatch's own table — never squeezed into `dispatches`, which has no meaningful `items`/`retryPolicy` for this shape. */
 export const relayDispatches = pgTable(
   'relay_dispatches',
@@ -209,6 +256,8 @@ export const relayDispatches = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /** #20: when a worker last claimed this row. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** #169: when a worker first claimed this row. */
+    firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }),
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   },
@@ -232,7 +281,10 @@ export const operatorActions = pgTable(
     tokenKind: text('token_kind').notNull(),
     reason: text('reason'),
   },
-  (table) => [index('operator_actions_at_id_idx').on(table.at, table.id)],
+  (table) => [
+    index('operator_actions_at_id_idx').on(table.at, table.id),
+    index('operator_actions_target_idx').on(table.targetId),
+  ],
 );
 
 /** ADR-0058: a Flag Rule's identity. Its content lives in `flag_rule_versions`. */
@@ -307,4 +359,77 @@ export const setupChecks = pgTable(
   (table) => [
     check('setup_checks_fix_unless_pass', sql`(${table.status} = 'pass') = (${table.fix} IS NULL)`),
   ],
+);
+
+/** ADR-0061: the Known Asset registry. A row is disabled, never deleted, so history keeps resolving. */
+export const knownAssets = pgTable(
+  'known_assets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    /** The mint or contract (Base checksummed), or `native`. */
+    address: text('address').notNull(),
+    symbol: text('symbol').notNull(),
+    name: text('name').notNull(),
+    decimals: integer('decimals').notNull(),
+    kind: text('kind').notNull(),
+    source: text('source').notNull(),
+    addedBy: text('added_by'),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+    enabled: boolean('enabled').notNull(),
+  },
+  (table) => [
+    uniqueIndex('known_assets_chain_address_idx').on(table.chain, table.address),
+    uniqueIndex('known_assets_enabled_symbol_idx')
+      .on(table.chain, sql`upper(${table.symbol})`)
+      .where(sql`${table.enabled}`),
+    check('known_assets_decimals', sql`${table.decimals} BETWEEN 0 AND 255`),
+  ],
+);
+
+/**
+ * ADR-0063: the contract registry. `definition` is the ABI (Base) or Anchor IDL
+ * (Solana) as given. A row is disabled, never deleted; one enabled row per address.
+ */
+export const knownContracts = pgTable(
+  'known_contracts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    /** The contract (Base, checksummed) or program. */
+    address: text('address').notNull(),
+    label: text('label').notNull(),
+    definition: jsonb('definition').notNull(),
+    source: text('source').notNull(),
+    addedBy: text('added_by').notNull(),
+    addedAt: timestamp('added_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    enabled: boolean('enabled').notNull(),
+  },
+  (table) => [
+    uniqueIndex('known_contracts_enabled_address_idx')
+      .on(table.chain, table.address)
+      .where(sql`${table.enabled}`),
+  ],
+);
+
+/** ADR-0062: a `POST /v1/dispatch` refused with a 4xx other than 401. Pruned by the worker. */
+export const rejectedRequests = pgTable(
+  'rejected_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    at: timestamp('at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    status: integer('status').notNull(),
+    chain: text('chain'),
+    idempotencyKey: text('idempotency_key'),
+    tokenKind: text('token_kind').notNull(),
+    code: text('code'),
+    message: text('message').notNull(),
+    chainDetail: jsonb('chain_detail'),
+    body: jsonb('body'),
+  },
+  (table) => [index('rejected_requests_at_id_idx').on(table.at, table.id)],
 );

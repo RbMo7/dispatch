@@ -1,0 +1,63 @@
+{
+  "chain": "solana",
+  "hash": "3C98JxZfNir4mCm1uRRGwfrzqPb71rVEUjWC2eLfU8gWuKfuB5LnVtAY3oAJFRJUtveuCcFxYzcyDooEPYzPemrx",
+  "network": "devnet",
+  "recordedAt": "2026-11-01T16:38:40.193Z",
+  "rpc": {
+    "getTransaction": {
+      "blockTime": 1793551003,
+      "meta": {
+        "computeUnitsConsumed": 150,
+        "costUnits": 1481,
+        "err": null,
+        "fee": 5000,
+        "innerInstructions": [],
+        "loadedAddresses": {
+          "readonly": [],
+          "writable": []
+        },
+        "logMessages": [
+          "Program 11111111111111111111111111111111 invoke [1]",
+          "Program 11111111111111111111111111111111 success"
+        ],
+        "postBalances": [1995000, 129826840, 1],
+        "postTokenBalances": [],
+        "preBalances": [3000000, 128826840, 1],
+        "preTokenBalances": [],
+        "rewards": [],
+        "status": {
+          "Ok": null
+        }
+      },
+      "slot": 517556736,
+      "transaction": {
+        "message": {
+          "accountKeys": [
+            "EbihtazafkcEX88FVksBDnoy14F5Jc29mAW94eMbKtWF",
+            "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH",
+            "11111111111111111111111111111111"
+          ],
+          "header": {
+            "numReadonlySignedAccounts": 0,
+            "numReadonlyUnsignedAccounts": 1,
+            "numRequiredSignatures": 1
+          },
+          "instructions": [
+            {
+              "accounts": [0, 1],
+              "data": "3Bxs4Bc3VYuGVB19",
+              "programIdIndex": 2,
+              "stackHeight": 1
+            }
+          ],
+          "recentBlockhash": "FPxRqVwgwGb65JnqFU2W3uvR3acMoSLqMJw2VBGBzk9g"
+        },
+        "signatures": [
+          "3C98JxZfNir4mCm1uRRGwfrzqPb71rVEUjWC2eLfU8gWuKfuB5LnVtAY3oAJFRJUtveuCcFxYzcyDooEPYzPemrx"
+        ]
+      },
+      "transactionIndex": 1,
+      "version": "legacy"
+    }
+  }
+}

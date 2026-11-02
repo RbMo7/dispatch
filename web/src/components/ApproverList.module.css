@@ -1,0 +1,41 @@
+.list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 22px;
+}
+
+.who {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--ink);
+  font-size: var(--text-12-5);
+}
+
+.label {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.address {
+  color: var(--muted);
+}
+
+.none {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--text-12-5);
+}

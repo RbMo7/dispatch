@@ -5,8 +5,8 @@ info:
   summary: Send payments, contract calls and signed transactions on Solana and Base, and track each one to an outcome.
   description: |
     The engine's HTTP API. Every `/v1` route needs a bearer token: the engine's API token, or
-    its operator token, which the operator-only routes (release, Flag Rule writes and the
-    activity record) require.
+    its operator token, which the operator-only routes (release, Flag Rule writes, Known Asset
+    writes, contract registry writes and the activity record) require.
     The reference pages on the docs site are built from this file, and the engine's offline
     tests send each example below to the real routes and check every answer against these schemas.
 
@@ -34,6 +34,18 @@ tags:
       submitted. A Dispatch that matches any enabled rule on its chain is stored `held`, and
       nothing is signed, proposed or sent until an operator releases it. Reading rules takes either
       token; writing them takes the operator token.
+  - name: Assets
+    description: |
+      The Known Assets a payment may name on each chain: the native coin, the tokens the operator
+      configured, and the tokens added here. Each token's decimals, name and symbol are read from
+      the chain, never typed in. Reading takes either token; adding, enabling and disabling take
+      the operator token.
+  - name: Contracts
+    description: |
+      The contract registry: ABIs on Base and Anchor IDLs on Solana, each with a label, so a call
+      shows the function it ran and its arguments, and the events it emitted. Calls and their
+      effects are decoded when they are read, so registering a contract explains its earlier calls
+      too. Reading takes either token; registering, enabling and disabling take the operator token.
   - name: Senders
     description: |
       A Sender is a wallet the engine pays from. Each enabled chain has one or more, each named,
@@ -45,8 +57,13 @@ tags:
       them. The console's Setup page reads them.
   - name: Activity
     description: |
-      The operator action record: every cancel that landed, every release, and every Flag Rule
-      create, edit and delete, newest first.
+      The operator action record: every cancel that landed, every release, every Flag Rule
+      create, edit and delete, every Known Asset added, disabled or enabled, and every contract
+      registered, disabled or enabled, newest first.
+  - name: Rejected
+    description: |
+      Requests to create a Dispatch that the engine refused, newest first, so an operator can see a
+      client failing and fix what it needs, such as a missing Known Asset.
   - name: Health
     description: |
       A liveness check for load balancers and scripts.
@@ -125,6 +142,53 @@ paths:
                       to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
                       data: 0x
                       value: '20000000000000'
+              callExplainedSolana:
+                summary: A Memo and an SPL transferChecked on Solana, as call items
+                value:
+                  chain: solana
+                  items:
+                    - type: call
+                      programId: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                      accounts: []
+                      data: Zmxvd3Mgcm93IDU=
+                    - type: call
+                      programId: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                      accounts:
+                        - pubkey: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                          isSigner: false
+                          isWritable: true
+                        - pubkey: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                          isSigner: false
+                          isWritable: false
+                        - pubkey: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                          isSigner: false
+                          isWritable: true
+                        - pubkey: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          isSigner: true
+                          isWritable: false
+                      data: DJDQAwAAAAAABg==
+              callUndecodedBase:
+                summary: A call to a contract no built-in decoder knows, with value
+                value:
+                  chain: base
+                  items:
+                    - type: call
+                      to: '0x79bb95aef7f032144a9a5c6933b8d13a98e6d793'
+                      data: '0xa26e11860000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b666c6f777320726f772034000000000000000000000000000000000000000000'
+                      value: '1000000000000'
+              payShortfallBase:
+                summary: Pay two recipients on Base, one in a token the Sender holds too little of
+                value:
+                  chain: base
+                  items:
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: ETH
+                      amount: '50000000000000'
+                    - type: payment
+                      recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                      asset: FLOW
+                      amount: '2000000000000'
               bulkCallBase:
                 summary: Two payments in one Bulk Call on Base
                 value:
@@ -294,6 +358,15 @@ paths:
                 callBase:
                   summary: A contract call on Base
                   value: { dispatchId: e9dd9112-3da8-40e7-98e3-2bc34fb11a40, status: queued }
+                callExplainedSolana:
+                  summary: A Memo and an SPL transferChecked on Solana, as call items
+                  value: { dispatchId: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9, status: queued }
+                callUndecodedBase:
+                  summary: A call to a contract no built-in decoder knows, with value
+                  value: { dispatchId: dafa9a9b-2759-45b9-9585-70890a2ec7bf, status: queued }
+                payShortfallBase:
+                  summary: Pay two recipients on Base, one in a token the Sender holds too little of
+                  value: { dispatchId: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0, status: queued }
                 bulkCallBase:
                   summary: Two payments in one Bulk Call on Base
                   value: { dispatchId: 66d96716-22fe-4a3c-bc18-a08b1646fd40, status: queued }
@@ -455,13 +528,15 @@ paths:
                           message: insufficient USDC balance
                           chainDetail: { asset: USDC, short: '40000000' }
                 managedWithTimeline:
-                  summary: The same Dispatch with its timeline
+                  summary: A Managed Dispatch with its timeline, one item paid and one failed by the Funding Check
                   value:
-                    dispatchId: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4
+                    dispatchId: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0
                     mode: managed
                     chain: base
-                    sender: { name: payouts, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
-                    createdAt: '2026-11-01T02:12:17.619Z'
+                    sender:
+                      name: payouts
+                      address: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                    createdAt: 2026-11-01T16:44:48.033Z
                     status: partial
                     items:
                       - type: payment
@@ -470,43 +545,87 @@ paths:
                         decimals: 18
                         amount: '50000000000000'
                         status: confirmed
-                        transactionHash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
+                        transactionHash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
                         error: null
+                        effects:
+                          transfers:
+                            - standard: native
+                              token: native
+                              from: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                              to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                              amount: '50000000000000'
+                              asset:
+                                address: native
+                                symbol: ETH
+                                name: Ether
+                                decimals: 18
+                              formatted: '0.00005'
+                          value:
+                            amount: '50000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.00005'
+                          fee:
+                            amount: '126000000092'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000000126000000092'
+                            payer: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                          events: []
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
                       - type: payment
                         recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
-                        asset: USDC
+                        asset: FLOW
                         decimals: 6
-                        amount: '40000000'
+                        amount: '2000000000000'
                         status: failed
                         transactionHash: null
                         error:
                           code: INSUFFICIENT_FUNDS
-                          message: insufficient USDC balance
-                          chainDetail: { asset: USDC, short: '40000000' }
+                          message: insufficient FLOW balance
+                          chainDetail:
+                            asset: FLOW
+                            short: '1001001500000'
                     timeline:
-                      - { kind: created, at: '2026-11-01T02:12:17.619Z' }
+                      - kind: created
+                        at: 2026-11-01T16:44:48.033Z
+                      - kind: claimed
+                        at: 2026-11-01T16:44:48.290Z
                       - kind: failed
-                        at: '2026-11-01T02:12:18.695Z'
+                        at: 2026-11-01T16:44:48.786Z
                         hash: null
-                        items: [1]
+                        items:
+                          - 1
                         error:
                           code: INSUFFICIENT_FUNDS
-                          message: insufficient USDC balance
-                          chainDetail: { asset: USDC, short: '40000000' }
-                      - { kind: claimed, at: '2026-11-01T02:12:22.042Z' }
+                          message: insufficient FLOW balance
+                          chainDetail:
+                            asset: FLOW
+                            short: '1001001500000'
                       - kind: written
-                        at: '2026-11-01T02:12:22.050Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:49.275Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                         replaces: null
                       - kind: sent
-                        at: '2026-11-01T02:12:22.320Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:49.558Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                       - kind: confirmed
-                        at: '2026-11-01T02:12:27.324Z'
-                        hash: '0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896'
-                        items: [0]
+                        at: 2026-11-01T16:44:51.329Z
+                        hash: '0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9'
+                        items:
+                          - 0
                 relay:
                   summary: A Relay Dispatch on Solana
                   value:
@@ -517,6 +636,260 @@ paths:
                     status: confirmed
                     transactionHash: 5suMQ69pdMQgSMWUaHQBcrJ8ydto3tUFhfQPN4VXiWSPFvrjvkM2TVGUjfePRxQ1pxe1LWqgFkEXXQnTU5Z8KJkh
                     error: null
+                callExplainedSolana:
+                  summary: Two decoded Solana calls and what their transaction changed
+                  value:
+                    dispatchId: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9
+                    mode: managed
+                    chain: solana
+                    sender:
+                      name: payouts
+                      address: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                    createdAt: 2026-11-01T16:36:30.148Z
+                    status: confirmed
+                    items:
+                      - type: call
+                        programId: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                        call:
+                          target: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                          decoded: true
+                          decoder: memo
+                          function: memo
+                          args:
+                            - name: text
+                              type: string
+                              value: flows row 5
+                        status: confirmed
+                        transactionHash: 4nuKdyGGwxnF3Mr5fMacBYqXpEMqjKgy1sWz5DFayg2L2AqSDHoGYtWhEcK8Ce9nqSFPZa4izJ91dU5t8GJyQtpw
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: spl
+                              token: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                              from: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                              to: GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd
+                              amount: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                          fee:
+                            amount: '5000'
+                            asset:
+                              address: native
+                              symbol: SOL
+                              name: Solana
+                              decimals: 9
+                            formatted: '0.000005'
+                            payer: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          events:
+                            - kind: instruction
+                              source: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                              decoder: memo
+                              name: memo
+                              args:
+                                - name: text
+                                  type: string
+                                  value: flows row 5
+                            - kind: instruction
+                              source: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                              decoder: spl-token
+                              name: transferChecked
+                              args:
+                                - name: source
+                                  type: pubkey
+                                  value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                                - name: mint
+                                  type: pubkey
+                                  value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                - name: destination
+                                  type: pubkey
+                                  value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                                - name: authority
+                                  type: pubkey
+                                  value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                                - name: amount
+                                  type: u64
+                                  value: '250000'
+                                  asset:
+                                    address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                    symbol: FSPL
+                                    name: FSPL
+                                    decimals: 6
+                                  formatted: '0.25'
+                                - name: decimals
+                                  type: u8
+                                  value: '6'
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
+                      - type: call
+                        programId: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                        call:
+                          target: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                          decoded: true
+                          decoder: spl-token
+                          function: transferChecked
+                          args:
+                            - name: source
+                              type: pubkey
+                              value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                            - name: mint
+                              type: pubkey
+                              value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                            - name: destination
+                              type: pubkey
+                              value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                            - name: authority
+                              type: pubkey
+                              value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                            - name: amount
+                              type: u64
+                              value: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                            - name: decimals
+                              type: u8
+                              value: '6'
+                          selector: 0c
+                        status: confirmed
+                        transactionHash: 4nuKdyGGwxnF3Mr5fMacBYqXpEMqjKgy1sWz5DFayg2L2AqSDHoGYtWhEcK8Ce9nqSFPZa4izJ91dU5t8GJyQtpw
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: spl
+                              token: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                              from: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                              to: GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd
+                              amount: '250000'
+                              asset:
+                                address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                symbol: FSPL
+                                name: FSPL
+                                decimals: 6
+                              formatted: '0.25'
+                          fee:
+                            amount: '5000'
+                            asset:
+                              address: native
+                              symbol: SOL
+                              name: Solana
+                              decimals: 9
+                            formatted: '0.000005'
+                            payer: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                          events:
+                            - kind: instruction
+                              source: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+                              decoder: memo
+                              name: memo
+                              args:
+                                - name: text
+                                  type: string
+                                  value: flows row 5
+                            - kind: instruction
+                              source: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+                              decoder: spl-token
+                              name: transferChecked
+                              args:
+                                - name: source
+                                  type: pubkey
+                                  value: H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA
+                                - name: mint
+                                  type: pubkey
+                                  value: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                - name: destination
+                                  type: pubkey
+                                  value: 9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM
+                                - name: authority
+                                  type: pubkey
+                                  value: A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH
+                                - name: amount
+                                  type: u64
+                                  value: '250000'
+                                  asset:
+                                    address: 8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P
+                                    symbol: FSPL
+                                    name: FSPL
+                                    decimals: 6
+                                  formatted: '0.25'
+                                - name: decimals
+                                  type: u8
+                                  value: '6'
+                          undecodedEvents: 0
+                          undecodedEventSources: []
+                          truncated: false
+                callUndecodedBase:
+                  summary: A Base call shown by its selector, and its effects
+                  value:
+                    dispatchId: dafa9a9b-2759-45b9-9585-70890a2ec7bf
+                    mode: managed
+                    chain: base
+                    sender:
+                      name: payouts
+                      address: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                    createdAt: 2026-11-01T16:36:20.882Z
+                    status: confirmed
+                    items:
+                      - type: call
+                        to: '0x79bb95aef7f032144a9a5c6933b8d13a98e6d793'
+                        call:
+                          target: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                          value:
+                            amount: '1000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000001'
+                          decoded: false
+                          selector: '0xa26e1186'
+                          data: '0xa26e11860000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b666c6f777320726f772034000000000000000000000000000000000000000000'
+                        status: confirmed
+                        transactionHash: '0x0c11df6a960dc8d1d39387345104cbda5a83b92992fa36d720fbc37fce1a1e74'
+                        error: null
+                        effects:
+                          transfers:
+                            - standard: native
+                              token: native
+                              from: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                              to: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                              amount: '1000000000000'
+                              asset:
+                                address: native
+                                symbol: ETH
+                                name: Ether
+                                decimals: 18
+                              formatted: '0.000001'
+                          value:
+                            amount: '1000000000000'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000001'
+                          fee:
+                            amount: '148302000092'
+                            asset:
+                              address: native
+                              symbol: ETH
+                              name: Ether
+                              decimals: 18
+                            formatted: '0.000000148302000092'
+                            payer: '0x8cdBF57d39066712E9eDADb0822D7b89E7699e06'
+                          events: []
+                          undecodedEvents: 1
+                          undecodedEventSources:
+                            - source: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                              count: 1
+                          truncated: false
                 held:
                   summary: A Dispatch held by a Flag Rule
                   value:
@@ -778,6 +1151,10 @@ paths:
                         status: cancelled
                         transactionHash: null
                         error: null
+                    cancellation:
+                      at: '2026-11-01T02:13:21.950Z'
+                      tokenKind: auth
+                      reason: duplicate of refund 7730
         '400':
           $ref: '#/components/responses/BadReason'
         '401':
@@ -1418,6 +1795,766 @@ paths:
         '404':
           $ref: '#/components/responses/RuleNotFound'
 
+  /v1/assets:
+    get:
+      tags: [Assets]
+      operationId: listAssets
+      summary: List Known Assets
+      description: |
+        Returns every Known Asset, enabled or not: each chain's native coin first, then its tokens by
+        symbol. Either token can read. A `payment` item may name the `symbol` of any enabled asset on
+        its chain; any other asset is refused with `UNKNOWN_ASSET`.
+
+        `source: config` rows come from `SOLANA_KNOWN_TOKENS`, `BASE_KNOWN_TOKENS` and the native
+        coins, and are written at startup. `source: console` rows were added through Add a Known
+        Asset. A disabled asset is kept, so past payments in it still show their decimals.
+      security:
+        - apiToken: []
+        - operatorToken: []
+      parameters:
+        - name: chain
+          in: query
+          required: false
+          description: Only this chain's assets.
+          schema: { $ref: '#/components/schemas/Chain' }
+          examples:
+            baseAssets: { value: base }
+      responses:
+        '200':
+          description: The assets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [assets]
+                properties:
+                  assets:
+                    type: array
+                    items: { $ref: '#/components/schemas/KnownAsset' }
+              examples:
+                baseAssets:
+                  summary: Base, with two tokens added from the console
+                  value:
+                    assets:
+                      - id: 90f91669-f845-45bf-b44a-d571ac098032
+                        chain: base
+                        address: native
+                        symbol: ETH
+                        name: Ether
+                        decimals: 18
+                        kind: native
+                        source: config
+                        enabled: true
+                        addedBy: null
+                        addedAt: '2026-11-01T15:44:24.221Z'
+                      - id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                        chain: base
+                        address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                        symbol: LUSD
+                        name: Live Dollar
+                        decimals: 6
+                        kind: erc20
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T15:45:08.074Z'
+                      - id: 4dc99cb4-a219-4b81-9580-45146942c0a1
+                        chain: base
+                        address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+                        symbol: USDC
+                        name: USDC
+                        decimals: 6
+                        kind: erc20
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T15:47:12.358Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Assets]
+      operationId: addAsset
+      summary: Add a Known Asset
+      description: |
+        Makes a token payable on its chain, with no restart. The engine reads the mint or contract
+        from the chain: its decimals, name, symbol and supply (an ERC-20's `decimals()`, `name()`,
+        `symbol()` and `totalSupply()`; a Solana mint, with its name and symbol from the Token-2022
+        metadata extension or the Metaplex metadata account). Decimals are never typed in, since a
+        wrong value would scale every amount. Only the operator token can add, and every add is
+        written to the activity record, with the `reason` if you give one.
+
+        `symbol` is optional and replaces the chain's symbol: give one when the token publishes none,
+        or when its own is already used on the chain. Symbols are unique per chain among enabled
+        assets, ignoring case.
+
+        The engine refuses an address that is not a token (`NOT_A_TOKEN`), a Solana mint it can't
+        pay out correctly, such as one with a transfer fee or a transfer hook (`NOT_PAYABLE`), and
+        an address that is already a Known Asset (`ASSET_EXISTS`). A chain it could not read is a
+        `503` with `RPC_UNAVAILABLE`. Both the API and the worker see the new asset on their next
+        request.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetRequest'
+            examples:
+              addErc20:
+                summary: An ERC-20 that names itself
+                value: { chain: base, address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027' }
+              notAToken:
+                summary: A wallet, not a token
+                value: { chain: base, address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A' }
+              alreadyKnown:
+                summary: A token the engine already knows
+                value: { chain: base, address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027' }
+      responses:
+        '201':
+          description: The asset, enabled. Payments may name its `symbol` from now on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownAsset'
+              examples:
+                addErc20:
+                  summary: Added
+                  value:
+                    id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                    chain: base
+                    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                    symbol: LUSD
+                    name: Live Dollar
+                    decimals: 6
+                    kind: erc20
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T15:45:08.074Z'
+        '400':
+          description: The body is not an asset request, or the address is not a token the engine can pay out.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                notAToken:
+                  summary: No contract at the address
+                  value:
+                    code: NOT_A_TOKEN
+                    message: 0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A has no contract code on this chain
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: The address is already a Known Asset, or the symbol is taken on the chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyKnown:
+                  summary: Already known
+                  value:
+                    code: ASSET_EXISTS
+                    message: 0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027 is already a Known Asset on base, as LUSD
+
+  /v1/assets/preview:
+    post:
+      tags: [Assets]
+      operationId: previewAsset
+      summary: Preview a Known Asset
+      description: |
+        Reads the address from the chain and answers with what Add a Known Asset would store, plus
+        the chain's own name and symbol and the token's supply, or with the same refusal Add would
+        give. Nothing is stored or recorded. Takes the same body as Add and the operator token.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetRequest'
+            examples:
+              previewToken2022:
+                summary: A Token-2022 mint named in its metadata extension
+                value: { chain: solana, address: 4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ }
+              symbolRequired:
+                summary: A mint that publishes no symbol
+                value: { chain: solana, address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4 }
+              symbolGiven:
+                summary: The same mint, with a symbol
+                value: { chain: solana, address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4, symbol: LIVE }
+              walletNotToken:
+                summary: A wallet, not a mint
+                value: { chain: solana, address: 3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe }
+              symbolTaken:
+                summary: A symbol the chain already uses
+                value: { chain: solana, address: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU, symbol: sol }
+      responses:
+        '200':
+          description: What adding it would store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetPreview'
+              examples:
+                previewToken2022:
+                  summary: Name and symbol from the chain
+                  value:
+                    chain: solana
+                    kind: token-2022
+                    address: 4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ
+                    decimals: 6
+                    symbol: LEUR
+                    name: Live Euro
+                    onChain: { symbol: LEUR, name: Live Euro }
+                    supply: '1000000000'
+                symbolGiven:
+                  summary: The symbol given, the chain's empty
+                  value:
+                    chain: solana
+                    kind: spl
+                    address: DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4
+                    decimals: 6
+                    symbol: LIVE
+                    name: LIVE
+                    onChain: { symbol: '', name: '' }
+                    supply: '1000000000'
+        '400':
+          description: The body is not an asset request, the address is not a token the engine can pay out, or a symbol is needed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                symbolRequired:
+                  summary: No symbol on chain
+                  value:
+                    code: SYMBOL_REQUIRED
+                    message: 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4 publishes no symbol on chain: give one in symbol'
+                walletNotToken:
+                  summary: A wallet
+                  value:
+                    code: NOT_A_TOKEN
+                    message: 3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe is owned by 11111111111111111111111111111111, not a token program, so it is not a mint
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: The address is already a Known Asset, or the symbol is taken on the chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                symbolTaken:
+                  summary: The native coin's symbol
+                  value:
+                    code: SYMBOL_TAKEN
+                    message: "sol is already solana's native coin on solana: give another symbol in symbol"
+
+  /v1/assets/{id}:
+    patch:
+      tags: [Assets]
+      operationId: updateAsset
+      summary: Enable or disable a Known Asset
+      description: |
+        Disables an asset added from the console, so no new payment can name it, or enables it
+        again. Nothing is ever deleted, so past payments keep their decimals, and a payment already
+        accepted still goes out. A config row can't be changed here (`CONFIG_ASSET`): edit the
+        variable and restart. Enabling is refused while another enabled asset has the symbol
+        (`SYMBOL_TAKEN`). Only the operator token can change an asset, and each change is written to
+        the activity record, with the `reason` if you give one. Setting what it already is records
+        nothing.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: string, minLength: 1, description: Why, for the activity record. }
+            examples:
+              disableAsset:
+                summary: Pause payouts in a token
+                value: { enabled: false, reason: LUSD payouts paused while the treasury rebalances }
+              configAsset:
+                summary: A configured asset
+                value: { enabled: false }
+              notFound:
+                summary: No such asset
+                value: { enabled: false }
+      responses:
+        '200':
+          description: The asset as it now is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownAsset'
+              examples:
+                disableAsset:
+                  summary: Disabled
+                  value:
+                    id: f1c40b26-3c95-44a8-a06b-5bc06b5272dd
+                    chain: base
+                    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027'
+                    symbol: LUSD
+                    name: Live Dollar
+                    decimals: 6
+                    kind: erc20
+                    source: console
+                    enabled: false
+                    addedBy: operator
+                    addedAt: '2026-11-01T15:45:08.074Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '404':
+          description: No Known Asset has this id. An id that is not a UUID gets the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlainError'
+              examples:
+                notFound:
+                  summary: No such asset
+                  value: { error: not found }
+        '409':
+          description: A config row, or a symbol another enabled asset holds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                configAsset:
+                  summary: A configured asset
+                  value:
+                    code: CONFIG_ASSET
+                    message: 'this asset comes from the configuration (SOLANA_KNOWN_TOKENS, BASE_KNOWN_TOKENS or the native coin): change it there and restart'
+
+  /v1/contracts:
+    get:
+      tags: [Contracts]
+      operationId: listContracts
+      summary: List registered contracts
+      description: |
+        Returns every contract registered on the engine, enabled or not, newest first. Either token
+        can read. Each one's `functions` and `events` are what its ABI or IDL explains.
+      security:
+        - apiToken: []
+        - operatorToken: []
+      parameters:
+        - name: chain
+          in: query
+          required: false
+          description: Only this chain's contracts.
+          schema: { $ref: '#/components/schemas/Chain' }
+          examples:
+            baseContracts: { value: base }
+      responses:
+        '200':
+          description: The contracts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contracts]
+                properties:
+                  contracts:
+                    type: array
+                    items: { $ref: '#/components/schemas/KnownContract' }
+              examples:
+                baseContracts:
+                  summary: FlowVault, registered from the console
+                  value:
+                    contracts:
+                      - id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                        chain: base
+                        address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                        label: FlowVault
+                        abi:
+                          - type: event
+                            name: Deposited
+                            anonymous: false
+                            inputs:
+                              - { name: from, type: address, indexed: true }
+                              - { name: amount, type: uint256, indexed: false }
+                              - { name: note, type: string, indexed: false }
+                          - type: function
+                            name: deposit
+                            stateMutability: payable
+                            inputs: [{ name: note, type: string }]
+                            outputs: []
+                        functions: ['deposit(string note)']
+                        events: ['Deposited(address indexed from, uint256 amount, string note)']
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T16:12:40.318Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Contracts]
+      operationId: addContract
+      summary: Register a contract
+      description: |
+        Registers a contract's ABI (Base) or Anchor IDL (Solana), with a label, so the engine can
+        name the functions its calls run and the events they emit. It takes effect at once, and for
+        earlier calls too: the engine decodes calls and effects when they are read, never when they
+        are sent. Only the operator token can register, and every registration is written to the
+        activity record, with the `reason` if you give one.
+
+        `abi` is a JSON array of ABI items, or a compiler artifact that holds one in `abi`. `idl` is
+        an Anchor IDL, in the format Anchor 0.30 and later write or the older one. Either can be the
+        JSON itself or the pasted text. A malformed one is refused with `INVALID_ABI` or
+        `INVALID_IDL`, and a message that names what is wrong and where. An IDL that names another
+        program in `address` is refused too.
+
+        One enabled registration per address: to replace an ABI or IDL, disable the old one first
+        (`CONTRACT_EXISTS` otherwise). The built-in decoders (ERC-20, ERC-721, ERC-1155, WETH and
+        Multicall3; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute
+        Budget) are tried first, so a registration explains only what they do not, and labels the
+        contract either way.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractRequest'
+            examples:
+              addAbi:
+                summary: FlowVault's ABI, as `solc` writes it
+                value:
+                  chain: base
+                  address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                  label: FlowVault
+                  reason: Explain vault deposits
+                  abi:
+                    - type: event
+                      name: Deposited
+                      anonymous: false
+                      inputs:
+                        - { name: from, type: address, indexed: true }
+                        - { name: amount, type: uint256, indexed: false }
+                        - { name: note, type: string, indexed: false }
+                    - type: function
+                      name: deposit
+                      stateMutability: payable
+                      inputs: [{ name: note, type: string }]
+                      outputs: []
+              addIdl:
+                summary: An Anchor program's IDL
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll
+                  idl:
+                    address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                    metadata: { name: payroll, version: 0.1.0, spec: 0.1.0 }
+                    instructions:
+                      - name: pay
+                        discriminator: [119, 18, 216, 65, 192, 117, 122, 220]
+                        accounts:
+                          - { name: payer, writable: true, signer: true }
+                          - { name: mint }
+                          - { name: to, writable: true }
+                        args:
+                          - { name: amount, type: u64 }
+                          - { name: memo, type: string }
+              invalidAbi:
+                summary: A misspelt type
+                value:
+                  chain: base
+                  address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                  label: FlowVault
+                  abi: '[{"type":"function","name":"deposit","inputs":[{"name":"note","type":"strng"}]}]'
+              alreadyRegistered:
+                summary: A program already registered
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll v2
+                  idl: '{"instructions":[{"name":"pay","accounts":[],"args":[{"name":"amount","type":"u64"}]}]}'
+      responses:
+        '201':
+          description: The contract, enabled. Calls to it, and its events, are decoded from now on, earlier ones included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownContract'
+              examples:
+                addAbi:
+                  summary: Registered
+                  value:
+                    id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                    chain: base
+                    address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                    label: FlowVault
+                    abi:
+                      - type: event
+                        name: Deposited
+                        anonymous: false
+                        inputs:
+                          - { name: from, type: address, indexed: true }
+                          - { name: amount, type: uint256, indexed: false }
+                          - { name: note, type: string, indexed: false }
+                      - type: function
+                        name: deposit
+                        stateMutability: payable
+                        inputs: [{ name: note, type: string }]
+                        outputs: []
+                    functions: ['deposit(string note)']
+                    events: ['Deposited(address indexed from, uint256 amount, string note)']
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:12:40.318Z'
+                addIdl:
+                  summary: Registered
+                  value:
+                    id: 0d6b3c2a-91e4-4a8f-b7d2-5e6f8a9c1b30
+                    chain: solana
+                    address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                    label: Payroll
+                    idl:
+                      address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                      metadata: { name: payroll, version: 0.1.0, spec: 0.1.0 }
+                      instructions:
+                        - name: pay
+                          discriminator: [119, 18, 216, 65, 192, 117, 122, 220]
+                          accounts:
+                            - { name: payer, writable: true, signer: true }
+                            - { name: mint }
+                            - { name: to, writable: true }
+                          args:
+                            - { name: amount, type: u64 }
+                            - { name: memo, type: string }
+                    functions: ['pay(amount: u64, memo: string)']
+                    events: []
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:14:02.551Z'
+        '400':
+          description: The body is not a registration, or its ABI or IDL is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                invalidAbi:
+                  summary: Not a Solidity type
+                  value:
+                    code: INVALID_ABI
+                    message: 'abi[0].inputs[0].type: "strng" is not a Solidity type'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: An enabled registration already has this address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyRegistered:
+                  summary: Already registered
+                  value:
+                    code: CONTRACT_EXISTS
+                    message: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB is already registered on solana, as Payroll: disable it first to replace its IDL'
+
+  /v1/contracts/preview:
+    post:
+      tags: [Contracts]
+      operationId: previewContract
+      summary: Preview a contract registration
+      description: |
+        Reads the ABI or IDL and answers with what it would explain, or with the same refusal
+        Register a contract would give. Nothing is stored or recorded. Takes the same body as
+        Register a contract, and the operator token.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractRequest'
+            examples:
+              previewArtifact:
+                summary: A compiler artifact, pasted whole
+                value:
+                  chain: base
+                  address: '0xb4AE694A6b3Bc58CC4C31d983a74dBC3947eA318'
+                  label: FlowAggregator
+                  abi:
+                    abi:
+                      - type: function
+                        name: aggregate3Value
+                        stateMutability: payable
+                        inputs:
+                          - name: calls
+                            type: tuple[]
+                            components:
+                              - { name: target, type: address }
+                              - { name: allowFailure, type: bool }
+                              - { name: value, type: uint256 }
+                              - { name: callData, type: bytes }
+                        outputs: []
+                    bytecode: { object: '0x6080' }
+              invalidIdl:
+                summary: A type the IDL never defines
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll
+                  idl:
+                    instructions:
+                      - name: pay
+                        accounts: []
+                        args: [{ name: schedule, type: { defined: Schedule } }]
+      responses:
+        '200':
+          description: What registering it would explain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractPreview'
+              examples:
+                previewArtifact:
+                  summary: Its one function
+                  value:
+                    chain: base
+                    address: '0xb4AE694A6b3Bc58CC4C31d983a74dBC3947eA318'
+                    label: FlowAggregator
+                    functions: ['aggregate3Value((address target, bool allowFailure, uint256 value, bytes callData)[] calls)']
+                    events: []
+        '400':
+          description: The body is not a registration, or its ABI or IDL is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                invalidIdl:
+                  summary: A missing type
+                  value:
+                    code: INVALID_IDL
+                    message: 'idl.types: has no type named "Schedule"'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+
+  /v1/contracts/{id}:
+    patch:
+      tags: [Contracts]
+      operationId: updateContract
+      summary: Enable or disable a registered contract
+      description: |
+        Disables a registration, so its ABI or IDL no longer explains calls and the contract loses
+        its label, or enables it again. Nothing is ever deleted. To correct an ABI or IDL, disable
+        it and register the right one. Enabling is refused while another enabled registration has
+        the address (`CONTRACT_EXISTS`). Only the operator token can change one, and each change is
+        written to the activity record, with the `reason` if you give one. Setting what it already
+        is records nothing.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: string, minLength: 1, description: Why, for the activity record. }
+            examples:
+              disableContract:
+                summary: Retire an ABI
+                value: { enabled: false, reason: FlowVault v2 deployed with a new ABI }
+              notFound:
+                summary: No such contract
+                value: { enabled: false }
+      responses:
+        '200':
+          description: The contract as it now is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownContract'
+              examples:
+                disableContract:
+                  summary: Disabled
+                  value:
+                    id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                    chain: base
+                    address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                    label: FlowVault
+                    abi:
+                      - type: event
+                        name: Deposited
+                        anonymous: false
+                        inputs:
+                          - { name: from, type: address, indexed: true }
+                          - { name: amount, type: uint256, indexed: false }
+                          - { name: note, type: string, indexed: false }
+                      - type: function
+                        name: deposit
+                        stateMutability: payable
+                        inputs: [{ name: note, type: string }]
+                        outputs: []
+                    functions: ['deposit(string note)']
+                    events: ['Deposited(address indexed from, uint256 amount, string note)']
+                    source: console
+                    enabled: false
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:12:40.318Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '404':
+          description: No registered contract has this id. An id that is not a UUID gets the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlainError'
+              examples:
+                notFound:
+                  summary: No such contract
+                  value: { error: not found }
+
   /v1/setup:
     get:
       tags: [Setup]
@@ -1483,7 +2620,8 @@ paths:
       summary: List operator actions
       description: |
         The operator action record, newest first, a page at a time. One entry for every cancel that
-        landed, by either token, every release, and every Flag Rule create, edit and delete. Each is
+        landed, by either token, every release, every Flag Rule create, edit and delete, and every
+        Known Asset added, disabled or enabled. Each is
         also written to the engine's log as an `operator action` line. Only the operator token can
         read it.
 
@@ -1535,6 +2673,97 @@ paths:
                         tokenKind: auth
                         reason: duplicate of refund 7730
                     nextCursor: WyIyMDI2LTExLTAxVDAyOjEzOjIxLjk1MFoiLCIxZTViOGM0Ny0yZjlhLTRkMDMtYjZlMS04YTRjN2Q5ZjBiNTIiXQ
+        '400':
+          description: The cursor is not one this API issued.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PlainError'
+                  - $ref: '#/components/schemas/RequestError'
+              examples:
+                badCursor:
+                  summary: A cursor the API did not issue
+                  value: { error: cursor is not one this API issued }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+
+  /v1/rejected:
+    get:
+      tags: [Rejected]
+      operationId: listRejectedRequests
+      summary: List refused requests
+      description: |
+        Every [Create a Dispatch](./openapi.yaml#create-a-dispatch) the engine refused with a `4xx`
+        other than `401`, newest first, a page at a time: when it came, which token sent it, its
+        `Idempotency-Key`, the error it got, and the body exactly as sent, every item kept. A
+        refused request stores no Dispatch, so this is the only trace of it. Only the operator
+        token can read it.
+
+        The body is kept as JSON, so its keys may come back in another order. `401`s are never
+        recorded, so a caller without a token cannot fill the record. The worker
+        keeps records for `REJECTED_RETENTION_DAYS` (30 by default) and at most 10,000 of them,
+        dropping the oldest first. `last24Hours` counts the records from the last 24 hours, whatever
+        the page. Pass `nextCursor` back as `cursor` until it is `null`.
+      security:
+        - operatorToken: []
+      parameters:
+        - name: limit
+          in: query
+          description: Records per page.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+          examples:
+            recent: { value: 25 }
+        - name: cursor
+          in: query
+          description: The `nextCursor` of the previous page, passed back as it came.
+          schema: { type: string }
+          examples:
+            badCursor: { value: not-a-cursor }
+      responses:
+        '200':
+          description: One page of refused requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectedPage'
+              examples:
+                recent:
+                  summary: The latest refusals
+                  value:
+                    rejected:
+                      - id: 5c6f7a4d-02ce-4b21-84a4-6a4456fb78f0
+                        at: '2026-11-01T16:40:18.680Z'
+                        status: 400
+                        chain: base
+                        idempotencyKey: er-mvy235bb-call
+                        tokenKind: auth
+                        code: CHAIN_REJECTED
+                        message: 'call data is not a well-formed (whole-byte) hex string: deposit'
+                        body:
+                          chain: base
+                          items:
+                            - { to: '0x6101864ad086cecf28d91b25068969a4d1129278', data: deposit, type: call, value: '0' }
+                      - id: ddd1fe79-78a7-4956-b965-60a9e51caaaa
+                        at: '2026-11-01T16:40:18.657Z'
+                        status: 400
+                        chain: base
+                        idempotencyKey: er-mvy235bb-usdt
+                        tokenKind: auth
+                        code: UNKNOWN_ASSET
+                        message: no known token configured for asset "USDT"
+                        chainDetail: { asset: USDT }
+                        body:
+                          chain: base
+                          items:
+                            - type: payment
+                              asset: USDT
+                              amount: '25000000'
+                              recipient: '0x8ba1f109551bD432803012645Ac136ddd64DBA72'
+                    nextCursor: null
+                    last24Hours: 2
         '400':
           description: The cursor is not one this API issued.
           content:
@@ -1630,6 +2859,10 @@ paths:
                           curve: secp256k1
                           address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'
                           readAt: '2026-11-01T02:09:20.649Z'
+                        foreignActivity:
+                          lastSeenAt: '2026-11-01T02:08:51.207Z'
+                          nonces: [3124, 3126]
+                          count: 3
                       - chain: solana
                         name: payouts
                         default: true
@@ -1647,6 +2880,7 @@ paths:
                           curve: ed25519
                           address: 33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf
                           readAt: '2026-11-01T02:09:20.669Z'
+                        foreignActivity: null
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1691,7 +2925,7 @@ components:
       description: |
         The engine's operator token, `OPERATOR_TOKEN` in its environment. It does everything the API
         token does, and is the only token the operator-only routes accept: releasing a held
-        Dispatch, writing and previewing Flag Rules, and reading the activity record. The API token
+        Dispatch, writing and previewing Flag Rules and Known Assets, and reading the activity record. The API token
         gets `403` on those routes, and so does everyone when the operator has not set an operator
         token.
 
@@ -1709,6 +2943,9 @@ components:
         payBase: { value: payroll-2026-11-01 }
         callAndPaySolana: { value: invoice-4471 }
         callBase: { value: call-base-2026-11-01 }
+        callExplainedSolana: { value: flows-row-5 }
+        callUndecodedBase: { value: flows-row-4 }
+        payShortfallBase: { value: payroll-2026-11-01-shortfall }
         bulkCallBase: { value: bulk-base-2026-11-01 }
         relayBase: { value: relay-order-8841 }
         relaySolana: { value: relay-order-8842 }
@@ -1733,7 +2970,9 @@ components:
       schema: { type: string, format: uuid }
       examples:
         managed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
-        managedWithTimeline: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
+        managedWithTimeline: { value: 8764d2b3-87f4-4b47-ba9e-fc3a0295b4d0 }
+        callExplainedSolana: { value: 4ce57f6b-3dd2-4bef-89ef-57e8ab66c2a9 }
+        callUndecodedBase: { value: dafa9a9b-2759-45b9-9585-70890a2ec7bf }
         relay: { value: 78dbeb88-ec45-4e73-bf74-f71434302ba4 }
         cancelled: { value: ecf5aff7-d3ce-4c72-92ed-06f910c7b5f2 }
         alreadyClaimed: { value: 1a2f3f9f-0e2e-461c-b12c-e31391f1d5b4 }
@@ -1760,6 +2999,31 @@ components:
         notFound: { value: 00000000-0000-4000-8000-000000000000 }
         unauthorized: { value: b3c1e0d2-5f4a-4c8e-9a71-2d6f0e8b9c13 }
         notOperator: { value: b3c1e0d2-5f4a-4c8e-9a71-2d6f0e8b9c13 }
+
+    AssetId:
+      name: id
+      in: path
+      required: true
+      description: The `id` of a Known Asset, from List Known Assets or Add a Known Asset.
+      schema: { type: string, format: uuid }
+      examples:
+        disableAsset: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
+        configAsset: { value: 90f91669-f845-45bf-b44a-d571ac098032 }
+        notFound: { value: 00000000-0000-4000-8000-000000000000 }
+        unauthorized: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
+        notOperator: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
+
+    ContractId:
+      name: id
+      in: path
+      required: true
+      description: The `id` of a registered contract, from List registered contracts or Register a contract.
+      schema: { type: string, format: uuid }
+      examples:
+        disableContract: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
+        notFound: { value: 00000000-0000-4000-8000-000000000000 }
+        unauthorized: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
+        notOperator: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
 
   responses:
     Unauthorized:
@@ -1980,6 +3244,15 @@ components:
             - ALREADY_CLAIMED
             - NOT_HELD
             - RULE_DELETED
+            - NOT_A_TOKEN
+            - NOT_PAYABLE
+            - SYMBOL_REQUIRED
+            - SYMBOL_TAKEN
+            - ASSET_EXISTS
+            - CONFIG_ASSET
+            - INVALID_ABI
+            - INVALID_IDL
+            - CONTRACT_EXISTS
           description: What went wrong. Switch on this. [Errors](./errors.md) lists what to do about each.
         message: { type: string, description: The most specific reason available, for people. On Base it is often the node's own words. }
         chainDetail: { description: The raw detail from the chain or the check, such as a shortfall, a JSON-RPC code or revert data. Its shape depends on the code. }
@@ -2038,7 +3311,7 @@ components:
       type: object
       additionalProperties: false
       description: Only on an item of a Multisig Sender whose Call is in a Proposal.
-      required: [state, approvals, threshold, deadline, expected, chainRef]
+      required: [state, approvals, threshold, remaining, approvers, deadline, expected, chainRef]
       properties:
         state:
           type: string
@@ -2046,6 +3319,22 @@ components:
           description: '`awaiting` is below the threshold. `approved` has reached it. `approved_after_deadline` was approved too late, and the engine will not execute it.'
         approvals: { type: integer, description: The votes so far. }
         threshold: { type: integer, description: The votes needed. }
+        remaining: { type: integer, minimum: 0, description: 'Approvals still needed: `threshold` less `approvals`, never below 0.' }
+        approvers:
+          type: array
+          description: |
+            Every member who can approve, in the multisig's own order, as the engine last read them: the
+            Squads members with the Vote permission, or the Safe's owners. Empty until the engine first
+            reads the Proposal. On Squads, a vote to reject or to cancel reads `rejected`. A Safe has no
+            per-owner rejection, so a Safe owner is `approved` or `pending`.
+          items:
+            type: object
+            additionalProperties: false
+            required: [address, decision]
+            properties:
+              address: { type: string }
+              label: { type: string, description: 'The name the senders file gives this Approver (`approvers`). Left out when it gives none.' }
+              decision: { type: string, enum: [approved, rejected, pending] }
         deadline: { type: string, format: date-time, description: When the engine stops waiting. After it the item is `abandoned` with `APPROVAL_TIMEOUT`. }
         expected:
           type: object
@@ -2079,6 +3368,7 @@ components:
             - $ref: '#/components/schemas/Error'
           description: '`null` unless the item failed or was abandoned.'
         approval: { $ref: '#/components/schemas/Approval' }
+        effects: { $ref: '#/components/schemas/Effects' }
 
     PaymentItem:
       title: A payment item
@@ -2100,15 +3390,144 @@ components:
         - $ref: '#/components/schemas/ItemOutcome'
       type: object
       unevaluatedProperties: false
-      required: [type]
-      description: A call item shows only its target, `to` on Base or `programId` on Solana. Its data, value and accounts are left out.
+      required: [type, call]
+      description: A call item shows its target, `to` on Base or `programId` on Solana, and in `call` what the call does, decoded when a built-in decoder knows it. Its raw data, value and accounts are not repeated.
       properties:
         type: { const: call }
         to: { type: string }
         programId: { type: string }
+        call: { $ref: '#/components/schemas/DecodedCall' }
       oneOf:
         - required: [to]
         - required: [programId]
+
+    AssetRef:
+      type: object
+      additionalProperties: false
+      required: [address, symbol, name, decimals]
+      description: A Known Asset. `address` is its mint or contract, or `native` for the chain's own coin.
+      properties:
+        address: { type: string }
+        symbol: { type: string }
+        name: { type: string }
+        decimals: { type: integer }
+
+    AmountView:
+      type: object
+      required: [amount]
+      description: An amount in the asset's smallest unit. `asset` and `formatted` (the amount in whole units, such as `1.5`) are there when the asset is a Known Asset.
+      properties:
+        amount: { $ref: '#/components/schemas/Amount' }
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        formatted: { type: string }
+
+    CallArg:
+      type: object
+      additionalProperties: false
+      required: [name, type, value]
+      description: One argument, named and typed as its decoder defines it. Numbers are strings. An amount of a Known Asset also has `asset` and `formatted`; for a registered ABI or IDL that is an argument named like an amount (`amount`, `value`, `...Amount`; `...lamports` in SOL) when the call names exactly one Known Asset.
+      properties:
+        name: { type: string }
+        type: { type: string, description: 'The ABI type on Base (`address`, `uint256`, `bytes`, ...). On Solana `pubkey` for an account, or the IDL type (`u8`, `u64`, `string`, `vec<u16>`, ...).' }
+        value: { description: 'A string, a boolean, or an array or object of them. `null` is an empty Anchor option; Anchor bytes are base64; an Anchor enum is its variant name, or an object keyed by it.' }
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        formatted: { type: string }
+
+    DecodedCall:
+      type: object
+      required: [target, decoded]
+      description: |
+        What a call does, read by the engine's built-in decoders first: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana. Then by the ABI or IDL registered for the target (Register a contract), which also gives the target its `label`.
+        Decoding happens when the Dispatch is read, so a contract registered later explains earlier calls too. When nothing knows the call, `decoded` is `false` and it shows its `selector` and raw `data`. The engine never asks a third-party service to guess a function.
+      properties:
+        target: { type: string, description: The contract (Base) or program (Solana) called. }
+        label: { type: string, description: The target's label, when it is a registered contract. }
+        decoded: { type: boolean, description: '`true` when a decoder named the function, or when the call carries no data. `function` is left out then.' }
+        decoder:
+          type: string
+          description: A built-in decoder, or `abi` or `idl` for the target's registered ABI or IDL.
+          enum: [erc20, erc721, erc1155, weth, multicall3, system, spl-token, token-2022, associated-token-account, memo, compute-budget, abi, idl]
+        function: { type: string }
+        args:
+          type: array
+          description: Solana lists the instruction's accounts first, then its data.
+          items: { $ref: '#/components/schemas/CallArg' }
+        selector: { type: string, description: 'Base: the 4-byte function selector. Solana: the instruction discriminator in hex, up to 8 bytes for a program no decoder knows.' }
+        data: { type: string, description: 'The raw data, only when `decoded` is `false`: hex on Base, base64 on Solana.' }
+        value:
+          description: 'Base: the ETH sent with the call, when not zero.'
+          $ref: '#/components/schemas/AmountView'
+        calls:
+          type: array
+          description: Multicall3 only. Each call it makes, decoded the same way, with its own `allowFailure`.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/DecodedCall'
+            type: object
+            required: [allowFailure]
+            properties:
+              allowFailure: { type: boolean }
+
+    Transfer:
+      allOf:
+        - $ref: '#/components/schemas/AmountView'
+      type: object
+      required: [standard, token, from, to]
+      description: Value that moved. `from` is `null` for a mint and `to` is `null` for a burn. On Solana `from` and `to` are the wallets that own the token accounts, when the transaction says.
+      properties:
+        standard: { type: string, enum: [native, erc20, erc721, erc1155, spl, token-2022] }
+        token: { type: string, description: The contract or mint, or `native`. }
+        from: { type: [string, 'null'] }
+        to: { type: [string, 'null'] }
+        tokenId: { type: string, description: ERC-721 and ERC-1155 only. }
+
+    Event:
+      type: object
+      additionalProperties: false
+      required: [kind, source, decoder, name, args]
+      description: A decoded receipt log on Base, or an instruction the transaction ran on Solana, inner ones included.
+      properties:
+        kind: { type: string, enum: [log, instruction] }
+        source: { type: string, description: The contract that emitted the log, or the program that ran. }
+        label: { type: string, description: The source's label, when it is a registered contract. }
+        decoder: { type: string, description: 'A built-in decoder, or `abi` or `idl`.' }
+        name: { type: string }
+        args: { type: array, items: { $ref: '#/components/schemas/CallArg' } }
+
+    Effects:
+      type: object
+      additionalProperties: false
+      required: [transfers, fee, events, undecodedEvents, undecodedEventSources, truncated]
+      description: |
+        What the item's transaction changed on chain, once it is confirmed and the worker has read it (a few seconds later). Items that share one transaction show the same effects.
+        Transfers come from decoded logs on Base, so ETH a contract forwards inside the call is not among them; on Solana they come from System and token instructions, inner ones included.
+      properties:
+        transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        value:
+          description: 'Base: the ETH the transaction itself sent, when not zero.'
+          $ref: '#/components/schemas/AmountView'
+        fee:
+          description: What the transaction cost and who paid it. On Base it includes the L1 data fee.
+          allOf:
+            - $ref: '#/components/schemas/AmountView'
+          type: object
+          required: [payer]
+          properties:
+            payer: { type: string }
+        events: { type: array, items: { $ref: '#/components/schemas/Event' } }
+        undecodedEvents: { type: integer, description: Logs or instructions neither a built-in decoder nor a registered ABI or IDL explains. }
+        undecodedEventSources:
+          type: array
+          description: Where the undecoded ones came from, most first. Registering a source's ABI or IDL explains them.
+          items:
+            type: object
+            additionalProperties: false
+            required: [source, count]
+            properties:
+              source: { type: string }
+              label: { type: string, description: The source's label, when it is registered but its ABI does not name the event. }
+              count: { type: integer }
+        truncated: { type: boolean, description: 'Part of what the transaction did was too large to store: past 128 logs or instructions, 2 KiB of data each, or 100 log lines.' }
 
     TimelineEntry:
       description: One step, oldest first. `items` are the positions of the items the step is about. `hash` names one version of a transaction.
@@ -2138,6 +3557,14 @@ components:
             hash: { type: string }
             items: { type: array, items: { type: integer } }
             replaces: { type: [string, 'null'] }
+            fee:
+              type: object
+              additionalProperties: false
+              required: [maxFeePerGas, maxPriorityFeePerGas]
+              description: Base only. The EIP-1559 fees this version was signed with, in wei, so a fee bump shows what it paid before and after.
+              properties:
+                maxFeePerGas: { type: string, pattern: '^[0-9]+$' }
+                maxPriorityFeePerGas: { type: string, pattern: '^[0-9]+$' }
         - title: sent
           type: object
           additionalProperties: false
@@ -2167,6 +3594,13 @@ components:
             hash: { type: string }
             items: { type: array, items: { type: integer } }
             by: { type: [string, 'null'] }
+            error:
+              $ref: '#/components/schemas/Error'
+              description: |
+                `dropped` only, and only when nothing else settled the item: on Base,
+                `NONCE_ALREADY_USED` when another sender took the version's nonce and the engine sent
+                the item again (`by`). Its `chainDetail` holds `reason: nonce_taken`, `nonce` and
+                `resentNonce`.
         - title: confirmed
           type: object
           additionalProperties: false
@@ -2237,6 +3671,19 @@ components:
         sender: { $ref: '#/components/schemas/SenderRef' }
         createdAt: { type: string, format: date-time, description: When the engine stored it. }
         status: { $ref: '#/components/schemas/DispatchStatus' }
+        retryPolicy:
+          type: boolean
+          description: Whether the engine may send a stuck transaction again at a higher fee, as the request or the operator's default set it.
+        bulkCall:
+          type: object
+          additionalProperties: false
+          required: [aggregator, maxBatchSize, allowFailure]
+          description: Only on a Bulk Call. The aggregator, with its label when the contract registry has one, and the settings in force.
+          properties:
+            aggregator: { type: string }
+            label: { type: string }
+            maxBatchSize: { type: integer, minimum: 1 }
+            allowFailure: { type: boolean }
         items:
           type: array
           description: One entry per item, in the order you sent them. Each repeats what you asked for and adds its own outcome.
@@ -2245,6 +3692,7 @@ components:
               - $ref: '#/components/schemas/PaymentItem'
               - $ref: '#/components/schemas/CallItem'
         hold: { $ref: '#/components/schemas/Hold' }
+        cancellation: { $ref: '#/components/schemas/Cancellation' }
         timeline:
           type: array
           description: Only with `include=timeline`.
@@ -2265,6 +3713,15 @@ components:
           enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled]
         transactionHash: { type: [string, 'null'] }
         error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        signer: { type: string, description: The address that signed the transaction, read from its bytes. }
+        target:
+          type: string
+          description: Base, its `to`. Solana, the recipient of a System transfer, else the first program it calls after the Compute Budget program.
+        value:
+          $ref: '#/components/schemas/AssetTotal'
+          description: The native coin it moves. On Solana, only for a System transfer.
+        cancellation: { $ref: '#/components/schemas/Cancellation' }
+        effects: { $ref: '#/components/schemas/Effects' }
         timeline:
           type: array
           description: Only with `include=timeline`. The one transaction is item `0`.
@@ -2285,6 +3742,11 @@ components:
             status: { $ref: '#/components/schemas/DispatchStatus' }
             createdAt: { type: string, format: date-time }
             itemCount: { type: integer }
+            callCount: { type: integer, description: How many of the items are calls; the rest are payments. }
+            heldBy:
+              type: array
+              items: { type: string }
+              description: Only on a held row. The names of the rules holding it.
             totals:
               type: array
               description: The sum per asset of the payment items. Call items carry no amount.
@@ -2327,7 +3789,8 @@ components:
     Sender:
       type: object
       additionalProperties: false
-      required: [chain, name, default, network, mode, address, multisig, balances, signerKey]
+      required:
+        [chain, name, default, network, mode, address, multisig, balances, signerKey, foreignActivity]
       properties:
         chain: { $ref: '#/components/schemas/Chain' }
         name:
@@ -2431,6 +3894,30 @@ components:
               required: [status]
               properties:
                 status: { const: not_read_yet }
+        foreignActivity:
+          description: |
+            Base only. Nonces of this Sender's wallet that something other than this engine used in
+            the last 24 hours, as the worker found them on chain: `null` when there were none.
+            Something else sending from the wallet makes the engine resend payments whose nonce it
+            took, and only one engine may send from a Sender
+            ([Errors](../errors.md#errors), `NONCE_ALREADY_USED`).
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [lastSeenAt, nonces, count]
+              properties:
+                lastSeenAt:
+                  type: string
+                  format: date-time
+                  description: When the worker first saw the most recent of them.
+                nonces:
+                  type: array
+                  items: { type: integer }
+                  minItems: 2
+                  maxItems: 2
+                  description: The lowest and the highest.
+                count: { type: integer }
 
     SenderList:
       type: object
@@ -2640,13 +4127,121 @@ components:
         at: { type: string, format: date-time }
         action:
           type: string
-          enum: [cancel, release, flag_rule_create, flag_rule_update, flag_rule_delete]
-        targetId: { type: string, format: uuid, description: The Dispatch or Flag Rule acted on. }
+          enum:
+            [
+              cancel,
+              release,
+              flag_rule_create,
+              flag_rule_update,
+              flag_rule_delete,
+              asset_add,
+              asset_disable,
+              asset_enable,
+              contract_add,
+              contract_disable,
+              contract_enable,
+            ]
+        targetId:
+          { type: string, format: uuid, description: 'The Dispatch, Flag Rule, Known Asset or registered contract acted on.' }
         tokenKind:
           type: string
           enum: [auth, operator]
           description: Which token made the request.
         reason: { type: [string, 'null'], description: What the caller gave, or `null`. }
+
+    KnownAsset:
+      type: object
+      additionalProperties: false
+      required: [id, chain, address, symbol, name, decimals, kind, source, enabled, addedBy, addedAt]
+      properties:
+        id: { type: string, format: uuid }
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: 'The mint (Solana) or contract (Base, checksummed). `native` for the native coin.' }
+        symbol: { type: string, description: What a payment item names in `asset`. Unique per chain among enabled assets, ignoring case. }
+        name: { type: string, description: The token's name as the chain gives it, or its symbol when it gives none. }
+        decimals: { type: integer, minimum: 0, maximum: 255, description: Read from the chain. }
+        kind: { type: string, enum: [native, spl, token-2022, erc20] }
+        source:
+          type: string
+          enum: [config, console]
+          description: '`config` rows come from the configuration and can''t be changed here; `console` rows were added through the API.'
+        enabled: { type: boolean, description: Whether a new payment may name it. }
+        addedBy: { type: [string, 'null'], enum: [auth, operator, null], description: 'Which token added it; `null` for a config row.' }
+        addedAt: { type: string, format: date-time }
+
+    AssetRequest:
+      type: object
+      additionalProperties: false
+      required: [chain, address]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The mint or contract address. }
+        symbol: { type: string, description: 'Replaces the chain''s symbol: 1 to 20 letters, digits, `.`, `_`, `$` or `-`.' }
+        reason: { type: string, minLength: 1, description: Why, for the activity record. Add only. }
+
+    AssetPreview:
+      type: object
+      additionalProperties: false
+      required: [chain, kind, address, decimals, symbol, name, onChain, supply]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        kind: { type: string, enum: [spl, token-2022, erc20] }
+        address: { type: string }
+        decimals: { type: integer, minimum: 0, maximum: 255 }
+        symbol: { type: string, description: The symbol it would be added under. }
+        name: { type: string }
+        onChain:
+          type: object
+          additionalProperties: false
+          required: [symbol, name]
+          description: The name and symbol the chain gives, empty when it gives none.
+          properties:
+            symbol: { type: string }
+            name: { type: string }
+        supply: { type: string, pattern: '^\d+$', description: The total supply, in the smallest unit. }
+
+    KnownContract:
+      type: object
+      additionalProperties: false
+      required: [id, chain, address, label, functions, events, source, enabled, addedBy, addedAt]
+      description: A registered contract, with `abi` on Base or `idl` on Solana as it was given.
+      properties:
+        id: { type: string, format: uuid }
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: 'The contract (Base, checksummed) or program (Solana).' }
+        label: { type: string, maxLength: 64, description: What the console and decoded calls call it. }
+        abi: { type: array, description: The ABI items. }
+        idl: { type: object, description: The Anchor IDL. }
+        functions: { type: array, items: { type: string }, description: 'What it explains, as signatures: Base functions, or Solana instructions.' }
+        events: { type: array, items: { type: string }, description: The Base events it explains. Empty on Solana. }
+        source: { type: string, enum: [console], description: Registered through the API. }
+        enabled: { type: boolean, description: Whether it explains calls and events. At most one enabled registration per address. }
+        addedBy: { type: string, enum: [auth, operator] }
+        addedAt: { type: string, format: date-time }
+
+    ContractRequest:
+      type: object
+      additionalProperties: false
+      required: [chain, address, label]
+      description: '`abi` on Base, `idl` on Solana. Each may be the JSON itself or the text that was pasted.'
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The contract or program address. }
+        label: { type: string, minLength: 1, maxLength: 64 }
+        abi: { type: [array, object, string], description: 'An ABI array, or a compiler artifact holding one in `abi`.' }
+        idl: { type: [object, string], description: 'An Anchor IDL, in the 0.30 format or the older one.' }
+        reason: { type: string, minLength: 1, description: Why, for the activity record. Register only. }
+
+    ContractPreview:
+      type: object
+      additionalProperties: false
+      required: [chain, address, label, functions, events]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The address as it would be stored. }
+        label: { type: string }
+        functions: { type: array, items: { type: string } }
+        events: { type: array, items: { type: string } }
 
     ActivityPage:
       type: object
@@ -2659,6 +4254,55 @@ components:
         nextCursor:
           type: [string, 'null']
           description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+
+    RejectedRequest:
+      type: object
+      additionalProperties: false
+      required: [id, at, status, chain, idempotencyKey, tokenKind, code, message, body]
+      properties:
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time, description: When the engine refused it. }
+        status: { type: integer, description: 'The HTTP status it got, `400` to `499` but never `401`.' }
+        chain:
+          oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Chain' }]
+          description: 'The request''s `chain`, or `null` when it named none the API has. `body` keeps what was sent.'
+        idempotencyKey: { type: [string, 'null'], description: 'The `Idempotency-Key` header, or `null` without one.' }
+        tokenKind:
+          type: string
+          enum: [auth, operator]
+          description: Which token sent it.
+        code:
+          type: [string, 'null']
+          description: 'The error''s `code`, one of the [error codes](./errors.md#error-codes) or an `FST_ERR_*` request error. `null` for a plain error, which has only a message.'
+        message: { type: string, description: 'The error''s `message`, or a plain error''s `error`.' }
+        chainDetail: { description: 'The error''s `chainDetail`, when it had one.' }
+        body: { description: 'The request body as sent, every item kept, or `null` when it was not JSON.' }
+
+    RejectedPage:
+      type: object
+      additionalProperties: false
+      required: [rejected, nextCursor, last24Hours]
+      properties:
+        rejected:
+          type: array
+          items: { $ref: '#/components/schemas/RejectedRequest' }
+        nextCursor:
+          type: [string, 'null']
+          description: Pass it as `cursor` for the next page. `null` on the last page, and only there.
+        last24Hours: { type: integer, minimum: 0, description: How many requests were refused in the last 24 hours. }
+
+    Cancellation:
+      type: object
+      additionalProperties: false
+      required: [at, tokenKind, reason]
+      description: Who cancelled the Dispatch, when and why. Only on a `cancelled` Dispatch.
+      properties:
+        at: { type: string, format: date-time }
+        tokenKind:
+          type: string
+          enum: [auth, operator]
+          description: Which token cancelled it.
+        reason: { type: [string, 'null'], description: 'The reason given with the cancel, or `null`.' }
 
     SetupCheck:
       type: object

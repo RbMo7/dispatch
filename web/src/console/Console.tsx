@@ -1,11 +1,14 @@
 import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
 import { ActivityPage } from './activity/ActivityPage';
+import { AssetsPage } from './assets/AssetsPage';
+import { ContractsPage } from './contracts/ContractsPage';
 import { DispatchesPage } from './dispatches/DispatchesPage';
 import { HeldProvider } from './held/heldData';
 import { HeldPage } from './held/HeldPage';
 import { LiveProvider } from './live';
 import { Overview } from './overview/Overview';
+import { RejectedPage } from './rejected/RejectedPage';
 import { OPERATOR_PAGES, RouterProvider, useRouter } from './router';
 import { RulesPage } from './rules/RulesPage';
 import { SendersPage } from './senders/SendersPage';
@@ -52,8 +55,14 @@ function CurrentPage() {
       return <RulesPage />;
     case 'senders':
       return <SendersPage />;
+    case 'assets':
+      return <AssetsPage />;
+    case 'contracts':
+      return <ContractsPage />;
     case 'activity':
       return <ActivityPage />;
+    case 'rejected':
+      return <RejectedPage />;
     case 'setup':
       return <SetupPage />;
   }

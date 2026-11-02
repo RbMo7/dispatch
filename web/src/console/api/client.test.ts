@@ -4,15 +4,40 @@ import { ApiError, createApiClient } from './client';
 
 const ID = 'c59cd54c-295c-4948-9120-c20387ad5f09';
 
+const asset = (chain: string, symbol: string, name: string, decimals: number) => ({
+  id: `${chain}-${symbol}`,
+  chain,
+  address: symbol === 'SOL' ? 'native' : `${symbol}-address`,
+  symbol,
+  name,
+  decimals,
+  kind: symbol === 'SOL' ? 'native' : 'spl',
+  source: 'config',
+  enabled: true,
+  addedBy: null,
+  addedAt: '2026-11-01T15:44:24.221Z',
+});
+
+const REGISTRY = {
+  status: 200,
+  body: {
+    assets: [asset('solana', 'SOL', 'Solana', 9), asset('solana', 'USDC', 'USD Coin', 6)],
+  },
+};
+
+/** An engine answering `routes` by path prefix; the asset registry is read apart, in `assetReads`. */
 function engine(routes: Record<string, { status: number; body: unknown }>) {
   const calls: { url: string; init: RequestInit }[] = [];
+  const assetReads: string[] = [];
+  const answer = { ...routes, '/v1/assets': routes['/v1/assets'] ?? REGISTRY };
   const fetcher = vi.fn((path: string, init: RequestInit = {}) => {
-    calls.push({ url: path, init });
-    const route = Object.entries(routes).find(([prefix]) => path.startsWith(prefix));
+    if (path === '/v1/assets') assetReads.push(path);
+    else calls.push({ url: path, init });
+    const route = Object.entries(answer).find(([prefix]) => path.startsWith(prefix));
     const [status, body] = route ? [route[1].status, route[1].body] : [404, { error: 'Not Found' }];
     return Promise.resolve(new Response(JSON.stringify(body), { status }));
   }) as unknown as typeof fetch;
-  return { fetcher, calls };
+  return { fetcher, calls, assetReads };
 }
 
 async function failure(promise: Promise<unknown>) {
@@ -56,7 +81,7 @@ describe('the API client', () => {
       status: 'failed',
       createdAt: new Date('2026-10-31T19:06:29.598Z'),
       itemCount: 1,
-      totals: [{ asset: 'SOL', decimals: 9, raw: '1000000' }],
+      totals: [{ asset: 'SOL', name: 'Solana', decimals: 9, raw: '1000000' }],
     });
     expect(calls[0]!.url).toBe('/v1/dispatches?limit=5&chain=solana&sender=payouts&status=failed');
     expect(new Headers(calls[0]!.init.headers).get('Authorization')).toBe('Bearer t0ken');
@@ -142,6 +167,7 @@ describe('the API client', () => {
                 },
               ],
               signerKey: { error: 'the Signer could not be reached' },
+              foreignActivity: null,
             },
           ],
         },
@@ -150,7 +176,7 @@ describe('the API client', () => {
     const [sender] = await createApiClient('t', () => {}, fetcher).listSenders();
     expect(sender!.multisig!.threshold).toEqual({ ok: false, error: 'RPC_UNAVAILABLE' });
     expect(sender!.balances[0]!.assets.map((a) => a.balance)).toEqual([
-      { ok: true, value: { asset: 'SOL', decimals: 9, raw: '9000000' } },
+      { ok: true, value: { asset: 'SOL', name: 'Solana', decimals: 9, raw: '9000000' } },
       { ok: false, error: 'RPC_UNAVAILABLE' },
     ]);
     expect(sender!.signerKey).toEqual({ ok: false, error: 'the Signer could not be reached' });
@@ -166,6 +192,7 @@ describe('the API client', () => {
       address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
       multisig: null,
       balances: [],
+      foreignActivity: null,
     };
     const { fetcher } = engine({
       '/v1/senders': {
@@ -190,6 +217,43 @@ describe('the API client', () => {
     expect(read!.signerKey).toMatchObject({
       ok: true,
       value: { curve: 'secp256k1', readAt: '2026-11-01T09:14:02.511Z' },
+    });
+  });
+
+  it('reads the nonces another sender used in a Base Sender, and refuses a range that is not two nonces', async () => {
+    const sender = (foreignActivity: unknown) => ({
+      chain: 'base',
+      name: 'payouts',
+      default: true,
+      network: 'base-sepolia',
+      mode: 'single',
+      address: '0x8b21c7D90e4A1f3b5C6d2E9a07B4f81c3D5e44fe',
+      multisig: null,
+      balances: [],
+      signerKey: { status: 'not_read_yet' },
+      foreignActivity,
+    });
+    const used = { lastSeenAt: '2026-11-01T02:08:51.207Z', nonces: [3124, 3126], count: 3 };
+    const { fetcher } = engine({
+      '/v1/senders': { status: 200, body: { senders: [sender(used), sender(null)] } },
+    });
+    const [seen, quiet] = await createApiClient('t', () => {}, fetcher).listSenders();
+    expect(seen!.foreignActivity).toEqual({
+      lastSeenAt: new Date('2026-11-01T02:08:51.207Z'),
+      nonces: [3124, 3126],
+      count: 3,
+    });
+    expect(quiet!.foreignActivity).toBeNull();
+
+    const broken = engine({
+      '/v1/senders': {
+        status: 200,
+        body: { senders: [sender({ ...used, nonces: [3124] })] },
+      },
+    });
+    expect(await failure(createApiClient('t', () => {}, broken.fetcher).listSenders())).toEqual({
+      kind: 'malformed',
+      message: 'senders[0].foreignActivity.nonces is not the lowest and the highest nonce',
     });
   });
 
@@ -288,6 +352,7 @@ describe('the API client', () => {
       multisig: null,
       balances: [],
       signerKey: { status: 'not_read_yet' },
+      foreignActivity: null,
     };
     const { fetcher } = engine({
       '/v1/senders': {
@@ -332,6 +397,7 @@ describe('the API client', () => {
               multisig: null,
               balances: [],
               signerKey: { status: 'not_read_yet' },
+              foreignActivity: null,
             },
           ],
         },
@@ -426,6 +492,7 @@ describe('the API client', () => {
               multisig: null,
               balances: [],
               signerKey: { error: 'the Signer could not be reached' },
+              foreignActivity: null,
             },
           ],
         },
@@ -433,5 +500,130 @@ describe('the API client', () => {
     });
     const [sender] = await createApiClient('t', () => {}, fetcher).listSenders();
     expect(sender!.network).toEqual(parsed);
+  });
+});
+
+describe('asset names at the API boundary', () => {
+  const page = (asset: string) => ({
+    status: 200,
+    body: {
+      dispatches: [
+        {
+          dispatchId: ID,
+          mode: 'managed',
+          chain: 'solana',
+          status: 'confirmed',
+          createdAt: '2026-10-31T19:06:29.598Z',
+          itemCount: 1,
+          totals: [{ asset, decimals: 6, amount: '1500000' }],
+        },
+      ],
+      nextCursor: null,
+    },
+  });
+  const totalOf = async (api: ReturnType<typeof createApiClient>) =>
+    (await api.listDispatches({}, {})).dispatches[0]!.totals[0]!;
+
+  it('names each amount from the registry, read once for every later read', async () => {
+    const { fetcher, assetReads } = engine({ '/v1/dispatches': page('USDC') });
+    const api = createApiClient('t', () => {}, fetcher);
+    expect((await totalOf(api)).name).toBe('USD Coin');
+    expect((await totalOf(api)).name).toBe('USD Coin');
+    expect(assetReads).toHaveLength(1);
+  });
+
+  it('takes a renamed asset from the registry the Senders poll refreshes', async () => {
+    let name = 'USD Coin';
+    const fetcher = vi.fn((path: string) => {
+      const body = path.startsWith('/v1/assets')
+        ? { assets: [asset('solana', 'USDC', name, 6)] }
+        : page('USDC').body;
+      return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+    }) as unknown as typeof fetch;
+    const api = createApiClient('t', () => {}, fetcher);
+    expect((await totalOf(api)).name).toBe('USD Coin');
+    name = 'Circle Dollar';
+    await api.listAssets();
+    expect((await totalOf(api)).name).toBe('Circle Dollar');
+  });
+
+  it('shows the symbol while the registry is unreadable, and asks for it again next time', async () => {
+    const { fetcher, assetReads } = engine({
+      '/v1/assets': { status: 503, body: { code: 'UNAVAILABLE', message: 'database down' } },
+      '/v1/dispatches': page('USDC'),
+    });
+    const api = createApiClient('t', () => {}, fetcher);
+    expect((await totalOf(api)).name).toBe('USDC');
+    await totalOf(api);
+    expect(assetReads).toHaveLength(2);
+  });
+
+  it('signs out when the engine refuses the token for the registry', async () => {
+    const onUnauthorized = vi.fn();
+    const { fetcher } = engine({
+      '/v1/assets': { status: 401, body: { error: 'unauthorized' } },
+      '/v1/dispatches': page('USDC'),
+    });
+    const api = createApiClient('t', onUnauthorized, fetcher);
+    expect(await failure(api.listDispatches({}, {}))).toEqual({ kind: 'unauthorized' });
+    expect(onUnauthorized).toHaveBeenCalled();
+  });
+
+  it('reads the registry again after an asset is added, so its name shows at once', async () => {
+    const added = asset('solana', 'LEUR', 'Live Euro', 6);
+    let registry = [asset('solana', 'SOL', 'Solana', 9)];
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetcher = vi.fn((path: string, init: RequestInit = {}) => {
+      calls.push({ url: path, init });
+      if (path === '/v1/assets' && init.method === 'POST') {
+        registry = [...registry, added];
+        return Promise.resolve(new Response(JSON.stringify(added), { status: 201 }));
+      }
+      const body = path === '/v1/assets' ? { assets: registry } : page('LEUR').body;
+      return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+    }) as unknown as typeof fetch;
+    const api = createApiClient('t', () => {}, fetcher);
+    expect((await totalOf(api)).name).toBe('LEUR');
+    const result = await api.addAsset({ chain: 'solana', address: 'LEUR-address' });
+    expect(result).toMatchObject({ symbol: 'LEUR', name: 'Live Euro' });
+    expect(JSON.parse(calls.find((c) => c.init.method === 'POST')!.init.body as string)).toEqual({
+      chain: 'solana',
+      address: 'LEUR-address',
+    });
+    expect((await totalOf(api)).name).toBe('Live Euro');
+  });
+
+  it('carries an add refusal code for the form to explain', async () => {
+    const { fetcher } = engine({
+      '/v1/assets/preview': {
+        status: 400,
+        body: { code: 'SYMBOL_REQUIRED', message: 'DmzL publishes no symbol on chain' },
+      },
+    });
+    const api = createApiClient('t', () => {}, fetcher);
+    expect(await failure(api.previewAsset({ chain: 'solana', address: 'DmzL' }))).toEqual({
+      kind: 'refused',
+      status: 400,
+      code: 'SYMBOL_REQUIRED',
+      message: 'DmzL publishes no symbol on chain',
+    });
+  });
+
+  it('disables an asset with the reason for the activity record', async () => {
+    const id = 'f1c40b26-3c95-44a8-a06b-5bc06b5272dd';
+    const { fetcher, calls } = engine({
+      [`/v1/assets/${id}`]: {
+        status: 200,
+        body: { ...asset('base', 'LUSD', 'Live Dollar', 6), enabled: false },
+      },
+    });
+    const api = createApiClient('t', () => {}, fetcher);
+    const result = await api.setAssetEnabled(id, false, 'paused while the treasury rebalances');
+    expect(result.enabled).toBe(false);
+    expect(calls[0]!.init.method).toBe('PATCH');
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+      enabled: false,
+      reason: 'paused while the treasury rebalances',
+    });
   });
 });

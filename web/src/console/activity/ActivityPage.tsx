@@ -2,6 +2,9 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
+import type { KnownAsset } from '../../domain/assets';
+import { CHAINS } from '../../domain/chains';
+import type { KnownContract } from '../../domain/contracts';
 import { dayKey } from '../../domain/dateRange';
 import { shortId } from '../../domain/dispatch';
 import { ACTIONS, type FlagRule, type OperatorAction } from '../../domain/flagRules';
@@ -12,6 +15,7 @@ import { dayHeading } from '../dispatches/DispatchRows';
 import { SENDERS_MS, usePoll } from '../live';
 import ops from '../operator.module.css';
 import { Link } from '../router';
+import { useAssets } from '../senderData';
 import { useApi } from '../session';
 import { PageBar } from '../Shell';
 
@@ -25,22 +29,33 @@ interface Loaded {
   first: Page;
   /** Rule names by id, for rule actions: a deleted rule is no longer listed. */
   rules: Map<string, string>;
+  contracts: Map<string, KnownContract>;
 }
 
-/** The activity record (ADR-0057): every cancel, release and rule change, newest first, by day. */
+/** The activity record (ADR-0057): every cancel, release, rule and asset change, newest first, by day. */
 export function ActivityPage() {
   const api = useApi();
   const load = useCallback(
     async (signal: AbortSignal): Promise<Loaded> => {
-      const [first, rules] = await Promise.all([
+      const [first, rules, contracts] = await Promise.all([
         api.listActivity(null, signal),
         api.listFlagRules(signal),
+        api.listContracts(signal),
       ]);
-      return { first, rules: new Map(rules.map((r: FlagRule) => [r.id, r.current.name])) };
+      return {
+        first,
+        rules: new Map(rules.map((r: FlagRule) => [r.id, r.current.name])),
+        contracts: new Map(contracts.map((c) => [c.id, c])),
+      };
     },
     [api],
   );
   const polled = usePoll({ key: 'activity', load, delay: () => SENDERS_MS });
+  const assetList = useAssets().data;
+  const assets = useMemo(
+    () => new Map((assetList ?? []).map((asset) => [asset.id, asset])),
+    [assetList],
+  );
   const [older, setOlder] = useState<{ after: string; pages: Page[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
@@ -87,13 +102,19 @@ export function ActivityPage() {
             {polled.error ? describeFailure(polled.error.failure) : 'Loading the activity record'}
           </p>
         ) : actions.length === 0 ? (
-          <EmptyState caption="No activity yet. Every cancel, release and Flag Rule change is recorded here." />
+          <EmptyState caption="No activity yet. Every cancel, release, Flag Rule, asset and contract change is recorded here." />
         ) : (
           [...days].map(([key, rows]) => (
             <section key={key} aria-label={dayHeading(rows[0]!.at, today)}>
               <div className={styles.dayHead}>{dayHeading(rows[0]!.at, today)}</div>
               {rows.map((action) => (
-                <ActivityRow key={action.id} action={action} rules={polled.data!.rules} />
+                <ActivityRow
+                  key={action.id}
+                  action={action}
+                  rules={polled.data!.rules}
+                  contracts={polled.data!.contracts}
+                  assets={assets}
+                />
               ))}
             </section>
           ))
@@ -111,9 +132,21 @@ export function ActivityPage() {
   );
 }
 
-function ActivityRow({ action, rules }: { action: OperatorAction; rules: Map<string, string> }) {
+function ActivityRow({
+  action,
+  rules,
+  contracts,
+  assets,
+}: {
+  action: OperatorAction;
+  rules: Map<string, string>;
+  contracts: Map<string, KnownContract>;
+  assets: Map<string, KnownAsset>;
+}) {
+  const contract = contracts.get(action.targetId);
   const { label, target } = ACTIONS[action.action];
   const ruleName = rules.get(action.targetId);
+  const asset = assets.get(action.targetId);
   return (
     <div className={ops.activityRow}>
       <span className={ops.activityTime}>{time.format(action.at)}</span>
@@ -127,6 +160,22 @@ function ActivityRow({ action, rules }: { action: OperatorAction; rules: Map<str
           >
             {shortId(action.targetId)}
           </Link>
+        ) : target === 'asset' ? (
+          asset ? (
+            <Link page="assets" params={new URLSearchParams({ chain: asset.chain })}>
+              {asset.symbol} on {CHAINS[asset.chain].label}
+            </Link>
+          ) : (
+            <span className={styles.mono}>{shortId(action.targetId)}</span>
+          )
+        ) : target === 'contract' ? (
+          contract ? (
+            <Link page="contracts" params={new URLSearchParams({ chain: contract.chain })}>
+              {contract.label} on {CHAINS[contract.chain].label}
+            </Link>
+          ) : (
+            <span className={styles.mono}>{shortId(action.targetId)}</span>
+          )
         ) : ruleName ? (
           <Link page="rules" params={new URLSearchParams({ rule: action.targetId })}>
             {ruleName}

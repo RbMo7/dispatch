@@ -22,7 +22,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const USDC = { raw: '1842300000', decimals: 6, asset: 'USDC' };
+const USDC = { raw: '1842300000', decimals: 6, asset: 'USDC', name: 'USD Coin' };
 
 describe('hidden balances', () => {
   it('masks every amount but keeps the unit, and remembers the choice', async () => {
@@ -31,25 +31,72 @@ describe('hidden balances', () => {
       render(
         <BalancesProvider>
           <EyeToggle />
-          <Amount {...USDC} />
+          <p data-testid="amount">
+            <Amount {...USDC} />
+          </p>
         </BalancesProvider>,
       );
     view();
-    expect(screen.getByLabelText('1,842.30 USDC')).toBeTruthy();
+    const amount = () => screen.getByTestId('amount');
+    expect(amount().textContent).toContain('1,842.30');
 
     const eye = screen.getByRole('button', { name: 'Hide balances' });
     expect(eye.getAttribute('aria-pressed')).toBe('false');
     await user.click(eye);
 
-    const hidden = screen.getByLabelText('Hidden USDC amount');
-    expect(hidden.textContent).toBe('••••USDC');
+    expect(amount().textContent).not.toContain('1,842.30');
+    expect(amount().textContent).toContain('Hidden amount••••USDC');
     expect(screen.getByRole('button', { name: 'Show balances' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
 
     cleanup();
     view();
-    expect(screen.getByLabelText('Hidden USDC amount')).toBeTruthy();
+    expect(amount().textContent).toContain('Hidden amount••••USDC');
+  });
+});
+
+describe('the asset name on an amount', () => {
+  it('names the asset in a tooltip a keyboard can reach, and Escape hides it', async () => {
+    const user = userEvent.setup();
+    render(
+      <BalancesProvider>
+        <Amount {...USDC} />
+      </BalancesProvider>,
+    );
+    expect(screen.queryByText('USD Coin', { selector: '[aria-hidden]' })).toBeNull();
+
+    await user.tab();
+    const symbol = screen.getByText('USDC');
+    expect(document.activeElement).toBe(symbol);
+    expect(symbol.getAttribute('aria-describedby')).toBeTruthy();
+    expect(document.getElementById(symbol.getAttribute('aria-describedby')!)!.textContent).toBe(
+      'USD Coin',
+    );
+    expect(screen.getByText('USD Coin', { selector: '[aria-hidden]' })).toBeTruthy();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByText('USD Coin', { selector: '[aria-hidden]' })).toBeNull();
+  });
+
+  it('shows the name on hover', async () => {
+    const user = userEvent.setup();
+    render(
+      <BalancesProvider>
+        <Amount {...USDC} variant="plain" unit />
+      </BalancesProvider>,
+    );
+    await user.hover(screen.getByText('USDC'));
+    expect(screen.getByText('USD Coin', { selector: '[aria-hidden]' })).toBeTruthy();
+  });
+
+  it('adds no tooltip when the name is only the symbol', () => {
+    render(
+      <BalancesProvider>
+        <Amount {...USDC} name="USDC" />
+      </BalancesProvider>,
+    );
+    expect(screen.getByText('USDC').getAttribute('tabindex')).toBeNull();
   });
 });
 

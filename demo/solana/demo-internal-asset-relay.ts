@@ -42,6 +42,7 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 
+import { registryFromConfig } from '../../src/asset-registry/configured-assets.js';
 import { buildApp } from '../../src/app.js';
 import {
   SOLANA_ABANDONMENT_TIMEOUT_MS,
@@ -138,7 +139,8 @@ async function main() {
     chainRegistry,
     authToken: AUTH_TOKEN,
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('this demo serves no setup checks')),
   });

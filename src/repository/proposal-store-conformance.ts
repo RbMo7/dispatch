@@ -157,6 +157,7 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
           approvalState: 'awaiting',
           approvals: 0,
           threshold: 2,
+          approvers: [],
           sequence: 7,
           timedOutAt: null,
           resolvedAt: null,
@@ -360,6 +361,7 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
           phase: 'open',
           approvals: 1,
           approvalState: 'approved',
+          approvers: [{ address: 'voter-a', decision: 'approved' }],
           executeAfter,
           checkFailures: 3,
         });
@@ -368,6 +370,7 @@ export function runProposalStoreConformanceSuite(makeStore: () => DispatchStore)
           phase: 'open',
           approvals: 1,
           approvalState: 'approved',
+          approvers: [{ address: 'voter-a', decision: 'approved' }],
           executeAfter,
           checkFailures: 3,
           proposalRef: proposal.proposalRef,

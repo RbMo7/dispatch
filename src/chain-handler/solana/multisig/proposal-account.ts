@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 
 import { PublicKey } from '@solana/web3.js';
 
+import type { Approver } from '../../../domain/proposal.js';
+import { type MultisigAccount, PERMISSION_VOTE } from './multisig-account.js';
+
 /** Anchor's account discriminator: the first 8 bytes of sha256("account:Proposal") (`1a5ebdbb74883521`, spike #70). */
 export const PROPOSAL_DISCRIMINATOR = createHash('sha256')
   .update('account:Proposal')
@@ -82,4 +85,21 @@ export function decodeProposalAccount(data: Uint8Array): ProposalAccount {
   const rejected = keys();
   const cancelled = keys();
   return { multisig, transactionIndex, status, statusTimestamp, approved, rejected, cancelled };
+}
+
+/**
+ * Every member who can vote, in the multisig's member order, and how they
+ * stand on this Proposal. A vote to cancel an approved Proposal counts as a
+ * rejection: Squads keeps the canceller in `approved` too, but their last word
+ * is against it going ahead.
+ */
+export function squadsApprovers(proposal: ProposalAccount, multisig: MultisigAccount): Approver[] {
+  const approved = new Set(proposal.approved);
+  const against = new Set([...proposal.rejected, ...proposal.cancelled]);
+  return multisig.members
+    .filter((member) => (member.permissions & PERMISSION_VOTE) !== 0)
+    .map(({ key }) => ({
+      address: key,
+      decision: against.has(key) ? 'rejected' : approved.has(key) ? 'approved' : 'pending',
+    }));
 }

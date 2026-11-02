@@ -28,6 +28,8 @@ const PAIRS: [text: string, fill: string][] = [
   ['--on-accent', '--accent-hover'],
   ['--danger', '--surface'],
   ['--danger', '--danger-soft'],
+  ['--ink', '--danger-soft'],
+  ['--muted', '--danger-soft'],
   ['--on-danger', '--danger'],
   ['--ok-text', '--surface'],
   ['--warn-text', '--surface'],

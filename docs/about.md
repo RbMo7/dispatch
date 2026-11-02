@@ -10,6 +10,8 @@ Building a transaction is the short part of the job. After that, nonces have to 
 - **Reliable sends from one wallet.** A backend that sends many transactions from one wallet gets nonce ordering, rebroadcasts and confirmation tracking without writing its own.
 - **Delivery for transactions your users signed.** A DEX or a wallet app hands over a signed transaction. The engine broadcasts it, resends it if it stalls, and reports when it lands. It never sees the user's key.
 - **People who approve the money.** A Squads multisig on Solana or a Safe on Base can be the wallet that pays. The engine proposes each run of payments, your Approvers vote in the Squads or Safe app, and the engine executes once enough of them approve.
+- **A person looks before money moves.** [Flag Rules](./guides/flag-rules.md) hold a Dispatch that matches a condition you set, such as a payment over a limit or to a new recipient, until someone with the operator token releases it.
+- **Answers you can read.** Every call is decoded where a built-in decoder knows it, every confirmed transaction records what it moved and what it cost, and every error comes with a code and the chain's own reason.
 - **A console and these docs.** The API process serves an operator console at `/console` and this site at `/docs`.
 
 ## How one request flows
@@ -26,7 +28,8 @@ The [Quickstart](./quickstart.md) runs those three steps against a test network 
 - **Managed Dispatch.** You describe what to send as `items`, and the engine builds and signs each transaction with your wallet's key. This is the default.
 - **Relay Dispatch.** You hand over one transaction someone else already signed. The engine only delivers it. [Send a transaction your user already signed](./guides/relay.md) compares the two.
 - **Payment and Call.** An item is a `payment` (an asset, an amount and a recipient) or a `call` (a contract or program call you encoded yourself). Every payment becomes a call before it reaches the chain.
-- **Sender.** The wallet a Managed Dispatch pays from. Each enabled chain has exactly one.
+- **Sender.** The wallet a Managed Dispatch pays from. A chain can have several, each with a name, and a request picks one with `sender`. [Send from more than one Sender](./guides/multiple-senders.md) sets them up.
+- **Known Asset.** A coin or token a payment may name by symbol: the chain's native coin, or a token the operator listed. [Add a token with Known Assets](./guides/assets.md) adds one.
 - **Signer.** A separate service that holds the Sender's key and signs on request. The engine never holds a private key.
 - **Funding Check.** Before the engine signs anything, it checks that the Sender can afford the payments and, on Solana, the fees. A shortfall fails the affected items at once with `INSUFFICIENT_FUNDS`.
 - **Retry Policy.** Whether the engine may pay a higher fee to get a stuck Base transaction through. Off unless you turn it on.
@@ -46,7 +49,7 @@ The worker checks every signature it gets back against the Sender's address befo
 
 - **Not a wallet.** It has no user accounts and no key for any end user. A Relay Dispatch is delivery only.
 - **Not a hosted service.** You run it, you configure its RPC endpoints, and you fund its Senders.
-- **Not a place for business rules.** The Signer's policy can cap the amount one transaction moves and limit which contracts a key may call. Rules about whom you pay and how much per day belong in your application.
+- **Not a place for business rules.** The Signer's policy can cap the amount one transaction moves and limit which contracts a key may call, and Flag Rules can hold a Dispatch for a person to look at. Rules about whom you may pay belong in your application.
 - **Not synchronous.** `POST /v1/dispatch` answers `202 Accepted` with an id, and you [poll for the result](./polling.md). There are no webhooks yet.
 - **Not every chain.** It supports Solana and Base. Ethereum L1 would be a chain of its own and is not built. Adding a chain means adding a chain handler, never changing the engine's core.
 
@@ -54,7 +57,7 @@ The worker checks every signature it gets back against the Sender's address befo
 
 Both chains are proven end to end against their test networks: Solana devnet, including a run of 500 payments, and Base Sepolia, including a run of more than 100 transactions with a real fee bump and an on-chain nonce audit. Multisig Senders are proven against devnet and Base Sepolia. Nothing has run on mainnet yet, and the AWS KMS backend is proven only against mocks ([issue #61](https://github.com/RbMo7/dispatch/issues/61)). Clear the [mainnet checklist](./self-hosting/mainnet.md) before you send real money.
 
-Not built yet: webhooks, Ethereum L1, a pool of several Senders per chain, and Solana durable nonces.
+Not built yet: webhooks, Ethereum L1, a pool of Senders that shares one stream of work, a registry for your own contract ABIs and program IDLs, and Solana durable nonces. [What's new](./changelog.md) lists what this release adds.
 
 ## Next steps
 

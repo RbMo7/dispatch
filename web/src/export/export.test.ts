@@ -15,18 +15,19 @@ const ITEMS: Item[] = [
     type: 'payment',
     recipient: '0x4c1e2f0a9b7d3e5c8a6f1b2d4e9c0a7f3b5d9a07',
     asset: 'USDC',
-    amount: { raw: '1284500000', decimals: 6, asset: 'USDC' },
+    amount: { raw: '1284500000', decimals: 6, asset: 'USDC', name: 'USD Coin' },
     status: 'confirmed',
     transactionHash: '0x3e9d4c71aa02f86b1d5e9c37b40e2f18c6a9d5b210e4f7a8c3d1b6e9f0a2c41',
     error: null,
     approval: null,
+    effects: null,
   },
   {
     index: 1,
     type: 'payment',
     recipient: '=HYPERLINK("http://evil.example","x")',
     asset: 'USDC',
-    amount: { raw: '17256001', decimals: 6, asset: 'USDC' },
+    amount: { raw: '17256001', decimals: 6, asset: 'USDC', name: 'USD Coin' },
     status: 'failed',
     transactionHash: null,
     error: {
@@ -34,26 +35,41 @@ const ITEMS: Item[] = [
       message: 'No code at the address, and the token says "no", refusing it',
     },
     approval: null,
+    effects: null,
   },
   {
     index: 2,
     type: 'call',
     target: '+cmd|calc',
+    call: {
+      target: '+cmd|calc',
+      label: null,
+      decoded: false,
+      decoder: null,
+      function: null,
+      args: [],
+      selector: null,
+      data: '0x',
+      value: null,
+      calls: [],
+    },
     status: 'queued',
     transactionHash: null,
     error: { code: '@SUM', message: 'line one\nline two' },
     approval: null,
+    effects: null,
   },
   {
     index: 3,
     type: 'payment',
     recipient: '0x9a07b5d93f7a0c9e4d2b1f6a8c5e3d0a2f1e2c4c',
     asset: 'ETH',
-    amount: { raw: '123456789012345678901234567', decimals: 18, asset: 'ETH' },
+    amount: { raw: '123456789012345678901234567', decimals: 18, asset: 'ETH', name: 'Ether' },
     status: 'confirmed',
     transactionHash: '0x19c2be07f4a1d3c58e2b9a60d71f3c4e8a5b2d07e6c1f94a3b8d2e70c5a1f9d0e',
     error: null,
     approval: null,
+    effects: null,
   },
 ];
 
@@ -66,7 +82,7 @@ const DISPATCHES: DispatchSummary[] = [
     status: 'broadcasting',
     createdAt: new Date('2026-10-31T14:02:11Z'),
     itemCount: 37,
-    totals: [{ raw: '12480000000', decimals: 6, asset: 'USDC' }],
+    totals: [{ raw: '12480000000', decimals: 6, asset: 'USDC', name: 'USD Coin' }],
   },
   {
     id: '5ac83f1e',
@@ -76,7 +92,7 @@ const DISPATCHES: DispatchSummary[] = [
     status: 'failed',
     createdAt: new Date('2026-10-30T12:20:02Z'),
     itemCount: 1,
-    totals: [{ raw: '81370000', decimals: 9, asset: 'SOL' }],
+    totals: [{ raw: '81370000', decimals: 9, asset: 'SOL', name: 'Solana' }],
   },
 ];
 
@@ -124,28 +140,29 @@ describe('CSV export', () => {
       'payment',
       ITEMS[0]!.type === 'payment' ? ITEMS[0]!.recipient : '',
       'USDC',
+      'USD Coin',
       '1284.500000',
       'Confirmed',
       ITEMS[0]!.transactionHash,
       '',
       '',
     ]);
-    expect(rows[2]![8]).toBe('No code at the address, and the token says "no", refusing it');
-    expect(rows[3]![8]).toBe('line one\nline two');
+    expect(rows[2]![9]).toBe('No code at the address, and the token says "no", refusing it');
+    expect(rows[3]![9]).toBe('line one\nline two');
   });
 
   it('writes every amount exactly at full precision and leaves a missing one empty', () => {
     const rows = parseCsv(csv.slice(1));
-    expect(rows[2]![4]).toBe('17.256001');
-    expect(rows[3]![4]).toBe('');
-    expect(rows[4]![4]).toBe('123456789.012345678901234567');
+    expect(rows[2]![5]).toBe('17.256001');
+    expect(rows[3]![5]).toBe('');
+    expect(rows[4]![5]).toBe('123456789.012345678901234567');
   });
 
   it('defuses cells a spreadsheet would run as formulas', () => {
     const rows = parseCsv(csv.slice(1));
     expect(rows[2]![2]).toBe(`'=HYPERLINK("http://evil.example","x")`);
     expect(rows[3]![2]).toBe(`'+cmd|calc`);
-    expect(rows[3]![7]).toBe(`'@SUM`);
+    expect(rows[3]![8]).toBe(`'@SUM`);
   });
 
   it('writes dates as ISO 8601 and a column per asset total for Dispatches', () => {
@@ -217,9 +234,9 @@ describe('Excel export', () => {
 
   it('writes an amount as a number only when the number is exact, else as exact text', async () => {
     const rows = await readSheet(await toXlsx(ITEM_COLUMNS, ITEMS));
-    expect(rows[1]![4]).toBe(1284.5);
-    expect(rows[2]![4]).toBe(17.256001);
-    expect(rows[4]![4]).toBe('123456789.012345678901234567');
+    expect(rows[1]![5]).toBe(1284.5);
+    expect(rows[2]![5]).toBe(17.256001);
+    expect(rows[4]![5]).toBe('123456789.012345678901234567');
   });
 
   it('freezes the header row and formats amounts with the asset decimals', async () => {

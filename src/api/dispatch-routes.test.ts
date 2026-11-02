@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { privateKeyToAccount } from 'viem/accounts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
@@ -13,6 +14,7 @@ import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { MAX_SCANNED_ROWS } from './dispatch-list.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
 
@@ -45,8 +47,8 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
-    assetDecimals: (chain, asset) =>
-      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    assets: registryFromConfig({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6' }),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });
@@ -392,6 +394,42 @@ describe('POST /v1/dispatch', () => {
         first.json<PostResponseBody>().dispatchId,
       );
     });
+
+    it('reads back who signed it, its target and the value it moves, from the bytes', async () => {
+      const { app } = await buildTestApp();
+      const signer = privateKeyToAccount(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      );
+      const signedTransaction = await signer.signTransaction({
+        type: 'eip1559',
+        chainId: 84532,
+        nonce: 0,
+        to: '0x8ba1f109551bD432803012645Ac136ddd64DBA72',
+        value: 5_000n,
+        gas: 21_000n,
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000n,
+      });
+      const posted = await app.inject({
+        method: 'POST',
+        url: '/v1/dispatch',
+        headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-signed' },
+        payload: { chain: 'base', mode: 'relay', signedTransaction },
+      });
+
+      const read = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${posted.json<PostResponseBody>().dispatchId}`,
+        headers: AUTH_HEADERS,
+      });
+
+      expect(read.json()).toMatchObject({
+        mode: 'relay',
+        signer: signer.address,
+        target: '0x8ba1f109551bD432803012645Ac136ddd64DBA72',
+        value: { asset: 'ETH', amount: '5000', decimals: 18 },
+      });
+    });
   });
 });
 
@@ -458,6 +496,27 @@ describe('POST /v1/dispatch with bulkCall (#11)', () => {
 
     const dispatch = await store.getDispatch(response.json<PostResponseBody>().dispatchId);
     expect(dispatch?.bulkCall?.allowFailure).toBe(true);
+  });
+
+  it('reads the Bulk Call back with its settings, and the retry policy, on the Dispatch', async () => {
+    const { app } = await buildTestApp({ handler: new BulkCapableStub() });
+    const posted = await post(app, {
+      chain: 'base',
+      items,
+      retryPolicy: true,
+      bulkCall: { aggregator: '0xagg', allowFailure: true },
+    });
+
+    const read = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${posted.json<PostResponseBody>().dispatchId}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(read.json()).toMatchObject({
+      retryPolicy: true,
+      bulkCall: { aggregator: '0xagg', maxBatchSize: 50, allowFailure: true },
+    });
   });
 
   it('rejects bulkCall with 400 on a chain whose handler has no Bulk Call', async () => {
@@ -612,7 +671,17 @@ describe('GET /v1/dispatch/:id', () => {
       chain: 'base',
       createdAt: dispatch.createdAt.toISOString(),
       status: 'queued',
-      items: [{ type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null }],
+      retryPolicy: false,
+      items: [
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
+      ],
     });
   });
 
@@ -678,7 +747,23 @@ describe('GET /v1/dispatch/:id', () => {
         transactionHash: null,
         error: null,
       },
-      { type: 'call', to: '0xcontract', status: 'queued', transactionHash: null, error: null },
+      {
+        type: 'call',
+        to: '0xcontract',
+        call: {
+          target: '0xcontract',
+          decoded: false,
+          data: '0x1234',
+          value: {
+            amount: '7',
+            asset: { address: 'native', symbol: 'ETH', name: 'Ether', decimals: 18 },
+            formatted: '0.000000000000000007',
+          },
+        },
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
     ]);
     expect(await itemsOf(solana.id)).toEqual([
       {
@@ -691,7 +776,14 @@ describe('GET /v1/dispatch/:id', () => {
         transactionHash: null,
         error: null,
       },
-      { type: 'call', programId: 'Memo1111', status: 'queued', transactionHash: null, error: null },
+      {
+        type: 'call',
+        programId: 'Memo1111',
+        call: { target: 'Memo1111', decoded: false, selector: '6869', data: 'aGk=' },
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
     ]);
   });
 
@@ -746,8 +838,16 @@ describe('GET /v1/dispatch/:id', () => {
       chain: 'base',
       createdAt: dispatch.createdAt.toISOString(),
       status: 'confirmed',
+      retryPolicy: false,
       items: [
-        { type: 'call', to: '0xabc', status: 'confirmed', transactionHash: 'hash-1', error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'confirmed',
+          transactionHash: 'hash-1',
+          error: null,
+        },
       ],
     });
   });
@@ -840,10 +940,18 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(body.status).toBe('partial');
     expect(body.items).toEqual([
-      { type: 'call', to: '0xa', status: 'confirmed', transactionHash: 'hash-1', error: null },
+      {
+        type: 'call',
+        to: '0xa',
+        call: { target: '0xa', decoded: true },
+        status: 'confirmed',
+        transactionHash: 'hash-1',
+        error: null,
+      },
       {
         type: 'call',
         to: '0xb',
+        call: { target: '0xb', decoded: true },
         status: 'failed',
         transactionHash: null,
         error: { code: 'INSUFFICIENT_FUNDS', message: 'short' },
@@ -1099,13 +1207,28 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
 
     expect(await get()).toEqual({
       status: 'broadcasting',
+      retryPolicy: false,
       dispatchId: expect.any(String) as string,
       mode: 'managed',
       chain: 'base',
       createdAt: expect.any(String) as string,
       items: [
-        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
-        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+        },
       ],
     });
   });
@@ -1116,7 +1239,17 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       calls.map((c) => c.id),
       'prop',
     );
-    await store.updateProposal(proposal.id, { phase: 'open', approvals: 1 });
+    const approvers = [
+      { address: 'voter-1', decision: 'approved' },
+      { address: 'voter-2', decision: 'pending' },
+      { address: 'voter-3', decision: 'rejected' },
+      { address: 'voter-4', decision: 'pending' },
+    ] as const;
+    await store.updateProposal(proposal.id, {
+      phase: 'open',
+      approvals: 1,
+      approvers: [...approvers],
+    });
 
     const body = await get();
 
@@ -1125,6 +1258,8 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       state: 'awaiting',
       approvals: 1,
       threshold: 3,
+      remaining: 2,
+      approvers,
       deadline: '2026-10-24T12:00:00.000Z',
       expected,
       chainRef: squadsRef,
@@ -1133,6 +1268,7 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       ...[0, 1].map(() => ({
         type: 'call',
         to: '0xabc',
+        call: { target: '0xabc', decoded: true },
         status: 'awaiting_approval',
         transactionHash: null,
         error: null,
@@ -1246,10 +1382,12 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
         chain: 'base',
         createdAt: dispatch.createdAt,
         status: 'confirmed',
+        retryPolicy: false,
         items: [
           {
             type: 'call',
             to: '0xabc',
+            call: { target: '0xabc', decoded: true },
             status: 'confirmed',
             transactionHash: 'hash-1',
             error: null,
@@ -1305,10 +1443,26 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
       chain: 'base',
       createdAt: expect.any(String) as string,
       status: 'cancelled',
+      retryPolicy: false,
       items: [
-        { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
-        { type: 'call', to: '0xdef', status: 'cancelled', transactionHash: null, error: null },
+        {
+          type: 'call',
+          to: '0xabc',
+          call: { target: '0xabc', decoded: true },
+          status: 'cancelled',
+          transactionHash: null,
+          error: null,
+        },
+        {
+          type: 'call',
+          to: '0xdef',
+          call: { target: '0xdef', decoded: true },
+          status: 'cancelled',
+          transactionHash: null,
+          error: null,
+        },
       ],
+      cancellation: { at: expect.any(String) as string, tokenKind: 'auth', reason: null },
     };
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(cancelled);
@@ -1388,6 +1542,7 @@ describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
       status: 'cancelled',
       transactionHash: null,
       error: null,
+      cancellation: { at: expect.any(String) as string, tokenKind: 'auth', reason: null },
     });
     expect(await store.claimQueuedRelayDispatches(CHAINS, 10)).toEqual([]);
   });
@@ -1469,10 +1624,12 @@ describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
         chain: 'base',
         createdAt,
         status: 'confirmed',
+        retryPolicy: false,
         items: [
           {
             type: 'call',
             to: '0xabc',
+            call: { target: '0xabc', decoded: true },
             status: 'confirmed',
             transactionHash: 'hash-1',
             error: null,
@@ -1625,6 +1782,7 @@ describe('GET /v1/dispatches (#110)', () => {
           status: 'queued',
           createdAt: managed.createdAt.toISOString(),
           itemCount: 4,
+          callCount: 1,
           totals: [
             { asset: 'USDC', decimals: 6, amount: '25' },
             { asset: 'ETH', decimals: 18, amount: '1' },

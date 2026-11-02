@@ -33,6 +33,8 @@ export type RelayDispatch<C extends Chain = Chain> = {
   createdAt: Date;
   /** #20: when a worker last claimed it. */
   claimedAt: Date | null;
+  /** #169: when a worker first claimed it, never re-stamped: the timeline's `claimed`. */
+  firstClaimedAt: Date | null;
   /** ADR-0056: set exactly when `status` is `cancelled`. */
   cancelledAt: Date | null;
 };

@@ -6,6 +6,7 @@ import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js
 import type { SetupCheckRecord } from '../repository/dispatch-store.js';
 import type { CheckOutcome } from '../setup/run.js';
 import { setupReader, type SetupReads, type SetupView } from './setup-routes.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const RAN_AT = new Date('2026-11-01T10:00:00.000Z');
 const NOW = new Date('2026-11-01T10:02:30.000Z');
@@ -36,7 +37,8 @@ async function getSetup(reads: Partial<SetupReads>, token = 'api-token') {
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'api-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => undefined,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: setupReader({
       enabledChains: ['solana', 'base'],

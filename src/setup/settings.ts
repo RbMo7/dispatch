@@ -1,17 +1,11 @@
 import { isAddress } from 'viem';
 
-import {
-  NATIVE_ASSET_SYMBOL as BASE_NATIVE_ASSET,
-  parseBaseKnownTokens,
-} from '../chain-handler/base/known-tokens.js';
+import { parseBaseKnownTokens } from '../chain-handler/base/known-tokens.js';
 import {
   resolveBaseSafeConfig,
   type BaseSafeConfig,
 } from '../chain-handler/base/safe/safe-config.js';
-import {
-  NATIVE_ASSET_SYMBOL as SOLANA_NATIVE_ASSET,
-  parseSolanaKnownTokens,
-} from '../chain-handler/solana/known-tokens.js';
+import { parseSolanaKnownTokens } from '../chain-handler/solana/known-tokens.js';
 import {
   parsePublicKey,
   resolveSolanaMultisigConfig,
@@ -20,6 +14,7 @@ import {
 import { parseEnabledChains } from '../chain-registry/chain-registry.js';
 import type { Config } from '../config.js';
 import type { Chain } from '../domain/chain.js';
+import { NATIVE_ASSETS } from '../domain/known-asset.js';
 import type { SenderName } from '../domain/sender.js';
 import {
   parseSendersConfig,
@@ -41,7 +36,6 @@ export type SenderAccounts = {
   /** The key the Signer holds and that pays the fees: the Sender itself, or a Multisig Sender's engine key. */
   feePayer: string;
   native: { symbol: string; decimals: number };
-  tokens: { symbol: string; decimals: number }[];
 };
 
 /**
@@ -186,7 +180,12 @@ function readSender(
   };
 }
 
-type ChainBasics = Pick<SenderAccounts, 'native' | 'tokens'>;
+type ChainBasics = Pick<SenderAccounts, 'native'>;
+
+function nativeOf(chain: Chain): SenderAccounts['native'] {
+  const { symbol, decimals } = NATIVE_ASSETS[chain];
+  return { symbol, decimals };
+}
 type ChainReader = (config: Config, problems: string[]) => ChainBasics | undefined;
 
 const CHAIN_READERS: Record<Chain, ChainReader> = {
@@ -206,12 +205,7 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       );
     }
     const tokens = attempt(problems, () => parseSolanaKnownTokens(config.solana.knownTokens));
-    return (
-      tokens && {
-        native: { symbol: SOLANA_NATIVE_ASSET, decimals: 9 },
-        tokens: tokenList(tokens),
-      }
-    );
+    return tokens && { native: nativeOf('solana') };
   },
   base: (config, problems) => {
     checkUrl(problems, 'BASE_RPC_URL', config.base.rpcUrl);
@@ -228,12 +222,7 @@ const CHAIN_READERS: Record<Chain, ChainReader> = {
       1,
     );
     const tokens = attempt(problems, () => parseBaseKnownTokens(config.base.knownTokens));
-    return (
-      tokens && {
-        native: { symbol: BASE_NATIVE_ASSET, decimals: 18 },
-        tokens: tokenList(tokens),
-      }
-    );
+    return tokens && { native: nativeOf('base') };
   },
 };
 
@@ -303,10 +292,4 @@ function checkWholeNumber(problems: string[], variable: string, value: number, m
   if (!Number.isSafeInteger(value) || value < min) {
     problems.push(`${variable} must be a whole number of at least ${min}`);
   }
-}
-
-function tokenList(
-  registry: Readonly<Record<string, { decimals: number }>>,
-): SenderAccounts['tokens'] {
-  return Object.entries(registry).map(([symbol, { decimals }]) => ({ symbol, decimals }));
 }

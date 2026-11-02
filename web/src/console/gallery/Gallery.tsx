@@ -16,6 +16,7 @@ import { type ChainFilter, DispatchList } from './DispatchList';
 import styles from './Gallery.module.css';
 import { CancelSummary, Primitives } from './Primitives';
 import { GallerySidebar } from './Sidebar';
+import { errorContext } from '../../domain/errors';
 
 const TABS: readonly PaneTab[] = ['flow', 'items', 'details'];
 const count = new Intl.NumberFormat('en-US');
@@ -179,6 +180,7 @@ function Screen() {
         />
         {dispatch && (
           <DispatchPane
+            chain={dispatch.chain}
             head={{
               id: dispatch.id,
               mode: dispatch.mode,
@@ -189,6 +191,7 @@ function Screen() {
             }}
             flow={dispatch.flow}
             items={dispatch.items}
+            errors={errorContext(dispatch.chain, dispatch.sender ?? null, dispatch.items ?? [])}
             details={[
               { label: 'Chain', value: CHAINS[dispatch.chain].label },
               {

@@ -42,6 +42,7 @@ export function healthyChain(chain: Chain): ChainReads {
           : { chain: 'base', chainId: 84532 },
       ),
     balance: (_address, asset) => Promise.resolve(ok({ asset, amount: '5000000000' })),
+    tokens: () => Promise.resolve([]),
     feePaid: () => Promise.resolve(5000n),
   };
 }
@@ -69,6 +70,8 @@ export function fakeContext(
       ping: () => Promise.resolve(),
       pendingMigrations: () => Promise.resolve([]),
       recentTransactions: () => Promise.resolve({ count: 0, latestHashes: [] }),
+      knownAssets: () => Promise.resolve([]),
+      foreignActivity: () => Promise.resolve(null),
     },
     chain: healthyChain,
     signer: {
@@ -124,6 +127,8 @@ export function leakyContext(): { context: CheckContext; secrets: string[] } {
       ping: leak(env.DATABASE_URL!),
       pendingMigrations: leak(env.DATABASE_URL!),
       recentTransactions: leak(env.DATABASE_URL!),
+      knownAssets: leak(env.DATABASE_URL!),
+      foreignActivity: leak(env.DATABASE_URL!),
     },
     chain: (chain) => ({
       ...healthyChain(chain),

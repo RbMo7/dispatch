@@ -1,14 +1,18 @@
 import { approvalLoop as runApprovalLoop } from './approval-loop.js';
 import {
+  loadAssetRegistry,
   loadChainRegistry,
   coordinatorConfigFor,
   REORG_RECHECK_INTERVAL_MS,
   signerKeysFor,
   workerSignerClient,
 } from './chain-loaders.js';
+import { config } from './config.js';
 import { Coordinator } from './coordinator/coordinator.js';
 import { db } from './db/client.js';
+import { REJECTED_REQUEST_CAP } from './domain/rejected-request.js';
 import type { SenderRef } from './domain/sender.js';
+import { effectsLoop as runEffectsLoop } from './effects/record-effects.js';
 import { logger } from './logger.js';
 import { PostgresDispatchStore } from './repository/postgres-dispatch-store.js';
 import { cliContext } from './setup/cli-context.js';
@@ -44,12 +48,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+if (!(config.rejectedRetentionDays > 0)) {
+  throw new Error('REJECTED_RETENTION_DAYS must be a positive number of days');
+}
+
+const store = new PostgresDispatchStore(db);
 const signer = workerSignerClient();
-const chainRegistry = await loadChainRegistry(signer);
+const assets = await loadAssetRegistry(store);
+const chainRegistry = await loadChainRegistry(assets, signer);
 const { senders, abandonmentTimeoutMs, reorgRecheckWindowMs, stuckHandling } =
   coordinatorConfigFor(chainRegistry);
 
-const store = new PostgresDispatchStore(db);
 const coordinator = new Coordinator({
   store,
   chainHandlers: chainRegistry.handlers,
@@ -169,6 +178,23 @@ async function reclaimLoop(): Promise<void> {
   }
 }
 
+/** ADR-0062: refused requests are kept REJECTED_RETENTION_DAYS and at most 10,000, oldest dropped first. */
+const PRUNE_INTERVAL_MS = 60 * 60_000;
+
+async function pruneRejectedLoop(): Promise<void> {
+  while (running) {
+    try {
+      const before = new Date(Date.now() - config.rejectedRetentionDays * 86_400_000);
+      const dropped = await store.pruneRejectedRequests(before, REJECTED_REQUEST_CAP);
+      if (dropped > 0) logger.info({ dropped }, 'pruned refused requests');
+    } catch (cause) {
+      logger.error({ err: cause }, 'worker prune tick failed');
+    }
+    if (!running) break;
+    await sleep(PRUNE_INTERVAL_MS);
+  }
+}
+
 async function reorgRecheckLoop(): Promise<void> {
   while (running) {
     try {
@@ -231,6 +257,19 @@ function setupChecksLoop(): Promise<void> {
   });
 }
 
+/** ADR-0063: reads each confirmed transaction's effects once, for item reads to decode. */
+function effectsLoop(): Promise<void> {
+  return runEffectsLoop({
+    store,
+    handlers: chainRegistry.handlers,
+    limit: BATCH_LIMIT,
+    now: () => new Date(),
+    logger,
+    isRunning: () => running,
+    sleep,
+  });
+}
+
 logger.info(
   {
     chains: [...chainRegistry.handlers.keys()],
@@ -251,9 +290,11 @@ await Promise.all([
   rewatchLoop(),
   reorgRecheckLoop(),
   reclaimLoop(),
+  pruneRejectedLoop(),
   approvalLoop(),
   signerKeysLoop(),
   setupChecksLoop(),
+  effectsLoop(),
 ]);
 
 logger.info('worker stopped');

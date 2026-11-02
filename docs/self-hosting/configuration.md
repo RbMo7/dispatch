@@ -18,6 +18,7 @@ Restart a process after you change one of its variables. Nothing is reloaded whi
 | `SENDERS_FILE` | `senders.json` if it exists | A JSON file naming several Senders per chain, each with its own mode (`single`, `squads` or `safe`) and keys, and an optional default per chain. [The senders file](#the-senders-file) describes it. A path that does not exist is a startup error. With a senders file, the per-chain Sender variables below are ignored. Without one, they describe one Sender per chain, named `default`. | To pay from more than one Sender on a chain, such as a hot `payouts` Sender beside a multisig `treasury` |
 | `SIGNER_URL` | `http://localhost:8421` | Worker only. Where the worker reaches the Signer. The API never calls the Signer, so leave it unset in the API's environment. | Always, in a deployment: the Signer's address on your private network |
 | `SIGNER_AUTH_TOKEN` | unset | Worker only. The bearer token the worker sends to the Signer. Must equal the Signer's own. Unset, the worker starts, logs a warning, and every signing request gets `401`. Leave it unset in the API's environment. | Always on the worker, except for a Relay-only engine |
+| `REJECTED_RETENTION_DAYS` | `30` | Worker only. How many days the record of [refused requests](../openapi.yaml#list-refused-requests) is kept, request bodies included. The worker also keeps at most 10,000, dropping the oldest first. The worker refuses to start when it is not a positive number. | To keep request bodies (addresses, amounts) for less time |
 | `DEFAULT_RETRY_POLICY` | `false` | The [Retry Policy](../lifecycle.md#retry-policy-and-stuck-transactions) for a Dispatch whose request does not set `retryPolicy`. Only the exact value `true` turns it on. | To let the engine fee-bump stuck Base transactions by default |
 | `RPC_TIMEOUT_MS` | `15000` | The deadline, in milliseconds, for each outbound RPC or Signer call. A slower answer counts as unreachable. | When your RPC or Signer is slow and you see timeouts |
 | `LOG_LEVEL` | `info` | The engine's log level: `trace`, `debug`, `info`, `warn`, `error` or `fatal`. Logs are JSON lines on stdout. | `debug` while you investigate |
@@ -37,7 +38,8 @@ The file is a JSON object keyed by chain. Each chain has `senders`, an object ke
       "treasury": {
         "mode": "squads",
         "multisig": "4AzEDD9wGkvTs4hpRNGZ44tgt2xCZbwoFWNKZs28UkuC",
-        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV"
+        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV",
+        "approvers": { "2xUDRfJQTDjPuokctLdyAStss7fU3Cv1bZCgtRidCXwt": "Priya, finance" }
       }
     }
   },
@@ -60,10 +62,12 @@ Each Sender takes the fields of its `mode`, and any other field is a startup err
 | `mode` | Chain | Required | Optional |
 | --- | --- | --- | --- |
 | `single`, or left out | both | `address`: the Sender, whose key the Signer holds | none |
-| `squads` | `solana` | `multisig`: the Squads multisig account, not its vault. `memberKey`: the engine's own key, which proposes and executes. | `approvalDeadlineMs`, `approvalRewatchWindowMs` |
-| `safe` | `base` | `safe`: the Safe. `executor`: the engine's own key, a registered delegate and never an owner. | `txServiceUrl`, `apiKey`, `approvalDeadlineMs`, `approvalRewatchWindowMs`, `bundleLimit` |
+| `squads` | `solana` | `multisig`: the Squads multisig account, not its vault. `memberKey`: the engine's own key, which proposes and executes. | `approvalDeadlineMs`, `approvalRewatchWindowMs`, `approvers` |
+| `safe` | `base` | `safe`: the Safe. `executor`: the engine's own key, a registered delegate and never an owner. | `txServiceUrl`, `apiKey`, `approvalDeadlineMs`, `approvalRewatchWindowMs`, `bundleLimit`, `approvers` |
 
 The optional fields mean what the matching variables mean in [Solana Multisig Sender](#solana-multisig-sender) and [Base Safe Sender](#base-safe-sender), with the same defaults. The durations and `bundleLimit` are positive whole numbers, not strings. A Safe Sender without `apiKey` uses `BASE_SAFE_API_KEY`. A Squads Sender pays from its multisig's vault (index 0), and a Safe Sender from its Safe.
+
+`approvers` names the people who vote, so the console and the `approval` block show "Priya, finance" instead of an address. It maps an Approver's address (a Squads member, or a Safe owner) to a label of 1 to 40 characters. It changes nothing about who may approve: that is the multisig's own member or owner list, read from the chain. An Approver with no label is shown by address.
 
 The engine refuses to start, and lists every problem at once, when:
 
@@ -71,9 +75,16 @@ The engine refuses to start, and lists every problem at once, when:
 - a chain in `ENABLED_CHAINS` has no Senders in the file;
 - `default` names no Sender of its chain;
 - two Senders on a chain share an address, including a Multisig Sender's engine key;
-- an address is not valid on its chain, or a mixed-case Base address has a wrong checksum.
+- an address is not valid on its chain, or a mixed-case Base address has a wrong checksum;
+- `approvers` is not an object, lists an address twice, or has an empty label or one over 40 characters.
 
 A chain in the file but not in `ENABLED_CHAINS` is not read. Without `default`, every Dispatch on the chain must name its Sender, or it is refused with `SENDER_REQUIRED`. If any per-chain Sender variable, such as `SOLANA_SENDER_ADDRESS` or `BASE_SAFE_ADDRESS`, is set for a chain the file describes, the engine logs a warning that it ignores it.
+
+### One engine per Sender
+
+A Sender belongs to one engine. Run two engines with the same Base key, or send from the Sender's wallet with a wallet app or a script, and each sender uses nonces the others counted on. The engine copes, but it is not a way to run: when another sender takes a payment's nonce, the engine sends the payment again with a fresh nonce, payments can land out of order, and after 3 taken nonces the payment fails with [`NONCE_ALREADY_USED`](../errors.md#error-codes). The worker records every nonce of the wallet that it did not send. The [`sender.exclusive`](./doctor.md#used-only-by-this-engine) check warns about them in `doctor` and on the console's Setup page, and `GET /v1/senders` shows them as `foreignActivity`.
+
+To split work, give one engine several named Senders in this file, each with its own key, and name the Sender on each Dispatch ([Send from more than one Sender](../guides/multiple-senders.md)). Two engines that must both pay on Base each need a Sender of their own.
 
 ## Solana
 
@@ -83,7 +94,7 @@ Read only when `solana` is in `ENABLED_CHAINS`.
 | --- | --- | --- | --- |
 | `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | The Solana RPC. Its cluster decides devnet or mainnet. | Always, for real traffic. The public endpoint rate-limits. On mainnet, use an RPC that serves full transaction history (`searchTransactionHistory`) and `getRecentPrioritizationFees`. |
 | `SOLANA_SENDER_ADDRESS` | empty. In multisig mode, the vault derived from `SOLANA_MULTISIG_ADDRESS`. | The Sender's address. The Signer must hold its key. | Always in single mode. Leave it unset in multisig mode. If set there, it must equal the vault. |
-| `SOLANA_KNOWN_TOKENS` | empty | The tokens a `payment` may name, comma-separated, as `SYMBOL:mint:decimals`, with `:token-2022` appended for a Token-2022 mint. Each is checked against its mint at startup. Example: `USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6` (devnet USDC). | To pay in a token |
+| `SOLANA_KNOWN_TOKENS` | empty | Tokens a `payment` may name, comma-separated, as `SYMBOL:mint:decimals`, with `:token-2022` appended for a Token-2022 mint. Each is checked against its mint at startup. They become read-only Known Assets (`GET /v1/assets`); the operator can add more without a restart. An entry removed later is disabled, never deleted. Example: `USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6` (devnet USDC). | To pay in a token |
 | `SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` | `0`, no priority fee | A priority fee in micro-lamports per compute unit, on every transaction the engine builds. With any fee set, each transaction's compute-unit limit comes from a simulation, so the fee is paid on real usage. `auto` prices each transaction from recent network fees (75th percentile), never above the ceiling below. It costs more, so it is off by default. | On a congested mainnet |
 | `SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS` | `0` | The ceiling for an `auto` price. Required above 0 when the price is `auto`, or the engine refuses to start. | With `auto` |
 | `SOLANA_SEND_CONCURRENCY` | `4` | How many Solana transactions one worker sends at once. Solana has no nonces to keep in order. A whole number of at least 1. | Lower it if your RPC rate-limits you. Raise it for volume. |
@@ -109,7 +120,7 @@ Read only when `base` is in `ENABLED_CHAINS`.
 | `BASE_RPC_URL` | `https://sepolia.base.org` | The Base RPC | Always, for real traffic |
 | `BASE_CHAIN_ID` | `84532` (Base Sepolia) | The chain ID. The engine refuses to start if the RPC reports a different one. | `8453` for Base mainnet |
 | `BASE_SENDER_ADDRESS` | empty. In Safe mode, the executor. | The Sender's address. The Signer must hold its key. | Always in single mode. Leave it unset in Safe mode. If set there, it must equal the executor. |
-| `BASE_KNOWN_TOKENS` | empty | The ERC-20 tokens a `payment` may name, comma-separated, as `SYMBOL:contractAddress:decimals`. Example: `USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6` (Base Sepolia USDC). | To pay in a token |
+| `BASE_KNOWN_TOKENS` | empty | ERC-20 tokens a `payment` may name, comma-separated, as `SYMBOL:contractAddress:decimals`. They become read-only Known Assets (`GET /v1/assets`); the operator can add more without a restart. Example: `USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6` (Base Sepolia USDC). | To pay in a token |
 | `BASE_FEE_BUMP_PERCENT` | `15` | The least percentage both `maxFeePerGas` and `maxPriorityFeePerGas` rise by on a fee bump. Nodes require at least 10%. | If replacements are refused as underpriced |
 | `BASE_STUCK_AFTER_MS` | `60000` | How long a transaction may stay pending after its latest send before it counts as stuck, and is rebroadcast or fee-bumped | Rarely |
 | `BASE_MAX_FEE_BUMPS` | `5` | The most fee-bump attempts per Call, failed ones included. After that the latest version waits out the 15-minute timeout. | To cap what a stuck transaction can cost |
