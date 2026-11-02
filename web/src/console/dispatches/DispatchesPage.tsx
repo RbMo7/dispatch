@@ -17,6 +17,7 @@ import {
   type EntryOf,
   type Item,
   type LoadedDispatch,
+  relayItem,
 } from '../../domain/dispatch';
 import { errorContext } from '../../domain/errors';
 import { dispatchFlow } from '../../domain/dispatchFlow';
@@ -41,7 +42,13 @@ import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
 import { ProposalApprovals } from './ProposalApprovals';
 import { useDispatch, useDispatchList } from './data';
-import { DispatchPane, type PaneHead, SenderDetail, TotalsDetail } from './DispatchPane';
+import {
+  BulkCallDetail,
+  DispatchPane,
+  type PaneHead,
+  SenderDetail,
+  TotalsDetail,
+} from './DispatchPane';
 import { dayHeading, DispatchRows } from './DispatchRows';
 import { collectDispatches, matchesSearch } from './exportList';
 import {
@@ -486,7 +493,11 @@ function Pane({
       };
 
   const detail = loaded?.detail;
-  const items = detail?.mode === 'managed' ? detail.items : null;
+  const items = useMemo(() => {
+    if (detail?.mode === 'managed') return detail.items;
+    const relay = detail && relayItem(detail);
+    return relay ? [relay] : null;
+  }, [detail]);
   const errors = useMemo(
     () =>
       errorContext(
@@ -503,9 +514,10 @@ function Pane({
   const reviewHold = operator && detail?.status === 'held';
   const openProposal = items?.find((i) => i.status === 'awaiting_approval' && i.approval)?.approval;
   const proposals = useMemo(() => (items ? proposalApprovals(items) : []), [items]);
-  const hashes = items
-    ? items.map((i) => i.transactionHash)
-    : [detail?.mode === 'relay' ? detail.transactionHash : null];
+  const hashes =
+    detail?.mode === 'relay'
+      ? [detail.transactionHash]
+      : (items ?? []).map((i) => i.transactionHash);
   const firstHash = hashes.find((h) => h !== null) ?? null;
   const proposalHref = openProposal && proposalUrl(network, openProposal.chainRef);
 
@@ -513,19 +525,32 @@ function Pane({
     ? [
         { label: 'Chain', value: CHAINS[loaded.summary.chain].label },
         { label: 'Mode', value: loaded.summary.mode === 'relay' ? 'Relay' : 'Managed' },
-        {
-          label: 'Sender',
-          value:
-            loaded.summary.mode === 'relay' ? (
-              'Signed by the caller'
-            ) : (
-              <SenderDetail sender={loaded.summary.sender} />
-            ),
-        },
-        { label: 'Items', value: count.format(loaded.summary.itemCount) },
-        ...(loaded.summary.totals.length > 0
-          ? [{ label: 'Total', value: <TotalsDetail totals={loaded.summary.totals} /> }]
-          : []),
+        ...(detail?.mode === 'relay'
+          ? [
+              {
+                label: 'Signer',
+                value: detail.signer ? <MonoValue value={detail.signer} /> : 'Signed by the caller',
+              },
+              ...(detail.target
+                ? [{ label: 'Target', value: <MonoValue value={detail.target} /> }]
+                : []),
+              ...(detail.value
+                ? [{ label: 'Value', value: <TotalsDetail totals={[detail.value]} /> }]
+                : []),
+            ]
+          : [
+              { label: 'Sender', value: <SenderDetail sender={loaded.summary.sender} /> },
+              { label: 'Items', value: count.format(loaded.summary.itemCount) },
+              ...(loaded.summary.totals.length > 0
+                ? [{ label: 'Total', value: <TotalsDetail totals={loaded.summary.totals} /> }]
+                : []),
+              ...(detail?.mode === 'managed' && detail.retryPolicy !== undefined
+                ? [{ label: 'Retry Policy', value: detail.retryPolicy ? 'On' : 'Off' }]
+                : []),
+              ...(detail?.mode === 'managed' && detail.bulkCall
+                ? [{ label: 'Bulk Call', value: <BulkCallDetail bulk={detail.bulkCall} /> }]
+                : []),
+            ]),
         { label: 'Created', value: full.format(loaded.summary.createdAt) },
         { label: 'Claimed', value: claimed ? full.format(claimed.at) : 'Not yet' },
         { label: 'Id', value: <MonoValue value={id} head={13} tail={6} /> },
@@ -544,6 +569,7 @@ function Pane({
         head={head}
         flow={flow}
         items={items}
+        bundled={detail?.mode === 'managed' && detail.bulkCall ? 'Bulk Call' : 'transaction'}
         errors={errors}
         details={details}
         body={

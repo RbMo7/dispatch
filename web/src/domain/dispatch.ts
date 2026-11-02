@@ -26,8 +26,12 @@ export interface DispatchSummary {
   status: Status;
   createdAt: Date;
   itemCount: number;
+  /** How many items are calls; the rest are payments. Absent from an engine too old to say. */
+  callCount?: number;
   /** Per asset, summed over `payment` items. Empty for a Relay Dispatch. */
   totals: Money[];
+  /** On a held row: the names of the rules holding it. */
+  heldBy?: string[];
 }
 
 /** docs/openapi.yaml's per-item status, also a Relay Dispatch's top-level one. */
@@ -140,10 +144,33 @@ export interface TakenNonce {
   resentNonce: number | null;
 }
 
+/** A Base version's EIP-1559 fees, in wei. */
+export interface Fee {
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+}
+
+/** A Bulk Call's aggregator and settings (ADR-0038). */
+export interface BulkCallSettings {
+  aggregator: string;
+  /** The contract registry's label for the aggregator, if it has one. */
+  label: string | null;
+  maxBatchSize: number;
+  allowFailure: boolean;
+}
+
 /** `GET /v1/dispatch/:id?include=timeline`'s entries, oldest first (docs/openapi.yaml). */
 export type TimelineEntry =
   | { kind: 'created' | 'claimed' | 'cancelled'; at: Date }
-  | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }
+  | {
+      kind: 'written';
+      at: Date;
+      hash: string;
+      items: number[];
+      replaces: string | null;
+      /** Base: the fees this version was signed with; null where the engine did not say. */
+      fee?: Fee | null;
+    }
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
   | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
@@ -197,6 +224,10 @@ export interface ManagedDetail {
   /** Why it was held, on a Dispatch that ever was: it stays after a release or a cancel. */
   hold: Hold | null;
   cancellation?: Cancellation | null;
+  /** Whether the engine may fee-bump a stuck transaction; absent from an engine too old to say. */
+  retryPolicy?: boolean;
+  /** Only on a Bulk Call. */
+  bulkCall?: BulkCallSettings | null;
 }
 
 export interface RelayDetail {
@@ -209,6 +240,10 @@ export interface RelayDetail {
   error: DispatchError | null;
   timeline: TimelineEntry[];
   cancellation?: Cancellation | null;
+  /** Read from the signed bytes: who signed, what it calls or pays, and the native value it moves. */
+  signer?: string | null;
+  target?: string | null;
+  value?: Money | null;
 }
 
 /** Who cancelled a cancelled Dispatch, when and why. */
@@ -224,6 +259,53 @@ export type DispatchDetail = ManagedDetail | RelayDetail;
 export interface LoadedDispatch {
   summary: DispatchSummary;
   detail: DispatchDetail;
+}
+
+/** Marks the call a Relay item stands for: its caller signed it, and the engine reads only its target. */
+export const RELAY_DECODER = 'relay';
+
+/**
+ * A Relay Dispatch's one transaction as an item, for the Items tab: a payment
+ * of its native value when it moves any, else a call to its target. Null when
+ * the engine did not read the bytes (one from before it did).
+ */
+export function relayItem(detail: RelayDetail): Item | null {
+  if (!detail.target) return null;
+  const base = {
+    index: 0,
+    status: detail.status,
+    transactionHash: detail.transactionHash,
+    error: detail.error,
+    approval: null,
+    effects: null,
+  };
+  const value = detail.value;
+  if (value && BigInt(value.raw) > 0n) {
+    return {
+      ...base,
+      type: 'payment',
+      recipient: detail.target,
+      asset: value.asset,
+      amount: value,
+    };
+  }
+  return {
+    ...base,
+    type: 'call',
+    target: detail.target,
+    call: {
+      target: detail.target,
+      label: null,
+      decoded: true,
+      decoder: RELAY_DECODER,
+      function: null,
+      args: [],
+      selector: null,
+      data: null,
+      value: null,
+      calls: [],
+    },
+  };
 }
 
 /** The list row for a Dispatch, from its detail: `totals` sums the `payment` items the engine reports decimals for. */
@@ -249,18 +331,32 @@ export function summaryOf(detail: DispatchDetail): DispatchSummary {
     status,
     createdAt,
     itemCount: detail.items.length,
+    callCount: detail.items.filter((item) => item.type === 'call').length,
     totals: [...totals.values()],
   };
 }
 
 const count = new Intl.NumberFormat('en-US');
 
-/** The engine stores no label, so a Dispatch is named by what it carries: "37 payments". */
-export function dispatchName(summary: Pick<DispatchSummary, 'mode' | 'itemCount' | 'totals'>) {
+const counted = (n: number, noun: string) => `${count.format(n)} ${noun}${n === 1 ? '' : 's'}`;
+
+/**
+ * The engine stores no label, so a Dispatch is named by what it carries:
+ * "37 payments", "3 calls", "1 payment, 1 call".
+ */
+export function dispatchName(
+  summary: Pick<DispatchSummary, 'mode' | 'itemCount' | 'totals' | 'callCount'>,
+) {
   if (summary.mode === 'relay') return 'Relay transaction';
   const n = summary.itemCount;
-  const noun = summary.totals.length > 0 ? 'payment' : 'item';
-  return `${count.format(n)} ${noun}${n === 1 ? '' : 's'}`;
+  if (summary.callCount === undefined) {
+    return counted(n, summary.totals.length > 0 ? 'payment' : 'item');
+  }
+  const calls = summary.callCount;
+  const payments = n - calls;
+  if (payments === 0) return counted(calls, 'call');
+  if (calls === 0) return counted(payments, 'payment');
+  return `${counted(payments, 'payment')}, ${counted(calls, 'call')}`;
 }
 
 /** Ids are UUIDs; the list and pane show the first block, as the board does. */

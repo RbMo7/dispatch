@@ -44,6 +44,14 @@ export type StageLink = { label: string; href: string } | { label: string; items
 /** Stage prose. Amounts stay `Money` so hidden balances mask them like every other amount. */
 export type Text = string | readonly (string | Money)[];
 
+export interface StageHash {
+  hash: string;
+  /** "Confirmed", "Failed": the status of the items it carried. */
+  outcome: string;
+  failed: boolean;
+  links: StageLink[];
+}
+
 export interface Stage {
   kind: StageKind;
   title: string;
@@ -53,6 +61,8 @@ export interface Stage {
   /** For a large Dispatch: how many items have reached this stage. */
   count?: { reached: number; of: number };
   hash?: string;
+  /** Every transaction a finished Dispatch sent, each with how it ended, in place of `hash`. */
+  hashes?: readonly StageHash[];
   /** A Proposal's Approvers and their decisions, on its approval stage. */
   approvers?: readonly Approver[];
   links?: StageLink[];

@@ -94,6 +94,29 @@ export interface Hold {
   reason: string | null;
 }
 
+/** "Item 3", "Items 1 and 2", "All 4 items" or "6 of 40 items": which items a rule matched. */
+export function matchedItemsText(items: readonly number[], total: number): string {
+  if (items.length === total && total > 1) return `All ${whole.format(total)} items`;
+  if (items.length > 4) return `${whole.format(items.length)} of ${whole.format(total)} items`;
+  const positions = items.map((i) => whole.format(i + 1));
+  const list =
+    positions.length === 1
+      ? positions[0]
+      : `${positions.slice(0, -1).join(', ')} and ${positions.at(-1)}`;
+  return `Item${items.length === 1 ? '' : 's'} ${list}`;
+}
+
+/** 'Rule "Big USDC" matched item 1: a payment over 5,000 USDC.', one sentence per rule. */
+export function holdReason(hold: Hold, chain: Chain, total: number): string {
+  return hold.matched
+    .map((match) => {
+      const items = matchedItemsText(match.items, total);
+      const check = describeCheck(match.check, chain);
+      return `Rule "${match.name}" matched ${items.charAt(0).toLowerCase()}${items.slice(1)}: ${check.charAt(0).toLowerCase()}${check.slice(1)}.`;
+    })
+    .join(' ');
+}
+
 /** Each item's position, with the names of the rules that matched it. */
 export function matchedItems(hold: Hold): Map<number, string[]> {
   const byItem = new Map<number, string[]>();

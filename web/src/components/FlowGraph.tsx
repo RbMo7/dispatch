@@ -103,6 +103,21 @@ function StageNode({
             <MonoValue value={stage.hash} full />
           </div>
         )}
+        {stage.hashes && (
+          <ul className={styles.hashes}>
+            {stage.hashes.map((sent) => (
+              <li key={sent.hash} className={styles.hashRow}>
+                <MonoValue value={sent.hash} head={10} tail={8} />
+                <span className={sent.failed ? styles.hashFailed : styles.hashOutcome}>
+                  {sent.outcome}
+                </span>
+                {sent.links.map((link) => (
+                  <StageLinkView key={link.label} link={link} onShowItems={onShowItems} />
+                ))}
+              </li>
+            ))}
+          </ul>
+        )}
         {stage.detail && (
           <div className={styles.detail}>
             <TextView text={stage.detail} />

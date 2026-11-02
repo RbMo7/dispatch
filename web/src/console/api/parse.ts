@@ -20,11 +20,13 @@ import type { ContractPreview, KnownContract } from '../../domain/contracts';
 import type {
   Approval,
   Approver,
+  BulkCallSettings,
   Cancellation,
   ChainRef,
   DispatchDetail,
   DispatchError,
   DispatchSummary,
+  Fee,
   Item,
   ItemStatus,
   SenderRef,
@@ -416,6 +418,7 @@ function entry(value: unknown, path: string): TimelineEntry {
         hash: hash(),
         items: items(),
         replaces: nullableString(json.replaces, `${path}.replaces`),
+        fee: fee(json.fee, `${path}.fee`),
       };
     case 'sent':
       return { kind: 'sent', at: at(), hash: hash(), items: items() };
@@ -513,6 +516,9 @@ export function parseDetail(value: unknown, names: AssetNames = bySymbol): Dispa
       error: dispatchError(json.error, 'error'),
       timeline,
       cancellation: cancellation(json.cancellation),
+      signer: nullableString(json.signer, 'signer'),
+      target: nullableString(json.target, 'target'),
+      value: json.value === undefined ? null : total(json.value, 'value', chain, names),
     };
   }
   if (json.mode !== 'managed') fail('mode', 'managed or relay');
@@ -529,7 +535,43 @@ export function parseDetail(value: unknown, names: AssetNames = bySymbol): Dispa
     timeline,
     hold: json.hold === undefined ? null : hold(json.hold, 'hold'),
     cancellation: cancellation(json.cancellation),
+    ...(json.retryPolicy === undefined
+      ? {}
+      : { retryPolicy: boolean(json.retryPolicy, 'retryPolicy') }),
+    bulkCall: json.bulkCall === undefined ? null : bulkCall(json.bulkCall, 'bulkCall'),
   };
+}
+
+function fee(value: unknown, path: string): Fee | null {
+  if (value === undefined || value === null) return null;
+  const json = object(value, path);
+  return {
+    maxFeePerGas: rawAmount(json.maxFeePerGas, `${path}.maxFeePerGas`),
+    maxPriorityFeePerGas: rawAmount(json.maxPriorityFeePerGas, `${path}.maxPriorityFeePerGas`),
+  };
+}
+
+function bulkCall(value: unknown, path: string): BulkCallSettings {
+  const json = object(value, path);
+  return {
+    aggregator: string(json.aggregator, `${path}.aggregator`),
+    label: nullableString(json.label, `${path}.label`),
+    maxBatchSize: integer(json.maxBatchSize, `${path}.maxBatchSize`),
+    allowFailure: boolean(json.allowFailure, `${path}.allowFailure`),
+  };
+}
+
+/** An `AssetTotal`: null when the asset is no longer configured, so it has no decimals. */
+function total(value: unknown, path: string, chain: Chain, names: AssetNames): Money | null {
+  const t = object(value, path);
+  const asset = string(t.asset, `${path}.asset`);
+  return money(
+    names(chain, asset),
+    asset,
+    rawAmount(t.amount, `${path}.amount`),
+    t.decimals,
+    `${path}.decimals`,
+  );
 }
 
 function cancellation(value: unknown): Cancellation | null {
@@ -593,18 +635,14 @@ function summary(value: unknown, path: string, names: AssetNames): DispatchSumma
     status: oneOf(json.status, STATUS_NAMES, `${path}.status`),
     createdAt: date(json.createdAt, `${path}.createdAt`),
     itemCount: integer(json.itemCount, `${path}.itemCount`),
+    ...(json.callCount === undefined
+      ? {}
+      : { callCount: integer(json.callCount, `${path}.callCount`) }),
     // A total in an asset no longer configured has no decimals to show it by.
-    totals: list(json.totals, `${path}.totals`, (total, at) => {
-      const t = object(total, at);
-      const asset = string(t.asset, `${at}.asset`);
-      return money(
-        names(chain, asset),
-        asset,
-        rawAmount(t.amount, `${at}.amount`),
-        t.decimals,
-        `${at}.decimals`,
-      );
-    }).filter((total): total is Money => total !== null),
+    totals: list(json.totals, `${path}.totals`, (value, at) =>
+      total(value, at, chain, names),
+    ).filter((t): t is Money => t !== null),
+    ...(json.heldBy === undefined ? {} : { heldBy: list(json.heldBy, `${path}.heldBy`, string) }),
   };
 }
 

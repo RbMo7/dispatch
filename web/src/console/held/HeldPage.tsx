@@ -16,7 +16,7 @@ import {
   type ManagedDetail,
 } from '../../domain/dispatch';
 import { duration } from '../../domain/dispatchFlow';
-import { describeCheck, type Hold, matchedItems } from '../../domain/flagRules';
+import { describeCheck, type Hold, matchedItems, matchedItemsText } from '../../domain/flagRules';
 import { describeFailure } from '../api/client';
 import styles from '../console.module.css';
 import { CancelModal } from '../dispatches/CancelModal';
@@ -86,7 +86,16 @@ export function HeldPage() {
           today={now}
           senderOf={senderOf}
           statusOf={(row) => (
-            <span className={ops.heldFor}>{duration(now.getTime() - row.createdAt.getTime())}</span>
+            <>
+              {row.heldBy && row.heldBy.length > 0 && (
+                <span className={ops.heldBy} title={row.heldBy.join(', ')}>
+                  {row.heldBy.join(', ')}
+                </span>
+              )}
+              <span className={ops.heldFor}>
+                {duration(now.getTime() - row.createdAt.getTime())}
+              </span>
+            </>
           )}
           empty={
             held.error ? (
@@ -320,17 +329,6 @@ function ShownChip(props: { label: string; n: number; on: boolean; onClick: () =
   );
 }
 
-function itemsText(items: number[], total: number): string {
-  if (items.length === total && total > 1) return `All ${count.format(total)} items`;
-  if (items.length > 4) return `${count.format(items.length)} of ${count.format(total)} items`;
-  const positions = items.map((i) => count.format(i + 1));
-  const list =
-    positions.length === 1
-      ? positions[0]
-      : `${positions.slice(0, -1).join(', ')} and ${positions.at(-1)}`;
-  return `Item${items.length === 1 ? '' : 's'} ${list}`;
-}
-
 function HoldSection({
   detail,
   hold,
@@ -366,7 +364,7 @@ function HoldSection({
             <span className={ops.matchName}>{match.name}</span>
             <span className={ops.matchCheck}>{describeCheck(match.check, detail.chain)}</span>
             <span className={ops.matchItems}>
-              {itemsText(match.items, detail.items.length)}, version {match.ruleVersion}
+              {matchedItemsText(match.items, detail.items.length)}, version {match.ruleVersion}
             </span>
           </li>
         ))}

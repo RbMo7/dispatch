@@ -130,6 +130,7 @@ describe('the flow of one Dispatch', () => {
               hash: H_AA,
               items: [0],
               replaces: null,
+              fee: { maxFeePerGas: '12000000', maxPriorityFeePerGas: '1000000' },
             },
             {
               at: '2026-10-31T10:01:02.000Z',
@@ -144,6 +145,7 @@ describe('the flow of one Dispatch', () => {
               hash: H_BB,
               items: [0],
               replaces: H_AA,
+              fee: { maxFeePerGas: '15000000', maxPriorityFeePerGas: '1250000' },
             },
             {
               at: '2026-10-31T10:02:03.000Z',
@@ -161,9 +163,9 @@ describe('the flow of one Dispatch', () => {
       clock('2026-10-31T11:00:00Z'),
     );
     const [bump] = branches(flow);
-    expect(bump).toMatchObject({ kind: 'branch-done', title: 'Fee bumped', at: '10:02:03' });
+    expect(bump).toMatchObject({ kind: 'branch-done', title: 'Fee bumped once', at: '10:02:03' });
     expect(bump!.detail).toBe(
-      'No block in time, so it was repriced at the same nonce: 0xaa1f…5d7f replaced by 0xbb4c…4b6c.',
+      'No block in time, so it was repriced at the same nonce. 0xaa1f…5d7f to 0xbb4c…4b6c: max fee 0.012 to 0.015 gwei, tip 0.001 to 0.00125 gwei.',
     );
     expect(titled(flow, 'Signed and sent').detail).toBe(
       '1 transaction, sent again 1 time while waiting',
