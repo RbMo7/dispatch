@@ -253,6 +253,8 @@ function engine() {
           wouldHold: 3,
           examples: [{ dispatchId: HELD_ID, createdAt: HELD_AT, items: [0] }],
         });
+      case 'GET /v1/contracts':
+        return answer(200, { contracts: [] });
       case 'GET /v1/activity':
         return answer(200, {
           actions: [
@@ -336,7 +338,14 @@ describe('signing in with AUTH_TOKEN (ADR-0057)', () => {
   it('hides Held, Flag Rules and Activity, and never calls an operator-only route', async () => {
     const { requests, user } = await signIn(AUTH, '/console/held');
 
-    expect(navNames()).toEqual(['Overview', 'Dispatches', 'Senders & Keys', 'Assets', 'Setup']);
+    expect(navNames()).toEqual([
+      'Overview',
+      'Dispatches',
+      'Senders & Keys',
+      'Assets',
+      'Contracts',
+      'Setup',
+    ]);
     expect(await screen.findByText('Oldest hold')).toBeTruthy();
     await user.click(screen.getAllByRole('link', { name: /Dispatches/ })[0]!);
     await user.click(await screen.findByRole('button', { name: /2 payments/ }));
@@ -359,6 +368,7 @@ describe('signing in with OPERATOR_TOKEN', () => {
         'Flag Rules',
         'Senders & Keys',
         'Assets',
+        'Contracts',
         'Activity',
         'Rejected',
         'Setup',

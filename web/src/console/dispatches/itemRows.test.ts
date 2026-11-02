@@ -14,6 +14,7 @@ function item(index: number, hash: string | null, status: Item['status'] = 'conf
     transactionHash: hash,
     error: null,
     approval: null,
+    effects: null,
   };
 }
 
@@ -23,7 +24,9 @@ const shape = (rows: ReturnType<typeof itemRows>) =>
       ? `bundle ${row.hash} x${row.count}${row.expanded ? '' : ' collapsed'}`
       : row.kind === 'error'
         ? `  why #${row.item.index}`
-        : `${row.bundled ? '  ' : ''}#${row.item.index}`,
+        : row.kind === 'call'
+          ? `  call #${row.item.index}`
+          : `${row.bundled ? '  ' : ''}#${row.item.index}`,
   );
 
 describe('the Items table rows', () => {

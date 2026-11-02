@@ -5,6 +5,7 @@ import {
   type KnownAsset,
 } from '../../domain/assets';
 import type { Chain } from '../../domain/chains';
+import type { ContractPreview, ContractRequest, KnownContract } from '../../domain/contracts';
 import type { DispatchDetail, Mode } from '../../domain/dispatch';
 import type { FlagRule, Preview, TokenKind } from '../../domain/flagRules';
 import type { Sender } from '../../domain/sender';
@@ -18,7 +19,10 @@ import {
   parseActivity,
   parseAssetPreview,
   parseAssets,
+  parseContractPreview,
+  parseContracts,
   parseDetail,
+  parseKnownContract,
   parseKnownAsset,
   parseFlagRule,
   parseFlagRules,
@@ -104,6 +108,11 @@ export interface ApiClient {
   previewAsset(body: AssetRequest, signal?: AbortSignal): Promise<AssetPreview>;
   addAsset(body: AssetRequest): Promise<KnownAsset>;
   setAssetEnabled(id: string, enabled: boolean, reason?: string): Promise<KnownAsset>;
+  /** ADR-0063: either token. */
+  listContracts(signal?: AbortSignal): Promise<KnownContract[]>;
+  previewContract(body: ContractRequest, signal?: AbortSignal): Promise<ContractPreview>;
+  addContract(body: ContractRequest): Promise<KnownContract>;
+  setContractEnabled(id: string, enabled: boolean, reason?: string): Promise<KnownContract>;
   /** ADR-0062: refused `POST /v1/dispatch` requests, newest first, with the count of the last 24 hours. */
   listRejected(cursor: string | null, signal?: AbortSignal, limit?: number): Promise<RejectedPage>;
 }
@@ -299,12 +308,45 @@ export function createApiClient(
         }),
       );
     },
+    listContracts(signal) {
+      return request('/v1/contracts', parseContracts, { signal: signal ?? null });
+    },
+    previewContract(body, signal) {
+      return request('/v1/contracts/preview', parseContractPreview, {
+        method: 'POST',
+        body: contractBody(body),
+        signal: signal ?? null,
+      });
+    },
+    addContract(body) {
+      return request('/v1/contracts', (value) => parseKnownContract(value), {
+        method: 'POST',
+        body: contractBody(body),
+      });
+    },
+    setContractEnabled(id, enabled, reason) {
+      return request(
+        `/v1/contracts/${encodeURIComponent(id)}`,
+        (value) => parseKnownContract(value),
+        { method: 'PATCH', body: JSON.stringify(reason ? { enabled, reason } : { enabled }) },
+      );
+    },
     listRejected(cursor, signal, limit = PAGE_LIMIT) {
       const query = new URLSearchParams({ limit: String(limit) });
       if (cursor) query.set('cursor', cursor);
       return request(`/v1/rejected?${query}`, parseRejected, { signal: signal ?? null });
     },
   };
+}
+
+/** The pasted text goes as it is: the engine reads it, so its refusal names what is wrong. */
+function contractBody({ chain, address, label, definition }: ContractRequest): string {
+  return JSON.stringify({
+    chain,
+    address,
+    label,
+    [chain === 'base' ? 'abi' : 'idl']: definition,
+  });
 }
 
 export function isUuid(value: string): boolean {

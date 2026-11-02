@@ -180,6 +180,7 @@ function Screen() {
         />
         {dispatch && (
           <DispatchPane
+            chain={dispatch.chain}
             head={{
               id: dispatch.id,
               mode: dispatch.mode,

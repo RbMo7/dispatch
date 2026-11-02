@@ -31,6 +31,7 @@ export const NAV: readonly NavSection[] = [
     pages: [
       { source: 'docs/guides/send-payments.md', slug: 'guides/send-payments' },
       { source: 'docs/guides/call-a-contract.md', slug: 'guides/call-a-contract' },
+      { source: 'docs/guides/register-a-contract.md', slug: 'guides/register-a-contract' },
       { source: 'docs/guides/relay.md', slug: 'guides/relay' },
       { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
       { source: 'docs/guides/multisig.md', slug: 'guides/multisig' },
@@ -48,6 +49,7 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/openapi.yaml', tag: 'Dispatches', slug: 'rest/dispatches' },
       { source: 'docs/openapi.yaml', tag: 'Flag Rules', slug: 'rest/flag-rules' },
       { source: 'docs/openapi.yaml', tag: 'Assets', slug: 'rest/assets' },
+      { source: 'docs/openapi.yaml', tag: 'Contracts', slug: 'rest/contracts' },
       { source: 'docs/openapi.yaml', tag: 'Senders', slug: 'rest/senders' },
       { source: 'docs/openapi.yaml', tag: 'Setup', slug: 'rest/setup' },
       { source: 'docs/openapi.yaml', tag: 'Activity', slug: 'rest/activity' },

@@ -58,6 +58,7 @@ export function ConsoleScreen({ landed }: { landed: boolean }) {
       <GallerySidebar operator />
       <List landed={landed} selected={LARGE} />
       <DispatchPane
+        chain={dispatch.chain}
         head={{
           id: dispatch.id,
           mode: dispatch.mode,

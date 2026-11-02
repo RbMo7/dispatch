@@ -7,11 +7,13 @@ import { MonoValue } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { StatusPill } from '../../components/StatusPill';
 import { type Column, VirtualTable } from '../../components/VirtualTable';
+import type { Chain } from '../../domain/chains';
 import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
 import { type ErrorContext, explainError } from '../../domain/errors';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
+import { CallCell, CallLine } from './CallView';
 import { filterItems, type ItemRow, itemRows, paidIn, statusCounts } from './itemRows';
 
 const count = new Intl.NumberFormat('en-US');
@@ -26,10 +28,15 @@ const COLUMNS: readonly Column<ItemRow>[] = [
   },
   {
     id: 'target',
-    header: 'Recipient',
+    header: 'Recipient or call',
     width: 'minmax(0, 1fr)',
     render: (row) =>
-      row.kind === 'item' && <MonoValue value={itemTarget(row.item)} head={5} tail={4} />,
+      row.kind === 'item' &&
+      (row.item.type === 'call' ? (
+        <CallCell item={row.item} />
+      ) : (
+        <MonoValue value={itemTarget(row.item)} head={5} tail={4} />
+      )),
   },
   {
     id: 'amount',
@@ -37,7 +44,11 @@ const COLUMNS: readonly Column<ItemRow>[] = [
     width: '100px',
     align: 'end',
     render: (row) => {
-      if (row.kind !== 'item' || row.item.type !== 'payment') return null;
+      if (row.kind !== 'item') return null;
+      if (row.item.type === 'call') {
+        const value = row.item.call.value?.money;
+        return value ? <Amount {...value} /> : null;
+      }
       return row.item.amount ? (
         <Amount {...row.item.amount} />
       ) : (
@@ -68,6 +79,7 @@ const COLUMNS: readonly Column<ItemRow>[] = [
 ];
 
 interface ItemsTabProps {
+  chain: Chain;
   items: readonly Item[];
   filter: ItemFilter;
   onFilter: (filter: ItemFilter) => void;
@@ -93,6 +105,7 @@ function ErrorLine({ item, errors }: { item: Item; errors: ErrorContext }) {
 }
 
 export function ItemsTab({
+  chain,
   items,
   filter,
   onFilter,
@@ -141,7 +154,7 @@ export function ItemsTab({
       <div className={styles.itemsBar}>
         <SearchField
           label="Search items"
-          placeholder="Recipient, target or hash"
+          placeholder="Recipient, target, function or hash"
           value={search}
           onChange={onSearch}
           width={280}
@@ -164,13 +177,15 @@ export function ItemsTab({
         rowKey={(row) =>
           row.kind === 'bundle'
             ? `bundle-${row.hash}`
-            : row.kind === 'error'
-              ? `error-${row.item.index}`
-              : row.item.index
+            : row.kind === 'item'
+              ? row.item.index
+              : `${row.kind}-${row.item.index}`
         }
         span={(row) =>
           row.kind === 'error' ? (
             <ErrorLine item={row.item} errors={errors} />
+          ) : row.kind === 'call' ? (
+            <CallLine item={row.item} chain={chain} />
           ) : row.kind === 'bundle' ? (
             <button
               type="button"

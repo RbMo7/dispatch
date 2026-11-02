@@ -80,6 +80,7 @@ function makeItems(plan: ItemPlan): Item[] {
       asset: plan.total.asset,
       amount: amounts[index]!,
       approval: null,
+      effects: null,
       status,
       transactionHash: sent ? (plan.sharedHash ?? txHash(rand, plan.chain)) : null,
       error: status === 'failed' ? (plan.failures?.[index] ?? null) : null,
