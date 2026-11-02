@@ -28,7 +28,7 @@ const COLUMNS: readonly Column<ItemRow>[] = [
   },
   {
     id: 'target',
-    header: 'Recipient or call',
+    header: 'To',
     width: 'minmax(0, 1fr)',
     render: (row) =>
       row.kind === 'item' &&

@@ -44,16 +44,14 @@ export function unexplainedAddress(item: CallItem): string | null {
   return item.effects?.undecodedEventSources.find((s) => s.label === null)?.source ?? null;
 }
 
-/** What the call is, in one cell of the Items table: the pill, the target and the function. */
+/** The call's target in the Items table: its label, or its address as recipients show theirs. */
 export function CallCell({ item }: { item: CallItem }) {
   const { call } = item;
-  return (
-    <span className={css.cell} title={call.target}>
-      <Pill tone="queued" label="Call" />
-      <span className={css.cellTarget}>{targetName(call)}</span>
-      <span className={css.cellFunction}>
-        {call.function ?? (call.data ? 'unknown function' : 'no data')}
-      </span>
+  return call.label === null ? (
+    <MonoValue value={call.target} head={5} tail={4} />
+  ) : (
+    <span className={css.cellTarget} title={call.target}>
+      {call.label}
     </span>
   );
 }
@@ -88,6 +86,7 @@ export function CallLine({ item, chain }: { item: CallItem; chain: Chain }) {
   const changed = item.effects ? effectsSummary(chain, item.effects) : '';
   return (
     <span className={css.line}>
+      <Pill tone="queued" label="Call" />
       <span className={css.lineCall} title={signature ?? call.data ?? undefined}>
         {signature ??
           (call.selector
@@ -238,9 +237,11 @@ function CallCard({
       <div className={css.callHead}>
         <Pill tone="queued" label="Call" />
         <span className={css.callName}>{targetName(call)}</span>
-        <span className={css.callAddress}>
-          <MonoValue value={call.target} head={6} tail={4} />
-        </span>
+        {call.label !== null && (
+          <span className={css.callAddress}>
+            <MonoValue value={call.target} head={6} tail={4} />
+          </span>
+        )}
       </div>
       <What call={call} chain={chain} />
       {call.value && (

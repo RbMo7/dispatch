@@ -1,23 +1,7 @@
-/* A call item's target in the Items table: the pill, then what is called. */
-.cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
 .cellTarget {
+  display: block;
   overflow: hidden;
   font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cellFunction {
-  overflow: hidden;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-12);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -25,7 +9,7 @@
 /* The line under a call item: its arguments and what it changed. */
 .line {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-3);
   min-width: 0;
   padding-left: 44px;

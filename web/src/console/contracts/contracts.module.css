@@ -1,4 +1,6 @@
 .definition {
+  box-sizing: border-box;
+  width: 100%;
   font-family: var(--font-mono);
   font-size: var(--text-12);
 }
