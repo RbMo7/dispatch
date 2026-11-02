@@ -19,6 +19,7 @@ import { configFrom, type Env } from '../config.js';
 import { parseSendersConfig } from '../senders-config.js';
 import { parseEnvText } from './env-file.js';
 import { init, INIT_EXIT, type InitIo } from './init.js';
+import { composeCanReadSendersFile } from './init-plan.js';
 import { startServices, type Readiness, type Runner } from './init-services.js';
 import { plainUi } from './init-ui.js';
 import { findMissing, type Machine, type Probe } from './prerequisites.js';
@@ -105,7 +106,8 @@ function harness(env: Env = {}, probe: Probe = probeWithout()) {
         { backend: string; keyRef: string; curve: string; policy: Record<string, unknown> }
       >,
     backups: () => readdirSync(root).filter((name) => name.startsWith('.env.backup-')),
-    senders: () => JSON.parse(readFileSync(path.join(root, 'senders.json'), 'utf8')) as unknown,
+    senders: () =>
+      JSON.parse(readFileSync(path.join(root, 'config/senders.json'), 'utf8')) as unknown,
   };
 }
 
@@ -238,6 +240,7 @@ describe('pnpm dispatch init --yes', () => {
     const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: passphrase });
     await init(['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'], t.io);
     expect(existsSync(path.join(t.root, 'senders.json'))).toBe(false);
+    expect(existsSync(path.join(t.root, 'config/senders.json'))).toBe(false);
     const first = t.env();
     const firstKey = first.SOLANA_SENDER_ADDRESS!;
     const firstKeystore = t.file('signer/local/keystore/solana-sender.json');
@@ -261,7 +264,7 @@ describe('pnpm dispatch init --yes', () => {
         senders: { default: { address: firstKey }, refunds: { address: refundsKey } },
       },
     });
-    expect(t.mode('senders.json')).toBe(0o600);
+    expect(t.mode('config/senders.json')).toBe(0o600);
     expect(t.signerConfig()[firstKey]).toEqual(firstEntry);
     expect(t.signerConfig()[refundsKey]).toMatchObject({
       backend: 'local',
@@ -307,17 +310,23 @@ describe('pnpm dispatch init --yes', () => {
         },
       },
     });
-    const backups = readdirSync(t.root).filter((name) => name.startsWith('senders.json.backup-'));
-    expect(backups.map((name) => JSON.parse(t.file(name)) as unknown)).toContainEqual(before);
+    const backups = readdirSync(path.join(t.root, 'config')).filter((name) =>
+      name.startsWith('senders.json.backup-'),
+    );
+    expect(backups.map((name) => JSON.parse(t.file(`config/${name}`)) as unknown)).toContainEqual(
+      before,
+    );
     expect(t.output()).toContain(
       `default on Solana (default): devnet, plain Sender ${firstKey}, local key solana-sender`,
     );
     expect(t.output()).toContain(`refunds on Solana: devnet, plain Sender ${refundsKey}`);
-    expect(t.output()).toContain('pnpm dev:worker');
+    expect(t.env().SENDERS_FILE).toBe('config/senders.json');
+    expect(t.output()).toContain('docker compose up -d --build api worker');
+    expect(t.output()).not.toContain('pnpm dev:worker');
 
     const config = configFrom(t.env());
     const engineReads = parseSendersConfig({
-      source: { kind: 'file', path: 'senders.json', text: t.file('senders.json') },
+      source: { kind: 'file', path: 'config/senders.json', text: t.file('config/senders.json') },
       enabledChains: ['solana'],
       variables: { solana: config.solana.multisig, base: config.base.safe },
     });
@@ -392,6 +401,100 @@ describe('pnpm dispatch init --yes', () => {
     const code = await init(['--yes', '--chains', 'solana', '--no-start'], t.io);
     expect(code).toBe(INIT_EXIT.cannotRun);
     expect(t.output()).toContain('--solana-signer');
+  });
+});
+
+describe('the senders file under Compose', () => {
+  /** Compose and migrations succeed, and every service reports ready at once. */
+  function composeUp(t: ReturnType<typeof harness>) {
+    const commands: string[] = [];
+    t.io.run = (command, args) => {
+      commands.push([command, ...args].join(' '));
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+    };
+    t.io.readiness = {
+      container: () => Promise.resolve({ State: 'running', Health: 'healthy' }),
+      answers: () => Promise.resolve(true),
+      logs: () => Promise.resolve('{"msg":"worker started"}'),
+    };
+    return commands;
+  }
+  const NAMED = ['--yes', '--chains', 'solana', '--solana-signer', 'keyfile'];
+  const ADD_REFUNDS = [
+    '--yes',
+    '--solana-sender-name',
+    'refunds',
+    '--solana-signer',
+    'keyfile',
+    '--solana-default',
+    'refunds',
+  ];
+
+  it('writes a new senders file into config/ and starts every service under Compose', async () => {
+    const t = harness();
+    composeUp(t);
+    expect(await init([...NAMED, '--no-start'], t.io)).toBe(INIT_EXIT.ok);
+    const commands = composeUp(t);
+
+    const code = await init(ADD_REFUNDS, t.io);
+
+    expect(code, t.output()).toBe(INIT_EXIT.ok);
+    expect(t.env().SENDERS_FILE).toBe('config/senders.json');
+    expect(t.mode('config/senders.json')).toBe(0o600);
+    expect(existsSync(path.join(t.root, 'senders.json'))).toBe(false);
+    expect(commands).toEqual([
+      'docker compose up -d --build postgres signer',
+      'pnpm db:migrate',
+      'docker compose up -d --build api worker',
+    ]);
+    expect(t.output()).not.toContain('Not starting the services');
+  });
+
+  it('moves a senders file from the checkout root into config/', async () => {
+    const t = harness();
+    composeUp(t);
+    expect(await init([...NAMED, '--no-start'], t.io)).toBe(INIT_EXIT.ok);
+    const legacy = {
+      solana: { default: 'payouts', senders: { payouts: { address: DEV_SOLANA_KEY } } },
+    };
+    writeFileSync(path.join(t.root, 'senders.json'), JSON.stringify(legacy), { mode: 0o600 });
+
+    const code = await init([...ADD_REFUNDS, '--no-start'], t.io);
+
+    expect(code, t.output()).toBe(INIT_EXIT.ok);
+    expect(t.env().SENDERS_FILE).toBe('config/senders.json');
+    expect(Object.keys((t.senders() as { solana: { senders: object } }).solana.senders)).toEqual([
+      'payouts',
+      'refunds',
+    ]);
+    expect(t.output()).toContain('Moved the senders file to config/senders.json');
+    expect(t.output()).toContain('no longer reads senders.json');
+  });
+
+  it('keeps a senders file SENDERS_FILE names outside config/, and runs the engine from the checkout', async () => {
+    const t = harness();
+    composeUp(t);
+    expect(await init([...NAMED, '--no-start'], t.io)).toBe(INIT_EXIT.ok);
+    writeFileSync(path.join(t.root, '.env'), `${t.file('.env')}SENDERS_FILE=my-senders.json\n`);
+    const commands = composeUp(t);
+
+    const code = await init(ADD_REFUNDS, t.io);
+
+    expect(code, t.output()).toBe(INIT_EXIT.ok);
+    expect(t.env().SENDERS_FILE).toBe('my-senders.json');
+    expect(existsSync(path.join(t.root, 'my-senders.json'))).toBe(true);
+    expect(commands).toEqual([]);
+    expect(t.output()).toContain('SENDERS_FILE names my-senders.json');
+    expect(t.output()).toContain('pnpm dev:worker');
+  });
+
+  it('knows which SENDERS_FILE values the containers can read', () => {
+    expect(composeCanReadSendersFile('config/senders.json')).toBe(true);
+    expect(composeCanReadSendersFile('./config/prod.json')).toBe(true);
+    expect(composeCanReadSendersFile('senders.json')).toBe(false);
+    expect(composeCanReadSendersFile('config/../senders.json')).toBe(false);
+    expect(composeCanReadSendersFile('/srv/dispatch/config/senders.json')).toBe(false);
+    expect(composeCanReadSendersFile('')).toBe(false);
   });
 });
 

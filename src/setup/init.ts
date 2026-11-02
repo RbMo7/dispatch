@@ -19,6 +19,8 @@ import {
   backendsIn,
   chainEnv,
   clearedSenderVariables,
+  COMPOSE_SENDERS_FILE,
+  composeCanReadSendersFile,
   CONTAINER_SIGNER_CONFIG,
   CURVE,
   databaseEnv,
@@ -105,7 +107,8 @@ chain; it keeps everything else.
   --solana-sender <plain|squads>, --solana-multisig <address>
   --base-sender <plain|safe>,     --base-safe <address>
   --<chain>-sender-name <name>  add a named Sender to the chain, beside the ones it has,
-                                in the senders file (SENDERS_FILE, default senders.json)
+                                in the senders file (SENDERS_FILE; init writes a new one
+                                to config/senders.json, where Compose's containers read it)
   --<chain>-default <name>      the Sender a Dispatch that names none pays from
   --database <compose|url>      Compose's Postgres (default) or a postgres:// URL
   --start, --no-start           start the services with Docker Compose (default: start)
@@ -211,6 +214,8 @@ type Files = {
   signerConfig: Record<string, unknown>;
   /** SENDERS_FILE, or `senders.json`, under the root. */
   sendersPath: string;
+  /** SENDERS_FILE as .env sets it; empty when it names none. */
+  sendersSetting: string;
   /** The senders file (ADR-0060); undefined while there is none and today's variables describe the Senders. */
   senders: SendersFile | undefined;
 };
@@ -235,10 +240,8 @@ function readFiles(root: string): Files {
       );
     }
   }
-  const sendersPath = path.resolve(
-    root,
-    parseEnvText(envText).SENDERS_FILE?.trim() || 'senders.json',
-  );
+  const sendersSetting = parseEnvText(envText).SENDERS_FILE?.trim() ?? '';
+  const sendersPath = path.resolve(root, sendersSetting || 'senders.json');
   let senders: Files['senders'];
   if (existsSync(sendersPath)) {
     let json: unknown;
@@ -262,6 +265,7 @@ function readFiles(root: string): Files {
     keystore: path.join(signerDir, 'keystore'),
     signerConfig,
     sendersPath,
+    sendersSetting,
     senders,
   };
 }
@@ -771,7 +775,11 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     }
     for (const [chain, name] of defaults) sendersFile = withDefault(sendersFile, chain, name);
     for (const chain of enabled) Object.assign(updates, clearedSenderVariables(chain));
+    // #157: a senders file SENDERS_FILE does not name goes under config/, which Compose mounts for the api and worker.
+    if (files.sendersSetting === '') updates.SENDERS_FILE = COMPOSE_SENDERS_FILE;
   }
+  const sendersSetting = updates.SENDERS_FILE ?? files.sendersSetting;
+  const sendersPath = path.resolve(io.root, sendersSetting || 'senders.json');
   const envText = updateEnvText(files.envText, updates);
 
   const now = io.now();
@@ -786,10 +794,16 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
     writePrivateFile(files.signerConfigPath, `${JSON.stringify(signerConfig, null, 2)}\n`, now),
   );
   if (fileMode) {
+    mkdirSync(path.dirname(sendersPath), { recursive: true });
     wrote(
-      files.sendersPath,
-      writePrivateFile(files.sendersPath, `${JSON.stringify(sendersFile, null, 2)}\n`, now),
+      sendersPath,
+      writePrivateFile(sendersPath, `${JSON.stringify(sendersFile, null, 2)}\n`, now),
     );
+    if (sendersPath !== files.sendersPath && files.senders !== undefined) {
+      ui.info(
+        `Moved the senders file to ${relative(sendersPath)}, where Compose's containers read it. The engine no longer reads ${relative(files.sendersPath)}; delete it once you no longer need it.`,
+      );
+    }
   }
   wrote(files.envPath, writePrivateFile(files.envPath, envText, now));
   const generated = Object.keys(tokens);
@@ -806,7 +820,8 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
 
   const ownDatabase = (finalEnv.CONTAINER_DATABASE_URL ?? '') !== '';
   let servicesUp = true;
-  if (start && !fileMode) {
+  const composeReadsSenders = !fileMode || composeCanReadSendersFile(sendersSetting);
+  if (start && composeReadsSenders) {
     servicesUp = await startServices(
       io.run,
       io.readiness ?? composeReadiness(io.run, io.root),
@@ -818,10 +833,10 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
       },
     );
   } else {
-    // docker-compose.yml mounts no senders file into the api and worker containers, so they would start without it.
+    // docker-compose.yml mounts only config/ into the api and worker containers, so they could not read this senders file.
     if (start) {
       ui.warn(
-        `Not starting the services: Compose's api and worker containers cannot read ${relative(files.sendersPath)}, so they run from this checkout instead.`,
+        `Not starting the services: Compose's api and worker containers read the senders file only from config/, and SENDERS_FILE names ${sendersSetting}. Move it there and set SENDERS_FILE=${COMPOSE_SENDERS_FILE} to run them under Compose; until then they run from this checkout.`,
       );
     }
     const commands = composeCommands({ ownDatabase }).map((command) => command.join(' '));
@@ -829,14 +844,16 @@ async function setUp(io: InitIo, ui: Ui, ask: Asker, flags: Flags): Promise<numb
       ...(backends.has('local')
         ? ['read -rs SIGNER_KEYSTORE_PASSPHRASE && export SIGNER_KEYSTORE_PASSPHRASE']
         : []),
-      ...(fileMode ? [...commands.slice(0, 2), 'pnpm dev:api', 'pnpm dev:worker'] : commands),
+      ...(composeReadsSenders
+        ? commands
+        : [...commands.slice(0, 2), 'pnpm dev:api', 'pnpm dev:worker']),
     ]);
   }
 
   ui.step('Running pnpm dispatch doctor');
   const doctorCode = await io.runDoctor(finalEnv);
 
-  const funding = addressesToFund(finalEnv, settingsAt(finalEnv, files));
+  const funding = addressesToFund(finalEnv, settingsAt(finalEnv, { sendersPath }));
   if (funding.length > 0) {
     ui.note(
       'Fund these addresses',

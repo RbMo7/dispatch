@@ -16,3 +16,8 @@ dist/
 
 # A deployment's own senders file (ADR-0060) may hold a Safe API key; senders.example.json is the template.
 senders.json
+senders.json.backup-*
+
+# What Compose mounts into the api and worker (docker-compose.yml) is a deployment's own; only the README is committed.
+/config/*
+!/config/README.md

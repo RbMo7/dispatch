@@ -10,7 +10,7 @@ A Sender belongs to one engine. The engine's worker tracks the Sender's nonce an
 
 ## 1. Write the senders file
 
-Name the Senders in a JSON file, keyed by chain. The engine reads `senders.json` from the folder it starts in, or the file `SENDERS_FILE` names:
+Name the Senders in a JSON file, keyed by chain. Put it at `config/senders.json` and set `SENDERS_FILE=config/senders.json` in `.env`. That is where `pnpm dispatch init` writes it, and the one folder Docker Compose shares with the API and the worker. Without `SENDERS_FILE`, the engine reads `senders.json` from the folder it starts in, which works only when you run it from the checkout:
 
 ```json
 {

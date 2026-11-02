@@ -35,6 +35,10 @@ services:
       # ADR-0059: the API never calls the Signer, so it gets no Signer settings, even from .env.
       SIGNER_URL: ''
       SIGNER_AUTH_TOKEN: ''
+    # The senders file (ADR-0060), when .env names one under config/ (SENDERS_FILE=config/senders.json).
+    # A directory, not the file: Compose would create a missing file's path on the host as a directory.
+    volumes:
+      - ./config:/app/config:ro
     ports:
       - '8420:8420'
     depends_on:
@@ -52,6 +56,8 @@ services:
       DATABASE_URL: *database-url
       SIGNER_URL: *signer-url
       SIGNER_AUTH_TOKEN: *signer-auth-token
+    volumes:
+      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy

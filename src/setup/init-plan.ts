@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { isAddress } from 'viem';
 
 import { parsePublicKey } from '../chain-handler/solana/multisig/multisig-config.js';
@@ -75,6 +76,19 @@ export const FAUCETS: Record<Chain, string> = {
 export const COMPOSE_DATABASE_URL = 'postgres://dispatch:dispatch@localhost:5432/dispatch';
 /** Where Compose's signer container sees `signer/local/`. */
 export const CONTAINER_SIGNER_CONFIG = '/app/local/signer.config.json';
+/** The senders file init writes: under `config/`, which Compose mounts into the api and worker at `/app/config`, their working directory being `/app`. */
+export const COMPOSE_SENDERS_FILE = 'config/senders.json';
+
+/**
+ * Whether Compose's api and worker containers can read the senders file
+ * SENDERS_FILE names: a path relative to the checkout (the containers run in
+ * `/app`) that stays inside `config/`, the only directory mounted for them.
+ */
+export function composeCanReadSendersFile(sendersFile: string): boolean {
+  if (sendersFile === '' || path.isAbsolute(sendersFile)) return false;
+  const normal = path.posix.normalize(sendersFile.replaceAll('\\', '/'));
+  return normal.startsWith('config/') && normal !== 'config/';
+}
 const DEV_SIGNER_TOKEN = 'dev-only-signer-token';
 
 export function isChainAddress(chain: Chain, value: string): boolean {

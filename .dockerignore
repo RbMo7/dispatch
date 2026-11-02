@@ -2,6 +2,9 @@
 .env
 .env.backup-*
 signer/local
+config
+**/senders.json
+**/senders.json.backup-*
 **/node_modules
 **/dist
 .claude
