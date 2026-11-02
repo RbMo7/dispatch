@@ -75,7 +75,7 @@ Runs the engine's own parsers over its settings: `ENABLED_CHAINS`, `DATABASE_URL
 
 ### Tokens
 
-Id `configuration.tokens`. Runs in doctor and the worker.
+Id `configuration.tokens`. Runs in doctor and the API, the process that holds both tokens.
 
 Checks the API's bearer tokens, without showing them:
 

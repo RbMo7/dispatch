@@ -126,11 +126,12 @@ describe('GET /v1/setup (#137)', () => {
 
     expect(view.worker).toEqual({ status: 'not_run_yet' });
     expect(ranIn(view)).toEqual([
+      'api configuration.tokens',
       'api database.reachable',
       'api database.migrated',
       'api console.built',
     ]);
-    expect(view.summary).toEqual({ passed: 3, warnings: 0, problems: 0 });
+    expect(view.summary).toEqual({ passed: 4, warnings: 0, problems: 0 });
     expect(received).toHaveLength(0);
   });
 
@@ -146,7 +147,7 @@ describe('GET /v1/setup (#137)', () => {
     expect(view.worker).toEqual({ status: 'ran', ranAt: '2026-11-01T10:00:00.000Z' });
     expect(ranIn(view)).toEqual([
       'worker configuration.environment',
-      'worker configuration.tokens',
+      'api configuration.tokens',
       'worker configuration.chains',
       'api database.reachable',
       'api database.migrated',
