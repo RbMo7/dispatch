@@ -25,7 +25,7 @@ Restart a process after you change one of its variables. Nothing is reloaded whi
 
 ## The senders file
 
-The senders file names the Senders of each chain. The API and the worker both read it at startup, from `SENDERS_FILE`, or from `senders.json` in the folder they start in. Without the file, the per-chain Sender variables describe one Sender per chain, named `default`, and nothing else changes. [Send from more than one Sender](../guides/multiple-senders.md) walks through a setup, and [`senders.example.json`](../../senders.example.json) has one of each mode.
+The senders file names the Senders of each chain. The API and the worker both read it at startup, from `SENDERS_FILE`, or from `senders.json` in the folder they start in. Keep it at `config/senders.json` with `SENDERS_FILE=config/senders.json`: Docker Compose mounts `config/` read-only into the API and worker containers, which start in `/app`, so the same relative path works there and in a checkout. `pnpm dispatch init` writes it there. The repository and the image build ignore everything in `config/` but its README, since the file can hold a Safe API key. Without the file, the per-chain Sender variables describe one Sender per chain, named `default`, and nothing else changes. [Send from more than one Sender](../guides/multiple-senders.md) walks through a setup, and [`senders.example.json`](../../senders.example.json) has one of each mode.
 
 The file is a JSON object keyed by chain. Each chain has `senders`, an object keyed by Sender name, and an optional `default`:
 

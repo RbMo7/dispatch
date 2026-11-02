@@ -128,7 +128,7 @@ Each line is a check, its status and what it found. Under each warning and failu
 
 Run `pnpm dispatch init` again to change one chain or add another. It shows the current setup, changes only what you pick, and keeps every token that passes `doctor`.
 
-To pay from more than one Sender on a chain, such as a hot wallet beside a multisig, add a named Sender. `init` can do it: `--solana-sender-name` or `--base-sender-name` adds a Sender beside the ones the chain has, in the senders file (`SENDERS_FILE`, default `senders.json`), and `--solana-default` or `--base-default` names the one that pays when a request names none. `pnpm dispatch init --help` lists them. You can also write the senders file yourself. [Send from more than one Sender](../guides/multiple-senders.md) shows how.
+To pay from more than one Sender on a chain, such as a hot wallet beside a multisig, add a named Sender. `init` can do it: `--solana-sender-name` or `--base-sender-name` adds a Sender beside the ones the chain has, in the senders file, and `--solana-default` or `--base-default` names the one that pays when a request names none. `pnpm dispatch init --help` lists them. `init` writes the senders file to `config/senders.json` and sets `SENDERS_FILE=config/senders.json`, so the services start under Docker Compose as they do without one. A senders file at the checkout's root moves there. If `SENDERS_FILE` already names a file outside `config/`, `init` keeps it and prints the commands to run the API and worker from the checkout instead, since Compose's containers cannot read it. You can also write the senders file yourself. [Send from more than one Sender](../guides/multiple-senders.md) shows how.
 
 ## Run without init
 
@@ -146,11 +146,11 @@ Migrations run from the host. Compose builds one image for the API and the worke
 | Service | Port | What Compose sets |
 | --- | --- | --- |
 | `postgres` | 5432 | Postgres 16, with the user, password and database all named `dispatch` |
-| `api` | 8420 | `DATABASE_URL`, and empty `SIGNER_URL` and `SIGNER_AUTH_TOKEN`: the API never calls the Signer |
-| `worker` | none | `DATABASE_URL`, `SIGNER_URL=http://signer:8421`, and the shared Signer token |
+| `api` | 8420 | `DATABASE_URL`, and empty `SIGNER_URL` and `SIGNER_AUTH_TOKEN`: the API never calls the Signer. `config/` mounted read-only at `/app/config` |
+| `worker` | none | `DATABASE_URL`, `SIGNER_URL=http://signer:8421`, and the shared Signer token. `config/` mounted read-only at `/app/config` |
 | `signer` | 8421 | The config `init` wrote, or else the committed development keys, and the shared Signer token |
 
-Compose passes `.env` to the API and the worker, and wires the database and Signer addresses itself. Without `SIGNER_CONFIG` in `.env`, the Signer uses the committed development keys in `signer/keys.dev.json`. They are for development only. Replace them in any real deployment.
+Compose passes `.env` to the API and the worker, and wires the database and Signer addresses itself. A senders file they read goes in `config/`, with `SENDERS_FILE=config/senders.json` in `.env`. Without `SIGNER_CONFIG` in `.env`, the Signer uses the committed development keys in `signer/keys.dev.json`. They are for development only. Replace them in any real deployment.
 
 ### From source
 
