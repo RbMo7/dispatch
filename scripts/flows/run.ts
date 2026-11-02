@@ -31,6 +31,8 @@ import {
 import { openCamera } from './console-shots.js';
 import { type EngineTarget, engineApi } from './engine-api.js';
 import { type FlowContext, FLOWS, type Page, type Shot, Skip, type Wallets } from './flows.js';
+import { MULTISIGS_FILE, type Multisigs } from './multisig.js';
+import { EXTRA_TOKEN_FILE } from './prepare.js';
 
 type RowResult = {
   row: string;
@@ -57,6 +59,8 @@ function engineTarget(): EngineTarget & { proxyUrl: string | null } {
   return readJson(file);
 }
 
+const multisigs = existsSync(MULTISIGS_FILE) ? readJson<Multisigs>(MULTISIGS_FILE) : null;
+
 async function balances(wallets: Wallets) {
   const solana = new Connection(SOLANA_RPC_URL, 'confirmed');
   const base = createPublicClient({ transport: http(BASE_RPC_URL) });
@@ -69,11 +73,19 @@ async function balances(wallets: Wallets) {
       payouts: await sol(wallets.solana.payouts),
       refunds: await sol(wallets.solana.refunds),
       relay: await sol(wallets.solana.relay.publicKey.toBase58()),
+      ...(multisigs && {
+        squadsVault: await sol(multisigs.squads.vault),
+        squadsMember: await sol(multisigs.squads.member),
+      }),
     },
     base: {
       payouts: await eth(wallets.base.payouts),
       refunds: await eth(wallets.base.refunds),
       relay: await eth(privateKeyToAccount(wallets.base.relayKey).address),
+      ...(multisigs && {
+        safe: await eth(multisigs.safe.safe),
+        safeExecutor: await eth(multisigs.safe.executor),
+      }),
     },
   };
 }
@@ -109,6 +121,10 @@ let currentRow = '';
 const ctx: FlowContext = {
   api,
   assets,
+  extraToken: existsSync(EXTRA_TOKEN_FILE)
+    ? readJson<{ token: `0x${string}` }>(EXTRA_TOKEN_FILE).token
+    : null,
+  multisigs,
   wallets,
   proxyUrl: target.proxyUrl,
   staleBlockhash: await new Connection(SOLANA_RPC_URL, 'confirmed').getLatestBlockhash('confirmed'),

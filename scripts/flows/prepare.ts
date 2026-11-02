@@ -31,6 +31,7 @@ import {
   readJson,
   SOLANA_RPC_URL,
   solanaPayoutsKeypair,
+  statePath,
   writeJson,
 } from './config.js';
 import { FLOW_AGGREGATOR_SOURCE, FLOW_TOKEN_SOURCE, FLOW_VAULT_SOURCE } from './contracts.js';
@@ -116,6 +117,29 @@ async function deployBase() {
   });
   await client.waitForTransactionReceipt({ hash: fund });
   return { token: token.address, vault: vault.address, aggregator: aggregator.address };
+}
+
+export const EXTRA_TOKEN_FILE = statePath('extra-token.json');
+/** Row 3's token: refused while unknown, then added through the API and paid in. */
+export const EXTRA_TOKEN = { symbol: 'FUSD', name: 'Flows Dollar' };
+
+/** Deploys row 3's ERC-20 once, from the Base payouts Sender, which holds its whole supply. */
+export async function prepareExtraToken(): Promise<`0x${string}`> {
+  if (existsSync(EXTRA_TOKEN_FILE))
+    return readJson<{ token: `0x${string}` }>(EXTRA_TOKEN_FILE).token;
+  const account = privateKeyToAccount(basePayoutsKey());
+  const wallet = createWalletClient({ account, chain: baseSepolia, transport: http(BASE_RPC_URL) });
+  const client = createPublicClient({ chain: baseSepolia, transport: http(BASE_RPC_URL) });
+  const source = FLOW_TOKEN_SOURCE.replace('contract FlowToken', 'contract FlowDollar')
+    .replace('"Flows Test Token"', `"${EXTRA_TOKEN.name}"`)
+    .replace('"FLOW"', `"${EXTRA_TOKEN.symbol}"`);
+  const { abi, bytecode } = compileContract('FlowDollar', source);
+  const hash = await wallet.deployContract({ abi, bytecode, args: [] });
+  const receipt = await client.waitForTransactionReceipt({ hash });
+  if (!receipt.contractAddress) throw new Error(`FlowDollar deploy ${hash} has no address`);
+  console.log(`deployed FlowDollar at ${receipt.contractAddress} (${hash})`);
+  writeJson(EXTRA_TOKEN_FILE, { token: receipt.contractAddress });
+  return receipt.contractAddress;
 }
 
 export async function prepareAssets(): Promise<Assets> {

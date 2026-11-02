@@ -12,9 +12,12 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from '@sol
 import { createPublicClient, encodeFunctionData, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import { castVote } from '../../src/chain-handler/solana/test-support/squads-e2e-fixtures.js';
 import { type Assets, BASE_CHAIN_ID, BASE_RPC_URL, SOLANA_RPC_URL } from './config.js';
 import { FLOW_VAULT_ABI } from './contracts.js';
 import { type DispatchView, type EngineApi, SETTLED } from './engine-api.js';
+import { confirmSafeTx, type Multisigs, safeKeys, squadsKeys } from './multisig.js';
+import { EXTRA_TOKEN } from './prepare.js';
 
 export type Wallets = {
   solana: { payouts: string; refunds: string; relay: Keypair };
@@ -24,6 +27,10 @@ export type Wallets = {
 export type FlowContext = {
   api: EngineApi;
   assets: Assets;
+  /** Row 3's token, deployed by the run and unknown to the engine until the row adds it. */
+  extraToken: `0x${string}` | null;
+  /** The Squads multisig and the Safe rows 11 and 12 send from, when the run made them. */
+  multisigs: Multisigs | null;
   wallets: Wallets;
   /** The RPC proxy's control URL, when the engine's RPCs go through it; rows 9 and 10 need it. */
   proxyUrl: string | null;
@@ -49,6 +56,22 @@ const settled = (d: DispatchView) => SETTLED.has(d.status);
 const solana = new Connection(SOLANA_RPC_URL, 'confirmed');
 const base = createPublicClient({ transport: http(BASE_RPC_URL) });
 const WEI_SMALL = '1000000000000';
+
+/** Tops a wallet up to `target`, or sends `floor` when it already holds that, so a rerun spends little. */
+const topUp = (balance: bigint, target: bigint, floor: bigint) =>
+  String(balance >= target ? floor : target - balance);
+
+type ApprovalView = {
+  approvals: number;
+  threshold: number;
+  state: string;
+  chainRef: { transactionIndex?: number; safeTxHash?: `0x${string}` };
+};
+const approvalOf = (d: DispatchView) =>
+  (
+    d.items?.find((i) => (i as { approval?: unknown }).approval) as
+      { approval?: ApprovalView } | undefined
+  )?.approval;
 
 async function settle(ctx: FlowContext, label: string, body: unknown): Promise<Shot> {
   const dispatchId = await ctx.api.submit(ctx.key(label), body);
@@ -88,6 +111,10 @@ export const FLOWS: Flow[] = [
     title:
       'Named Senders, part 1: the default Sender funds the second Sender and the relay wallets',
     async run(ctx) {
+      const lamports = async (address: string) =>
+        BigInt(await solana.getBalance(new PublicKey(address)));
+      const wei = (address: `0x${string}`) => base.getBalance({ address });
+      const relayBase = privateKeyToAccount(ctx.wallets.base.relayKey).address;
       const sol = await settle(ctx, 'payouts-sol', {
         chain: 'solana',
         items: [
@@ -95,13 +122,17 @@ export const FLOWS: Flow[] = [
             type: 'payment',
             recipient: ctx.wallets.solana.refunds,
             asset: 'SOL',
-            amount: '10000000',
+            amount: topUp(await lamports(ctx.wallets.solana.refunds), 10_000_000n, 1_000_000n),
           },
           {
             type: 'payment',
             recipient: ctx.wallets.solana.relay.publicKey.toBase58(),
             asset: 'SOL',
-            amount: '3000000',
+            amount: topUp(
+              await lamports(ctx.wallets.solana.relay.publicKey.toBase58()),
+              3_000_000n,
+              1_000_000n,
+            ),
           },
         ],
       });
@@ -112,13 +143,17 @@ export const FLOWS: Flow[] = [
             type: 'payment',
             recipient: ctx.wallets.base.refunds,
             asset: 'ETH',
-            amount: '50000000000000',
+            amount: topUp(
+              await wei(ctx.wallets.base.refunds),
+              20_000_000_000_000n,
+              BigInt(WEI_SMALL),
+            ),
           },
           {
             type: 'payment',
-            recipient: privateKeyToAccount(ctx.wallets.base.relayKey).address,
+            recipient: relayBase,
             asset: 'ETH',
-            amount: '20000000000000',
+            amount: topUp(await wei(relayBase), 20_000_000_000_000n, BigInt(WEI_SMALL)),
           },
         ],
       });
@@ -169,7 +204,7 @@ export const FLOWS: Flow[] = [
   },
   {
     row: '3',
-    title: 'Payment in an unconfigured asset (baseline for the Rejected page)',
+    title: 'Payment in an unconfigured asset: refused, then added from Assets and sent again',
     async run(ctx) {
       const before = await ctx.api.call('GET', '/v1/dispatches?limit=100');
       const reply = await ctx.api.call('POST', '/v1/dispatch', {
@@ -190,25 +225,79 @@ export const FLOWS: Flow[] = [
       const activity = await ctx.api.call('GET', '/v1/activity', { operator: true });
       const count = (r: typeof before) => (r.body.dispatches as unknown[]).length;
       const mentions = JSON.stringify(activity.body).includes('USDT');
-      return {
-        dispatches: [],
-        pages: [
-          { name: 'dispatches', path: '/console/dispatches' },
-          { name: 'overview', path: '/console' },
-          { name: 'activity', path: '/console/activity' },
+      const notes = [
+        `POST answered ${reply.status} ${JSON.stringify(reply.body)}`,
+        `dispatches listed before ${count(before)}, after ${count(after)}`,
+        `activity record mentions USDT: ${mentions}`,
+      ];
+      const pages: Page[] = [
+        { name: 'dispatches', path: '/console/dispatches' },
+        { name: 'overview', path: '/console' },
+        { name: 'activity', path: '/console/activity' },
+      ];
+      if (!ctx.extraToken) return { dispatches: [], pages, notes };
+
+      // The spec's second half: the same request in a token the engine does not know yet,
+      // refused, then the token added through the API and the same request sent again.
+      const key = ctx.key('added-asset');
+      const body = {
+        chain: 'base',
+        items: [
+          {
+            type: 'payment',
+            recipient: ctx.wallets.base.refunds,
+            asset: EXTRA_TOKEN.symbol,
+            amount: '2000000',
+          },
         ],
+      };
+      const refused = await ctx.api.call('POST', '/v1/dispatch', { key, body });
+      await ctx.shoot('rejected', '/console/rejected');
+      const preview = await ctx.api.call('POST', '/v1/assets/preview', {
+        operator: true,
+        body: { chain: 'base', address: ctx.extraToken },
+      });
+      const added = await ctx.api.call('POST', '/v1/assets', {
+        operator: true,
+        body: { chain: 'base', address: ctx.extraToken, reason: 'flow-coverage run, row 3' },
+      });
+      if (added.status !== 201)
+        throw new Error(`add asset: ${added.status} ${JSON.stringify(added.body)}`);
+      const dispatchId = await ctx.api.submit(key, body);
+      const shot: Shot = {
+        label: 'added-asset',
+        dispatchId,
+        view: await ctx.api.waitUntil(dispatchId, settled),
+      };
+      return {
+        dispatches: [shot],
+        pages: [...pages, { name: 'assets', path: '/console/assets?chain=base' }],
         notes: [
-          `POST answered ${reply.status} ${JSON.stringify(reply.body)}`,
-          `dispatches listed before ${count(before)}, after ${count(after)}`,
-          `activity record mentions USDT: ${mentions}`,
+          ...notes,
+          `${EXTRA_TOKEN.symbol} first answered ${refused.status} ${JSON.stringify(refused.body)}`,
+          `preview ${preview.status} ${JSON.stringify(preview.body)}`,
+          `added ${added.status} as ${String(added.body.symbol)} (${String(added.body.name)})`,
+          summarize(shot),
         ],
       };
     },
   },
   {
     row: '4',
-    title: 'A Base call with value to a test contract the run deployed',
+    title: 'A Base call with value to a test contract the run deployed, its ABI added first',
     async run(ctx) {
+      const registered = await ctx.api.call('POST', '/v1/contracts', {
+        operator: true,
+        body: {
+          chain: 'base',
+          address: ctx.assets.base.vault,
+          label: 'FlowVault',
+          reason: 'flow-coverage run, row 4',
+          abi: FLOW_VAULT_ABI,
+        },
+      });
+      if (registered.status !== 201)
+        throw new Error(`register ABI: ${registered.status} ${JSON.stringify(registered.body)}`);
       const shot = await settle(ctx, 'call-value', {
         chain: 'base',
         items: [
@@ -224,7 +313,11 @@ export const FLOWS: Flow[] = [
           },
         ],
       });
-      return { dispatches: [shot], notes: [summarize(shot)] };
+      return {
+        dispatches: [shot],
+        pages: [{ name: 'contracts', path: '/console/contracts?chain=base' }],
+        notes: [`ABI registered: ${JSON.stringify(registered.body)}`, summarize(shot)],
+      };
     },
   },
   {
@@ -364,6 +457,157 @@ export const FLOWS: Flow[] = [
           summarize(shot),
           `a replacement transaction is in the timeline: ${bumped}`,
           ...(await proxyLog(ctx)),
+        ],
+      };
+    },
+  },
+  {
+    row: '11',
+    title:
+      'Squads multisig: a fresh 2-of-3; one approval, then the second; one Proposal left to time out',
+    async run(ctx) {
+      if (!ctx.multisigs) throw new Skip('the run made no Squads multisig (no multisigs.json)');
+      const ms = ctx.multisigs.squads;
+      const keys = squadsKeys();
+      const fixture = {
+        multisig: new PublicKey(ms.multisig),
+        vault: new PublicKey(ms.vault),
+        member: keys.member,
+        voters: keys.voters,
+        human: keys.member,
+      };
+      const proposed = (d: DispatchView) => approvalOf(d)?.chainRef.transactionIndex !== undefined;
+      const votes = (n: number) => (d: DispatchView) =>
+        (approvalOf(d)?.approvals ?? 0) >= n || settled(d);
+      const moments: string[] = [];
+
+      const approvedId = await ctx.api.submit(ctx.key('squads-approved'), {
+        chain: 'solana',
+        sender: 'treasury',
+        items: [
+          {
+            type: 'payment',
+            recipient: ctx.wallets.solana.refunds,
+            asset: 'SOL',
+            amount: '1000000',
+          },
+          {
+            type: 'payment',
+            recipient: ctx.wallets.solana.refunds,
+            asset: 'FSPL',
+            amount: '1000000',
+          },
+        ],
+      });
+      const index = approvalOf(await ctx.api.waitUntil(approvedId, proposed, 3 * 60_000))!.chainRef
+        .transactionIndex!;
+      moments.push(
+        await ctx.shoot('approved-0-of-2', `/console/dispatches?dispatch=${approvedId}`),
+      );
+      await castVote(solana, fixture, keys.voters[0]!, index, 'approve');
+      await ctx.api.waitUntil(approvedId, votes(1), 2 * 60_000);
+      await sleep(ctx.paceMs);
+      moments.push(
+        await ctx.shoot('approved-1-of-2', `/console/dispatches?dispatch=${approvedId}`),
+      );
+      moments.push(
+        await ctx.shoot(
+          'approved-1-of-2-items',
+          `/console/dispatches?dispatch=${approvedId}&tab=items`,
+        ),
+      );
+      await castVote(solana, fixture, keys.voters[1]!, index, 'approve');
+      const approved: Shot = {
+        label: 'squads-approved',
+        dispatchId: approvedId,
+        view: await ctx.api.waitUntil(approvedId, settled, 4 * 60_000),
+      };
+
+      const timeoutId = await ctx.api.submit(ctx.key('squads-timeout'), {
+        chain: 'solana',
+        sender: 'treasury',
+        items: [
+          {
+            type: 'payment',
+            recipient: ctx.wallets.solana.refunds,
+            asset: 'SOL',
+            amount: '500000',
+          },
+        ],
+      });
+      const timeoutIndex = approvalOf(await ctx.api.waitUntil(timeoutId, proposed, 3 * 60_000))!
+        .chainRef.transactionIndex!;
+      await castVote(solana, fixture, keys.voters[2]!, timeoutIndex, 'approve');
+      await ctx.api.waitUntil(timeoutId, votes(1), 2 * 60_000);
+      moments.push(await ctx.shoot('timeout-1-of-2', `/console/dispatches?dispatch=${timeoutId}`));
+      const timedOut: Shot = {
+        label: 'squads-timeout',
+        dispatchId: timeoutId,
+        view: await ctx.api.waitUntil(timeoutId, settled, 8 * 60_000),
+      };
+      return {
+        dispatches: [approved, timedOut],
+        pages: [{ name: 'senders', path: '/console/senders' }],
+        notes: [
+          `multisig ${ms.multisig}, vault ${ms.vault}, proposals ${index} and ${timeoutIndex}`,
+          `while awaiting: ${moments.join(', ')}`,
+          summarize(approved),
+          summarize(timedOut),
+        ],
+      };
+    },
+  },
+  {
+    row: '12',
+    title:
+      'Safe multisig: a fresh 2-of-3 Safe; the engine proposes as a delegate, two owners confirm',
+    async run(ctx) {
+      if (!ctx.multisigs) throw new Skip('the run made no Safe (no multisigs.json)');
+      const { owners } = safeKeys();
+      const safeTxHashOf = (d: DispatchView) => approvalOf(d)?.chainRef.safeTxHash;
+      const votes = (n: number) => (d: DispatchView) =>
+        (approvalOf(d)?.approvals ?? 0) >= n || settled(d);
+      const moments: string[] = [];
+      const id = await ctx.api.submit(ctx.key('safe-approved'), {
+        chain: 'base',
+        sender: 'treasury',
+        items: [
+          { type: 'payment', recipient: ctx.wallets.base.refunds, asset: 'ETH', amount: WEI_SMALL },
+          {
+            type: 'payment',
+            recipient: ctx.wallets.base.refunds,
+            asset: 'FLOW',
+            amount: '1000000',
+          },
+        ],
+      });
+      const safeTxHash = safeTxHashOf(
+        await ctx.api.waitUntil(id, (d) => safeTxHashOf(d) !== undefined || settled(d), 4 * 60_000),
+      );
+      if (!safeTxHash) {
+        const view = await ctx.api.getDispatch(id);
+        return {
+          dispatches: [{ label: 'safe-approved', dispatchId: id, view }],
+          notes: [`never proposed: ${summarize({ label: 'safe-approved', dispatchId: id, view })}`],
+        };
+      }
+      moments.push(await ctx.shoot('safe-0-of-2', `/console/dispatches?dispatch=${id}`));
+      await confirmSafeTx(owners[0]!, safeTxHash);
+      await ctx.api.waitUntil(id, votes(1), 4 * 60_000);
+      await sleep(ctx.paceMs);
+      moments.push(await ctx.shoot('safe-1-of-2', `/console/dispatches?dispatch=${id}`));
+      await confirmSafeTx(owners[1]!, safeTxHash);
+      const shot: Shot = {
+        label: 'safe-approved',
+        dispatchId: id,
+        view: await ctx.api.waitUntil(id, settled, 6 * 60_000),
+      };
+      return {
+        dispatches: [shot],
+        notes: [
+          `Safe ${ctx.multisigs.safe.safe}, safeTxHash ${safeTxHash}`,
+          `while awaiting: ${moments.join(', ')}`,
+          summarize(shot),
         ],
       };
     },
