@@ -31,4 +31,4 @@ This release adds a console for operators, holds for payments a person should lo
 
 ## These docs
 
-The docs site now has a REST API reference built from the OpenAPI file, with a cURL, JavaScript and Python sample for every route, and guides for every task above. Every request in the guides ran against a real engine on Solana devnet and Base Sepolia, and the responses shown are the ones it returned. Each operation shows a status's response schema once, built when you open the Response schema tab, so the Dispatches reference loads at less than half its first size.
+The docs site now has a REST API reference built from the OpenAPI file, with a cURL, JavaScript and Python sample for every route, and guides for every task above. Every request in the guides ran against a real engine on Solana devnet and Base Sepolia, and the responses shown are the ones it returned. Each operation shows a status's response schema once, and the page builds an example or a schema only when you pick it, so the Dispatches reference opens with a fortieth of the elements it had.

@@ -76,6 +76,24 @@ describe('the docs site', () => {
     expect(text).toContain('UNKNOWN_ASSET');
   });
 
+  it('builds an example when it is picked, in the language already chosen', async () => {
+    const user = open('/docs/rest/dispatches');
+    const panel = () =>
+      document.querySelector<HTMLElement>(
+        '[data-op="create-a-dispatch"][data-example="unknownAsset"]',
+      )!;
+    expect(panel().querySelector('[role="tab"]')).toBeNull();
+
+    const [python] = screen.getAllByRole('tab', { name: 'Python' });
+    await user.click(python!);
+    const [menu] = screen.getAllByRole('combobox');
+    await user.selectOptions(menu!, 'unknownAsset');
+
+    const selected = within(panel()).getByRole('tab', { selected: true });
+    expect(selected.textContent).toBe('Python');
+    expect(panel().textContent).toContain('requests.post');
+  });
+
   it("builds the response schema for the picked example's status when its tab opens", async () => {
     const user = open('/docs/rest/dispatches');
     const schemas = () =>
@@ -90,6 +108,7 @@ describe('the docs site', () => {
     const visible = [...schemas()].filter((panel) => !panel.hidden);
     expect(visible.map((panel) => panel.dataset.status)).toEqual(['400']);
     expect(visible[0]!.querySelector('pre')?.textContent).toContain('"code"');
+    expect(document.querySelector('[data-schema-op="get-a-dispatch"] pre')).toBeNull();
   });
 
   it('follows a link between Markdown files to its site route', async () => {
