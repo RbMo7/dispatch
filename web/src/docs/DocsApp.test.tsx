@@ -19,10 +19,6 @@ function open(path: string) {
   return user;
 }
 
-// The Dispatches reference renders every example of every operation, which takes
-// jsdom several seconds on a CI runner; #170 tracks making the page itself lighter.
-const REFERENCE_PAGE_MS = 30_000;
-
 const title = () => screen.getByRole('heading', { level: 1 }).textContent;
 const sideNav = () => within(screen.getByRole('navigation', { name: 'Docs' }));
 
@@ -52,7 +48,7 @@ describe('the docs site', () => {
       'href',
       'https://github.com/RbMo7/dispatch/blob/main/docs/openapi.yaml',
     );
-  }, REFERENCE_PAGE_MS);
+  });
 
   it('switches every sample on the page to the language you choose', async () => {
     const user = open('/docs/rest/dispatches');
@@ -63,7 +59,7 @@ describe('the docs site', () => {
     for (const tab of screen.getAllByRole('tab', { name: 'Python' })) {
       expect(tab.getAttribute('aria-selected')).toBe('true');
     }
-  }, REFERENCE_PAGE_MS);
+  });
 
   it('shows the request and response of the example you pick', async () => {
     const user = open('/docs/rest/dispatches');
@@ -71,13 +67,30 @@ describe('the docs site', () => {
     const [menu] = screen.getAllByRole('combobox');
     await user.selectOptions(menu!, 'unknownAsset');
 
-    const shown = document.querySelector<HTMLElement>(
-      '[data-op="create-a-dispatch"]:not([hidden])',
-    )!;
-    expect(shown.dataset.example).toBe('unknownAsset');
-    expect(shown.textContent).toContain('Status: 400');
-    expect(shown.textContent).toContain('UNKNOWN_ASSET');
-  }, REFERENCE_PAGE_MS);
+    const shown = [
+      ...document.querySelectorAll<HTMLElement>('[data-op="create-a-dispatch"]:not([hidden])'),
+    ];
+    expect(new Set(shown.map((panel) => panel.dataset.example))).toEqual(new Set(['unknownAsset']));
+    const text = shown.map((panel) => panel.textContent).join('\n');
+    expect(text).toContain('Status: 400');
+    expect(text).toContain('UNKNOWN_ASSET');
+  });
+
+  it("builds the response schema for the picked example's status when its tab opens", async () => {
+    const user = open('/docs/rest/dispatches');
+    const schemas = () =>
+      document.querySelectorAll<HTMLElement>('[data-schema-op="create-a-dispatch"]');
+    expect([...schemas()].some((panel) => panel.querySelector('pre'))).toBe(false);
+
+    const [menu] = screen.getAllByRole('combobox');
+    await user.selectOptions(menu!, 'unknownAsset');
+    const [schemaTab] = screen.getAllByRole('tab', { name: 'Response schema' });
+    await user.click(schemaTab!);
+
+    const visible = [...schemas()].filter((panel) => !panel.hidden);
+    expect(visible.map((panel) => panel.dataset.status)).toEqual(['400']);
+    expect(visible[0]!.querySelector('pre')?.textContent).toContain('"code"');
+  });
 
   it('follows a link between Markdown files to its site route', async () => {
     const user = open('/docs/self-hosting/signer');

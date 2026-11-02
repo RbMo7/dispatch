@@ -106,14 +106,31 @@ function selectTab(chosen: HTMLElement, scope: HTMLElement) {
       tab.setAttribute('aria-selected', String(selected));
       tab.tabIndex = selected ? 0 : -1;
       const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
-      if (panel) panel.hidden = !selected;
+      if (!panel) continue;
+      panel.hidden = !selected;
+      if (selected) build(panel);
     }
   }
 }
 
-/** A reference operation shows one named example at a time: its request and its response. */
+/** Swaps the inert `<template data-lazy>` blocks under `scope` for their content. */
+function build(scope: HTMLElement) {
+  for (const template of scope.querySelectorAll<HTMLTemplateElement>('template[data-lazy]')) {
+    template.replaceWith(template.content);
+  }
+}
+
+/**
+ * A reference operation shows one named example at a time: its request and its response, and the
+ * schema of that response's status, which the operation renders once per status.
+ */
 function showExample(scope: HTMLElement, operation: string, name: string) {
+  let status: string | undefined;
   for (const panel of scope.querySelectorAll<HTMLElement>(`[data-op="${operation}"]`)) {
     panel.hidden = panel.dataset.example !== name;
+    if (!panel.hidden) status = panel.dataset.status;
+  }
+  for (const panel of scope.querySelectorAll<HTMLElement>(`[data-schema-op="${operation}"]`)) {
+    panel.hidden = panel.dataset.status !== status;
   }
 }
