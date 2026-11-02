@@ -123,30 +123,38 @@ export type ActionKind =
   | 'flag_rule_delete'
   | 'asset_add'
   | 'asset_disable'
-  | 'asset_enable';
+  | 'asset_enable'
+  | 'contract_add'
+  | 'contract_disable'
+  | 'contract_enable';
 
 /** One entry of the activity record (ADR-0057). */
 export interface OperatorAction {
   id: string;
   at: Date;
   action: ActionKind;
-  /** The Dispatch, Flag Rule or Known Asset acted on. */
+  /** The Dispatch, Flag Rule, Known Asset or registered contract acted on. */
   targetId: string;
   tokenKind: TokenKind;
   reason: string | null;
 }
 
-export const ACTIONS: Record<ActionKind, { label: string; target: 'dispatch' | 'rule' | 'asset' }> =
-  {
-    cancel: { label: 'Cancelled', target: 'dispatch' },
-    release: { label: 'Released', target: 'dispatch' },
-    flag_rule_create: { label: 'Rule created', target: 'rule' },
-    flag_rule_update: { label: 'Rule edited', target: 'rule' },
-    flag_rule_delete: { label: 'Rule deleted', target: 'rule' },
-    asset_add: { label: 'Asset added', target: 'asset' },
-    asset_disable: { label: 'Asset disabled', target: 'asset' },
-    asset_enable: { label: 'Asset enabled', target: 'asset' },
-  };
+export const ACTIONS: Record<
+  ActionKind,
+  { label: string; target: 'dispatch' | 'rule' | 'asset' | 'contract' }
+> = {
+  cancel: { label: 'Cancelled', target: 'dispatch' },
+  release: { label: 'Released', target: 'dispatch' },
+  flag_rule_create: { label: 'Rule created', target: 'rule' },
+  flag_rule_update: { label: 'Rule edited', target: 'rule' },
+  flag_rule_delete: { label: 'Rule deleted', target: 'rule' },
+  asset_add: { label: 'Asset added', target: 'asset' },
+  asset_disable: { label: 'Asset disabled', target: 'asset' },
+  asset_enable: { label: 'Asset enabled', target: 'asset' },
+  contract_add: { label: 'Contract added', target: 'contract' },
+  contract_disable: { label: 'Contract disabled', target: 'contract' },
+  contract_enable: { label: 'Contract enabled', target: 'contract' },
+};
 
 /** The editor's fields, as typed: what the operator sees, before it is a request body. */
 export interface RuleDraft {

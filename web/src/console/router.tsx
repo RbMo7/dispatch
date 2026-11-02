@@ -7,6 +7,7 @@ export const PAGES = {
   rules: '/console/rules',
   senders: '/console/senders',
   assets: '/console/assets',
+  contracts: '/console/contracts',
   activity: '/console/activity',
   rejected: '/console/rejected',
   setup: '/console/setup',

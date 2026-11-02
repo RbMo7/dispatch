@@ -204,6 +204,13 @@
       "when": 1793554373844,
       "tag": "0028_sender_foreign_nonces",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793583422740,
+      "tag": "0029_known_contracts",
+      "breakpoints": true
     }
   ]
 }

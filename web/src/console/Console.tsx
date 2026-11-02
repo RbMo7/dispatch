@@ -2,6 +2,7 @@ import { BalancesProvider } from '../balances';
 import { ToastProvider } from '../components/Toast';
 import { ActivityPage } from './activity/ActivityPage';
 import { AssetsPage } from './assets/AssetsPage';
+import { ContractsPage } from './contracts/ContractsPage';
 import { DispatchesPage } from './dispatches/DispatchesPage';
 import { HeldProvider } from './held/heldData';
 import { HeldPage } from './held/HeldPage';
@@ -56,6 +57,8 @@ function CurrentPage() {
       return <SendersPage />;
     case 'assets':
       return <AssetsPage />;
+    case 'contracts':
+      return <ContractsPage />;
     case 'activity':
       return <ActivityPage />;
     case 'rejected':

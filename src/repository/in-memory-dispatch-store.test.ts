@@ -15,6 +15,7 @@ import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 import { runForeignNonceConformanceSuite } from './foreign-nonce-conformance.js';
 import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
+import { runKnownContractConformanceSuite } from './known-contract-conformance.js';
 import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
@@ -36,6 +37,7 @@ describe('InMemoryDispatchStore', () => {
   runEffectsConformanceSuite(() => new InMemoryDispatchStore());
   runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
   runKnownAssetConformanceSuite(() => new InMemoryDispatchStore());
+  runKnownContractConformanceSuite(() => new InMemoryDispatchStore());
   runRejectedRequestConformanceSuite(() => new InMemoryDispatchStore());
   runForeignNonceConformanceSuite(() => new InMemoryDispatchStore());
   runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());

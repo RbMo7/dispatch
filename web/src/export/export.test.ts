@@ -20,6 +20,7 @@ const ITEMS: Item[] = [
     transactionHash: '0x3e9d4c71aa02f86b1d5e9c37b40e2f18c6a9d5b210e4f7a8c3d1b6e9f0a2c41',
     error: null,
     approval: null,
+    effects: null,
   },
   {
     index: 1,
@@ -34,15 +35,29 @@ const ITEMS: Item[] = [
       message: 'No code at the address, and the token says "no", refusing it',
     },
     approval: null,
+    effects: null,
   },
   {
     index: 2,
     type: 'call',
     target: '+cmd|calc',
+    call: {
+      target: '+cmd|calc',
+      label: null,
+      decoded: false,
+      decoder: null,
+      function: null,
+      args: [],
+      selector: null,
+      data: '0x',
+      value: null,
+      calls: [],
+    },
     status: 'queued',
     transactionHash: null,
     error: { code: '@SUM', message: 'line one\nline two' },
     approval: null,
+    effects: null,
   },
   {
     index: 3,
@@ -54,6 +69,7 @@ const ITEMS: Item[] = [
     transactionHash: '0x19c2be07f4a1d3c58e2b9a60d71f3c4e8a5b2d07e6c1f94a3b8d2e70c5a1f9d0e',
     error: null,
     approval: null,
+    effects: null,
   },
 ];
 

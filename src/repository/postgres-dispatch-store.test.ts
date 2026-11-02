@@ -11,6 +11,7 @@ import {
   flagRules,
   flagRuleVersions,
   knownAssets,
+  knownContracts,
   operatorActions,
   proposals,
   rejectedRequests,
@@ -34,6 +35,7 @@ import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 import { runForeignNonceConformanceSuite } from './foreign-nonce-conformance.js';
 import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
+import { runKnownContractConformanceSuite } from './known-contract-conformance.js';
 import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
 /**
@@ -51,7 +53,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks}, ${knownAssets}, ${rejectedRequests} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks}, ${knownAssets}, ${knownContracts}, ${rejectedRequests} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -74,6 +76,7 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
   runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
   runKnownAssetConformanceSuite(() => new PostgresDispatchStore(db));
+  runKnownContractConformanceSuite(() => new PostgresDispatchStore(db));
   runRejectedRequestConformanceSuite(() => new PostgresDispatchStore(db));
   runForeignNonceConformanceSuite(() => new PostgresDispatchStore(db));
 

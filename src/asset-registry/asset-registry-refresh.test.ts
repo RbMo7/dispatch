@@ -17,7 +17,7 @@ import { ok } from '../domain/result.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import { PostgresDispatchStore } from '../repository/postgres-dispatch-store.js';
 import { AssetRegistry } from './asset-registry.js';
-import { KNOWN_ASSETS_CHANNEL, watchKnownAssets, type ListenForChanges } from './watch.js';
+import { KNOWN_ASSETS_CHANNEL, watchRegistry, type ListenForChanges } from './watch.js';
 
 const SENDER = '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A';
 const RECIPIENT = '0x8ba1f109551bD432803012645Ac136ddd64DBA72';
@@ -83,7 +83,14 @@ async function processRegistry(listen: 'notify' | 'fails'): Promise<AssetRegistr
     listen === 'notify'
       ? (onChange) => client.listen(KNOWN_ASSETS_CHANNEL, onChange, onChange)
       : () => Promise.reject(new Error('LISTEN is not available'));
-  stops.push(await watchKnownAssets(registry, { listen: subscribe, pollMs: 50, logger: silent }));
+  stops.push(
+    await watchRegistry(registry, {
+      what: 'known assets',
+      listen: subscribe,
+      pollMs: 50,
+      logger: silent,
+    }),
+  );
   return registry;
 }
 

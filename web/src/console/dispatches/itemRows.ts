@@ -1,5 +1,11 @@
 import { assetLabel } from '../../domain/assets';
-import { type Item, type ItemFilter, type ItemStatus, itemTarget } from '../../domain/dispatch';
+import {
+  type CallItem,
+  type Item,
+  type ItemFilter,
+  type ItemStatus,
+  itemTarget,
+} from '../../domain/dispatch';
 import { ALL_STATUSES } from '../../domain/status';
 
 /** Bundles of more items than this start collapsed. */
@@ -8,6 +14,8 @@ export const COLLAPSE_OVER = 20;
 export type ItemRow =
   | { kind: 'item'; item: Item; bundled: boolean }
   | { kind: 'bundle'; hash: string; count: number; expanded: boolean }
+  /** What the call above it runs and changed, on a line of its own (ADR-0063). */
+  | { kind: 'call'; item: CallItem }
   /** Why the item above it failed or was abandoned, on a line of its own. */
   | { kind: 'error'; item: Item };
 
@@ -40,15 +48,27 @@ export function filterItems(items: readonly Item[], filter: ItemFilter, search: 
       (filter === 'all' || item.status === filter) &&
       (!needle ||
         itemTarget(item).toLowerCase().includes(needle) ||
+        (item.type === 'call' &&
+          (item.call.label?.toLowerCase().includes(needle) ||
+            item.call.function?.toLowerCase().includes(needle))) ||
         (item.transactionHash?.toLowerCase().includes(needle) ?? false)),
   );
+}
+
+/** An item's row, then the lines under it: what a call does, and why it failed. */
+function withLines(item: Item, bundled: boolean): ItemRow[] {
+  return [
+    { kind: 'item', item, bundled },
+    ...(item.type === 'call' ? [{ kind: 'call' as const, item }] : []),
+    ...(item.error ? [{ kind: 'error' as const, item }] : []),
+  ];
 }
 
 /**
  * The table's rows: items in request order, except that items sharing one
  * transaction (a Solana bundle, a Bulk Call, a Proposal) sit under a heading
  * with their count. A bundle over 20 starts collapsed; `toggled` flips one.
- * An item with an error is followed by a row saying why.
+ * A call is followed by a row saying what it runs, and an item with an error by one saying why.
  */
 export function itemRows(items: readonly Item[], toggled: ReadonlySet<string>): ItemRow[] {
   const byHash = new Map<string, Item[]>();
@@ -64,8 +84,7 @@ export function itemRows(items: readonly Item[], toggled: ReadonlySet<string>): 
     const hash = item.transactionHash;
     const group = hash === null ? undefined : byHash.get(hash);
     if (hash === null || !group || group.length < 2) {
-      rows.push({ kind: 'item', item, bundled: false });
-      if (item.error) rows.push({ kind: 'error', item });
+      rows.push(...withLines(item, false));
       continue;
     }
     if (placed.has(hash)) continue;
@@ -73,10 +92,7 @@ export function itemRows(items: readonly Item[], toggled: ReadonlySet<string>): 
     const expanded = group.length <= COLLAPSE_OVER !== toggled.has(hash);
     rows.push({ kind: 'bundle', hash, count: group.length, expanded });
     if (expanded) {
-      for (const member of group) {
-        rows.push({ kind: 'item', item: member, bundled: true });
-        if (member.error) rows.push({ kind: 'error', item: member });
-      }
+      for (const member of group) rows.push(...withLines(member, true));
     }
   }
   return rows;

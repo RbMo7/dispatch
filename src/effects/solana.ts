@@ -1,5 +1,6 @@
 import bs58 from 'bs58';
 
+import { decodeIdlInstruction } from '../contract-registry/idl.js';
 import type { SolanaCall } from '../domain/call.js';
 import type { SolanaEffects, SolanaTokenBalance } from '../domain/effects.js';
 import { NATIVE_ADDRESS } from '../domain/known-asset.js';
@@ -10,6 +11,8 @@ import {
   type CallView,
   type EffectsView,
   type EventView,
+  type Known,
+  labelOf,
   type TransferStandard,
   type TransferView,
   undecodedSources,
@@ -243,18 +246,48 @@ type Decoded = { view: CallView; instruction?: Instruction; named: Map<string, s
 const discriminator = (bytes: Buffer, length: number) =>
   bytes.subarray(0, Math.min(length, bytes.length)).toString('hex');
 
+const LAMPORTS_NAME = /lamports$/i;
+const TOKEN_AMOUNT_NAME = /^amount$|Amount$|^amount_|_amount$/;
+
+/**
+ * An IDL says nothing about units, so an argument named for lamports is shown
+ * in SOL, and one named like an amount in the mint the instruction names when
+ * exactly one of its accounts is a Known Asset's mint.
+ */
+function idlArgs(
+  accounts: { name: string; value: string }[],
+  args: { name: string; type: string; value: ArgView['value'] }[],
+  assetAt: AssetAt,
+): ArgView[] {
+  const mints = new Set(accounts.flatMap((a) => (assetAt('solana', a.value) ? [a.value] : [])));
+  const mint = mints.size === 1 ? [...mints][0] : undefined;
+  return args.map((arg) => {
+    if (!/^u\d+$/.test(arg.type) || typeof arg.value !== 'string') return arg;
+    const of = LAMPORTS_NAME.test(arg.name)
+      ? NATIVE_ADDRESS
+      : TOKEN_AMOUNT_NAME.test(arg.name)
+        ? mint
+        : undefined;
+    const { asset, formatted } = amountOf(assetAt, 'solana', of, arg.value);
+    return { ...arg, ...(asset ? { asset, formatted } : {}) };
+  });
+}
+
 function decodeInstruction(
   programId: string,
   accounts: string[],
   data: string,
-  assetAt: AssetAt,
+  known: Known,
   tokenAccounts: TokenAccounts,
 ): Decoded {
+  const { assetAt } = known;
   const bytes = Buffer.from(data, 'base64');
   const named = new Map<string, string>();
+  const label = labelOf(known, 'solana', programId);
   const undecoded = (selectorBytes: number): Decoded => ({
     view: {
       target: programId,
+      ...label,
       decoded: false,
       ...(bytes.length > 0 ? { selector: discriminator(bytes, selectorBytes) } : {}),
       data,
@@ -266,6 +299,7 @@ function decodeInstruction(
     return {
       view: {
         target: programId,
+        ...label,
         decoded: true,
         decoder: 'memo',
         function: 'memo',
@@ -275,7 +309,29 @@ function decodeInstruction(
     };
   }
   const program = PROGRAMS[programId];
-  if (!program) return undecoded(8);
+  if (!program) {
+    const idl = known.contractAt('solana', programId)?.idl;
+    const decoded = idl ? decodeIdlInstruction(idl, bytes) : null;
+    if (!decoded) return undecoded(8);
+    const accountArgs = decoded.instruction.accounts.flatMap((name, i) =>
+      accounts[i] === undefined ? [] : [{ name, value: accounts[i] }],
+    );
+    return {
+      view: {
+        target: programId,
+        ...label,
+        decoded: true,
+        decoder: 'idl',
+        function: decoded.instruction.name,
+        args: [
+          ...accountArgs.map(({ name, value }) => ({ name, type: 'pubkey', value })),
+          ...idlArgs(accountArgs, decoded.args, assetAt),
+        ],
+        selector: decoded.instruction.discriminator,
+      },
+      named,
+    };
+  }
   // The Associated Token Account program's original `create` carries no data at all.
   const tag =
     bytes.length === 0 && programId === ASSOCIATED_TOKEN_PROGRAM
@@ -321,6 +377,7 @@ function decodeInstruction(
   return {
     view: {
       target: programId,
+      ...label,
       decoded: true,
       decoder: program.decoder,
       function: instruction.name,
@@ -344,14 +401,14 @@ function tokenAccountsOf(effects: SolanaEffects | undefined): TokenAccounts {
  */
 export function decodeSolanaCall(
   call: SolanaCall,
-  assetAt: AssetAt,
+  known: Known,
   effects?: SolanaEffects,
 ): CallView {
   return decodeInstruction(
     call.programId,
     call.accounts.map((account) => account.pubkey),
     call.data,
-    assetAt,
+    known,
     tokenAccountsOf(effects),
   ).view;
 }
@@ -413,13 +470,14 @@ function transferOf(
 }
 
 /** ADR-0063: a confirmed Solana transaction's stored effects, decoded. Pure. */
-export function decodeSolanaEffects(effects: SolanaEffects, assetAt: AssetAt): EffectsView {
+export function decodeSolanaEffects(effects: SolanaEffects, known: Known): EffectsView {
+  const { assetAt } = known;
   const tokenAccounts = tokenAccountsOf(effects);
   const events: EventView[] = [];
   const transfers: TransferView[] = [];
   const undecoded: string[] = [];
   for (const ix of effects.instructions) {
-    const decoded = decodeInstruction(ix.programId, ix.accounts, ix.data, assetAt, tokenAccounts);
+    const decoded = decodeInstruction(ix.programId, ix.accounts, ix.data, known, tokenAccounts);
     if (!decoded.view.decoded) {
       undecoded.push(ix.programId);
       continue;
@@ -427,6 +485,7 @@ export function decodeSolanaEffects(effects: SolanaEffects, assetAt: AssetAt): E
     events.push({
       kind: 'instruction',
       source: ix.programId,
+      ...(decoded.view.label === undefined ? {} : { label: decoded.view.label }),
       decoder: decoded.view.decoder!,
       name: decoded.view.function!,
       args: decoded.view.args ?? [],
@@ -442,7 +501,7 @@ export function decodeSolanaEffects(effects: SolanaEffects, assetAt: AssetAt): E
     },
     events,
     undecodedEvents: undecoded.length,
-    undecodedEventSources: undecodedSources(undecoded),
+    undecodedEventSources: undecodedSources(known, 'solana', undecoded),
     truncated: effects.truncated,
   };
 }

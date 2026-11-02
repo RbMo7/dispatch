@@ -57,7 +57,7 @@ function index(rows: readonly KnownAsset[]): Map<Chain, ChainIndex> {
 /**
  * ADR-0061: the one place the engine reads Known Assets from. The API and the
  * worker each hold one, loaded from `known_assets` and refreshed when it
- * changes (`watchKnownAssets`).
+ * changes (`watchRegistry`).
  */
 export class AssetRegistry {
   private byChain = new Map<Chain, ChainIndex>();

@@ -41,7 +41,12 @@ import { fetchWithTimeout } from './rpc-timeout.js';
 import { SignerClient } from './signer/client.js';
 import { AssetRegistry } from './asset-registry/asset-registry.js';
 import { configuredAssets } from './asset-registry/configured-assets.js';
-import { KNOWN_ASSETS_CHANNEL, watchKnownAssets } from './asset-registry/watch.js';
+import {
+  KNOWN_ASSETS_CHANNEL,
+  KNOWN_CONTRACTS_CHANNEL,
+  watchRegistry,
+} from './asset-registry/watch.js';
+import { ContractRegistry } from './contract-registry/contract-registry.js';
 import type { ReadToken } from './chain-handler/chain-handler.js';
 import { readBaseToken } from './chain-handler/base/token-reads.js';
 import { readSolanaToken } from './chain-handler/solana/token-reads.js';
@@ -367,8 +372,21 @@ export async function loadAssetRegistry(store: DispatchStore): Promise<AssetRegi
   if (!seeded.ok) throw new Error(seeded.error);
   const registry = new AssetRegistry(() => store.listKnownAssets());
   await registry.refresh();
-  await watchKnownAssets(registry, {
+  await watchRegistry(registry, {
+    what: 'known assets',
     listen: (onChange) => queryClient.listen(KNOWN_ASSETS_CHANNEL, onChange, onChange),
+    logger,
+  });
+  return registry;
+}
+
+/** ADR-0063: the contract registry the API decodes with, kept in step with every later change. */
+export async function loadContractRegistry(store: DispatchStore): Promise<ContractRegistry> {
+  const registry = new ContractRegistry(() => store.listKnownContracts());
+  await registry.refresh();
+  await watchRegistry(registry, {
+    what: 'known contracts',
+    listen: (onChange) => queryClient.listen(KNOWN_CONTRACTS_CHANNEL, onChange, onChange),
     logger,
   });
   return registry;

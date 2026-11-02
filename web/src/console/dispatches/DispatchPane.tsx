@@ -9,6 +9,7 @@ import { MonoValue } from '../../components/MonoValue';
 import { StatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
+import type { Chain } from '../../domain/chains';
 import type { Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
 import type { ErrorContext } from '../../domain/errors';
 import type { Flow } from '../../domain/flow';
@@ -16,6 +17,7 @@ import type { Status } from '../../domain/status';
 import type { ExportFormat } from '../../export/download';
 import { fade } from '../../motion/transitions';
 import styles from '../console.module.css';
+import { CallDetails } from './CallView';
 import { ItemsTab } from './ItemsTab';
 
 export type PaneTab = 'flow' | 'items' | 'details';
@@ -35,6 +37,7 @@ export interface PaneHead {
 
 interface DispatchPaneProps {
   head: PaneHead;
+  chain: Chain;
   /** Null while the first load is out, or when it failed: `body` says which. */
   flow: Flow | null;
   /** Null for a Relay Dispatch, which has no items: its tab is left out. */
@@ -133,6 +136,7 @@ export function DispatchPane(props: DispatchPaneProps) {
               )}
               {tab === 'items' && items && (
                 <ItemsTab
+                  chain={props.chain}
                   approvals={props.approvals}
                   items={items}
                   filter={props.itemFilter}
@@ -153,6 +157,7 @@ export function DispatchPane(props: DispatchPaneProps) {
                       </div>
                     ))}
                   </dl>
+                  {items && <CallDetails items={items} chain={props.chain} />}
                   {props.approvals && (
                     <div className={styles.detailsApprovals}>
                       <h3 className={styles.detailsHeading}>Approval</h3>

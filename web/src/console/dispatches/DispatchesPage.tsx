@@ -540,6 +540,7 @@ function Pane({
   return (
     <>
       <DispatchPane
+        chain={loaded?.summary.chain ?? 'base'}
         head={head}
         flow={flow}
         items={items}

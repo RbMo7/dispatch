@@ -519,7 +519,7 @@ describe('docs/openapi.yaml against the real routes', () => {
   it('answers every example with its documented status and a body that matches the schema', async () => {
     // Creates first, so the reads and cancels below find the Dispatches the examples name. Flag
     // Rules before Dispatches, so the held example has a rule to match.
-    const creates = ['createFlagRule', 'addAsset', 'createDispatch'].flatMap((id) =>
+    const creates = ['createFlagRule', 'addAsset', 'addContract', 'createDispatch'].flatMap((id) =>
       all.filter((s) => s.operationId === id),
     );
     // A 409 needs a claimed Dispatch or a deleted rule, so it runs last, after everything else is claimed.

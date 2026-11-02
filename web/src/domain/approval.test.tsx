@@ -41,6 +41,7 @@ describe('proposalApprovals', () => {
   const item = (approval: object | undefined) => ({
     type: 'call',
     programId: 'prog',
+    call: { target: 'prog', decoded: false, data: '' },
     status: approval ? 'awaiting_approval' : 'confirmed',
     transactionHash: null,
     error: null,

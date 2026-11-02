@@ -26,6 +26,7 @@ import {
   flagRules,
   flagRuleVersions,
   knownAssets,
+  knownContracts,
   operatorActions,
   rejectedRequests,
   proposals,
@@ -62,6 +63,7 @@ import type {
   OperatorActor,
   TokenKind,
 } from '../domain/operator-action.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
 import { ok, type Result } from '../domain/result.js';
 import type {
   ApprovalState,
@@ -205,6 +207,36 @@ function toKnownAsset(row: typeof knownAssets.$inferSelect): KnownAsset {
     source: row.source as AssetSource,
     addedBy: row.addedBy as TokenKind | null,
   } as KnownAsset;
+}
+
+function toKnownContract(row: typeof knownContracts.$inferSelect): KnownContract {
+  const { definition, ...rest } = row;
+  return {
+    ...rest,
+    chain: row.chain as Chain,
+    source: 'console',
+    addedBy: row.addedBy as TokenKind,
+    ...(row.chain === 'base' ? { abi: definition } : { idl: definition }),
+  } as KnownContract;
+}
+
+/** Every contract registry write takes this lock, so two writers never both enable one address. */
+async function lockKnownContracts(tx: Tx): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('known_contracts'))`);
+}
+
+async function contractAddressHeld(tx: Tx, chain: string, address: string): Promise<boolean> {
+  const [held] = await tx
+    .select({ id: knownContracts.id })
+    .from(knownContracts)
+    .where(
+      and(
+        eq(knownContracts.chain, chain),
+        eq(knownContracts.address, address),
+        eq(knownContracts.enabled, true),
+      ),
+    );
+  return held !== undefined;
 }
 
 /** Every Known Asset write takes this lock, so two writers never both pass the same check (ADR-0061). */
@@ -726,6 +758,65 @@ export class PostgresDispatchStore implements DispatchStore {
         targetId: id,
       });
       return { asset: toKnownAsset(updated!), changed: true };
+    });
+  }
+
+  async listKnownContracts(): Promise<KnownContract[]> {
+    return (await this.db.select().from(knownContracts)).map(toKnownContract);
+  }
+
+  async addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownContracts(tx);
+      if (await contractAddressHeld(tx, contract.chain, contract.address)) return 'address_taken';
+      const definition = contract.chain === 'base' ? contract.abi : contract.idl;
+      const [row] = await tx
+        .insert(knownContracts)
+        .values({
+          chain: contract.chain,
+          address: contract.address,
+          label: contract.label,
+          definition,
+          source: 'console',
+          addedBy: actor.tokenKind,
+          enabled: true,
+        })
+        .returning();
+      if (!row) throw new Error('Failed to add a contract');
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'contract_add', targetId: row.id });
+      return toKnownContract(row);
+    });
+  }
+
+  async setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownContracts(tx);
+      const [row] = await tx.select().from(knownContracts).where(eq(knownContracts.id, id));
+      if (!row) return 'not_found';
+      if (row.enabled === enabled) return { contract: toKnownContract(row), changed: false };
+      if (enabled && (await contractAddressHeld(tx, row.chain, row.address))) {
+        return 'address_taken';
+      }
+      const [updated] = await tx
+        .update(knownContracts)
+        .set({ enabled })
+        .where(eq(knownContracts.id, id))
+        .returning();
+      await tx.insert(operatorActions).values({
+        ...actor,
+        action: enabled ? 'contract_enable' : 'contract_disable',
+        targetId: id,
+      });
+      return { contract: toKnownContract(updated!), changed: true };
     });
   }
 

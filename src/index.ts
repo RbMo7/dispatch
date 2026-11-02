@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import {
   loadAssetRegistry,
   loadChainRegistry,
+  loadContractRegistry,
   senderConfigsFor,
   senderReadsFor,
   tokenReadersFor,
@@ -32,6 +33,7 @@ const app = buildApp({
   operatorToken: config.operatorToken,
   defaultRetryPolicy: config.defaultRetryPolicy,
   assets,
+  contracts: await loadContractRegistry(store),
   readToken: tokenReadersFor(chainRegistry),
   listSenders: cachedSenders(
     await senderConfigsFor(chainRegistry, assets),

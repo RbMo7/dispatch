@@ -11,6 +11,7 @@ import {
   type KnownAsset,
   type NewKnownAsset,
 } from '../domain/known-asset.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
 import type { DispatchError } from '../domain/errors.js';
 import {
   addressKey,
@@ -78,6 +79,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly operatorActions: OperatorAction[] = [];
   private readonly flagRules = new Map<string, FlagRule>();
   private readonly knownAssets = new Map<string, KnownAsset>();
+  private readonly knownContracts = new Map<string, KnownContract>();
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
   private setupChecks: SetupCheckRecord[] = [];
@@ -406,6 +408,53 @@ export class InMemoryDispatchStore implements DispatchStore {
     this.knownAssets.set(id, updated);
     this.recordAction(enabled ? 'asset_enable' : 'asset_disable', id, actor);
     return Promise.resolve({ asset: updated, changed: true });
+  }
+
+  listKnownContracts(): Promise<KnownContract[]> {
+    return Promise.resolve([...this.knownContracts.values()]);
+  }
+
+  private contractAddressHeld(chain: Chain, address: string): boolean {
+    return [...this.knownContracts.values()].some(
+      (row) => row.chain === chain && row.address === address && row.enabled,
+    );
+  }
+
+  addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'> {
+    if (this.contractAddressHeld(contract.chain, contract.address)) {
+      return Promise.resolve('address_taken');
+    }
+    const row = {
+      ...contract,
+      id: randomUUID(),
+      source: 'console',
+      addedBy: actor.tokenKind,
+      addedAt: this.now(),
+      enabled: true,
+    } as KnownContract;
+    this.knownContracts.set(row.id, row);
+    this.recordAction('contract_add', row.id, actor);
+    return Promise.resolve(row);
+  }
+
+  setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'> {
+    const row = this.knownContracts.get(id);
+    if (!row) return Promise.resolve('not_found');
+    if (row.enabled === enabled) return Promise.resolve({ contract: row, changed: false });
+    if (enabled && this.contractAddressHeld(row.chain, row.address)) {
+      return Promise.resolve('address_taken');
+    }
+    const updated = { ...row, enabled };
+    this.knownContracts.set(id, updated);
+    this.recordAction(enabled ? 'contract_enable' : 'contract_disable', id, actor);
+    return Promise.resolve({ contract: updated, changed: true });
   }
 
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {

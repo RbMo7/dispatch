@@ -6,7 +6,17 @@ import {
   type KnownAsset,
   type Money,
 } from '../../domain/assets';
+import type {
+  AmountView,
+  ArgValue,
+  CallArg,
+  CallEvent,
+  DecodedCall,
+  Effects,
+  Transfer,
+} from '../../domain/calls';
 import { CHAINS, type Chain, type Network } from '../../domain/chains';
+import type { ContractPreview, KnownContract } from '../../domain/contracts';
 import type {
   Approval,
   Approver,
@@ -224,6 +234,113 @@ function approval(value: unknown, path: string): Approval | null {
   };
 }
 
+/** An amount the engine decoded: its asset and name come with it when it is a Known Asset. */
+function amountView(value: unknown, path: string): AmountView {
+  const json = object(value, path);
+  const raw = rawAmount(json.amount, `${path}.amount`);
+  return { raw, money: moneyOf(json, raw, path) };
+}
+
+function moneyOf(json: Json, raw: string, path: string): Money | null {
+  if (json.asset === undefined) return null;
+  const asset = object(json.asset, `${path}.asset`);
+  return {
+    raw,
+    decimals: integer(asset.decimals, `${path}.asset.decimals`),
+    asset: string(asset.symbol, `${path}.asset.symbol`),
+    name: string(asset.name, `${path}.asset.name`),
+  };
+}
+
+function argValue(value: unknown, path: string): ArgValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map((v, i) => argValue(v, `${path}[${i}]`));
+  const json = object(value, path);
+  return Object.fromEntries(
+    Object.entries(json).map(([key, v]) => [key, argValue(v, `${path}.${key}`)]),
+  );
+}
+
+function callArg(value: unknown, path: string): CallArg {
+  const json = object(value, path);
+  const v = argValue(json.value, `${path}.value`);
+  return {
+    name: string(json.name, `${path}.name`),
+    type: string(json.type, `${path}.type`),
+    value: v,
+    money: typeof v === 'string' && /^\d+$/.test(v) ? moneyOf(json, v, path) : null,
+  };
+}
+
+const optional = <T>(value: unknown, read: (value: unknown) => T): T | null =>
+  value === undefined ? null : read(value);
+
+function decodedCall(value: unknown, path: string): DecodedCall {
+  const json = object(value, path);
+  return {
+    target: string(json.target, `${path}.target`),
+    label: optional(json.label, (v) => string(v, `${path}.label`)),
+    decoded: boolean(json.decoded, `${path}.decoded`),
+    decoder: optional(json.decoder, (v) => string(v, `${path}.decoder`)),
+    function: optional(json.function, (v) => string(v, `${path}.function`)),
+    args: list(json.args ?? [], `${path}.args`, callArg),
+    selector: optional(json.selector, (v) => string(v, `${path}.selector`)),
+    data: optional(json.data, (v) => string(v, `${path}.data`)),
+    value: optional(json.value, (v) => amountView(v, `${path}.value`)),
+    calls: list(json.calls ?? [], `${path}.calls`, decodedCall),
+  };
+}
+
+function transfer(value: unknown, path: string): Transfer {
+  const json = object(value, path);
+  return {
+    ...amountView(json, path),
+    standard: string(json.standard, `${path}.standard`),
+    token: string(json.token, `${path}.token`),
+    from: nullableString(json.from, `${path}.from`),
+    to: nullableString(json.to, `${path}.to`),
+    tokenId: optional(json.tokenId, (v) => string(v, `${path}.tokenId`)),
+  };
+}
+
+function callEvent(value: unknown, path: string): CallEvent {
+  const json = object(value, path);
+  return {
+    kind: oneOf(json.kind, ['log', 'instruction'] as const, `${path}.kind`),
+    source: string(json.source, `${path}.source`),
+    label: optional(json.label, (v) => string(v, `${path}.label`)),
+    decoder: string(json.decoder, `${path}.decoder`),
+    name: string(json.name, `${path}.name`),
+    args: list(json.args, `${path}.args`, callArg),
+  };
+}
+
+function effects(value: unknown, path: string): Effects | null {
+  if (value === undefined) return null;
+  const json = object(value, path);
+  const fee = object(json.fee, `${path}.fee`);
+  return {
+    transfers: list(json.transfers, `${path}.transfers`, transfer),
+    value: optional(json.value, (v) => amountView(v, `${path}.value`)),
+    fee: { ...amountView(fee, `${path}.fee`), payer: string(fee.payer, `${path}.fee.payer`) },
+    events: list(json.events, `${path}.events`, callEvent),
+    undecodedEvents: integer(json.undecodedEvents, `${path}.undecodedEvents`),
+    undecodedEventSources: list(
+      json.undecodedEventSources,
+      `${path}.undecodedEventSources`,
+      (s, at) => {
+        const source = object(s, at);
+        return {
+          source: string(source.source, `${at}.source`),
+          label: optional(source.label, (v) => string(v, `${at}.label`)),
+          count: integer(source.count, `${at}.count`),
+        };
+      },
+    ),
+    truncated: boolean(json.truncated, `${path}.truncated`),
+  };
+}
+
 function item(value: unknown, path: string, index: number, name: (asset: string) => string): Item {
   const json = object(value, path);
   const base = {
@@ -232,6 +349,7 @@ function item(value: unknown, path: string, index: number, name: (asset: string)
     transactionHash: nullableString(json.transactionHash, `${path}.transactionHash`),
     error: dispatchError(json.error, `${path}.error`),
     approval: approval(json.approval, `${path}.approval`),
+    effects: effects(json.effects, `${path}.effects`),
   };
   if (json.type === 'payment') {
     const asset = string(json.asset, `${path}.asset`);
@@ -251,7 +369,12 @@ function item(value: unknown, path: string, index: number, name: (asset: string)
   }
   if (json.type === 'call') {
     const target = json.to ?? json.programId;
-    return { ...base, type: 'call', target: string(target, `${path}.to`) };
+    return {
+      ...base,
+      type: 'call',
+      target: string(target, `${path}.to`),
+      call: decodedCall(json.call, `${path}.call`),
+    };
   }
   return fail(`${path}.type`, 'payment or call');
 }
@@ -639,6 +762,39 @@ export function parseKnownAsset(value: unknown, path = 'body'): KnownAsset {
         ? null
         : oneOf(json.addedBy, ['auth', 'operator'] as const, `${path}.addedBy`),
     addedAt: date(json.addedAt, `${path}.addedAt`),
+  };
+}
+
+/** A row of `GET /v1/contracts` (ADR-0063). */
+export function parseKnownContract(value: unknown, path = 'body'): KnownContract {
+  const json = object(value, path);
+  return {
+    id: string(json.id, `${path}.id`),
+    chain: oneOf(json.chain, CHAIN_NAMES, `${path}.chain`),
+    address: string(json.address, `${path}.address`),
+    label: string(json.label, `${path}.label`),
+    functions: list(json.functions, `${path}.functions`, string),
+    events: list(json.events, `${path}.events`, string),
+    enabled: boolean(json.enabled, `${path}.enabled`),
+    addedBy: oneOf(json.addedBy, ['auth', 'operator'] as const, `${path}.addedBy`),
+    addedAt: date(json.addedAt, `${path}.addedAt`),
+  };
+}
+
+/** `GET /v1/contracts`. */
+export function parseContracts(value: unknown): KnownContract[] {
+  return list(object(value, 'body').contracts, 'contracts', parseKnownContract);
+}
+
+/** `POST /v1/contracts/preview`. */
+export function parseContractPreview(value: unknown): ContractPreview {
+  const json = object(value, 'body');
+  return {
+    chain: oneOf(json.chain, CHAIN_NAMES, 'chain'),
+    address: string(json.address, 'address'),
+    label: string(json.label, 'label'),
+    functions: list(json.functions, 'functions', string),
+    events: list(json.events, 'events', string),
   };
 }
 

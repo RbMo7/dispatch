@@ -1,3 +1,4 @@
+import { type DecodedCall, targetName } from './calls';
 import { approvalProgress } from './approval';
 import type { Money } from './assets';
 import { type Chain, type Network, proposalApp, proposalUrl, txLink } from './chains';
@@ -120,6 +121,13 @@ function submitted(summary: DispatchSummary, items: readonly Item[]): Text {
   const parts: (string | Money)[] = [what];
   summary.totals.forEach((total, index) => parts.push(index === 0 ? ', ' : ' and ', total));
   return parts;
+}
+
+/** "calls deposit on FlowVault": what a single-call Dispatch runs (ADR-0063). */
+function callPhrase(call: DecodedCall): string {
+  if (call.function) return `calls ${call.function} on ${targetName(call)}`;
+  if (call.data) return `calls an unknown function on ${targetName(call)}`;
+  return `sends value to ${targetName(call)}`;
 }
 
 function waitingStages(clock: FlowClock, created: Date): { stages: Stage[]; summary: string } {
@@ -453,6 +461,8 @@ function managedFlow(
         ? 'current'
         : 'done';
   const sendDetail: string[] = [];
+  const [only] = items;
+  if (items.length === 1 && only?.type === 'call') sendDetail.push(callPhrase(only.call));
   if (versions.length > 0) {
     sendDetail.push(
       versions.length < sentItems

@@ -1,4 +1,5 @@
 import type { Money } from './assets';
+import type { DecodedCall, Effects } from './calls';
 import type { Chain } from './chains';
 import type { ErrorDetail } from './errors';
 import type { Hold } from './flagRules';
@@ -97,6 +98,8 @@ interface ItemBase {
   error: DispatchError | null;
   /** Present whenever the item's Call belongs to a multisig Proposal. */
   approval: Approval | null;
+  /** What its transaction changed, once it confirmed and the worker read it (ADR-0063). */
+  effects: Effects | null;
 }
 
 export interface PaymentItem extends ItemBase {
@@ -111,6 +114,8 @@ export interface CallItem extends ItemBase {
   type: 'call';
   /** `to` on Base, `programId` on Solana. */
   target: string;
+  /** What it does, decoded when the engine read the Dispatch. */
+  call: DecodedCall;
 }
 
 export type Item = PaymentItem | CallItem;

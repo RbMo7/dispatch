@@ -387,6 +387,33 @@ export const knownAssets = pgTable(
   ],
 );
 
+/**
+ * ADR-0063: the contract registry. `definition` is the ABI (Base) or Anchor IDL
+ * (Solana) as given. A row is disabled, never deleted; one enabled row per address.
+ */
+export const knownContracts = pgTable(
+  'known_contracts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chain: text('chain').notNull(),
+    /** The contract (Base, checksummed) or program. */
+    address: text('address').notNull(),
+    label: text('label').notNull(),
+    definition: jsonb('definition').notNull(),
+    source: text('source').notNull(),
+    addedBy: text('added_by').notNull(),
+    addedAt: timestamp('added_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    enabled: boolean('enabled').notNull(),
+  },
+  (table) => [
+    uniqueIndex('known_contracts_enabled_address_idx')
+      .on(table.chain, table.address)
+      .where(sql`${table.enabled}`),
+  ],
+);
+
 /** ADR-0062: a `POST /v1/dispatch` refused with a 4xx other than 401. Pruned by the worker. */
 export const rejectedRequests = pgTable(
   'rejected_requests',

@@ -32,6 +32,7 @@ describe('a Dispatch row from its detail alone', () => {
         {
           type: 'call',
           programId: 'Memo1111',
+          call: { target: 'Memo1111', decoded: false, data: '' },
           status: 'queued',
           transactionHash: null,
           error: null,

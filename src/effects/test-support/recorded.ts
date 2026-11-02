@@ -7,7 +7,8 @@ import { BaseChainHandler } from '../../chain-handler/base/base-chain-handler.js
 import { SolanaChainHandler } from '../../chain-handler/solana/solana-chain-handler.js';
 import type { TransactionEffects } from '../../domain/effects.js';
 import { InMemoryNonceHistoryStore } from '../../repository/in-memory-nonce-history-store.js';
-import type { AssetAt } from '../view.js';
+import { NO_CONTRACTS } from '../../contract-registry/contract-registry.js';
+import type { AssetAt, Known } from '../view.js';
 
 /**
  * Transactions the flows run (`scripts/flows/`, rows 1, 2, 4, 5, 6 and 7) sent
@@ -35,6 +36,8 @@ export const registry = registryFromConfig({
   solana: `FSPL:${FSPL}:6,F22:${F22}:6:token-2022`,
 });
 export const assetAt: AssetAt = (chain, address) => registry.forChain(chain).byAddress(address);
+/** The Known Assets above, and no registered contracts. */
+export const known: Known = { assetAt, contractAt: NO_CONTRACTS };
 export const asset = (address: string, symbol: string, decimals: number, name = symbol) => ({
   address,
   symbol,
