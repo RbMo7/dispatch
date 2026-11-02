@@ -17,7 +17,7 @@ import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Result } from '../domain/result.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { ForeignActivity, SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type { CheckOutcome } from '../setup/run.js';
 import type { SignerPins } from '../signer/client.js';
@@ -347,8 +347,8 @@ export interface DispatchStore {
     claimedBefore: Date,
     limit: number,
   ): Promise<RelayDispatch[]>;
-  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
-  markDropped(transactionId: string): Promise<void>;
+  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. ADR-0064: `reason` says why when nothing settled it (another sender took its nonce). */
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void>;
   /** `error` (ADR-0053's APPROVAL_TIMEOUT) is recorded when given; omitted leaves the row's error untouched, as before. */
   markAbandoned(transactionId: string, error?: DispatchError): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
@@ -476,5 +476,13 @@ export interface DispatchStore {
   recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void>;
   /** The stored effects of these transactions on `chain`, by hash; a hash with none is left out. */
   listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>>;
+  /** ADR-0064 (#172): nonces of `sender`'s wallet another sender used, first seen at `seenAt`. Returns the ones not recorded before, ascending. */
+  recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]>;
+  /** ADR-0064 (#172): the foreign nonces of `sender` first seen at or after `since`; null when there are none. */
+  foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null>;
   listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

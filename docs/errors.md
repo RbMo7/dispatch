@@ -72,7 +72,7 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `CHAIN_NOT_ENABLED` | `400` | The `chain` is valid but not in the engine's `ENABLED_CHAINS`. | Use an enabled chain. [List Senders](./openapi.yaml#list-senders) shows them. |
 | `UNKNOWN_SENDER` | `400` | The request's `sender`, or a list's `sender` filter, names a Sender the chain does not have. | Use a name [List Senders](./openapi.yaml#list-senders) shows. |
 | `SENDER_REQUIRED` | `400` | A Managed Dispatch names no `sender` on a chain whose senders file names no default. | Name the Sender with `sender`. |
-| `NONCE_ALREADY_USED` | An item, `failed` | Base only. The transaction's nonce was already used on chain, usually because something else sent from the Sender. | Make sure only the engine sends from the Sender, then send again. |
+| `NONCE_ALREADY_USED` | An item, `failed` | Base only. Another sender keeps using the Sender's wallet: each time the engine sent the payment, its nonce had already been used by someone else, and the engine sent it again at a fresh nonce, 3 times. Nothing was paid. A single taken nonce is not an error: the engine sends the payment again by itself, and the item's timeline shows it. | Stop whatever else sends from the Sender, or give this engine a Sender of its own, then send again. One engine per Sender. |
 | `APPROVAL_REJECTED` | An item, `failed` | Multisig only. The Approvers rejected or cancelled the Proposal before its deadline, or it went stale. A Safe whose nonce was taken by a different transaction counts as rejected. It is definite: `transactionHash` is `null` and nothing was paid. | Send it again only if the Approvers want it. |
 | `APPROVAL_TIMEOUT` | An item, `abandoned` | Multisig only. Nobody decided on the Proposal by its deadline. The Proposal may still be approved and executed by someone else. | Check the multisig before you send the payment again, or it may happen twice. |
 | `ALREADY_CLAIMED` | `409` | You tried to cancel a Dispatch the worker already claimed. | Nothing. The Dispatch is being sent. |
@@ -122,6 +122,8 @@ For `CHAIN_REJECTED` on a Base transaction that reverted, the engine replays it 
   }
 }
 ```
+
+For `NONCE_ALREADY_USED`, `chainDetail` is `{ "reason": "nonce_taken", "resends": 3 }`. Each time before that, the engine found the transaction's nonce used by another sender and its own hash never landed, so nothing was paid. It sent the same Calls again with a fresh nonce, and the item stayed `broadcasting`. The item's timeline shows each of those as a `dropped` entry whose `error` has the same code and `chainDetail` `{ "reason": "nonce_taken", "nonce": 3124, "resentNonce": 3127 }`, and the console's Flow tab shows it as "Nonce 3124 was taken by another sender. Sent again with nonce 3127." The worker also records the nonces another sender used, and warns about them in the [`sender.exclusive`](./self-hosting/doctor.md#used-only-by-this-engine) setup check and in `foreignActivity` on [List Senders](./openapi.yaml#list-senders). Only one engine may send from a Sender ([One engine per Sender](./self-hosting/configuration.md#one-engine-per-sender)).
 
 For `APPROVAL_TIMEOUT`, `chainDetail` is `{ "deadlineAt": "<ISO 8601>" }`. For an `APPROVAL_REJECTED` the engine found while watching a Proposal, it is `{ "status": "rejected" }`, `"cancelled"` or `"stale"`.
 

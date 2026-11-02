@@ -18,6 +18,8 @@ export interface SenderCardProps {
   needed?: Money;
   /** Who pays fees (an amount), or which Signer signs (text). */
   footer: { label: string; fee: Money } | { label: string; text: string };
+  /** Something the operator must act on that is not about funds, such as another sender using the wallet. */
+  warning?: string;
   href: string;
   onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
 }
@@ -30,6 +32,7 @@ export function SenderCard({
   committed,
   needed,
   footer,
+  warning,
   href,
   onClick,
 }: SenderCardProps) {
@@ -50,6 +53,7 @@ export function SenderCard({
       ) : (
         <Funds balance={balance} committed={committed} needed={needed} />
       )}
+      {warning && <div className={styles.warning}>{warning}</div>}
       <div className={styles.footer}>
         <span>{footer.label}</span>
         <span className={styles.footerValue}>

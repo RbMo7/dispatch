@@ -4,6 +4,11 @@ import type { AssetRegistry } from '../asset-registry/asset-registry.js';
 import type { Network } from './network.js';
 import type { DispatchError } from '../domain/errors.js';
 import type { AssetAmount } from '../domain/proposal.js';
+import {
+  FOREIGN_ACTIVITY_WINDOW_MS,
+  type ForeignActivity,
+  type SenderAddress,
+} from '../domain/sender.js';
 import type { Result } from '../domain/result.js';
 import type { CommittedHolder, SignerKeyRecord } from '../repository/dispatch-store.js';
 import type { SignerPins } from '../signer/client.js';
@@ -47,6 +52,12 @@ export type SenderReads = {
     timedOutSince: Date,
     senderAddress?: string,
   ): Promise<AssetAmount[]>;
+  /** ADR-0064: the nonces of `senderAddress`'s wallet another sender used since `since`. */
+  foreignActivity(
+    chain: Chain,
+    senderAddress: SenderAddress,
+    since: Date,
+  ): Promise<ForeignActivity | null>;
   now(): Date;
 };
 
@@ -82,6 +93,8 @@ export type SenderView = {
   balances: HolderBalances[];
   /** ADR-0055: what the Signer says the engine's signing key is pinned to, as the worker last read it (ADR-0059). */
   signerKey: ((SignerPins | FieldError) & { readAt: string }) | { status: 'not_read_yet' };
+  /** ADR-0064: nonces another sender used in this wallet in the last 24 hours, as the worker recorded them. */
+  foreignActivity: { lastSeenAt: string; nonces: [number, number]; count: number } | null;
 };
 
 function signerKeyView(record: SignerKeyRecord | null): SenderView['signerKey'] {
@@ -124,7 +137,8 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
   };
   const assets = config.assets.payableSymbols(chain);
   const signingKey = approval?.engineKey ?? config.address;
-  const [balances, signerKey, threshold] = await Promise.all([
+  const foreignSince = new Date(reads.now().getTime() - FOREIGN_ACTIVITY_WINDOW_MS);
+  const [balances, signerKey, threshold, foreign] = await Promise.all([
     Promise.all(
       approval
         ? [
@@ -140,6 +154,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
     ),
     reads.getSignerKey(chain, signingKey),
     approval ? reads.readThreshold(chain, approval.multisigAddress) : undefined,
+    reads.foreignActivity(chain, config.address as SenderAddress, foreignSince),
   ]);
 
   return {
@@ -159,6 +174,7 @@ export async function readSender(config: SenderConfig, reads: SenderReads): Prom
         : null,
     balances,
     signerKey: signerKeyView(signerKey),
+    foreignActivity: foreign && { ...foreign, lastSeenAt: foreign.lastSeenAt.toISOString() },
   };
 }
 

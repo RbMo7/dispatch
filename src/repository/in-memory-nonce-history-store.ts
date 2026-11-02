@@ -1,5 +1,5 @@
 import type { Chain } from '../domain/chain.js';
-import type { NonceHistoryRecord, NonceHistoryStore } from './nonce-history-store.js';
+import type { NonceHistoryRecord, NonceHistoryStore, NonceRange } from './nonce-history-store.js';
 
 function key(chain: Chain, senderAddress: string, nonce: number): string {
   return `${chain}\u0000${senderAddress}\u0000${nonce}`;
@@ -15,9 +15,14 @@ export class InMemoryNonceHistoryStore implements NonceHistoryStore {
     return Promise.resolve();
   }
 
-  listNonceHistory(chain: Chain, senderAddress: string): Promise<NonceHistoryRecord[]> {
+  listNonceHistory(
+    chain: Chain,
+    senderAddress: string,
+    range?: NonceRange,
+  ): Promise<NonceHistoryRecord[]> {
     const matches = [...this.records.values()]
       .filter((record) => record.chain === chain && record.senderAddress === senderAddress)
+      .filter((record) => !range || (record.nonce >= range.from && record.nonce < range.to))
       .sort((a, b) => a.nonce - b.nonce);
     return Promise.resolve(matches);
   }

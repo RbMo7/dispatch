@@ -625,6 +625,7 @@ export function senderReadsFor(registry: ChainRegistry, store: DispatchStore): S
     },
     listCommitted: (chain, holder, timedOutSince, senderAddress) =>
       store.listCommitted(chain, holder, timedOutSince, senderAddress),
+    foreignActivity: (chain, address, since) => store.foreignActivity({ chain, address }, since),
     now: () => new Date(),
   };
 }

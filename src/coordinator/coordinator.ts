@@ -19,6 +19,7 @@ import { senderKey, type SenderAddress, type SenderRef } from '../domain/sender.
 import type { CommittedHolder, DispatchStore } from '../repository/dispatch-store.js';
 import { ApprovalFlow, DEFAULT_APPROVAL_REWATCH_WINDOW_MS } from './approval-flow.js';
 import type { CoordinatorSender } from './coordinator-sender.js';
+import { decideTakenNonce, type VersionRead } from './taken-nonce.js';
 
 export type { CoordinatorSender } from './coordinator-sender.js';
 
@@ -477,6 +478,13 @@ export class Coordinator {
         );
         return;
       }
+      if (
+        broadcastResult.error.code === 'NONCE_ALREADY_USED' &&
+        handler.prepareResend !== undefined
+      ) {
+        await this.resolveTakenNonce(noted, false, log);
+        return;
+      }
       log.warn({ stage: 'broadcast', error: broadcastResult.error }, 'call(s) failed');
       for (const row of noted) await this.store.markFailed(row.id, broadcastResult.error);
       return;
@@ -933,6 +941,45 @@ export class Coordinator {
         ),
       ),
     );
+    await this.detectForeignNonces();
+  }
+
+  /**
+   * #172 (ADR-0064): records the nonces each plain Sender's chain shows
+   * another sender used. Never fails the poll: a failed read is tried again
+   * on the next pass.
+   */
+  private async detectForeignNonces(): Promise<void> {
+    await Promise.all(
+      this.senders.map(async (sender) => {
+        if (!sender.handler.foreignNonces || sender.handler.approval) return;
+        const log = this.logger.child({ chain: sender.ref.chain, sender: sender.ref.address });
+        try {
+          const found = await sender.handler.foreignNonces();
+          if (found.ok) await this.recordForeignNonces(sender, found.value);
+          else log.debug({ error: found.error }, 'could not check for another sender');
+        } catch (cause) {
+          log.warn({ err: cause }, 'could not record nonces another sender used');
+        }
+      }),
+    );
+  }
+
+  /** Warns once for each run of consecutive nonces not seen before. */
+  private async recordForeignNonces(sender: CoordinatorSender, nonces: number[]): Promise<void> {
+    if (nonces.length === 0) return;
+    const added = await this.store.recordForeignNonces(sender.ref, nonces, this.now());
+    for (const [first, last] of consecutiveRuns(added)) {
+      this.logger.warn(
+        {
+          chain: sender.ref.chain,
+          sender: sender.ref.address,
+          nonces: [first, last],
+          count: last - first + 1,
+        },
+        `another sender used this Sender's wallet: ${first === last ? `nonce ${first} was` : `nonces ${first} to ${last} were`} not sent by this engine. Only this engine may send from a Sender`,
+      );
+    }
   }
 
   /**
@@ -1051,7 +1098,7 @@ export class Coordinator {
     if (resolved) return false;
 
     const stuck = await this.handleIfStuck(transaction, log);
-    if (stuck === 'bumped') return true; // now REPLACED: its replacement carries the clock from here
+    if (stuck === 'superseded') return true; // a newer version, or a settled one, carries it from here
 
     // Either still PENDING on-chain, or the status check itself failed (e.g.
     // RPC unavailable) — either way, fall through to the ABANDONED timeout.
@@ -1071,12 +1118,13 @@ export class Coordinator {
    * cap reached, or a bump attempt that just failed) rebroadcasts its
    * identical bytes — free, and a no-op for the chain if it already has
    * them. A `NONCE_ALREADY_USED` bump failure means some version already
-   * landed: stop, and let resolution find it.
+   * landed, or another sender took the nonce: stop bumping, and let
+   * resolution or the rebroadcast's answer (ADR-0064) settle it.
    */
   private async handleIfStuck(
     transaction: Transaction,
     log: Logger,
-  ): Promise<'none' | 'bumped' | 'handled'> {
+  ): Promise<'none' | 'superseded' | 'handled'> {
     const config = this.stuckHandling.get(transaction.chain);
     const lastSentAt = transaction.lastBroadcastAt ?? transaction.broadcastAt;
     if (!config || !lastSentAt) return 'none';
@@ -1091,8 +1139,7 @@ export class Coordinator {
       const outcome = await this.bump(transaction, sender, config, log);
       if (outcome !== 'failed') return outcome;
     }
-    await this.rebroadcast(transaction, log);
-    return 'handled';
+    return (await this.rebroadcast(transaction, log)) ? 'superseded' : 'handled';
   }
 
   /**
@@ -1114,7 +1161,7 @@ export class Coordinator {
     sender: CoordinatorSender,
     config: StuckHandlingConfig,
     log: Logger,
-  ): Promise<'bumped' | 'handled' | 'failed'> {
+  ): Promise<'superseded' | 'handled' | 'failed'> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const { handler } = sender;
     // ADR-0054: a Proposal's execute is signed by the proposer, never the multisig Sender.
@@ -1167,7 +1214,7 @@ export class Coordinator {
       );
       for (const replacement of replacements)
         await this.store.recordSent(replacement.id, broadcast.value.hash, broadcast.value.sentAt);
-      return 'bumped';
+      return 'superseded';
     }
     if (isAmbiguousBroadcastFailure(broadcast.error)) {
       // It may have reached the node (or is already pooled): the replacement stays written down, PENDING.
@@ -1175,7 +1222,7 @@ export class Coordinator {
         { error: broadcast.error },
         'fee-bump: replacement broadcast ambiguous — left PENDING',
       );
-      return 'bumped';
+      return 'superseded';
     }
     // Definitely refused: undo it, so the original is the live version again.
     for (const replacement of replacements) await this.store.undoReplacement(replacement.id);
@@ -1294,23 +1341,142 @@ export class Coordinator {
     }
   }
 
-  private async rebroadcast(transaction: Transaction, log: Logger): Promise<void> {
+  /** Returns whether the rebroadcast's answer took the transaction out of PENDING (ADR-0064). */
+  private async rebroadcast(transaction: Transaction, log: Logger): Promise<boolean> {
     const { hash, signedBytes } = this.requireBroadcast(transaction);
     const result = await (await this.handlerFor(transaction)).broadcast(signedBytes);
     // A refused resend — e.g. "already known", or "nonce too low" once some
-    // version landed — is never evidence against the transaction
+    // version landed — is never evidence against the transaction on its own
     // (resolution/timeout decide), but it's still recorded as an Attempt:
     // that's what restarts the stuck clock, so a stuck transaction is
     // resent once per stuckAfterMs, never once per tick.
     if (result.ok) log.debug('rebroadcast identical bytes');
     else log.info({ error: result.error }, 'rebroadcast not accepted — still pending');
-    for (const member of await this.pendingMembersOf(hash)) {
+    const members = await this.pendingMembersOf(hash);
+    for (const member of members) {
       await this.store.recordBroadcast(
         member.id,
         result.ok ? result.value.hash : hash,
         result.ok ? undefined : result.error,
       );
     }
+    if (result.ok || result.error.code !== 'NONCE_ALREADY_USED') return false;
+    const polled = members.find((m) => m.id === transaction.id) ?? transaction;
+    return this.resolveTakenNonce([polled, ...members.filter((m) => m !== polled)], true, log);
+  }
+
+  /**
+   * ADR-0064: the node answered "nonce too low" for `members`, the PENDING
+   * rows sharing one hash, the first being the one polled. Reads a receipt
+   * for every version of the Call, and only once none can have landed sends
+   * the same Calls again at a fresh nonce. Returns whether the rows stopped
+   * being PENDING.
+   */
+  private async resolveTakenNonce(
+    members: Transaction[],
+    everSent: boolean,
+    log: Logger,
+  ): Promise<boolean> {
+    const [latest] = members;
+    if (!latest || members.some((m) => m.proposalId !== null)) return false;
+    const sender = await this.senderOfTransaction(latest);
+    if (!sender?.handler.prepareResend) return false;
+    const { handler } = sender;
+
+    const versions = await this.versionsOf(latest);
+    const reads = await Promise.all(
+      versions.map(async (version): Promise<VersionRead> => {
+        const status = await handler.getStatus(this.requireBroadcast(version).hash);
+        if (!status.ok) return 'unreadable';
+        return status.value === 'CONFIRMED' || status.value === 'FAILED' ? 'landed' : 'no_receipt';
+      }),
+    );
+    const resends = (await this.store.listTransactions(latest.dispatchId)).filter(
+      (t) => t.callIndex === latest.callIndex && isTakenNonceDrop(t),
+    ).length;
+    const answers = everSent
+      ? (await this.store.listAttempts(latest.dispatchId)).filter(
+          (a) => a.transactionId === latest.id && a.error?.code === 'NONCE_ALREADY_USED',
+        ).length
+      : 1;
+    const decision = decideTakenNonce({ everSent, answers, versions: reads, resends });
+    log.info({ decision, versions: reads, answers, resends }, 'nonce too low: decided');
+
+    if (decision === 'confirmed' || decision === 'wait') return false;
+    if (decision === 'fail') {
+      for (const member of members) {
+        await this.store.markFailed(member.id, takenNonceLimitError(resends));
+      }
+      return true;
+    }
+    return this.resendTakenNonce(members, sender, log);
+  }
+
+  /** ADR-0064: the same Calls at a fresh nonce, as a new Transaction written down before it is sent (ADR-0041). */
+  private async resendTakenNonce(
+    members: Transaction[],
+    sender: CoordinatorSender,
+    log: Logger,
+  ): Promise<boolean> {
+    const { handler } = sender;
+    const senderAddress = sender.ref.address;
+    const [latest] = members;
+    if (!latest || !handler.prepareResend) return false;
+    const { signedBytes } = this.requireBroadcast(latest);
+
+    const reprice = await this.retryPolicyFor(latest);
+    const prepared = await handler.prepareResend(signedBytes, senderAddress, { reprice });
+    const signed = prepared.ok ? await handler.sign(prepared.value, senderAddress) : prepared;
+    if (!signed.ok && signed.error.code === 'SIGNER_REFUSED') {
+      // ADR-0046: refused on purpose, and the original can never land.
+      log.warn({ error: signed.error }, 'resend refused by the Signer — failed');
+      for (const member of members) await this.store.markFailed(member.id, signed.error);
+      return true;
+    }
+    const hash = signed.ok ? handler.transactionHash(signed.value) : signed;
+    if (!signed.ok || !hash.ok) {
+      // The original can't land, so nothing is lost: the next "nonce too low" tries again.
+      log.warn({ error: hash.ok ? undefined : hash.error }, 'resend not signed — still pending');
+      return false;
+    }
+
+    const takenNonce = handler.nonceOf?.(signedBytes);
+    const resentNonce = handler.nonceOf?.(signed.value);
+    const replacements: Transaction[] = [];
+    for (const member of members) {
+      const deadVersions = await this.versionsOf(member);
+      replacements.push(
+        await this.store.createReplacementTransaction(member.id, {
+          signedBytes: signed.value,
+          hash: hash.value,
+        }),
+      );
+      await this.store.markDropped(member.id, takenNonceDrop(takenNonce, resentNonce));
+      // Fee-bump versions at the taken nonce can never land either.
+      for (const version of deadVersions) {
+        if (version.id !== member.id) await this.store.markDropped(version.id);
+      }
+    }
+    if (takenNonce !== undefined) await this.recordForeignNonces(sender, [takenNonce]);
+
+    const broadcast = await handler.broadcast(signed.value);
+    if (broadcast.ok) {
+      log.info(
+        { takenNonce, resentNonce, resentHash: broadcast.value.hash },
+        'nonce taken by another sender — sent again at a fresh nonce',
+      );
+      for (const replacement of replacements)
+        await this.store.recordSent(replacement.id, broadcast.value.hash, broadcast.value.sentAt);
+    } else if (broadcast.error.code === 'NONCE_ALREADY_USED') {
+      await this.resolveTakenNonce(replacements, false, log);
+    } else if (isAmbiguousBroadcastFailure(broadcast.error)) {
+      log.warn({ error: broadcast.error }, 'resend broadcast ambiguous — left PENDING');
+    } else {
+      log.warn({ error: broadcast.error }, 'resend refused — failed');
+      for (const replacement of replacements)
+        await this.store.markFailed(replacement.id, broadcast.error);
+    }
+    return true;
   }
 
   /** Every still-PENDING Transaction sharing `hash` — several when one bundled broadcast covered several Calls. */
@@ -1374,15 +1540,7 @@ export class Coordinator {
     transaction: Transaction,
     log: Logger,
   ): Promise<boolean | 'expired'> {
-    const versions =
-      transaction.replacesTransactionId === null
-        ? [transaction]
-        : [
-            transaction,
-            ...(await this.store.listTransactions(transaction.dispatchId)).filter(
-              (t) => t.callIndex === transaction.callIndex && t.status === 'REPLACED',
-            ),
-          ];
+    const versions = await this.versionsOf(transaction);
 
     let latestExpired = false;
     for (const version of versions) {
@@ -1398,6 +1556,17 @@ export class Coordinator {
       return true;
     }
     return latestExpired ? 'expired' : false;
+  }
+
+  /** A Call's live version and every fee-bump version it replaced (ADR-0037): any of them may be the one that lands. */
+  private async versionsOf(transaction: Transaction): Promise<Transaction[]> {
+    if (transaction.replacesTransactionId === null) return [transaction];
+    return [
+      transaction,
+      ...(await this.store.listTransactions(transaction.dispatchId)).filter(
+        (t) => t.callIndex === transaction.callIndex && t.status === 'REPLACED',
+      ),
+    ];
   }
 
   private async tryResolveByStatus(
@@ -1627,6 +1796,17 @@ function singleSenders(deps: CoordinatorDeps): CoordinatorSender[] {
   });
 }
 
+/** Ascending numbers as [first, last] runs of consecutive values. */
+function consecutiveRuns(sorted: number[]): [number, number][] {
+  const runs: [number, number][] = [];
+  for (const n of sorted) {
+    const run = runs.at(-1);
+    if (run && n === run[1] + 1) run[1] = n;
+    else runs.push([n, n]);
+  }
+  return runs;
+}
+
 /** #42 (ADR-0044): runs `task` over `items`, at most `limit` at a time (one when unset). */
 async function inPool<T>(
   items: T[],
@@ -1640,6 +1820,33 @@ async function inPool<T>(
       for (let item = queue.shift(); item !== undefined; item = queue.shift()) await task(item);
     }),
   );
+}
+
+/** ADR-0064: why a version was dropped when another sender took its nonce; the timeline shows it. */
+function takenNonceDrop(nonce: number | undefined, resentNonce: number | undefined): DispatchError {
+  const taken = nonce === undefined ? 'Its nonce' : `Nonce ${nonce}`;
+  const again = resentNonce === undefined ? 'a fresh nonce' : `nonce ${resentNonce}`;
+  return {
+    code: 'NONCE_ALREADY_USED',
+    message: `${taken} was taken by another sender. Sent again with ${again}.`,
+    chainDetail: {
+      reason: 'nonce_taken',
+      ...(nonce === undefined ? {} : { nonce }),
+      ...(resentNonce === undefined ? {} : { resentNonce }),
+    },
+  };
+}
+
+function isTakenNonceDrop(transaction: Transaction): boolean {
+  return transaction.status === 'DROPPED' && transaction.error?.code === 'NONCE_ALREADY_USED';
+}
+
+function takenNonceLimitError(resends: number): DispatchError {
+  return {
+    code: 'NONCE_ALREADY_USED',
+    message: `another sender keeps taking this wallet's nonces: this payment was sent ${resends + 1} times, and each time another sender used the nonce first. Stop the other sender, or give this engine a Sender of its own.`,
+    chainDetail: { reason: 'nonce_taken', resends },
+  };
 }
 
 function expiredError(chain: Chain): DispatchError {

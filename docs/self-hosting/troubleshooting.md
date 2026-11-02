@@ -55,7 +55,19 @@ Read `error.code`. Nothing that failed before signing was sent, so after you fix
 - **`SIGNER_UNREACHABLE`.** The worker could not get a usable signature. The message names the cause: [Troubleshoot from the engine's side](./signer.md#10-troubleshoot-from-the-engines-side) maps each one.
 - **`CHAIN_REJECTED`.** The chain refused or reverted it. `message` has the node's words, and `chainDetail` the raw detail, such as revert data.
 - **`RPC_UNAVAILABLE`.** The RPC timed out, rate-limited or returned a 5xx. Public endpoints rate-limit, so use your own RPC provider for real traffic.
-- **`NONCE_ALREADY_USED`.** The nonce was already used on Base, usually because something else sent from the Sender. Only the engine may send from a Sender.
+- **`NONCE_ALREADY_USED`.** Something else keeps sending from the Base Sender: a second engine, a wallet app or a script. The engine sends a payment whose nonce was taken again with a fresh nonce, up to 3 times, and fails it only after that. Nothing was paid. See [Another sender uses a Sender's wallet](#another-sender-uses-a-senders-wallet).
+
+## Another sender uses a Sender's wallet
+
+The `sender.exclusive` check warns, the Sender's card in the console says "Another sender used 3 nonces", or a Dispatch's Flow tab shows "Nonce 3124 was taken by another sender". Something other than this engine sent from the Base Sender's address in the last 24 hours, and the warning names the nonces it used.
+
+Each payment whose nonce was taken was sent again with a fresh nonce, so it is paid once. Payments can land out of order, and a payment whose nonce is taken 3 times fails with `NONCE_ALREADY_USED`.
+
+1. Find what else holds the key: a second engine with the same `BASE_SENDER_ADDRESS` or senders file entry, a wallet app, or a script.
+2. Stop it, or give it a key of its own. To split work, use [named Senders](./configuration.md#one-engine-per-sender) in one engine.
+3. Send again any payment that failed with `NONCE_ALREADY_USED`, with a new `Idempotency-Key`.
+
+The warning clears 24 hours after the last nonce another sender used.
 
 ## An item stays `broadcasting`
 

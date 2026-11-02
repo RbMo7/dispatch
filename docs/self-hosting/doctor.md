@@ -181,6 +181,12 @@ Id `sender.tokens`. Runs in doctor and the worker, once per Sender.
 
 Checks the Sender's balance of each enabled token in the Known Asset registry (`GET /v1/assets`): the ones in `SOLANA_KNOWN_TOKENS` or `BASE_KNOWN_TOKENS` and the ones added through the API. Run from your machine, it reads the registry from `DATABASE_URL`, or only the variables when the database can't be read. It warns for each token the Sender holds none of, because every payment in that token fails its [Funding Check](../lifecycle.md#the-funding-check). It passes when no tokens are configured. Fix: send the token to the Sender, or disable the token (or remove it from the variable) if you do not pay in it.
 
+### Used only by this engine
+
+Id `sender.exclusive`. Runs in doctor and the worker, once per plain Base Sender.
+
+A Sender belongs to one engine. On each pass the worker compares the wallet's nonce on chain with the nonces this engine sent, and records every nonce something else used: another engine with the same key, a wallet app or a script. This check reads those records from `DATABASE_URL` and warns when any was seen in the last 24 hours, with how many and which. The engine sends a payment again when another sender took its nonce, so nothing is lost, but payments can land out of order and fail after 3 tries with `NONCE_ALREADY_USED`. `GET /v1/senders` shows the same records as `foreignActivity`. Fix: stop whatever else sends from the address, or give this engine a Sender of its own. To split work, use [named Senders](./configuration.md#the-senders-file) in one engine.
+
 ## Multisig
 
 ### Account exists

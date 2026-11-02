@@ -14,6 +14,7 @@ function sender(chain: Chain, name: string): Sender {
     multisig: null,
     balances: [],
     signerKey: { ok: false, error: 'the worker has not read this key yet' },
+    foreignActivity: null,
   };
 }
 

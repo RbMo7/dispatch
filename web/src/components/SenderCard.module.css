@@ -52,6 +52,13 @@
   font-weight: 500;
 }
 
+.warning {
+  margin-top: var(--space-2);
+  color: var(--warn-text);
+  font-size: var(--text-11-5);
+  font-weight: 500;
+}
+
 .footer {
   display: flex;
   justify-content: space-between;

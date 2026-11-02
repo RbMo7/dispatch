@@ -761,6 +761,19 @@
   margin-bottom: var(--space-3);
 }
 
+.foreignTitle {
+  color: var(--warn-text);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.foreignText {
+  max-width: 68ch;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-13);
+  line-height: 1.5;
+}
+
 .holdingName {
   font-size: var(--text-13);
   font-weight: 600;

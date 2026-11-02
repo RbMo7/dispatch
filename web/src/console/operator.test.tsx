@@ -38,6 +38,7 @@ function sender(name: string, address: string, isDefault: boolean) {
       },
     ],
     signerKey: { status: 'not_read_yet' },
+    foreignActivity: null,
   };
 }
 

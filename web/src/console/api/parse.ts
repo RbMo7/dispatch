@@ -18,6 +18,7 @@ import type {
   Item,
   ItemStatus,
   SenderRef,
+  TakenNonce,
   TimelineEntry,
 } from '../../domain/dispatch';
 import {
@@ -33,7 +34,14 @@ import {
   type TokenKind,
 } from '../../domain/flagRules';
 import type { ErrorDetail, ReadError } from '../../domain/errors';
-import type { AssetBalance, Holding, Read, Sender, SignerKey } from '../../domain/sender';
+import type {
+  AssetBalance,
+  ForeignActivity,
+  Holding,
+  Read,
+  Sender,
+  SignerKey,
+} from '../../domain/sender';
 import { AREAS, type Fix, type Setup, type SetupCheck, type WorkerRun } from '../../domain/setup';
 import { type Status, STATUSES } from '../../domain/status';
 
@@ -248,6 +256,21 @@ function item(value: unknown, path: string, index: number, name: (asset: string)
   return fail(`${path}.type`, 'payment or call');
 }
 
+/** A dropped version's `error`, when it says another sender took the nonce (`chainDetail.reason: nonce_taken`). */
+function takenNonce(value: unknown, path: string): TakenNonce | null {
+  if (value === undefined || value === null) return null;
+  const json = object(value, path);
+  const detail = json.chainDetail;
+  if (typeof detail !== 'object' || detail === null) return null;
+  const { reason, nonce, resentNonce } = detail as Json;
+  if (reason !== 'nonce_taken') return null;
+  const optional = (v: unknown, at: string) => (v === undefined ? null : integer(v, at));
+  return {
+    nonce: optional(nonce, `${path}.chainDetail.nonce`),
+    resentNonce: optional(resentNonce, `${path}.chainDetail.resentNonce`),
+  };
+}
+
 function indexes(value: unknown, path: string): number[] {
   return list(value, path, integer);
 }
@@ -282,13 +305,21 @@ function entry(value: unknown, path: string): TimelineEntry {
         error: dispatchError(json.error, `${path}.error`),
       };
     case 'replaced':
-    case 'dropped':
       return {
-        kind: json.kind,
+        kind: 'replaced',
         at: at(),
         hash: hash(),
         items: items(),
         by: nullableString(json.by, `${path}.by`),
+      };
+    case 'dropped':
+      return {
+        kind: 'dropped',
+        at: at(),
+        hash: hash(),
+        items: items(),
+        by: nullableString(json.by, `${path}.by`),
+        taken: takenNonce(json.error, `${path}.error`),
       };
     case 'confirmed':
       return {
@@ -545,6 +576,21 @@ function signerKeyRead(value: unknown, path: string): Read<SignerKey> {
   return read(value, path, signerKey);
 }
 
+function foreignActivity(value: unknown, path: string): ForeignActivity | null {
+  if (value === null) return null;
+  const json = object(value, path);
+  const nonces = list(json.nonces, `${path}.nonces`, integer);
+  const [first, last] = nonces;
+  if (nonces.length !== 2 || first === undefined || last === undefined) {
+    return fail(`${path}.nonces`, 'the lowest and the highest nonce');
+  }
+  return {
+    lastSeenAt: date(json.lastSeenAt, `${path}.lastSeenAt`),
+    nonces: [first, last],
+    count: integer(json.count, `${path}.count`),
+  };
+}
+
 function sender(value: unknown, path: string, names: AssetNames): Sender {
   const json = object(value, path);
   const multisig = json.multisig === null ? null : object(json.multisig, `${path}.multisig`);
@@ -565,6 +611,7 @@ function sender(value: unknown, path: string, names: AssetNames): Sender {
       holding(h, at, (asset) => names(chain, asset)),
     ),
     signerKey: signerKeyRead(json.signerKey, `${path}.signerKey`),
+    foreignActivity: foreignActivity(json.foreignActivity, `${path}.foreignActivity`),
   };
 }
 

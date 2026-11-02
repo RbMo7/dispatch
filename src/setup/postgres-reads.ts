@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 
-import { and, count, desc, eq, gte, isNotNull } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, max, min } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
-import { dispatches, knownAssets, transactions } from '../db/schema.js';
+import { dispatches, knownAssets, senderForeignNonces, transactions } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { KnownAsset } from '../domain/known-asset.js';
 import type { DatabaseReads } from './check.js';
@@ -73,6 +73,26 @@ export function postgresReads(
       }),
     knownAssets: () =>
       unwrapQueryError(async () => (await db.select().from(knownAssets)) as KnownAsset[]),
+    foreignActivity: (chain, senderAddress, since) =>
+      unwrapQueryError(async () => {
+        const [row] = await db
+          .select({
+            lastSeenAt: max(senderForeignNonces.firstSeenAt),
+            first: min(senderForeignNonces.nonce),
+            last: max(senderForeignNonces.nonce),
+            count: count(),
+          })
+          .from(senderForeignNonces)
+          .where(
+            and(
+              eq(senderForeignNonces.chain, chain),
+              eq(senderForeignNonces.senderAddress, senderAddress),
+              gte(senderForeignNonces.firstSeenAt, since),
+            ),
+          );
+        if (!row?.lastSeenAt || row.first === null || row.last === null) return null;
+        return { lastSeenAt: row.lastSeenAt, nonces: [row.first, row.last], count: row.count };
+      }),
     close: () => client.end({ timeout: 1 }),
   };
 }
