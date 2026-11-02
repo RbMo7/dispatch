@@ -1,13 +1,19 @@
 import { readFileSync } from 'node:fs';
 
-import { and, count, desc, eq, gte, isNotNull, max, min } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, isNull, max, min, or } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
-import { dispatches, knownAssets, senderForeignNonces, transactions } from '../db/schema.js';
+import {
+  dispatches,
+  knownAssets,
+  proposals,
+  senderForeignNonces,
+  transactions,
+} from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { KnownAsset } from '../domain/known-asset.js';
-import type { DatabaseReads } from './check.js';
+import type { DatabaseReads, FeeSender } from './check.js';
 
 const JOURNAL_URL = new URL('../../drizzle/meta/_journal.json', import.meta.url);
 
@@ -46,29 +52,53 @@ export function postgresReads(
         .filter((entry) => last === undefined || entry.when > last)
         .map((entry) => entry.tag);
     },
-    recentTransactions: (chain: Chain, since: Date) =>
+    recentTransactions: (chain: Chain, sender: FeeSender, since: Date) =>
       unwrapQueryError(async () => {
-        // A Managed Dispatch's Transactions only: a Relay Dispatch's fee is paid by whoever signed it.
+        // #159: only what this Sender's fee payer paid for. A Relay Dispatch's fee is paid by whoever signed it, so it has no Dispatch row here.
+        const ownDispatch = sender.isDefault
+          ? or(eq(dispatches.senderAddress, sender.address), isNull(dispatches.senderAddress))
+          : eq(dispatches.senderAddress, sender.address);
         const sent = and(
           eq(transactions.chain, chain),
           isNotNull(transactions.hash),
           gte(transactions.broadcastAt, since),
+          ownDispatch,
         );
-        const [counted] = await db
-          .select({ count: count() })
-          .from(transactions)
-          .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-          .where(sent);
-        const latest = await db
-          .select({ hash: transactions.hash })
-          .from(transactions)
-          .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-          .where(sent)
-          .orderBy(desc(transactions.broadcastAt))
-          .limit(FEE_SAMPLE_SIZE);
+        // A Multisig Sender's engine key also pays to post each Proposal (ADR-0054).
+        const proposed = and(
+          eq(proposals.chain, chain),
+          eq(proposals.senderAddress, sender.address),
+          isNotNull(proposals.proposeHash),
+          gte(proposals.createdAt, since),
+        );
+        const [[sentCount], [proposedCount], sentLatest, proposedLatest] = await Promise.all([
+          db
+            .select({ count: count() })
+            .from(transactions)
+            .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+            .where(sent),
+          db.select({ count: count() }).from(proposals).where(proposed),
+          db
+            .select({ hash: transactions.hash, at: transactions.broadcastAt })
+            .from(transactions)
+            .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+            .where(sent)
+            .orderBy(desc(transactions.broadcastAt))
+            .limit(FEE_SAMPLE_SIZE),
+          db
+            .select({ hash: proposals.proposeHash, at: proposals.createdAt })
+            .from(proposals)
+            .where(proposed)
+            .orderBy(desc(proposals.createdAt))
+            .limit(FEE_SAMPLE_SIZE),
+        ]);
+        const latest = [...sentLatest, ...proposedLatest]
+          .flatMap(({ hash, at }) => (hash === null || at === null ? [] : [{ hash, at }]))
+          .sort((a, b) => b.at.getTime() - a.at.getTime())
+          .slice(0, FEE_SAMPLE_SIZE);
         return {
-          count: counted?.count ?? 0,
-          latestHashes: latest.flatMap(({ hash }) => (hash === null ? [] : [hash])),
+          count: (sentCount?.count ?? 0) + (proposedCount?.count ?? 0),
+          latestHashes: latest.map(({ hash }) => hash),
         };
       }),
     knownAssets: () =>

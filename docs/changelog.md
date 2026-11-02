@@ -27,6 +27,7 @@ This release adds a console for operators, holds for payments a person should lo
 - **Named Senders.** A senders file names each chain's Senders, plain or multisig, and labels a multisig's Approvers. [Configuration](./self-hosting/configuration.md#the-senders-file).
 - **Setup in one command.** `pnpm dispatch init` writes the Signer config and the `.env` and can start the services. `pnpm dispatch doctor`, the worker every five minutes, the console's Setup page and `GET /v1/setup` all run the same checks, each with its fix. [Install and run](./self-hosting/install.md) and [Setup checks](./self-hosting/doctor.md).
 - **A taken nonce no longer fails a payment.** On Base, when something else sending from the Sender's wallet takes a nonce the engine used, and the engine's transaction never landed, it sends the payment again at the next free nonce, up to 3 times. The item's timeline shows each resend, and the worker reports which nonces another sender used, on the Sender in the console and in [List Senders](./openapi.yaml#list-senders) as `foreignActivity`.
+- **Fee balance per Sender.** The Fee balance check compares each Sender's fee payer with the fees that Sender paid, not the whole chain's, so a quiet treasury no longer reports a busy Sender's fee load. [Setup checks](./self-hosting/doctor.md#fee-balance).
 - **One engine per Sender.** This is the rule, now stated plainly: never share a Sender's key between engines, and use named Senders to split work. [Install and run](./self-hosting/install.md#where-things-run-in-production).
 
 ## These docs

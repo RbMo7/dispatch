@@ -64,8 +64,8 @@ export const feeBalance: Check = {
   runsIn: ['cli', 'worker'],
   scope: 'sender',
   appliesTo: (setup) => setup.accounts !== undefined,
-  run: async (context, { chain, accounts }) => {
-    const { feePayer, native } = accounts!;
+  run: async (context, { chain, accounts, isDefault }) => {
+    const { address, feePayer, native } = accounts!;
     const amount = (value: bigint) => `${formatUnits(value, native.decimals)} ${native.symbol}`;
 
     const balance = await context.chain(chain).balance(feePayer, native.symbol);
@@ -79,6 +79,7 @@ export const feeBalance: Check = {
     try {
       recent = await context.database.recentTransactions(
         chain,
+        { address, isDefault },
         new Date(context.now().getTime() - DAY_MS),
       );
     } catch (cause) {
