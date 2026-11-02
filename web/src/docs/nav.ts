@@ -24,12 +24,14 @@ export const NAV: readonly NavSection[] = [
       { source: 'docs/lifecycle.md', slug: 'lifecycle' },
       { source: 'docs/pagination.md', slug: 'pagination' },
       { source: 'docs/polling.md', slug: 'polling' },
+      { source: 'docs/changelog.md', slug: 'changelog' },
     ],
   },
   {
     title: 'Guides',
     pages: [
       { source: 'docs/guides/send-payments.md', slug: 'guides/send-payments' },
+      { source: 'docs/guides/assets.md', slug: 'guides/assets' },
       { source: 'docs/guides/call-a-contract.md', slug: 'guides/call-a-contract' },
       { source: 'docs/guides/relay.md', slug: 'guides/relay' },
       { source: 'docs/guides/bulk-call.md', slug: 'guides/bulk-call' },
