@@ -116,6 +116,10 @@ _Avoid_: Token (ambiguous with an API token), Custom asset
 What a confirmed Transaction changed on chain, as the chain reports it: tokens and native value moved, the fee paid, and the events or log messages it produced. Recorded once at confirmation and decoded when read, so they describe what happened, never what a Call was meant to do (ADR-0063).
 _Avoid_: Result, Outcome (that's a Call's status), Simulation
 
+**Known Contract**:
+A contract (Base) or program (Solana) an operator registered with its ABI or Anchor IDL and a label, so the engine can name the function, arguments and events of a Call to it. Decoding happens when a Dispatch is read, so a registration also explains Calls sent before it. An address has at most one enabled registration; a wrong one is disabled, never deleted or edited, and a new one added. Standard contracts and programs are decoded by built-in decoders without one (ADR-0063).
+_Avoid_: ABI (that's what a Known Contract holds), Verified contract
+
 **Setup Check**:
 One check of an engine's setup (configuration, database, chain, Signer, Sender, multisig or console) that passes, warns or fails, with a fix for anything but a pass. The same checks run in `doctor`, in the worker, and behind the console's Setup page. A failing one is reported, never a reason to stop the engine (ADR-0067).
 _Avoid_: Startup check (a refusal to start, which only an unsafe state causes), Health check

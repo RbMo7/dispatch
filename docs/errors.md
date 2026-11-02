@@ -53,8 +53,8 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `400` | The request is invalid. Nothing was stored, and the `Idempotency-Key` is not used up. |
 | `401` | The `Authorization` header is missing, or its token is neither the engine's `AUTH_TOKEN` nor its `OPERATOR_TOKEN`. |
 | `403` | The route needs the [operator token](./authentication.md#the-operator-token), and the request sent `AUTH_TOKEN`, or the engine has no `OPERATOR_TOKEN`. |
-| `404` | No Dispatch, Flag Rule or Known Asset has this id. An id that is not a UUID gets the same answer. |
-| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). For a Known Asset: the address or the symbol is taken (`ASSET_EXISTS`, `SYMBOL_TAKEN`), or the asset comes from the configuration (`CONFIG_ASSET`). |
+| `404` | No Dispatch, Flag Rule, Known Asset or contract registration has this id. An id that is not a UUID gets the same answer. |
+| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). For a Known Asset: the address or the symbol is taken (`ASSET_EXISTS`, `SYMBOL_TAKEN`), or the asset comes from the configuration (`CONFIG_ASSET`). For a contract: an enabled registration already has the address (`CONTRACT_EXISTS`). |
 | `503` | Adding or previewing a Known Asset: the chain could not be read (`RPC_UNAVAILABLE`). |
 | `413` | The body is over 1 MiB. |
 
@@ -84,6 +84,9 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `SYMBOL_TAKEN` | `409` | Adding or enabling a Known Asset: another enabled asset on the chain has the symbol, ignoring case. | Send another `symbol`, or disable the other asset first. |
 | `ASSET_EXISTS` | `409` | Adding a Known Asset that is already one, enabled or not. | Enable it with `PATCH /v1/assets/{id}`. |
 | `CONFIG_ASSET` | `409` | Enabling or disabling an asset that comes from `*_KNOWN_TOKENS` or is a native coin. | Change the variable and restart. |
+| `INVALID_ABI` | `400` | Registering a Base contract: the ABI is not JSON, or an item or parameter is malformed. `message` says where, as in `abi[0].inputs[0].type: "strng" is not a Solidity type`. | Fix the ABI at the place `message` names. |
+| `INVALID_IDL` | `400` | Registering a Solana program: the IDL is not JSON, uses a type it never defines, uses generics, or names another program. | Use the Anchor IDL your build wrote for this program. |
+| `CONTRACT_EXISTS` | `409` | Registering or enabling a contract whose address already has an enabled registration. | Disable the old registration with `PATCH /v1/contracts/{id}`, then add the new one. |
 
 The engine has one more code, `ALREADY_KNOWN`, which it never reports. It means the node already had the exact bytes, so the item stays `broadcasting` until it resolves.
 

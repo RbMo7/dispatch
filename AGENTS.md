@@ -25,7 +25,7 @@ Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domai
 
 ## Where things stand
 
-As of 2026-11-01.
+As of 2026-11-02.
 
 - `old-docs/` is a frozen snapshot from the prior product this repo diverged from. Reference only, never current.
 - **Wire format and docs.** `docs/openapi.yaml` pins the `/v1` wire format, and `src/api/openapi.contract.test.ts` drives the real routes through its examples, so a route that drifts from it, or a `/v1` route it lacks, fails CI (ADR-0066). Older ADRs that cite `docs/api.md` mean `docs/openapi.yaml`. The docs site (`docs/`, rendered by `web/`) is written for a developer: Get started, Guides, the REST API reference built from `docs/openapi.yaml`, and Self-hosting. ADRs and `CONTEXT.md` stay in the repo but are not on the site, and the docs build fails on an `ADR-NNNN` reference, an em or en dash, or a filler word in a page. `docs/self-hosting/mainnet.md` is the mainnet checklist.
@@ -53,16 +53,15 @@ Lands `web-console`, `flag-rules`, `setup-tooling` and `named-senders` (specs in
 
 ### `flow-coverage` (on top of `integration`, no PR yet)
 
-`.scratch/flow-coverage/spec.md`; ADR-0061 to ADR-0063. Every kind of Dispatch seen and explained in the console. Other branches are merging into it now.
+`.scratch/flow-coverage/spec.md` and `.scratch/nonce-resilience/spec.md`; ADR-0061 to ADR-0064. Every kind of Dispatch seen and explained in the console, and a Base nonce taken by another sender no longer fails a payment. Everything below is merged into the branch and verified offline (`pnpm test:offline`, `web/` tests, both builds); each part was also run live on devnet or Base Sepolia on its own branch.
 
-- Merged into the branch: the Known Asset registry in the engine, seeded from `*_KNOWN_TOKENS` and extended by operators, with metadata read from the chain (#161, ADR-0061); who approved a Proposal and how many approvals remain (#165); and the baseline live run, `scripts/flows/` (#160).
-- In review on their own branches: the console's Assets page and asset names everywhere (#162, `console-assets`); Effects recorded at confirmation and calls decoded on read (#163, `call-effects`, ADR-0063); the error catalogue and Rejected Requests (#166, `errors-rejected`, ADR-0062).
-- Ready to go: the contract registry and the console's call view (#164), the console gaps the baseline run found (#168), and timeline order, the cancel reason and revert reasons in the engine (#169).
-- Blocked on the above: the live run of every flow after the changes, with the docs (#167).
-
-### `nonce-resilience` (on top of `flow-coverage`, no PR yet)
-
-`.scratch/nonce-resilience/spec.md`; ADR-0064, which is only on that branch so far. The baseline run found that two engines sharing one Base key fail each other's items with `NONCE_ALREADY_USED`. Decided: a Base transaction whose nonce another sender took, and which never landed, is sent again at the next free nonce, up to 3 times; the worker records and reports nonces another sender used; one engine per Sender stays the rule. The branch holds the spec and the ADR only. #171 (resend) and #172 (detect and report) are in progress; #173 (console) and #174 (docs and a two-engine live run) are blocked on them.
+- The Known Asset registry: seeded from `*_KNOWN_TOKENS`, extended by operators with metadata read from the chain (#161, ADR-0061), and the console's Assets page with asset names everywhere (#162).
+- Effects recorded once at confirmation and calls decoded on read by built-in decoders (#163, ADR-0063), and the contract registry of operator-added ABIs and Anchor IDLs, with the console's Contracts page and call view (#164). Migration `0029_known_contracts` carries a hand-written notify trigger that drizzle-kit does not generate.
+- Who approved a Proposal and how many approvals remain (#165).
+- The error catalogue in the console and Rejected Requests (#166, ADR-0062).
+- A Base transaction whose nonce another sender took, and which never landed, is sent again at the next free nonce, up to 3 times; the worker records the nonces another sender used and reports them as `foreignActivity` and a `sender.exclusive` setup check; the console shows the resend and warns on the Sender (#171 to #174, ADR-0064). One engine per Sender stays the rule.
+- `scripts/flows/` drives each flow against devnet and Base Sepolia and screenshots the console (#160).
+- The Tokens setup check runs in the API and doctor, not the worker, which is never given the tokens.
 
 ### Unproven
 
@@ -77,14 +76,8 @@ Lands `web-console`, `flag-rules`, `setup-tooling` and `named-senders` (specs in
 Every open issue carries one status label (see above).
 
 - `needs-triage`: #132 (one oversized Dispatch fails the others claimed in its Funding Check batch).
-- `ready-to-go`: #159 (the fee balance check should count only its own Sender's fees), #164, #168, #169, #170 (two Postgres-tier tests fail intermittently).
-- `in-progress`: #160, #161, #165, #171, #172.
-- `in-review`: #162, #163, #166, and the PR #158 issues listed above, including #145, whose live criterion (one run per chain through a plain and a multisig Sender) is still unmet.
-- `blocked`: #157 (Compose does not pass the senders file to the API and the worker), #167, #173, #174.
+- `ready-to-go`: #159 (the fee balance check should count only its own Sender's fees), #168 (console gaps the baseline run found: Relay details, the Bulk Call label, fee-bump numbers, holds in the flow, every hash, the Sender card's headline coin), #169 (timeline order, the cancel reason on the Dispatch, revert reasons), #170 (two Postgres-tier tests fail intermittently: Node's clock against Postgres `now()`, and the docs reference tests under load).
+- `in-progress`: #167 (the live run of every flow after the changes; needs the Base dev key topped up).
+- `in-review`: #160 to #166 and #171 to #174 (on `flow-coverage`), and the PR #158 issues listed above, including #145, whose live criterion (one run per chain through a plain and a multisig Sender) is still unmet.
+- `blocked`: #157 (Compose does not pass the senders file to the API and the worker), #175 (the Safe executor key, the foreign-nonce record write, duplicate warnings).
 - `waiting`: #61 (needs operator AWS keys), #91 (a human checks that the Squads app shows a batch's contents), #96 (human checks before mainnet: Squads app labels and rent collector, Safe plan quotas, delegate removal, self-hosting).
-
-### Next and deferred
-
-- **Next:** merge PR #158; finish `flow-coverage` and `nonce-resilience`; then a small mainnet smoke test following `docs/self-hosting/mainnet.md` (including its multisig items), and a separate Base mainnet review. On hold: there are no mainnet funds yet.
-- **Deferred:** Solana Durable Nonce Execution (ADR-0048, #44 closed): not built until a Sender needs offline signing or volume shows expiry failures; if built, cancel by advancing the nonce before resubmitting.
-- **Roadmap, not yet ticketed:** the Bulk Call `allowFailure: true` API-level proof, which needs a tracing RPC (`BASE_TRACE_RPC_URL`); webhooks (ADR-0023); Ethereum L1 as its own chain (ADR-0035); the Sender Pool (ADR-0016).
