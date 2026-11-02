@@ -1,8 +1,9 @@
+import { Keypair } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
 
 import { err, ok } from '../../domain/result.js';
 import type { ForeignActivity } from '../../domain/sender.js';
-import type { ChainReads, CheckContext, RecentTransactions } from '../check.js';
+import type { ChainReads, CheckContext, FeeSender, RecentTransactions } from '../check.js';
 import {
   BASE_SENDER,
   fakeContext,
@@ -109,6 +110,76 @@ describe('Sender: Fee balance', () => {
         )
       ).status,
     ).toBe('pass');
+  });
+
+  it("counts only each Sender's own fees when two Senders share a chain (#159)", async () => {
+    const REFUNDS = Keypair.generate().publicKey.toBase58();
+    const asked: FeeSender[] = [];
+    const context = fakeContext(
+      goodEnv({ ENABLED_CHAINS: 'solana', SOLANA_SENDER_ADDRESS: '' }),
+      {
+        database: {
+          ...fakeContext().database,
+          recentTransactions: (_chain, sender) => {
+            asked.push(sender);
+            // A busy hot Sender and a quiet one.
+            return Promise.resolve(
+              sender.address === SOLANA_SENDER
+                ? { count: 3, latestHashes: hashes(3) }
+                : { count: 0, latestHashes: [] },
+            );
+          },
+        },
+        chain: (chain) => ({
+          ...healthyChain(chain),
+          balance: (_address, asset) => Promise.resolve(ok({ asset, amount: '10000' })),
+        }),
+      },
+      {
+        solana: {
+          default: 'payouts',
+          senders: { payouts: { address: SOLANA_SENDER }, refunds: { address: REFUNDS } },
+        },
+      },
+    );
+
+    expect(await result(context, 'sender.fees:solana:payouts')).toMatchObject({
+      status: 'warn',
+      finding: `${SOLANA_SENDER} holds 0.00001 SOL, which would not cover the 0.000015 SOL in fees over 3 transactions in the last 24 hours`,
+    });
+    expect(await result(context, 'sender.fees:solana:refunds')).toEqual({
+      status: 'pass',
+      finding: `${REFUNDS} holds 0.00001 SOL; no fees paid in the last 24 hours to compare with`,
+    });
+    expect(asked).toEqual(
+      expect.arrayContaining([
+        { address: SOLANA_SENDER, isDefault: true },
+        { address: REFUNDS, isDefault: false },
+      ]),
+    );
+  });
+
+  it("asks for a Safe Sender's fees by the Safe, and checks the engine key's balance", async () => {
+    const SAFE = '0x84Ac281B68de095f6227050F56C74d93d294e609';
+    const asked: FeeSender[] = [];
+    const env = goodEnv({
+      BASE_SENDER_MODE: 'safe',
+      BASE_SENDER_ADDRESS: '',
+      BASE_SAFE_ADDRESS: SAFE,
+      BASE_SAFE_EXECUTOR_ADDRESS: BASE_SENDER,
+    });
+    const context = fakeContext(env, {
+      database: {
+        ...fakeContext().database,
+        recentTransactions: (_chain, sender) => {
+          asked.push(sender);
+          return Promise.resolve({ count: 0, latestHashes: [] });
+        },
+      },
+    });
+
+    expect((await result(context, 'sender.fees:base')).finding).toContain(BASE_SENDER);
+    expect(asked).toContainEqual({ address: SAFE, isDefault: true });
   });
 
   it('checks the engine key, not the Safe, on a Safe Sender', async () => {

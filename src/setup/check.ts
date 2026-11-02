@@ -58,11 +58,19 @@ export type ApiEnvironment = { source: 'compose' | 'process'; env: Env };
 /** The engine's own Transactions on a chain since a time: how many, and the hashes of the latest few. */
 export type RecentTransactions = { count: number; latestHashes: string[] };
 
+/**
+ * #159: the Sender whose fees `recentTransactions` counts. `address` is the
+ * Sender's identity (a plain Sender, a Squads vault or a Safe); the default
+ * Sender also takes a Dispatch stored without one (ADR-0060).
+ */
+export type FeeSender = { address: string; isDefault: boolean };
+
 export type DatabaseReads = {
   ping: () => Promise<void>;
   /** Tags of migrations in `drizzle/` the database has not applied. */
   pendingMigrations: () => Promise<string[]>;
-  recentTransactions: (chain: Chain, since: Date) => Promise<RecentTransactions>;
+  /** The transactions `sender`'s fee payer paid for on `chain` since `since` (#159). */
+  recentTransactions: (chain: Chain, sender: FeeSender, since: Date) => Promise<RecentTransactions>;
   /** Every stored Known Asset row (ADR-0061). */
   knownAssets: () => Promise<KnownAsset[]>;
   /** ADR-0064: the nonces of a Sender's wallet the worker found another sender used since `since`. */

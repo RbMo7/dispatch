@@ -168,7 +168,12 @@ Checks that the API process has neither `SIGNER_URL` nor `SIGNER_AUTH_TOKEN`. On
 
 Id `sender.fees`. Runs in doctor and the worker, once per Sender.
 
-Checks that the key that pays fees holds enough of the native asset, SOL or ETH. For a Multisig Sender that key is the member key or the executor. It compares the balance with the fees the engine paid on that chain in the last 24 hours, read from the chain for the latest 20 transactions and scaled to the day's count:
+Checks that the key that pays fees holds enough of the native asset, SOL or ETH. For a Multisig Sender that key is the member key or the executor. It compares the balance with the fees that key paid in the last 24 hours, read from the chain for the latest 20 transactions and scaled to the day's count. It counts only this Sender's own transactions, so a busy Sender's fees never show on a quiet one:
+
+- the transactions of Dispatches this Sender paid for, which on the chain's default Sender include any Dispatch stored without a Sender;
+- for a Multisig Sender, also each Proposal the engine key posted.
+
+A Relay Dispatch is not counted, since whoever signed it paid its fee.
 
 - It fails when the balance is zero and the engine sent transactions in the last 24 hours.
 - It warns when the balance would not cover the last 24 hours' fees, or when it is zero on a new install with no history.
