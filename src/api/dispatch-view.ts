@@ -10,8 +10,9 @@ import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store
 import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import type { TransactionEffects } from '../domain/effects.js';
 import { decodeCall, decodeEffects } from '../effects/decode.js';
-import type { EffectsView, Known } from '../effects/view.js';
+import { labelOf, type EffectsView, type Known } from '../effects/view.js';
 import { toWireDefinition } from './flag-rule-wire.js';
+import { relaySignedView } from './signed-view.js';
 import { buildTimeline } from './timeline.js';
 
 /** ADR-0060: the configured name of the Sender at an address, or null when no Sender has it any more. */
@@ -261,6 +262,17 @@ export async function readDispatchView(
       ...senderView(dispatch, options.nameOf),
       createdAt: dispatch.createdAt,
       status: deriveDispatchStatus(dispatch, transactions),
+      retryPolicy: dispatch.retryPolicy,
+      ...(dispatch.bulkCall
+        ? {
+            bulkCall: {
+              aggregator: dispatch.bulkCall.aggregator,
+              ...labelOf(known, dispatch.chain, dispatch.bulkCall.aggregator),
+              maxBatchSize: dispatch.bulkCall.maxBatchSize,
+              allowFailure: dispatch.bulkCall.allowFailure,
+            },
+          }
+        : {}),
       items,
       ...(hold ? { hold: toWireHold(hold) } : {}),
       ...(await cancellationView(store, dispatch.id, dispatch.status)),
@@ -294,6 +306,7 @@ export async function readDispatchView(
       status: deriveRelayStatus(relayDispatch, relayTransactions),
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,
+      ...(await relaySignedView(relayDispatch.chain, relayDispatch.signedTransaction)),
       ...(await cancellationView(store, relayDispatch.id, relayDispatch.status)),
       ...effects.view(transaction),
       ...(options.timeline
@@ -340,6 +353,7 @@ export function summarizeDispatch(
     status: deriveDispatchStatus(dispatch, listed.transactions.filter(isCurrentVersion)),
     createdAt: dispatch.createdAt,
     itemCount: dispatch.items.length,
+    callCount: dispatch.items.filter((item) => item.payment === null).length,
     totals: sumAssetAmounts([
       dispatch.items.flatMap(({ payment }) =>
         payment ? [{ asset: payment.asset, amount: payment.amount }] : [],

@@ -1,6 +1,7 @@
 import type { DispatchError } from '../domain/errors.js';
 import type { ApprovalState, ChainProposalRef, Proposal } from '../domain/proposal.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
+import { feeOf, type FeeView } from './signed-view.js';
 
 /**
  * #109: one moment in a Dispatch's history, rebuilt from timestamps the
@@ -12,7 +13,15 @@ export type TimelineEntry =
   | { kind: 'created'; at: Date }
   | { kind: 'claimed'; at: Date }
   | { kind: 'cancelled'; at: Date }
-  | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }
+  | {
+      kind: 'written';
+      at: Date;
+      hash: string;
+      items: number[];
+      replaces: string | null;
+      /** Base: the fees this version was signed with, so a fee bump shows before and after. */
+      fee?: FeeView;
+    }
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
   | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
@@ -109,12 +118,14 @@ export function buildTimeline({
       const predecessor = first.replacesTransactionId
         ? byId.get(first.replacesTransactionId)
         : undefined;
+      const fee = feeOf(first.chain, first.signedBytes);
       entries.push({
         kind: 'written',
         at: first.broadcastAt,
         hash,
         items,
         replaces: predecessor?.hash ?? null,
+        ...(fee ? { fee } : {}),
       });
       if (first.sentAt) entries.push({ kind: 'sent', at: first.sentAt, hash, items });
       for (const attempt of rowAttempts) {
