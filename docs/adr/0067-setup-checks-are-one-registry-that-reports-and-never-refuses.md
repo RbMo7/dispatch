@@ -10,7 +10,8 @@ The startup checks (ADR-0049, ADR-0051, ADR-0055) stop at the first problem and 
 - **Three places run it:**
   - `cli`: `pnpm dispatch doctor` and `pnpm dispatch init`. `doctor` exits 1 on any failure, so a deploy can gate on it.
   - `worker`: at start and every five minutes, recording the latest result per check.
-  - `api`: on each `GET /v1/setup`, only the checks that need no Signer and no chain (database, migrations, console build).
+  - `api`: on each `GET /v1/setup`, only the checks that need no Signer and no chain (database, migrations, console build), plus the checks about settings only the API process is given: `AUTH_TOKEN` and `OPERATOR_TOKEN` (the Tokens check).
+- **A check runs only where its inputs exist.** The worker is never given the API's tokens, so running the Tokens check there reported "OPERATOR_TOKEN is not set" on every engine; it moved to the API (2026-11-02).
 - **The console reads what the worker recorded**, merged with the API's own results, each marked with where and when it ran. It never calls the Signer (ADR-0059).
 - **Checks reuse the engine's code paths** (configuration parsing, the handlers' reads, the Signer pin read, the multisig startup checks), never a copy of them.
 - **A check reports; it never stops a process.** The engine still refuses to start only in the unsafe states it already refused (ADR-0049, ADR-0051, ADR-0055).
