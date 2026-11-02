@@ -132,7 +132,7 @@ This Base payment had [Retry Policy](../lifecycle.md#retry-policy-and-stuck-tran
 ]
 ```
 
-The second `written` entry names the version it `replaces`. While both versions were pending, the first one read `replaced`, because either could still land. Once the replacement confirmed, the first one can never land, so it reads `dropped`, at the time it was replaced. While this happens, the item's `transactionHash` is the latest version, and it can change between polls. Once a version lands, `transactionHash` is the one that landed, which may be the original.
+The second `written` entry names the version it `replaces`, and on Base each `written` entry carries the `fee` it was signed with, so you can see how much the bump raised it. While both versions were pending, the first one read `replaced`, because either could still land. Once the replacement confirmed, the first one can never land, so it reads `dropped`, at the time it was replaced. While this happens, the item's `transactionHash` is the latest version, and it can change between polls. Once a version lands, `transactionHash` is the one that landed, which may be the original.
 
 A Solana transaction that expires looks the same, with `dropped` straight away, because an expired blockhash can never land. This payment was signed over a blockhash that had already expired, so the engine resubmitted it with a fresh one:
 
@@ -164,7 +164,7 @@ Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of
 | `created` | `POST /v1/dispatch` stored it. | |
 | `claimed` | The worker first claimed it. | |
 | `cancelled` | It was [cancelled](./cancel.md). | |
-| `written` | A transaction version was signed and written down, before it was sent. | `hash`, `items`, `replaces`: the hash it replaced, or `null` |
+| `written` | A transaction version was signed and written down, before it was sent. | `hash`, `items`, `replaces`: the hash it replaced, or `null`. On Base, `fee`: the `maxFeePerGas` and `maxPriorityFeePerGas` it was signed with, in wei |
 | `sent` | The node first accepted it. Later resends are `attempt` entries. | `hash`, `items` |
 | `attempt` | The same bytes were sent again. `error` is the node's answer if it refused. | `hash`, `items`, `error` |
 | `replaced` | A newer version took its place: a fee bump. It may still be the one that lands. Once the item settles on another version, this entry reads `dropped`. | `hash`, `items`, `by` |
