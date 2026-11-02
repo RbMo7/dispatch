@@ -1,8 +1,21 @@
 import type { DispatchItem } from './call.js';
 import type { Chain } from './chain.js';
+import type { SenderAddress } from './sender.js';
 
-/** Lowercase to mirror the wire enum pinned in docs/api.md verbatim. */
-export type DispatchStatus = 'queued' | 'broadcasting' | 'confirmed' | 'failed' | 'partial';
+/** Lowercase to mirror the wire enum pinned in docs/openapi.yaml verbatim. `cancelled` (ADR-0056) and `held` (ADR-0058) are stored, like `queued` and `broadcasting`; the rest are derived. */
+export type DispatchStatus =
+  'queued' | 'held' | 'broadcasting' | 'confirmed' | 'failed' | 'partial' | 'cancelled';
+
+/** docs/openapi.yaml's per-item status, also a Relay Dispatch's top-level one: adds `abandoned` and `awaiting_approval`, never `partial`. A Relay Dispatch is never `held`. */
+export type ItemStatus =
+  | 'queued'
+  | 'held'
+  | 'awaiting_approval'
+  | 'broadcasting'
+  | 'confirmed'
+  | 'failed'
+  | 'abandoned'
+  | 'cancelled';
 
 /**
  * A Dispatch's items are always Call, paired with the Payment each came
@@ -31,6 +44,17 @@ export type Dispatch<C extends Chain = Chain> = {
   retryPolicy: boolean;
   /** #11 (ADR-0038): opted into Bulk Call — items go out as `aggregate3Value` chunks through this caller-named aggregator. Null for the default one-transaction-per-item mode. */
   bulkCall: BulkCall | null;
+  createdAt: Date;
+  /** #20: when a worker last claimed it; re-stamped as a heartbeat while it sends, and on a reclaim. */
+  claimedAt: Date | null;
+  /** ADR-0056: set exactly when `status` is `cancelled`. */
+  cancelledAt: Date | null;
+  /**
+   * ADR-0060: the Sender that pays, its identity. Null only while stored
+   * without one (from before named Senders, or a caller that named none):
+   * its chain's default Sender takes it over before it is ever claimed.
+   */
+  senderAddress: SenderAddress | null;
 };
 
 /** #11 (ADR-0038): a request's Bulk Call opt-in, as resolved at the API edge (`maxBatchSize` already defaulted and bounded). */

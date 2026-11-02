@@ -1,0 +1,2 @@
+CREATE INDEX "dispatches_created_at_id_idx" ON "dispatches" USING btree ("created_at","id");--> statement-breakpoint
+CREATE INDEX "relay_dispatches_created_at_id_idx" ON "relay_dispatches" USING btree ("created_at","id");

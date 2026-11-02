@@ -10,6 +10,9 @@ async function testApp() {
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'test-token',
     defaultRetryPolicy: false,
+    assetDecimals: () => undefined,
+    listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
 }
 

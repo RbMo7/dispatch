@@ -11,91 +11,98 @@ import { DEFAULT_RPC_TIMEOUT_MS } from './rpc-timeout.js';
 // without one is unaffected.
 if (existsSync('.env')) process.loadEnvFile('.env');
 
+export type Env = Readonly<Record<string, string | undefined>>;
+
 /** The vault of SOLANA_MULTISIG_ADDRESS, or '' when it is unset or invalid (resolveSolanaMultisigConfig reports that at startup). */
-function solanaVaultFromEnv(): string {
-  const multisig = parsePublicKey((process.env.SOLANA_MULTISIG_ADDRESS ?? '').trim());
+function solanaVaultFromEnv(env: Env): string {
+  const multisig = parsePublicKey((env.SOLANA_MULTISIG_ADDRESS ?? '').trim());
   return multisig ? deriveVaultAddress(multisig).toBase58() : '';
 }
 
-export const config = {
-  port: Number(process.env.PORT ?? 8420),
+/** The engine's configuration as read from `env`. It never throws: the startup checks and `doctor` validate it. */
+export const configFrom = (env: Env) => ({
+  port: Number(env.PORT ?? 8420),
   /** issue 15: per-call deadline for outbound RPC/Signer network calls (rpc-timeout.ts) — never how long broadcast()'s own confirmation polling loop may run in total. */
-  rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS ?? DEFAULT_RPC_TIMEOUT_MS),
-  databaseUrl: process.env.DATABASE_URL ?? 'postgres://dispatch:dispatch@localhost:5432/dispatch',
-  /** Base URL of the operator-configured Signer (ADR-0002) — swap this to point at a production Signer. */
-  signerUrl: process.env.SIGNER_URL ?? 'http://localhost:8421',
+  rpcTimeoutMs: Number(env.RPC_TIMEOUT_MS ?? DEFAULT_RPC_TIMEOUT_MS),
+  databaseUrl: env.DATABASE_URL ?? 'postgres://dispatch:dispatch@localhost:5432/dispatch',
+  /** Base URL of the operator-configured Signer (ADR-0002). Read by the worker only: the API never calls the Signer (ADR-0059). */
+  signerUrl: env.SIGNER_URL ?? 'http://localhost:8421',
   /** ADR-0046: the bearer token every /sign request carries. Unset, the engine still starts (a Relay-only deployment never signs), but the Signer refuses to sign with 401. */
-  signerAuthToken: process.env.SIGNER_AUTH_TOKEN || undefined,
+  signerAuthToken: env.SIGNER_AUTH_TOKEN || undefined,
   /** Comma-separated chain names (ADR-0019), e.g. "solana,evm" — parsed via chain-registry's parseEnabledChains. */
-  enabledChains: process.env.ENABLED_CHAINS ?? '',
+  enabledChains: env.ENABLED_CHAINS ?? '',
+  /** ADR-0060: the senders file naming several Senders per chain (senders-config.ts). Unset: `senders.json` if it exists, else the per-chain variables below describe one Sender per chain. */
+  sendersFile: env.SENDERS_FILE ?? '',
   /** Operator-configured shared secret (ADR-0022) — override in any non-dev deployment. */
-  authToken: process.env.AUTH_TOKEN ?? 'dev-secret',
+  authToken: env.AUTH_TOKEN ?? 'dev-secret',
+  /** ADR-0057: release and Flag Rule edits. Unset leaves them off; set, it must be non-empty and differ from AUTH_TOKEN. */
+  operatorToken: env.OPERATOR_TOKEN,
   /** Global Retry Policy default (ADR-0003) when a Dispatch request omits its own — off unless the operator opts in. */
-  defaultRetryPolicy: process.env.DEFAULT_RETRY_POLICY === 'true',
+  defaultRetryPolicy: env.DEFAULT_RETRY_POLICY === 'true',
   /** Solana Chain Handler config — only consulted when 'solana' is actually in enabledChains (ADR-0019). */
   solana: {
-    rpcUrl: process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com',
+    rpcUrl: env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com',
     /** The single Sender wallet (ADR-0016) this build's Solana Chain Handler transfers from. In multisig mode (ADR-0049) it is the multisig's vault, derived from SOLANA_MULTISIG_ADDRESS. */
     senderAddress:
-      process.env.SOLANA_SENDER_ADDRESS ||
-      (process.env.SOLANA_SENDER_MODE === 'multisig' ? solanaVaultFromEnv() : ''),
+      env.SOLANA_SENDER_ADDRESS ||
+      (env.SOLANA_SENDER_MODE === 'multisig' ? solanaVaultFromEnv(env) : ''),
     /** #73 (ADR-0049): raw Multisig Sender settings, validated by resolveSolanaMultisigConfig when 'solana' loads — `single` (the default) ignores them. */
     multisig: {
-      senderMode: process.env.SOLANA_SENDER_MODE ?? '',
-      senderAddress: process.env.SOLANA_SENDER_ADDRESS ?? '',
-      multisigAddress: process.env.SOLANA_MULTISIG_ADDRESS ?? '',
-      memberAddress: process.env.SOLANA_MULTISIG_MEMBER_ADDRESS ?? '',
-      approvalDeadlineMs: process.env.SOLANA_APPROVAL_DEADLINE_MS ?? '',
-      approvalRewatchWindowMs: process.env.SOLANA_APPROVAL_REWATCH_WINDOW_MS ?? '',
+      senderMode: env.SOLANA_SENDER_MODE ?? '',
+      senderAddress: env.SOLANA_SENDER_ADDRESS ?? '',
+      multisigAddress: env.SOLANA_MULTISIG_ADDRESS ?? '',
+      memberAddress: env.SOLANA_MULTISIG_MEMBER_ADDRESS ?? '',
+      approvalDeadlineMs: env.SOLANA_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: env.SOLANA_APPROVAL_REWATCH_WINDOW_MS ?? '',
     },
     /** Comma-separated `SYMBOL:mint:decimals` list — parsed via known-tokens.ts's parseSolanaKnownTokens. */
-    knownTokens: process.env.SOLANA_KNOWN_TOKENS ?? '',
+    knownTokens: env.SOLANA_KNOWN_TOKENS ?? '',
     /** #34: priority fee in micro-lamports per compute unit on every transaction the engine builds. 0 (default) adds none — a priority fee costs more, so it's opt-in (ADR-0003). */
     computeUnitPriceMicroLamports:
-      process.env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS === 'auto'
+      env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS === 'auto'
         ? ('auto' as const)
-        : Number(process.env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
+        : Number(env.SOLANA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
     /** #43: the ceiling for an `auto` price. */
-    maxComputeUnitPriceMicroLamports: Number(
-      process.env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0,
-    ),
+    maxComputeUnitPriceMicroLamports: Number(env.SOLANA_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS ?? 0),
     /** #42: how many Solana transactions one worker may have in flight at once. */
-    sendConcurrency: Number(process.env.SOLANA_SEND_CONCURRENCY || 4),
+    sendConcurrency: Number(env.SOLANA_SEND_CONCURRENCY || 4),
   },
   /** Base Chain Handler config — only consulted when 'base' is actually in enabledChains (ADR-0019). Same shape as config.solana (base-chain-handler spec's own maintainer-facing decision). */
   base: {
-    rpcUrl: process.env.BASE_RPC_URL ?? 'https://sepolia.base.org',
+    rpcUrl: env.BASE_RPC_URL ?? 'https://sepolia.base.org',
     /** Verified against the connected RPC's own eth_chainId at construction — refuses to start on mismatch. Base mainnet 8453, Base Sepolia 84532. */
-    chainId: Number(process.env.BASE_CHAIN_ID ?? 84532),
+    chainId: Number(env.BASE_CHAIN_ID ?? 84532),
     /** The single Sender wallet (ADR-0016) this build's Base Chain Handler transfers from. In safe mode (ADR-0051) it is the executor, so BASE_SAFE_EXECUTOR_ADDRESS alone is enough. */
     senderAddress:
-      process.env.BASE_SENDER_ADDRESS ||
-      (process.env.BASE_SENDER_MODE === 'safe'
-        ? (process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '')
-        : ''),
+      env.BASE_SENDER_ADDRESS ||
+      (env.BASE_SENDER_MODE === 'safe' ? (env.BASE_SAFE_EXECUTOR_ADDRESS ?? '') : ''),
     /** #82 (ADR-0051): raw Safe Sender settings, validated by resolveBaseSafeConfig when 'base' loads — `single` (the default) ignores them. */
     safe: {
-      senderMode: process.env.BASE_SENDER_MODE ?? '',
-      senderAddress: process.env.BASE_SENDER_ADDRESS ?? '',
-      safeAddress: process.env.BASE_SAFE_ADDRESS ?? '',
-      safeExecutorAddress: process.env.BASE_SAFE_EXECUTOR_ADDRESS ?? '',
-      txServiceUrl: process.env.BASE_SAFE_TX_SERVICE_URL ?? '',
-      apiKey: process.env.BASE_SAFE_API_KEY ?? '',
-      approvalDeadlineMs: process.env.BASE_APPROVAL_DEADLINE_MS ?? '',
-      approvalRewatchWindowMs: process.env.BASE_APPROVAL_REWATCH_WINDOW_MS ?? '',
-      bundleLimit: process.env.BASE_SAFE_BUNDLE_LIMIT ?? '',
+      senderMode: env.BASE_SENDER_MODE ?? '',
+      senderAddress: env.BASE_SENDER_ADDRESS ?? '',
+      safeAddress: env.BASE_SAFE_ADDRESS ?? '',
+      safeExecutorAddress: env.BASE_SAFE_EXECUTOR_ADDRESS ?? '',
+      txServiceUrl: env.BASE_SAFE_TX_SERVICE_URL ?? '',
+      apiKey: env.BASE_SAFE_API_KEY ?? '',
+      approvalDeadlineMs: env.BASE_APPROVAL_DEADLINE_MS ?? '',
+      approvalRewatchWindowMs: env.BASE_APPROVAL_REWATCH_WINDOW_MS ?? '',
+      bundleLimit: env.BASE_SAFE_BUNDLE_LIMIT ?? '',
     },
     /** Comma-separated `SYMBOL:contractAddress:decimals` list — parsed via known-tokens.ts's parseBaseKnownTokens. */
-    knownTokens: process.env.BASE_KNOWN_TOKENS ?? '',
+    knownTokens: env.BASE_KNOWN_TOKENS ?? '',
     /** Minimum percentage both maxFeePerGas and maxPriorityFeePerGas must be bumped by on a Retry Policy fee-bump replacement (issue 09) — go-ethereum/op-geth's own inherited PriceBump floor is 10%; a documented default with margin above that, not a verified Base-sequencer guarantee. */
-    feeBumpPercent: Number(process.env.BASE_FEE_BUMP_PERCENT ?? 15),
+    feeBumpPercent: Number(env.BASE_FEE_BUMP_PERCENT ?? 15),
     /** #9 (ADR-0037): how long a transaction may stay pending after its latest broadcast before it counts as stuck — fee-bumped (Retry Policy on) or else rebroadcast. */
-    stuckAfterMs: Number(process.env.BASE_STUCK_AFTER_MS ?? 60_000),
+    stuckAfterMs: Number(env.BASE_STUCK_AFTER_MS ?? 60_000),
     /** #9 (ADR-0037): the most fee-bump attempts (failed ones included) a Call gets before its latest version just waits out the ABANDONED timeout. */
-    maxFeeBumps: Number(process.env.BASE_MAX_FEE_BUMPS ?? 5),
+    maxFeeBumps: Number(env.BASE_MAX_FEE_BUMPS ?? 5),
     /** Max items per Bulk Call transaction (issue 11) before the engine splits a request across multiple aggregate3Value transactions. */
-    bulkCallMaxBatchSize: Number(process.env.BASE_BULK_CALL_MAX_BATCH_SIZE ?? 50),
+    bulkCallMaxBatchSize: Number(env.BASE_BULK_CALL_MAX_BATCH_SIZE ?? 50),
     /** #11 (ADR-0038): a tracing-capable RPC (`debug_traceTransaction`) — Bulk Call's per-item outcomes are only visible in a trace. Bulk Call is off without one. */
-    traceRpcUrl: process.env.BASE_TRACE_RPC_URL ?? '',
+    traceRpcUrl: env.BASE_TRACE_RPC_URL ?? '',
   },
-};
+});
+
+export type Config = ReturnType<typeof configFrom>;
+
+export const config = configFrom(process.env);

@@ -1,5 +1,6 @@
 import {
   and,
+  desc,
   eq,
   gte,
   inArray,
@@ -11,13 +12,35 @@ import {
   notInArray,
   or,
   sql,
+  type SQL,
 } from 'drizzle-orm';
 
 import type { Database } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  dispatchHolds,
+  flagRules,
+  flagRuleVersions,
+  operatorActions,
+  proposals,
+  relayDispatches,
+  setupChecks,
+  signerKeys,
+  transactions,
+} from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import {
+  definitionFromJson,
+  definitionToJson,
+  type FlagRule,
+  type FlagRuleSpec,
+  type FlagRuleVersion,
+  type Hold,
+} from '../domain/flag-rule.js';
+import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
 import type {
   ApprovalState,
   AssetAmount,
@@ -26,20 +49,30 @@ import type {
   ProposalPhase,
 } from '../domain/proposal.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
-import type { Transaction, TransactionStatus } from '../domain/transaction.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { Area } from '../setup/check.js';
+import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
+import { compareNewestFirst } from './dispatch-store.js';
 import type {
+  CancelOutcome,
   ChainScope,
   CommittedHolder,
+  DispatchListQuery,
   DispatchStore,
+  ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
+  SetupCheckRecord,
+  SignerKeyRecord,
 } from './dispatch-store.js';
 
 type DispatchRow = typeof dispatches.$inferSelect;
@@ -56,6 +89,10 @@ function toDispatch(row: DispatchRow): Dispatch {
     status: row.status as DispatchStatus,
     retryPolicy: row.retryPolicy,
     bulkCall: row.bulkCall ?? null,
+    createdAt: row.createdAt,
+    claimedAt: row.claimedAt,
+    cancelledAt: row.cancelledAt,
+    senderAddress: row.senderAddress as SenderAddress | null,
   };
 }
 
@@ -72,6 +109,7 @@ function toTransaction(row: TransactionRow): Transaction {
     broadcastAt: row.broadcastAt,
     abandonedAt: row.abandonedAt,
     confirmedAt: row.confirmedAt,
+    failedAt: row.failedAt,
     lastCheckedAt: row.lastCheckedAt,
     lastBroadcastAt: row.lastBroadcastAt,
     replacesTransactionId: row.replacesTransactionId,
@@ -122,7 +160,76 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
     signedTransaction: row.signedTransaction,
     status: row.status as RelayDispatchStatus,
     transactionId: row.transactionId,
+    createdAt: row.createdAt,
+    claimedAt: row.claimedAt,
+    cancelledAt: row.cancelledAt,
   };
+}
+
+type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+function toVersionRow(ruleId: string, version: number, spec: FlagRuleSpec) {
+  return {
+    ruleId,
+    version,
+    name: spec.name,
+    chain: spec.chain,
+    senderAddress: spec.senderAddress,
+    enabled: spec.enabled,
+    definition: definitionToJson(spec.definition),
+  };
+}
+
+function toFlagRuleVersion(row: typeof flagRuleVersions.$inferSelect): FlagRuleVersion {
+  return {
+    ruleId: row.ruleId,
+    version: row.version,
+    name: row.name,
+    chain: row.chain as Chain,
+    senderAddress: row.senderAddress as SenderAddress | null,
+    enabled: row.enabled,
+    definition: definitionFromJson(row.definition),
+    createdAt: row.createdAt,
+  };
+}
+
+/** The rules `rows`, each with its versions, in the order given. */
+async function withVersions(
+  db: Database | Tx,
+  rows: (typeof flagRules.$inferSelect)[],
+): Promise<FlagRule[]> {
+  if (rows.length === 0) return [];
+  const versions = await db
+    .select()
+    .from(flagRuleVersions)
+    .where(
+      inArray(
+        flagRuleVersions.ruleId,
+        rows.map((r) => r.id),
+      ),
+    )
+    .orderBy(flagRuleVersions.version);
+  return rows.map((row) => {
+    const own = versions.filter((v) => v.ruleId === row.id).map(toFlagRuleVersion);
+    const current = own.find((v) => v.version === row.currentVersion);
+    if (!current) throw new Error(`Flag Rule ${row.id} has no version ${row.currentVersion}`);
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      deletedAt: row.deletedAt,
+      current,
+      versions: own,
+    };
+  });
+}
+
+async function withVersionsOne(
+  db: Database | Tx,
+  row: typeof flagRules.$inferSelect,
+): Promise<FlagRule> {
+  const [rule] = await withVersions(db, [row]);
+  if (!rule) throw new Error(`Flag Rule ${row.id} vanished mid-read`);
+  return rule;
 }
 
 /**
@@ -133,17 +240,34 @@ export class PostgresDispatchStore implements DispatchStore {
   constructor(private readonly db: Database) {}
 
   async createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>> {
-    const inserted = await this.db
-      .insert(dispatches)
-      .values({
-        chain: input.chain,
-        idempotencyKey: input.idempotencyKey,
-        items: input.items,
-        retryPolicy: input.retryPolicy,
-        bulkCall: input.bulkCall ?? null,
-      })
-      .onConflictDoNothing({ target: dispatches.idempotencyKey })
-      .returning();
+    const hold = input.hold ?? [];
+    const inserted = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(dispatches)
+        .values({
+          chain: input.chain,
+          idempotencyKey: input.idempotencyKey,
+          items: input.items,
+          retryPolicy: input.retryPolicy,
+          bulkCall: input.bulkCall ?? null,
+          senderAddress: input.senderAddress ?? null,
+          status: hold.length > 0 ? 'held' : 'queued',
+        })
+        .onConflictDoNothing({ target: dispatches.idempotencyKey })
+        .returning();
+      const [row] = rows;
+      if (row && hold.length > 0) {
+        await tx.insert(dispatchHolds).values({
+          dispatchId: row.id,
+          matched: hold.map(({ rule, items }) => ({
+            ruleId: rule.ruleId,
+            ruleVersion: rule.version,
+            items,
+          })),
+        });
+      }
+      return rows;
+    });
 
     const row =
       inserted[0] ??
@@ -173,7 +297,44 @@ export class PostgresDispatchStore implements DispatchStore {
     return rows.map(toTransaction);
   }
 
+  async listAttempts(dispatchId: string): Promise<Attempt[]> {
+    const rows = await this.db
+      .select({ attempt: attempts })
+      .from(attempts)
+      .innerJoin(transactions, eq(transactions.id, attempts.transactionId))
+      .where(eq(transactions.dispatchId, dispatchId))
+      .orderBy(attempts.broadcastAt);
+    return rows.map(({ attempt }) => ({ ...attempt, error: attempt.error ?? null }));
+  }
+
+  async claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]> {
+    return this.claimWhere(
+      and(
+        eq(dispatches.status, 'queued'),
+        eq(dispatches.chain, sender.chain),
+        eq(dispatches.senderAddress, sender.address),
+      ),
+      limit,
+    );
+  }
+
+  async assignUnassignedDispatches(sender: SenderRef): Promise<number> {
+    const rows = await this.db
+      .update(dispatches)
+      .set({ senderAddress: sender.address })
+      .where(and(eq(dispatches.chain, sender.chain), isNull(dispatches.senderAddress)))
+      .returning({ id: dispatches.id });
+    return rows.length;
+  }
+
   async claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
+    return this.claimWhere(
+      and(eq(dispatches.status, 'queued'), inArray(dispatches.chain, chains)),
+      limit,
+    );
+  }
+
+  private async claimWhere(where: SQL | undefined, limit: number): Promise<Dispatch[]> {
     // Concurrency-safe outbox claim: lock and skip rows another worker is
     // already claiming, per ADR-0009's shared-outbox pattern. Via the query
     // builder (not a raw sql`` template) so the returned rows go through
@@ -183,7 +344,7 @@ export class PostgresDispatchStore implements DispatchStore {
       const claimable = await tx
         .select({ id: dispatches.id })
         .from(dispatches)
-        .where(and(eq(dispatches.status, 'queued'), inArray(dispatches.chain, chains)))
+        .where(where)
         .orderBy(dispatches.createdAt)
         .limit(limit)
         .for('update', { skipLocked: true });
@@ -203,6 +364,281 @@ export class PostgresDispatchStore implements DispatchStore {
 
       return rows.map(toDispatch);
     });
+  }
+
+  async cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
+    // The status guard is the whole race: claimQueued and releaseDispatch lock the row they change,
+    // so this update either commits first or re-reads the row as they left it.
+    const cancelled = await this.db.transaction(async (tx) => {
+      const cancelledAt = new Date();
+      const [managed] = await tx
+        .update(dispatches)
+        .set({ status: 'cancelled', cancelledAt })
+        .where(and(eq(dispatches.id, id), inArray(dispatches.status, ['queued', 'held'])))
+        .returning({ id: dispatches.id });
+      const [relay] = managed
+        ? []
+        : await tx
+            .update(relayDispatches)
+            .set({ status: 'cancelled', cancelledAt })
+            .where(and(eq(relayDispatches.id, id), eq(relayDispatches.status, 'queued')))
+            .returning({ id: relayDispatches.id });
+      if (!managed && !relay) return false;
+      await tx.insert(operatorActions).values({ ...actor, action: 'cancel', targetId: id });
+      return true;
+    });
+    if (cancelled) return 'cancelled';
+
+    const [existing] = await this.db
+      .select({ status: dispatches.status })
+      .from(dispatches)
+      .where(eq(dispatches.id, id))
+      .union(
+        this.db
+          .select({ status: relayDispatches.status })
+          .from(relayDispatches)
+          .where(eq(relayDispatches.id, id)),
+      );
+    if (!existing) return 'not_found';
+    return existing.status === 'cancelled' ? 'already_cancelled' : 'already_claimed';
+  }
+
+  async releaseDispatch(
+    id: string,
+    reason: string,
+  ): Promise<'released' | 'not_held' | 'not_found'> {
+    const released = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(dispatches)
+        .set({ status: 'queued' })
+        .where(and(eq(dispatches.id, id), eq(dispatches.status, 'held')))
+        .returning({ id: dispatches.id });
+      if (!row) return false;
+      await tx
+        .update(dispatchHolds)
+        .set({ releasedAt: new Date(), releaseReason: reason })
+        .where(eq(dispatchHolds.dispatchId, id));
+      await tx
+        .insert(operatorActions)
+        .values({ tokenKind: 'operator', reason, action: 'release', targetId: id });
+      return true;
+    });
+    if (released) return 'released';
+    const [existing] = await this.db
+      .select({ id: dispatches.id })
+      .from(dispatches)
+      .where(eq(dispatches.id, id))
+      .union(
+        this.db
+          .select({ id: relayDispatches.id })
+          .from(relayDispatches)
+          .where(eq(relayDispatches.id, id)),
+      );
+    return existing ? 'not_held' : 'not_found';
+  }
+
+  async listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    const rows = await this.db
+      .select({
+        row: operatorActions,
+        exactAt: sql<string>`to_char(${operatorActions.at} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(operatorActions)
+      .where(
+        after
+          ? sql`(${operatorActions.at}, ${operatorActions.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      )
+      .orderBy(desc(operatorActions.at), desc(operatorActions.id))
+      .limit(query.limit);
+    return rows.map(({ row, exactAt }) => ({
+      action: {
+        ...row,
+        action: row.action as OperatorActionKind,
+        tokenKind: row.tokenKind as TokenKind,
+      },
+      cursor: { createdAt: exactAt, id: row.id },
+    }));
+  }
+
+  async createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
+    return this.db.transaction(async (tx) => {
+      const [rule] = await tx.insert(flagRules).values({ currentVersion: 1 }).returning();
+      if (!rule) throw new Error('Failed to create a Flag Rule');
+      await tx.insert(flagRuleVersions).values(toVersionRow(rule.id, 1, spec));
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'flag_rule_create', targetId: rule.id });
+      return withVersionsOne(tx, rule);
+    });
+  }
+
+  async updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'> {
+    return this.db.transaction(async (tx) => {
+      // The row lock serializes concurrent edits, so each takes the next version number.
+      const [rule] = await tx.select().from(flagRules).where(eq(flagRules.id, id)).for('update');
+      if (!rule) return 'not_found';
+      if (rule.deletedAt) return 'deleted';
+      const version = rule.currentVersion + 1;
+      await tx.insert(flagRuleVersions).values(toVersionRow(id, version, spec));
+      await tx.update(flagRules).set({ currentVersion: version }).where(eq(flagRules.id, id));
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'flag_rule_update', targetId: id });
+      return withVersionsOne(tx, { ...rule, currentVersion: version });
+    });
+  }
+
+  async deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'> {
+    return this.db.transaction(async (tx) => {
+      const [deleted] = await tx
+        .update(flagRules)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(flagRules.id, id), isNull(flagRules.deletedAt)))
+        .returning();
+      if (deleted) {
+        await tx
+          .insert(operatorActions)
+          .values({ ...actor, action: 'flag_rule_delete', targetId: id });
+        return { rule: await withVersionsOne(tx, deleted), deleted: true };
+      }
+      const [existing] = await tx.select().from(flagRules).where(eq(flagRules.id, id));
+      return existing ? { rule: await withVersionsOne(tx, existing), deleted: false } : 'not_found';
+    });
+  }
+
+  async getFlagRule(id: string): Promise<FlagRule | null> {
+    const rows = await this.db.select().from(flagRules).where(eq(flagRules.id, id));
+    const [rule] = await withVersions(this.db, rows);
+    return rule ?? null;
+  }
+
+  async listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    const rows = await this.db
+      .select({ version: flagRuleVersions })
+      .from(flagRules)
+      .innerJoin(
+        flagRuleVersions,
+        and(
+          eq(flagRuleVersions.ruleId, flagRules.id),
+          eq(flagRuleVersions.version, flagRules.currentVersion),
+        ),
+      )
+      .where(
+        and(
+          isNull(flagRules.deletedAt),
+          eq(flagRuleVersions.enabled, true),
+          eq(flagRuleVersions.chain, chain),
+        ),
+      )
+      .orderBy(flagRules.createdAt, flagRules.id);
+    return rows.map(({ version }) => toFlagRuleVersion(version));
+  }
+
+  async firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    if (recipients.length === 0) return new Map();
+    const raw = sql`(${dispatches.items} -> ${transactions.callIndex} -> 'payment' ->> 'recipient')`;
+    const recipient = chain === 'base' ? sql<string>`lower(${raw})` : sql<string>`${raw}`;
+    const rows = await this.db
+      .select({
+        recipient,
+        first:
+          sql<Date>`min(coalesce(${transactions.confirmedAt}, ${transactions.broadcastAt}, ${dispatches.createdAt}))`.mapWith(
+            transactions.confirmedAt,
+          ),
+      })
+      .from(transactions)
+      .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
+      .where(
+        and(
+          eq(transactions.status, 'CONFIRMED'),
+          eq(transactions.chain, chain),
+          inArray(recipient, recipients),
+        ),
+      )
+      .groupBy(recipient);
+    return new Map(rows.map((r) => [r.recipient, r.first]));
+  }
+
+  async acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>> {
+    if (assets.length === 0) return new Map();
+    const rows = await this.db.execute<{ asset: string; total: string }>(sql`
+      select item -> 'payment' ->> 'asset' as asset,
+             sum((item -> 'payment' ->> 'amount')::numeric)::text as total
+      from ${dispatches}, jsonb_array_elements(${dispatches.items}) as item
+      where ${dispatches.chain} = ${chain}
+        and ${dispatches.createdAt} >= ${since.toISOString()}::timestamptz
+        and ${dispatches.status} <> 'cancelled'
+        and ${senderAddress === undefined ? sql`true` : sql`${dispatches.senderAddress} = ${senderAddress}`}
+        and item -> 'payment' ->> 'asset' in (${sql.join(
+          assets.map((a) => sql`${a}`),
+          sql`, `,
+        )})
+      group by 1`);
+    return new Map(rows.map((r) => [r.asset, BigInt(r.total)]));
+  }
+
+  async listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    const rows = await this.db
+      .select()
+      .from(dispatches)
+      .where(and(eq(dispatches.chain, chain), gte(dispatches.createdAt, since)))
+      .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
+      .limit(limit);
+    return rows.map(toDispatch);
+  }
+
+  async getHold(dispatchId: string): Promise<Hold | null> {
+    const [hold] = await this.db
+      .select()
+      .from(dispatchHolds)
+      .where(eq(dispatchHolds.dispatchId, dispatchId));
+    if (!hold) return null;
+    const versions = await this.db
+      .select()
+      .from(flagRuleVersions)
+      .where(
+        or(
+          ...hold.matched.map((m) =>
+            and(eq(flagRuleVersions.ruleId, m.ruleId), eq(flagRuleVersions.version, m.ruleVersion)),
+          ),
+        ),
+      );
+    return {
+      dispatchId,
+      heldAt: hold.heldAt,
+      release:
+        hold.releasedAt && hold.releaseReason !== null
+          ? { at: hold.releasedAt, reason: hold.releaseReason }
+          : null,
+      matched: hold.matched.map(({ ruleId, ruleVersion, items }) => {
+        const row = versions.find((v) => v.ruleId === ruleId && v.version === ruleVersion);
+        if (!row) throw new Error(`hold on ${dispatchId} names a missing rule version`);
+        return { rule: toFlagRuleVersion(row), items };
+      }),
+    };
+  }
+
+  async listFlagRules(): Promise<FlagRule[]> {
+    const rows = await this.db
+      .select()
+      .from(flagRules)
+      .where(isNull(flagRules.deletedAt))
+      .orderBy(flagRules.createdAt, flagRules.id);
+    return withVersions(this.db, rows);
   }
 
   async listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]> {
@@ -505,6 +941,7 @@ export class PostgresDispatchStore implements DispatchStore {
         chain: input.chain,
         status: 'FAILED',
         error: input.error,
+        failedAt: new Date(),
       })
       .returning();
 
@@ -548,7 +985,7 @@ export class PostgresDispatchStore implements DispatchStore {
   async markFailed(transactionId: string, error: DispatchError): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'FAILED', error })
+      .set({ status: 'FAILED', error, failedAt: new Date() })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -597,12 +1034,22 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
-  async listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+  async listUnproposed(
+    chain: Chain,
+    limit: number,
+    senderAddress?: string,
+  ): Promise<Transaction[]> {
     const rows = await this.db
       .select({ transaction: transactions })
       .from(transactions)
       .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-      .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+      .where(
+        and(
+          eq(transactions.status, 'UNPROPOSED'),
+          eq(transactions.chain, chain),
+          senderAddress === undefined ? undefined : eq(dispatches.senderAddress, senderAddress),
+        ),
+      )
       .orderBy(dispatches.createdAt, dispatches.id, transactions.callIndex)
       .limit(limit);
     return rows.map((row) => toTransaction(row.transaction));
@@ -786,6 +1233,7 @@ export class PostgresDispatchStore implements DispatchStore {
           hash: null,
           signedBytes: null,
           error: null,
+          failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
         })
@@ -826,6 +1274,7 @@ export class PostgresDispatchStore implements DispatchStore {
             ? { hash: null, signedBytes: null }
             : {}),
           ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'FAILED' ? { failedAt: now } : {}),
           ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
         })
         .where(
@@ -843,10 +1292,12 @@ export class PostgresDispatchStore implements DispatchStore {
     chain: Chain,
     holder: CommittedHolder,
     timedOutSince: Date,
+    senderAddress?: string,
   ): Promise<AssetAmount[]> {
     const rows = await this.db.query.proposals.findMany({
       where: and(
         eq(proposals.chain, chain),
+        senderAddress === undefined ? undefined : eq(proposals.senderAddress, senderAddress),
         or(
           inArray(proposals.phase, ['noted', 'open', 'executing']),
           and(eq(proposals.phase, 'timed_out'), gte(proposals.timedOutAt, timedOutSince)),
@@ -859,7 +1310,15 @@ export class PostgresDispatchStore implements DispatchStore {
             .select({ callIndex: transactions.callIndex, items: dispatches.items })
             .from(transactions)
             .innerJoin(dispatches, eq(dispatches.id, transactions.dispatchId))
-            .where(and(eq(transactions.status, 'UNPROPOSED'), eq(transactions.chain, chain)))
+            .where(
+              and(
+                eq(transactions.status, 'UNPROPOSED'),
+                eq(transactions.chain, chain),
+                senderAddress === undefined
+                  ? undefined
+                  : eq(dispatches.senderAddress, senderAddress),
+              ),
+            )
         : [];
     return totalCommitted(
       holder,
@@ -874,6 +1333,87 @@ export class PostgresDispatchStore implements DispatchStore {
       orderBy: [proposals.createdAt, proposals.id],
     });
     return rows.map(toProposal);
+  }
+
+  async recordSignerKey(record: SignerKeyRecord): Promise<void> {
+    const row = {
+      pins: 'pins' in record.read ? record.read.pins : null,
+      error: 'error' in record.read ? record.read.error : null,
+      readAt: record.readAt,
+    };
+    await this.db
+      .insert(signerKeys)
+      .values({ chain: record.chain, address: record.address, ...row })
+      .onConflictDoUpdate({ target: [signerKeys.chain, signerKeys.address], set: row });
+  }
+
+  async getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(signerKeys)
+      .where(and(eq(signerKeys.chain, chain), eq(signerKeys.address, address)));
+    if (!row) return null;
+    return {
+      chain,
+      address,
+      read: row.pins ? { pins: row.pins } : { error: row.error ?? 'no read recorded' },
+      readAt: row.readAt,
+    };
+  }
+
+  async recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void> {
+    const rows = records.map(({ id, area, title, chain, result, ranAt }) => ({
+      id,
+      area,
+      title,
+      chain: chain ?? null,
+      status: result.status,
+      finding: result.finding,
+      fix: result.status === 'pass' ? null : result.fix,
+      ranAt,
+    }));
+    await this.db.transaction(async (tx) => {
+      await tx.delete(setupChecks).where(
+        rows.length > 0
+          ? notInArray(
+              setupChecks.id,
+              rows.map((row) => row.id),
+            )
+          : undefined,
+      );
+      if (rows.length === 0) return;
+      await tx
+        .insert(setupChecks)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: setupChecks.id,
+          set: {
+            area: sql`excluded.area`,
+            title: sql`excluded.title`,
+            chain: sql`excluded.chain`,
+            status: sql`excluded.status`,
+            finding: sql`excluded.finding`,
+            fix: sql`excluded.fix`,
+            ranAt: sql`excluded.ran_at`,
+          },
+        });
+    });
+  }
+
+  async listSetupChecks(): Promise<SetupCheckRecord[]> {
+    const rows = await this.db.select().from(setupChecks).orderBy(setupChecks.id);
+    return rows.map((row) => ({
+      id: row.id,
+      area: row.area as Area,
+      title: row.title,
+      ...(row.chain ? { chain: row.chain as Chain } : {}),
+      // The table's check constraint keeps `fix` null exactly when the check passed.
+      result:
+        row.fix === null
+          ? { status: 'pass', finding: row.finding }
+          : { status: row.status as 'warn' | 'fail', finding: row.finding, fix: row.fix },
+      ranAt: row.ranAt,
+    }));
   }
 
   /** A Proposal's Calls in position order, one per Call (never a REPLACED or DROPPED version). `lock` takes row locks, inside a transaction. */
@@ -929,6 +1469,84 @@ export class PostgresDispatchStore implements DispatchStore {
       where: eq(relayDispatches.id, id),
     });
     return row ? toRelayDispatch(row) : null;
+  }
+
+  async listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]> {
+    const { after } = query;
+    const where = (table: typeof dispatches | typeof relayDispatches) =>
+      and(
+        query.chain ? eq(table.chain, query.chain) : undefined,
+        query.storedStatuses ? inArray(table.status, [...query.storedStatuses]) : undefined,
+        query.from ? gte(table.createdAt, query.from) : undefined,
+        query.to ? lt(table.createdAt, query.to) : undefined,
+        after
+          ? sql`(${table.createdAt}, ${table.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      );
+    // Microseconds, which a Date would drop: a cursor rounded to the millisecond could repeat its own row.
+    const exactCreatedAt = (table: typeof dispatches | typeof relayDispatches) =>
+      sql<string>`to_char(${table.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
+    const [managed, relay] = await Promise.all([
+      query.mode === 'relay'
+        ? []
+        : this.db
+            .select({ row: dispatches, exactCreatedAt: exactCreatedAt(dispatches) })
+            .from(dispatches)
+            .where(
+              and(
+                where(dispatches),
+                query.senders
+                  ? or(
+                      ...query.senders.map((s) =>
+                        and(eq(dispatches.chain, s.chain), eq(dispatches.senderAddress, s.address)),
+                      ),
+                    )
+                  : undefined,
+              ),
+            )
+            .orderBy(desc(dispatches.createdAt), desc(dispatches.id))
+            .limit(query.limit),
+      query.mode === 'managed' || query.senders
+        ? []
+        : this.db
+            .select({ row: relayDispatches, exactCreatedAt: exactCreatedAt(relayDispatches) })
+            .from(relayDispatches)
+            .where(where(relayDispatches))
+            .orderBy(desc(relayDispatches.createdAt), desc(relayDispatches.id))
+            .limit(query.limit),
+    ]);
+    const listed = [
+      ...managed.map(({ row, exactCreatedAt }) => ({
+        mode: 'managed' as const,
+        dispatch: toDispatch(row),
+        cursor: { createdAt: exactCreatedAt, id: row.id },
+      })),
+      ...relay.map(({ row, exactCreatedAt }) => ({
+        mode: 'relay' as const,
+        dispatch: toRelayDispatch(row),
+        cursor: { createdAt: exactCreatedAt, id: row.id },
+      })),
+    ]
+      .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+      .slice(0, query.limit);
+    if (listed.length === 0) return [];
+
+    const rows = await this.db.query.transactions.findMany({
+      where: inArray(
+        transactions.dispatchId,
+        listed.map((l) => l.dispatch.id),
+      ),
+      orderBy: transactions.callIndex,
+    });
+    const byDispatch = new Map<string, Transaction[]>();
+    for (const row of rows) {
+      byDispatch.set(row.dispatchId, [
+        ...(byDispatch.get(row.dispatchId) ?? []),
+        toTransaction(row),
+      ]);
+    }
+    return listed.map((l) => ({ ...l, transactions: byDispatch.get(l.dispatch.id) ?? [] }));
   }
 
   async claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {

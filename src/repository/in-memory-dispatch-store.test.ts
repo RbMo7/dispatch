@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
+import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
+import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { InMemoryDispatchStore } from './in-memory-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
+import { runListConformanceSuite } from './list-conformance.js';
+import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
+import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
+import { runTimelineConformanceSuite } from './timeline-conformance.js';
+import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
@@ -17,7 +24,14 @@ describe('InMemoryDispatchStore', () => {
   });
 
   runChainScopeConformanceSuite(() => new InMemoryDispatchStore());
+  runSenderScopeConformanceSuite(() => new InMemoryDispatchStore());
+  runCancelConformanceSuite(() => new InMemoryDispatchStore());
   runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
+  runListConformanceSuite(() => new InMemoryDispatchStore());
+  runTimelineConformanceSuite(() => new InMemoryDispatchStore());
+  runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
+  runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());
+  runSetupCheckConformanceSuite(() => new InMemoryDispatchStore());
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

@@ -1,0 +1,35 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 40px;
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-full);
+  font-size: var(--text-14);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 120ms;
+}
+
+.pill:active {
+  transform: translateY(1px);
+}
+
+.ink {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.ink:hover {
+  background: color-mix(in srgb, var(--ink) 86%, var(--surface));
+}
+
+.soft {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.soft:hover {
+  background: color-mix(in srgb, var(--sunken) 88%, var(--ink));
+}

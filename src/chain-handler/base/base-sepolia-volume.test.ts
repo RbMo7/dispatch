@@ -107,7 +107,15 @@ describe.runIf(RUN)('Base Sepolia volume run (#15)', () => {
     const chainRegistry = await ChainRegistry.load(['base'], {
       base: () => Promise.resolve(handler),
     });
-    app = buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false });
+    app = buildApp({
+      store,
+      chainRegistry,
+      authToken: AUTH_TOKEN,
+      defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
+      listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
+    });
     coordinator = new Coordinator({
       store,
       chainHandlers: chainRegistry.handlers,

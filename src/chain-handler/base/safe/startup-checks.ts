@@ -19,8 +19,8 @@ export type SafeStartupDeps = {
   service: Pick<SafeTxServiceClient, 'about' | 'getSafe' | 'getDelegates'>;
   /** Reads the Safe from the chain, pinned to one block (safe-reads.ts). */
   readSafe: (safe: Address) => Promise<SafeOnChainState>;
-  /** ADR-0055: what the Signer says the executor's key is pinned to. */
-  readSignerPins: (executor: Address) => Promise<PolicyRead>;
+  /** ADR-0055: what the Signer says the executor's key is pinned to. Absent in the API, which never calls the Signer (ADR-0059); the worker checks it. */
+  readSignerPins?: (executor: Address) => Promise<PolicyRead>;
   now?: () => number;
 };
 
@@ -117,12 +117,14 @@ export async function runSafeStartupChecks(deps: SafeStartupDeps): Promise<{ war
   }
 
   const signer = await deps
-    .readSignerPins(config.executorAddress)
+    .readSignerPins?.(config.executorAddress)
     .catch((cause: unknown): PolicyRead => ({ kind: 'unreachable', message: errorText(cause) }));
-  if (signer.kind === 'no-key') {
+  if (signer === undefined) {
+    // The API: the worker reads the pins and refuses to start on them.
+  } else if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the executor',
-      `the Signer has no key for ${config.executorAddress}: add it to the Signer's config (docs/signer.md), pinned to the Safe by policy`,
+      `the Signer has no key for ${config.executorAddress}: add it to the Signer's config (docs/self-hosting/signer.md), pinned to the Safe by policy`,
     );
   } else if (signer.kind === 'unreachable') {
     fail(
@@ -136,7 +138,7 @@ export async function runSafeStartupChecks(deps: SafeStartupDeps): Promise<{ war
     if (allowedSafe === undefined || !sameAddress(allowedSafe, config.safeAddress)) {
       fail(
         'signer pins the Safe',
-        `the Signer's policy for ${config.executorAddress} pins ${allowedSafe ?? 'no Safe'}, but BASE_SAFE_ADDRESS is ${config.safeAddress}: set policy.allowedSafe for this key in the Signer's config (docs/signer.md)`,
+        `the Signer's policy for ${config.executorAddress} pins ${allowedSafe ?? 'no Safe'}, but BASE_SAFE_ADDRESS is ${config.safeAddress}: set policy.allowedSafe for this key in the Signer's config (docs/self-hosting/signer.md)`,
       );
     }
     if (chainIds === undefined || !chainIds.includes(deps.chainId)) {

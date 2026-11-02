@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
@@ -10,6 +12,7 @@ import { CHAINS } from '../domain/chain.js';
 import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
+import { MAX_SCANNED_ROWS } from './dispatch-list.js';
 
 const AUTH_HEADERS = { authorization: 'Bearer test-token' };
 
@@ -42,6 +45,10 @@ async function buildTestApp(options?: {
     chainRegistry,
     authToken: 'test-token',
     defaultRetryPolicy: options?.defaultRetryPolicy ?? false,
+    assetDecimals: (chain, asset) =>
+      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('not read in this test')),
   });
   return { app, store };
 }
@@ -570,6 +577,15 @@ describe('GET /v1/dispatch/:id', () => {
   it('returns 404 for an unknown Dispatch', async () => {
     const response = await app.inject({
       method: 'GET',
+      url: `/v1/dispatch/${randomUUID()}`,
+      headers: AUTH_HEADERS,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('returns 404 for an id that is not a UUID', async () => {
+    const response = await app.inject({
+      method: 'GET',
       url: '/v1/dispatch/missing',
       headers: AUTH_HEADERS,
     });
@@ -593,9 +609,112 @@ describe('GET /v1/dispatch/:id', () => {
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
       mode: 'managed',
+      chain: 'base',
+      createdAt: dispatch.createdAt.toISOString(),
       status: 'queued',
-      items: [{ status: 'queued', transactionHash: null, error: null }],
+      items: [{ type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null }],
     });
+  });
+
+  it("reports the Dispatch's own chain and creation time", async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'key-1',
+      items: [{ call: { programId: 'Prog111', accounts: [], data: '' }, payment: null }],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json()).toMatchObject({
+      chain: 'solana',
+      createdAt: dispatch.createdAt.toISOString(),
+    });
+  });
+
+  it('reports what the caller asked for on each item, payment or call, on either chain', async () => {
+    const base = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'base',
+      items: [
+        {
+          call: { to: '0xusdc', data: '0xa9059cbb', value: '0' },
+          payment: { recipient: '0xbob', asset: 'USDC', amount: '2500000' },
+        },
+        { call: { to: '0xcontract', data: '0x1234', value: '7' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+    const solana = await store.createDispatch({
+      chain: 'solana',
+      idempotencyKey: 'solana',
+      items: [
+        {
+          call: { programId: '11111111111111111111111111111111', accounts: [], data: 'AgAAAA==' },
+          payment: { recipient: 'Bob1111', asset: 'SOL', amount: '1000' },
+        },
+        { call: { programId: 'Memo1111', accounts: [], data: 'aGk=' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+
+    const itemsOf = async (id: string) =>
+      (
+        await app.inject({ method: 'GET', url: `/v1/dispatch/${id}`, headers: AUTH_HEADERS })
+      ).json<GetResponseBody>().items;
+
+    expect(await itemsOf(base.id)).toEqual([
+      {
+        type: 'payment',
+        recipient: '0xbob',
+        asset: 'USDC',
+        decimals: 6,
+        amount: '2500000',
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
+      { type: 'call', to: '0xcontract', status: 'queued', transactionHash: null, error: null },
+    ]);
+    expect(await itemsOf(solana.id)).toEqual([
+      {
+        type: 'payment',
+        recipient: 'Bob1111',
+        asset: 'SOL',
+        decimals: 9,
+        amount: '1000',
+        status: 'queued',
+        transactionHash: null,
+        error: null,
+      },
+      { type: 'call', programId: 'Memo1111', status: 'queued', transactionHash: null, error: null },
+    ]);
+  });
+
+  it('leaves decimals out of an item whose asset is no longer configured', async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'retired',
+      items: [
+        {
+          call: { to: '0xold', data: '0xa9059cbb', value: '0' },
+          payment: { recipient: '0xbob', asset: 'OLD', amount: '5' },
+        },
+      ],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<GetResponseBody>().items[0]).not.toHaveProperty('decimals');
   });
 
   it('reports confirmed once every item is confirmed', async () => {
@@ -624,8 +743,12 @@ describe('GET /v1/dispatch/:id', () => {
     expect(response.json<GetResponseBody>()).toEqual({
       dispatchId: dispatch.id,
       mode: 'managed',
+      chain: 'base',
+      createdAt: dispatch.createdAt.toISOString(),
       status: 'confirmed',
-      items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+      items: [
+        { type: 'call', to: '0xabc', status: 'confirmed', transactionHash: 'hash-1', error: null },
+      ],
     });
   });
 
@@ -717,8 +840,10 @@ describe('GET /v1/dispatch/:id', () => {
 
     expect(body.status).toBe('partial');
     expect(body.items).toEqual([
-      { status: 'confirmed', transactionHash: 'hash-1', error: null },
+      { type: 'call', to: '0xa', status: 'confirmed', transactionHash: 'hash-1', error: null },
       {
+        type: 'call',
+        to: '0xb',
         status: 'failed',
         transactionHash: null,
         error: { code: 'INSUFFICIENT_FUNDS', message: 'short' },
@@ -798,6 +923,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'queued',
         transactionHash: null,
         error: null,
@@ -829,6 +956,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'broadcasting',
         transactionHash: 'relay-hash-1',
         error: null,
@@ -888,6 +1017,8 @@ describe('GET /v1/dispatch/:id', () => {
       expect(response.json<RelayGetResponseBody>()).toEqual({
         dispatchId: relayDispatch.id,
         mode: 'relay',
+        chain: 'base',
+        createdAt: relayDispatch.createdAt.toISOString(),
         status: 'failed',
         transactionHash: null,
         error: { code: 'CHAIN_REJECTED', message: 'send failed' },
@@ -970,9 +1101,11 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       status: 'broadcasting',
       dispatchId: expect.any(String) as string,
       mode: 'managed',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
       items: [
-        { status: 'queued', transactionHash: null, error: null },
-        { status: 'queued', transactionHash: null, error: null },
+        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
+        { type: 'call', to: '0xabc', status: 'queued', transactionHash: null, error: null },
       ],
     });
   });
@@ -997,8 +1130,14 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       chainRef: squadsRef,
     };
     expect(body.items).toEqual([
-      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
-      { status: 'awaiting_approval', transactionHash: null, error: null, approval },
+      ...[0, 1].map(() => ({
+        type: 'call',
+        to: '0xabc',
+        status: 'awaiting_approval',
+        transactionHash: null,
+        error: null,
+        approval,
+      })),
     ]);
   });
 
@@ -1104,10 +1243,494 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       JSON.stringify({
         dispatchId: dispatch.id,
         mode: 'managed',
+        chain: 'base',
+        createdAt: dispatch.createdAt,
         status: 'confirmed',
-        items: [{ status: 'confirmed', transactionHash: 'hash-1', error: null }],
+        items: [
+          {
+            type: 'call',
+            to: '0xabc',
+            status: 'confirmed',
+            transactionHash: 'hash-1',
+            error: null,
+          },
+        ],
       }),
     );
     expect(lookups).toEqual([]);
+  });
+});
+
+describe('POST /v1/dispatch/:id/cancel (ADR-0056)', () => {
+  type App = Awaited<ReturnType<typeof buildTestApp>>['app'];
+  const twoCalls = {
+    chain: 'base',
+    items: [
+      { type: 'call', to: '0xabc', data: '0x', value: '0' },
+      { type: 'call', to: '0xdef', data: '0x', value: '0' },
+    ],
+  };
+
+  async function submit(app: App, key = 'key-1'): Promise<string> {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': key },
+      payload: twoCalls,
+    });
+    return response.json<PostResponseBody>().dispatchId;
+  }
+
+  const cancel = (app: App, id: string) =>
+    app.inject({ method: 'POST', url: `/v1/dispatch/${id}/cancel`, headers: AUTH_HEADERS });
+
+  it('rejects a request without a valid bearer token', async () => {
+    const { app } = await buildTestApp();
+    const id = await submit(app);
+
+    const response = await app.inject({ method: 'POST', url: `/v1/dispatch/${id}/cancel` });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('cancels an unclaimed Dispatch: it and every item read cancelled, and it is never claimed', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app);
+
+    const response = await cancel(app, id);
+
+    const cancelled = {
+      dispatchId: id,
+      mode: 'managed',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
+      status: 'cancelled',
+      items: [
+        { type: 'call', to: '0xabc', status: 'cancelled', transactionHash: null, error: null },
+        { type: 'call', to: '0xdef', status: 'cancelled', transactionHash: null, error: null },
+      ],
+    };
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(cancelled);
+    const read = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}`,
+      headers: AUTH_HEADERS,
+    });
+    expect(read.json()).toEqual(cancelled);
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+
+  it('answers a repeat cancel with 200 and the current state', async () => {
+    const { app } = await buildTestApp();
+    const id = await submit(app);
+    await cancel(app, id);
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<GetResponseBody>().status).toBe('cancelled');
+  });
+
+  it('refuses a claimed Dispatch with 409 ALREADY_CLAIMED', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app);
+    await store.claimQueued(CHAINS, 10);
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ code: string }>().code).toBe('ALREADY_CLAIMED');
+  });
+
+  it('answers 401 before checking the query of an unauthenticated request', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({ method: 'GET', url: '/v1/dispatches?limit=500' });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 404 for an id that is not a UUID', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await cancel(app, 'not-a-uuid');
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('answers 404 for an unknown id', async () => {
+    const { app } = await buildTestApp();
+
+    const response = await cancel(app, randomUUID());
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('cancels an unclaimed Relay Dispatch', async () => {
+    const { app, store } = await buildTestApp();
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-1' },
+      payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+    });
+    const id = submitted.json<PostResponseBody>().dispatchId;
+
+    const response = await cancel(app, id);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      dispatchId: id,
+      mode: 'relay',
+      chain: 'base',
+      createdAt: expect.any(String) as string,
+      status: 'cancelled',
+      transactionHash: null,
+      error: null,
+    });
+    expect(await store.claimQueuedRelayDispatches(CHAINS, 10)).toEqual([]);
+  });
+
+  it('returns a cancelled Dispatch for its Idempotency-Key, creating nothing new', async () => {
+    const { app, store } = await buildTestApp();
+    const id = await submit(app, 'key-1');
+    await cancel(app, id);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'key-1' },
+      payload: twoCalls,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ dispatchId: id, status: 'cancelled' });
+    expect(await store.claimQueued(CHAINS, 10)).toEqual([]);
+  });
+});
+
+describe('GET /v1/dispatch/:id?include=timeline (#109)', () => {
+  type TimelineBody = { timeline?: { at: string; kind: string; hash?: string }[] };
+
+  async function confirmedDispatch() {
+    const { app, store } = await buildTestApp();
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'key-1',
+      items: [{ call: { to: '0xabc', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+    await store.claimQueued(CHAINS, 10);
+    const transaction = await store.createTransaction({
+      dispatchId: dispatch.id,
+      callIndex: 0,
+      chain: 'base',
+      signedBytes: 'bytes',
+      hash: 'hash-1',
+    });
+    await store.markConfirmed(transaction.id);
+    return { app, store, id: dispatch.id, createdAt: dispatch.createdAt };
+  }
+
+  it('adds the timeline, oldest first, with ISO timestamps', async () => {
+    const { app, id } = await confirmedDispatch();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}?include=timeline`,
+      headers: AUTH_HEADERS,
+    });
+
+    const body = response.json<GetResponseBody & TimelineBody>();
+    expect(body.status).toBe('confirmed');
+    expect(body.timeline?.map((e) => [e.kind, e.hash])).toEqual([
+      ['created', undefined],
+      ['claimed', undefined],
+      ['written', 'hash-1'],
+      ['confirmed', 'hash-1'],
+    ]);
+    expect(body.timeline?.every((e) => !Number.isNaN(Date.parse(e.at)))).toBe(true);
+  });
+
+  it('leaves the body without the flag exactly as it was', async () => {
+    const { app, id, createdAt } = await confirmedDispatch();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.body).toBe(
+      JSON.stringify({
+        dispatchId: id,
+        mode: 'managed',
+        chain: 'base',
+        createdAt,
+        status: 'confirmed',
+        items: [
+          {
+            type: 'call',
+            to: '0xabc',
+            status: 'confirmed',
+            transactionHash: 'hash-1',
+            error: null,
+          },
+        ],
+      }),
+    );
+  });
+
+  it('adds the timeline to a Relay Dispatch', async () => {
+    const { app } = await buildTestApp();
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/dispatch',
+      headers: { ...AUTH_HEADERS, 'idempotency-key': 'relay-1' },
+      payload: { chain: 'base', mode: 'relay', signedTransaction: 'externally-signed-bytes' },
+    });
+    const id = submitted.json<PostResponseBody>().dispatchId;
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${id}?include=timeline`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<RelayGetResponseBody & TimelineBody>()).toMatchObject({
+      mode: 'relay',
+      status: 'queued',
+      timeline: [{ kind: 'created' }],
+    });
+  });
+
+  it.each(['include=everything', 'include=timeline&include=timeline', 'include='])(
+    'answers %s with the plain body, exactly as without it',
+    async (query) => {
+      const { app, id } = await confirmedDispatch();
+
+      const plain = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${id}`,
+        headers: AUTH_HEADERS,
+      });
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${id}?${query}`,
+        headers: AUTH_HEADERS,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe(plain.body);
+    },
+  );
+});
+
+describe('GET /v1/dispatches (#110)', () => {
+  type ListBody = {
+    dispatches: Record<string, unknown>[];
+    nextCursor: string | null;
+  };
+
+  it('rejects a request without a valid bearer token', async () => {
+    const { app } = await buildTestApp();
+
+    const missing = await app.inject({ method: 'GET', url: '/v1/dispatches' });
+    const wrong = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches',
+      headers: { authorization: 'Bearer nope' },
+    });
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(401);
+  });
+
+  it.each([
+    'limit=0',
+    'limit=101',
+    'limit=ten',
+    'chain=ethereum',
+    'mode=batch',
+    'status=awaiting_approval',
+    'from=yesterday',
+    'to=2026-13-45',
+    'cursor=not-a-cursor',
+  ])('rejects %s with 400', async (query) => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatches?${query}`,
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('lists Managed and Relay rows newest first, each a summary with its count and totals', async () => {
+    const { app, store } = await buildTestApp();
+    const managed = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'managed',
+      items: [
+        {
+          call: { to: '0xa', data: '0x', value: '0' },
+          payment: { recipient: '0xa', asset: 'USDC', amount: '10' },
+        },
+        {
+          call: { to: '0xb', data: '0x', value: '0' },
+          payment: { recipient: '0xb', asset: 'USDC', amount: '15' },
+        },
+        {
+          call: { to: '0xc', data: '0x', value: '1' },
+          payment: { recipient: '0xc', asset: 'ETH', amount: '1' },
+        },
+        { call: { to: '0xd', data: '0x', value: '0' }, payment: null },
+      ],
+      retryPolicy: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const relay = await store.createRelayDispatch({
+      chain: 'base',
+      idempotencyKey: 'relay',
+      signedTransaction: 'signed',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches',
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<ListBody>()).toEqual({
+      dispatches: [
+        {
+          dispatchId: relay.id,
+          mode: 'relay',
+          chain: 'base',
+          status: 'queued',
+          transactionHash: null,
+          error: null,
+          createdAt: relay.createdAt.toISOString(),
+          itemCount: 1,
+          totals: [],
+        },
+        {
+          dispatchId: managed.id,
+          mode: 'managed',
+          chain: 'base',
+          status: 'queued',
+          createdAt: managed.createdAt.toISOString(),
+          itemCount: 4,
+          totals: [
+            { asset: 'USDC', decimals: 6, amount: '25' },
+            { asset: 'ETH', decimals: 18, amount: '1' },
+          ],
+        },
+      ],
+      nextCursor: null,
+    });
+  });
+
+  it('pages 25 rows by default and hands back a cursor for the rest', async () => {
+    const { app, store } = await buildTestApp();
+    for (let i = 0; i < 26; i++) {
+      await store.createRelayDispatch({
+        chain: 'base',
+        idempotencyKey: `relay-${i}`,
+        signedTransaction: 'signed',
+      });
+    }
+
+    const first = (
+      await app.inject({ method: 'GET', url: '/v1/dispatches', headers: AUTH_HEADERS })
+    ).json<ListBody>();
+    const second = (
+      await app.inject({
+        method: 'GET',
+        url: `/v1/dispatches?cursor=${first.nextCursor ?? ''}`,
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+
+    expect(first.dispatches).toHaveLength(25);
+    expect(second.dispatches).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('stops a filtered scan after MAX_SCANNED_ROWS rows and hands back a cursor to keep paging', async () => {
+    const { app, store } = await buildTestApp();
+    const confirmed = await store.createRelayDispatch({
+      chain: 'base',
+      idempotencyKey: 'confirmed',
+      signedTransaction: 'signed',
+    });
+    await store.claimQueuedRelayDispatches(CHAINS, 1);
+    const transaction = await store.createTransaction({
+      dispatchId: confirmed.id,
+      callIndex: 0,
+      chain: 'base',
+      signedBytes: 'signed',
+      hash: 'hash-1',
+    });
+    await store.setRelayDispatchTransaction(confirmed.id, transaction.id);
+    await store.markConfirmed(transaction.id);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    for (let i = 0; i < MAX_SCANNED_ROWS; i++) {
+      await store.createRelayDispatch({
+        chain: 'base',
+        idempotencyKey: `claimed-${i}`,
+        signedTransaction: 'signed',
+      });
+    }
+    await store.claimQueuedRelayDispatches(CHAINS, MAX_SCANNED_ROWS);
+
+    const first = (
+      await app.inject({
+        method: 'GET',
+        url: '/v1/dispatches?status=confirmed',
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+    const second = (
+      await app.inject({
+        method: 'GET',
+        url: `/v1/dispatches?status=confirmed&cursor=${first.nextCursor ?? ''}`,
+        headers: AUTH_HEADERS,
+      })
+    ).json<ListBody>();
+
+    expect(first.dispatches).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    expect(second.dispatches.map((d) => d.dispatchId)).toEqual([confirmed.id]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('filters on the cancelled status', async () => {
+    const { app, store } = await buildTestApp();
+    const cancelled = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'cancelled',
+      items: [{ call: { to: '0xa', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+    await store.cancelDispatch(cancelled.id, { tokenKind: 'auth', reason: null });
+    await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'queued',
+      items: [{ call: { to: '0xa', data: '0x', value: '0' }, payment: null }],
+      retryPolicy: false,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches?status=cancelled',
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.json<ListBody>().dispatches.map((d) => d.dispatchId)).toEqual([cancelled.id]);
   });
 });

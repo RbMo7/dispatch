@@ -1,13 +1,14 @@
 import type { Chain } from './chain.js';
 
 /**
- * Only the two states this record itself ever persists directly
- * (ADR-0009's outbox transition, mirrored from Dispatch's own status field)
+ * Only the states this record itself ever persists directly
+ * (ADR-0009's outbox transition, mirrored from Dispatch's own status field,
+ * plus ADR-0056's `cancelled`)
  * — the terminal wire status (confirmed/failed/abandoned) is derived at read
  * time from the linked Transaction, once `transactionId` is set, exactly
  * like a Managed Dispatch's per-item status.
  */
-export type RelayDispatchStatus = 'queued' | 'broadcasting';
+export type RelayDispatchStatus = 'queued' | 'broadcasting' | 'cancelled';
 
 /**
  * ADR-0031: a Relay Dispatch's own domain type — never a `Dispatch`/
@@ -29,4 +30,9 @@ export type RelayDispatch<C extends Chain = Chain> = {
   signedTransaction: string;
   status: RelayDispatchStatus;
   transactionId: string | null;
+  createdAt: Date;
+  /** #20: when a worker last claimed it. */
+  claimedAt: Date | null;
+  /** ADR-0056: set exactly when `status` is `cancelled`. */
+  cancelledAt: Date | null;
 };

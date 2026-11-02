@@ -17,7 +17,7 @@ A separate process, reachable only over a small network contract, that holds a w
 _Avoid_: SigningProvider (an earlier, in-process/library-coupled shape — deliberately not this), Custodian, Wallet
 
 **Sender**:
-The wallet a Managed Dispatch's transaction is signed and paid from — the address whose Signer the engine calls, and whose nonce it owns. Never the recipient's wallet; a recipient only ever needs a public address, no Signer involved.
+The wallet a Managed Dispatch's transaction is signed and paid from — the address whose Signer the engine calls, and whose nonce it owns. Never the recipient's wallet; a recipient only ever needs a public address, no Signer involved. A chain may have several Senders (ADR-0060), named in the senders file, each with its own key, mode (plain, Squads or Safe), balances and nonces; a Managed Dispatch names the one it pays from, or pays from the chain's default. A Dispatch records the Sender's address, its identity; the name is a label from configuration. The Sender is the unit of execution: claims, the Funding Check, nonces, bundling, Proposals and send concurrency are all per Sender, so one Sender's stuck transaction or open Proposal never delays another. Without a senders file, each chain has one Sender, named `default`, described by the per-chain variables.
 _Avoid_: Wallet (ambiguous — always say Sender or Recipient)
 
 **Call**:
@@ -73,7 +73,11 @@ _Avoid_: Fee Bump (the mechanism the policy turns on, not the policy itself), Au
 
 **ABANDONED**:
 The terminal status for a transaction the engine has stopped actively tracking without a definitive on-chain outcome — e.g. an EVM transaction that never confirmed within its timeout while Retry Policy is off, or a multisig proposal nobody decided on by its deadline (ADR-0053). Distinct from `FAILED`, which means the chain itself rejected or reverted the transaction: an `ABANDONED` transaction may still land later, so the engine keeps a low-frequency background check running for it, for a bounded window, and reports if it does. With Retry Policy on, abandonment waits only while the transaction can still be fee-bumped.
-_Avoid_: FAILED (reserved for a definitive on-chain outcome only), CANCELLED (implies an action stopped it — nothing did)
+_Avoid_: FAILED (reserved for a definitive on-chain outcome only), CANCELLED (an operator's action — see **Cancelled**; nothing stopped an abandoned transaction)
+
+**Cancelled**:
+The terminal status of a Dispatch an operator withdrew before the engine claimed it, so nothing was ever signed, proposed or sent (ADR-0056). Only a Dispatch can be cancelled, never a single item, and never once claimed: a signed transaction cannot be safely unsent, and an open Proposal is the Approvers' to reject.
+_Avoid_: Abandoned (nobody acted), Failed (the chain refused it), Revoked
 
 **Bulk Call**:
 An EVM Managed Dispatch batching mode, opt-in per request, where multiple payments are encoded as one call against a caller-supplied aggregator contract instead of one transaction per payment. The engine only knows how to encode against a documented interface (Multicall3's `aggregate3Value`) — it never deploys or owns the contract itself (ADR-0038). By default a bundle lands whole or fails whole (`allowFailure: false`); per-item success and failure is opt-in and needs a tracing RPC. ERC-20 items spend the aggregator's own balance, so they're refused through the canonical, permissionless Multicall3. The default batching mode, without Bulk Call, is one transaction per payment, sent sequentially under the Sender's nonce.
@@ -82,6 +86,18 @@ _Avoid_: Multicall (that's the caller's contract pattern, not the engine's conce
 **Stuck Transaction**:
 A `PENDING` EVM transaction still unconfirmed a configured time (`stuckAfterMs`, 60s on Base) after its latest send (ADR-0037). Stuck handling rebroadcasts its identical bytes, or fee-bumps it when Retry Policy allows. Only chains that opt in get stuck handling. Solana has none: `broadcast` resends the identical bytes while the blockhash is valid, and once it has provably expired the Coordinator resubmits the Calls as a new Transaction (ADR-0042, ADR-0045).
 _Avoid_: Dropped (a mempool eviction is one possible cause, not the state), Failed
+
+**Flag Rule** (planned — `flag-rules` spec):
+An operator-set condition, edited in the web console, that a Managed Dispatch is checked against before anything is signed or proposed — an amount or total over a limit, a first-time or non-allowlisted recipient, a `call` to an unlisted contract, a rolling daily volume. A Dispatch that matches one is held for an operator to release or cancel. A mistake-catcher, not a security control: it lives in the engine's own database, so the hard limits stay in the Signer's policy (ADR-0046). Never applies to Relay Dispatch.
+_Avoid_: Policy (that's the Signer's), Rule (ambiguous), Compliance check
+
+**Held** (planned — `flag-rules` spec):
+The status of a whole Managed Dispatch that matched a Flag Rule when it was submitted: stored but never claimed, so nothing is signed or proposed, until an operator releases or cancels it. A hold has no deadline (ADR-0058).
+_Avoid_: Flagged (describes why, not the state), Paused, Pending review
+
+**Release**:
+An operator's decision to let a Held Dispatch go ahead, recorded with a reason; it becomes `queued` and runs as if it had never been held. Needs the operator token, never the API token a client submits with (ADR-0057).
+_Avoid_: Approve (that's an Approver's vote on a Proposal), Unflag
 
 **Durable Nonce Execution**:
 An opt-in Solana submission mode using a durable nonce account instead of a recent blockhash, for a Sender that needs offline/async signing or hits blockhash-expiry problems at very high volume. The default Solana mode is a recent blockhash, with resubmission after provable expiry (ADR-0042). Deferred (ADR-0048): without expiry, safe resubmission would first have to cancel the original by advancing the nonce, and no Sender needs the mode yet.

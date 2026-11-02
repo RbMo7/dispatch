@@ -89,7 +89,15 @@ describe('a Signer policy refusing a Managed Dispatch (real Base Sepolia)', () =
     const chainRegistry = await ChainRegistry.load(['base'], {
       base: () => Promise.resolve(handler),
     });
-    const app = buildApp({ store, chainRegistry, authToken: API_TOKEN, defaultRetryPolicy: false });
+    const app = buildApp({
+      store,
+      chainRegistry,
+      authToken: API_TOKEN,
+      defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
+      listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
+    });
 
     const post = await app.inject({
       method: 'POST',

@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync } from 'fastify';
 
 import type { ChainRegistry } from '../chain-registry/chain-registry.js';
 import type {
@@ -8,20 +8,35 @@ import type {
 } from '../chain-handler/chain-handler.js';
 import type { Call, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
-import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
-import type { Proposal } from '../domain/proposal.js';
-import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { err, ok, type Result } from '../domain/result.js';
 import type { DispatchStore } from '../repository/dispatch-store.js';
+import {
+  listDispatchPage,
+  listQuerySchema,
+  parseListQuery,
+  type RawListQuery,
+} from './dispatch-list.js';
+import { readDispatchView } from './dispatch-view.js';
+import { findHoldMatches } from './hold-check.js';
+import type { AssetDecimals } from './asset-decimals.js';
+import {
+  type ApiTokens,
+  authedTokenKind,
+  logOperatorAction,
+  readReason,
+  requireOperator,
+  requireToken,
+} from './operator-auth.js';
+import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
   store: DispatchStore;
   chainRegistry: ChainRegistry;
-  /** Operator-configured shared secret (ADR-0022). */
-  authToken: string;
+  tokens: ApiTokens;
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
+  assetDecimals: AssetDecimals;
 };
 
 type RouteError = { status: number; body: Record<string, unknown> };
@@ -50,6 +65,8 @@ const postDispatchSchema = {
         },
       },
       signedTransaction: { type: 'string' },
+      /** ADR-0060: the name of the Sender a Managed Dispatch pays from; omitted, its chain's default. */
+      sender: { type: 'string', minLength: 1 },
       /** #11 (ADR-0038): opt into Bulk Call through this caller-named aggregator. */
       bulkCall: {
         type: 'object',
@@ -71,6 +88,7 @@ type PostDispatchBody = {
   retryPolicy?: boolean;
   items?: Record<string, unknown>[];
   signedTransaction?: string;
+  sender?: string;
   bulkCall?: BulkCallRequest;
 };
 
@@ -125,89 +143,14 @@ async function translateItem(
   );
 }
 
-/** The wire's lowercase per-item status vocabulary (docs/api.md) — distinct from Transaction's own uppercase one. */
-function toWireItemStatus(status: TransactionStatus): string {
-  switch (status) {
-    case 'PENDING':
-      return 'broadcasting';
-    case 'CONFIRMED':
-      return 'confirmed';
-    case 'FAILED':
-      return 'failed';
-    case 'ABANDONED':
-      return 'abandoned';
-    // ADR-0054: claimed but in no Proposal yet reads as `queued`; inside one, `awaiting_approval`.
-    case 'UNPROPOSED':
-      return 'queued';
-    case 'AWAITING_APPROVAL':
-      return 'awaiting_approval';
-    case 'REPLACED':
-    case 'DROPPED':
-      throw new Error(`a ${status} Transaction is never a Call's reported version (ADR-0037)`);
-  }
-}
-
-/** #9 (ADR-0037): a fee-bumped Call has several Transactions at one nonce — only the current one (latest while pending, or the one that settled it) is its reported version. */
-function isCurrentVersion(transaction: Transaction): boolean {
-  return transaction.status !== 'REPLACED' && transaction.status !== 'DROPPED';
-}
-
-/**
- * Dispatch.status only ever persists 'queued'/'broadcasting' (claimQueued's
- * own transition, ADR-0009's outbox) — the terminal wire statuses
- * (confirmed/failed/partial) are derived here from the aggregate of the
- * Dispatch's Transactions, never stored redundantly. ABANDONED counts
- * alongside FAILED for this aggregate: the Coordinator has stopped
- * actively watching it, even though it might still confirm later — that
- * nuance stays visible at the per-item level (docs/api.md), not lost, just
- * not double-counted as "in progress" here.
- */
-function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): DispatchStatus {
-  if (dispatch.status === 'queued') return 'queued';
-
-  // ADR-0054: a Call waiting to be proposed or approved is still in progress, and the Dispatch gains no status of its own for it.
-  const stillPending =
-    transactions.length < dispatch.items.length ||
-    transactions.some(
-      (t) =>
-        t.status === 'PENDING' || t.status === 'UNPROPOSED' || t.status === 'AWAITING_APPROVAL',
-    );
-  if (stillPending) return 'broadcasting';
-
-  const confirmedCount = transactions.filter((t) => t.status === 'CONFIRMED').length;
-  if (confirmedCount === transactions.length) return 'confirmed';
-  if (confirmedCount === 0) return 'failed';
-  return 'partial';
-}
-
-/** docs/api.md's per-item `approval` block: what the Approvers have done about the Proposal this Call is in. */
-function toWireApproval(proposal: Proposal) {
-  return {
-    state: proposal.approvalState,
-    approvals: proposal.approvals,
-    threshold: proposal.threshold,
-    deadline: proposal.deadlineAt.toISOString(),
-    expected: proposal.expected,
-    chainRef: proposal.chainRef,
-  };
-}
-
-function checkAuth(authToken: string) {
-  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    if (request.headers.authorization !== `Bearer ${authToken}`) {
-      await reply.code(401).send({ error: 'unauthorized' });
-    }
-  };
-}
-
-/** `POST /v1/dispatch` and `GET /v1/dispatch/:id` against the wire format pinned in docs/api.md (issue 08). */
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
-  const { store, chainRegistry, authToken, defaultRetryPolicy } = deps;
-  const auth = checkAuth(authToken);
+  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
+  const auth = requireToken(tokens);
+  const nameOf = (chain: Chain, address: string) => chainRegistry.nameOf(chain, address);
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
-    { schema: postDispatchSchema, preHandler: auth },
+    { schema: postDispatchSchema, onRequest: auth },
     async (request, reply) => {
       const idempotencyKey = request.headers['idempotency-key'];
       if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {
@@ -220,10 +163,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (!registryResult.ok) {
         return reply.code(400).send(registryResult.error satisfies DispatchError);
       }
-      const handler = registryResult.value;
 
       if ((mode ?? 'managed') === 'relay') {
-        const { signedTransaction, items, retryPolicy, bulkCall } = request.body;
+        const handler = registryResult.value;
+        const { signedTransaction, items, retryPolicy, bulkCall, sender } = request.body;
         if (typeof signedTransaction !== 'string' || signedTransaction.length === 0) {
           return reply
             .code(400)
@@ -233,6 +176,12 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
           return reply.code(400).send({
             error:
               'a relay dispatch accepts only chain and signedTransaction — no items, no retryPolicy, no bulkCall',
+          });
+        }
+        if (sender !== undefined) {
+          return reply.code(400).send({
+            error:
+              'a relay dispatch has no Sender: it arrives already signed by its own wallet, so it takes no sender',
           });
         }
 
@@ -257,6 +206,11 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
       if (!Array.isArray(items) || items.length === 0) {
         return reply.code(400).send({ error: 'items must be a non-empty array' });
       }
+
+      // ADR-0060: the Sender it pays from, and so the handler that builds its Calls.
+      const sender = chainRegistry.resolveSender(chain, request.body.sender);
+      if (!sender.ok) return reply.code(400).send(sender.error satisfies DispatchError);
+      const { handler } = sender.value;
 
       const translated: DispatchItem[] = [];
       for (let i = 0; i < items.length; i++) {
@@ -317,78 +271,108 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         items: translated,
         retryPolicy: retryPolicy ?? defaultRetryPolicy,
         bulkCall: bulkCallPlan?.bulkCall ?? null,
+        senderAddress: sender.value.address,
+        hold: await findHoldMatches(
+          store,
+          { chain, senderAddress: sender.value.address, items: translated },
+          new Date(),
+        ),
       });
 
       return reply.code(202).send({ dispatchId: dispatch.id, status: dispatch.status });
     },
   );
 
-  app.get<{ Params: { id: string } }>(
-    '/v1/dispatch/:id',
-    { preHandler: auth },
+  app.get<{ Querystring: RawListQuery }>(
+    '/v1/dispatches',
+    { onRequest: auth, schema: { querystring: listQuerySchema } },
     async (request, reply) => {
-      const dispatch = await store.getDispatch(request.params.id);
-      if (dispatch) {
-        const transactions = (await store.listTransactions(dispatch.id)).filter(isCurrentVersion);
-        const transactionByCallIndex = new Map(transactions.map((t) => [t.callIndex, t]));
-        // ADR-0054: only a multisig Dispatch has Proposals; everyone else costs no extra read. The API never calls a chain.
-        const proposalById = new Map(
-          transactions.some((t) => t.proposalId !== null)
-            ? (await store.listProposalsForDispatch(dispatch.id)).map((p) => [p.id, p])
-            : [],
-        );
+      const filter = parseListQuery(request.query);
+      if (!filter.ok) return reply.code(400).send({ error: filter.error });
+      const { sender } = request.query;
+      if (sender === undefined) {
+        return reply.send(await listDispatchPage(store, filter.value, assetDecimals, nameOf));
+      }
+      // ADR-0060: names are unique per chain, so a name without `chain` covers every chain's Sender of that name.
+      const senders = chainRegistry.senders.flatMap((s) =>
+        s.name === sender && s.address && (!filter.value.chain || s.chain === filter.value.chain)
+          ? [{ chain: s.chain, address: s.address }]
+          : [],
+      );
+      if (senders.length === 0) {
+        return reply.code(400).send({
+          code: 'UNKNOWN_SENDER',
+          message: `no Sender named "${sender}"${filter.value.chain ? ` on ${filter.value.chain}` : ''}`,
+        } satisfies DispatchError);
+      }
+      return reply.send(
+        await listDispatchPage(store, { ...filter.value, senders }, assetDecimals, nameOf),
+      );
+    },
+  );
 
-        const items = dispatch.items.map((_, index) => {
-          const transaction = transactionByCallIndex.get(index);
-          if (!transaction) {
-            return { status: 'queued', transactionHash: null, error: null };
-          }
-          const proposal = transaction.proposalId
-            ? proposalById.get(transaction.proposalId)
-            : undefined;
-          return {
-            status: toWireItemStatus(transaction.status),
-            transactionHash: transaction.hash,
-            error: transaction.error,
-            ...(proposal ? { approval: toWireApproval(proposal) } : {}),
-          };
-        });
+  app.get<{ Params: { id: string }; Querystring: { include?: unknown } }>(
+    '/v1/dispatch/:id',
+    { onRequest: auth },
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
+      const view = await readDispatchView(store, request.params.id, assetDecimals, {
+        timeline: request.query.include === 'timeline',
+        nameOf,
+      });
+      if (!view) return reply.code(404).send({ error: 'not found' });
+      return reply.send(view);
+    },
+  );
 
-        return reply.send({
-          dispatchId: dispatch.id,
-          mode: 'managed',
-          status: deriveDispatchStatus(dispatch, transactions),
-          items,
+  app.post<{ Params: { id: string } }>(
+    '/v1/dispatch/:id/cancel',
+    { onRequest: auth },
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
+      const reason = readReason(request.body);
+      if (!reason.ok) return reply.code(400).send({ error: reason.error });
+      const actor = { tokenKind: authedTokenKind(request, tokens), reason: reason.value };
+      const outcome = await store.cancelDispatch(request.params.id, actor);
+      if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'cancelled') logOperatorAction(request, 'cancel', request.params.id, actor);
+      if (outcome === 'already_claimed') {
+        return reply.code(409).send({
+          code: 'ALREADY_CLAIMED',
+          message: 'the engine has already claimed this Dispatch, so it can no longer be cancelled',
         });
       }
+      return reply.send(
+        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+      );
+    },
+  );
 
-      // ADR-0031: a Relay Dispatch is always exactly one already-signed
-      // transaction, never a batch — its response shape (dispatchId, mode,
-      // status, transactionHash, error) is honestly distinct from Managed
-      // Dispatch's items-array shape, not a fake single-item version of it.
-      const relayDispatch = await store.getRelayDispatch(request.params.id);
-      if (relayDispatch) {
-        const [transaction] = await store.listTransactions(relayDispatch.id);
-        if (!transaction) {
-          return reply.send({
-            dispatchId: relayDispatch.id,
-            mode: 'relay',
-            status: 'queued',
-            transactionHash: null,
-            error: null,
-          });
-        }
-
-        return reply.send({
-          dispatchId: relayDispatch.id,
-          mode: 'relay',
-          status: toWireItemStatus(transaction.status),
-          transactionHash: transaction.hash,
-          error: transaction.error,
+  app.post<{ Params: { id: string } }>(
+    '/v1/dispatch/:id/release',
+    { onRequest: requireOperator(tokens) },
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
+      const reason = readReason(request.body);
+      if (!reason.ok) return reply.code(400).send({ error: reason.error });
+      if (reason.value === null) {
+        return reply.code(400).send({ error: 'reason: required, a non-empty string' });
+      }
+      const outcome = await store.releaseDispatch(request.params.id, reason.value);
+      if (outcome === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (outcome === 'not_held') {
+        return reply.code(409).send({
+          code: 'NOT_HELD',
+          message: 'this Dispatch is not held, so there is nothing to release',
         });
       }
-
-      return reply.code(404).send({ error: 'not found' });
+      logOperatorAction(request, 'release', request.params.id, {
+        tokenKind: 'operator',
+        reason: reason.value,
+      });
+      return reply.send(
+        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+      );
     },
   );
 

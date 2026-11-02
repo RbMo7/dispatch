@@ -1,0 +1,10 @@
+.git
+.env
+.env.backup-*
+signer/local
+**/node_modules
+**/dist
+.claude
+.scratch
+.devnet-fixtures
+.base-fixtures

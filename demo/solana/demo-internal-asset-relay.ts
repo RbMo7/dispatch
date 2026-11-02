@@ -133,7 +133,15 @@ async function main() {
         }),
       ),
   });
-  const app = buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false });
+  const app = buildApp({
+    store,
+    chainRegistry,
+    authToken: AUTH_TOKEN,
+    defaultRetryPolicy: false,
+    assetDecimals: () => undefined,
+    listSenders: () => Promise.resolve([]),
+    readSetup: () => Promise.reject(new Error('this demo serves no setup checks')),
+  });
 
   const postResponse = await app.inject({
     method: 'POST',

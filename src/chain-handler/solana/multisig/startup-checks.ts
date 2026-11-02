@@ -25,8 +25,8 @@ export type MultisigStartupDeps = {
   senderAddress: string;
   /** Reads the multisig account, at one slot (multisig-account.ts). */
   readMultisig: (address: string) => Promise<MultisigOnChainState>;
-  /** ADR-0055: what the Signer says the member's key is pinned to. */
-  readSignerPins: (member: string) => Promise<PolicyRead>;
+  /** ADR-0055: what the Signer says the member's key is pinned to. Absent in the API, which never calls the Signer (ADR-0059); the worker checks it. */
+  readSignerPins?: (member: string) => Promise<PolicyRead>;
 };
 
 /** One thing wrong that stops startup: `check` names it, so an operator can tell which. */
@@ -156,12 +156,14 @@ export async function runMultisigStartupChecks(
   }
 
   const signer = await deps
-    .readSignerPins(config.memberAddress)
+    .readSignerPins?.(config.memberAddress)
     .catch((cause: unknown): PolicyRead => ({ kind: 'unreachable', message: errorText(cause) }));
-  if (signer.kind === 'no-key') {
+  if (signer === undefined) {
+    // The API: the worker reads the pins and refuses to start on them.
+  } else if (signer.kind === 'no-key') {
     fail(
       'signer can sign for the member',
-      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/signer.md), pinned to the multisig by policy`,
+      `the Signer has no key for ${config.memberAddress}: add it to the Signer's config (docs/self-hosting/signer.md), pinned to the multisig by policy`,
     );
   } else if (signer.kind === 'unreachable') {
     fail(
@@ -173,7 +175,7 @@ export async function runMultisigStartupChecks(
   } else if (signer.pins.allowedMultisig !== config.multisigAddress) {
     fail(
       'signer pins the multisig',
-      `the Signer's policy for ${config.memberAddress} pins ${signer.pins.allowedMultisig ?? 'no multisig'}, but SOLANA_MULTISIG_ADDRESS is ${config.multisigAddress}: set policy.allowedMultisig for this key in the Signer's config (docs/signer.md)`,
+      `the Signer's policy for ${config.memberAddress} pins ${signer.pins.allowedMultisig ?? 'no multisig'}, but SOLANA_MULTISIG_ADDRESS is ${config.multisigAddress}: set policy.allowedMultisig for this key in the Signer's config (docs/self-hosting/signer.md)`,
     );
   }
 

@@ -3,9 +3,12 @@ import {
   type AnyPgColumn,
   bigint,
   boolean,
+  check,
+  index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -15,7 +18,10 @@ import {
 import type { DispatchItem } from '../domain/call.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type { FlagRuleDefinitionJson } from '../domain/flag-rule.js';
 import type { ChainProposalRef, CommittedAmounts, ExpectedTotals } from '../domain/proposal.js';
+import type { Fix } from '../setup/check.js';
+import type { SignerPins } from '../signer/client.js';
 
 export const dispatches = pgTable(
   'dispatches',
@@ -30,51 +36,71 @@ export const dispatches = pgTable(
     bulkCall: jsonb('bulk_call').$type<BulkCall | null>(),
     /** #20 (ADR-0041): when a worker last claimed this row — a claim still `broadcasting` long after is reclaimed. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** ADR-0056: when an operator cancelled it, before any claim. */
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * ADR-0060: the Sender that pays, its identity. Null only for a row stored
+     * without one (from before named Senders, or a caller that named none): its
+     * chain's default Sender takes it over, at startup and before each claim.
+     */
+    senderAddress: text('sender_address'),
   },
-  (table) => [uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey)],
+  (table) => [
+    uniqueIndex('dispatches_idempotency_key_idx').on(table.idempotencyKey),
+    index('dispatches_created_at_id_idx').on(table.createdAt, table.id),
+    index('dispatches_chain_sender_status_idx').on(table.chain, table.senderAddress, table.status),
+  ],
 );
 
-export const transactions = pgTable('transactions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  /**
-   * Deliberately NOT a foreign key: this points at either `dispatches.id`
-   * (a Managed Dispatch's Call) or `relay_dispatches.id` (ADR-0031's
-   * RelayDispatch, always exactly one Transaction) — a single-table FK
-   * can't express "one of two tables." This is the intentional
-   * replacement for that referential-integrity check, not a gap left
-   * open: `Coordinator.maybeAbandon` already resolves which owner a
-   * Transaction belongs to (tries getDispatch, falls back to
-   * getRelayDispatch, throws if neither matches — a genuinely orphaned
-   * row still surfaces loudly). Nothing in this repo ever deletes a
-   * Dispatch/RelayDispatch row, so there's no live risk the dropped FK's
-   * old ON DELETE behavior was actually guarding against.
-   */
-  dispatchId: uuid('dispatch_id').notNull(),
-  callIndex: integer('call_index').notNull(),
-  chain: text('chain').notNull(),
-  signedBytes: text('signed_bytes'),
-  hash: text('hash'),
-  status: text('status').notNull().default('PENDING'),
-  error: jsonb('error').$type<DispatchError | null>(),
-  broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
-  /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
-  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
-  /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
-  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
-  /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
-  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
-  /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
-  lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
-  /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
-  replacesTransactionId: uuid('replaces_transaction_id'),
-  /** #9: fee-bump attempts made for this Call so far, failed ones included. */
-  feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
-  /** ADR-0054: the Proposal a multisig Call belongs to — null for every other Transaction. */
-  proposalId: uuid('proposal_id').references((): AnyPgColumn => proposals.id),
-  /** ADR-0054: this Call's position inside its Proposal. */
-  proposalPosition: integer('proposal_position'),
-});
+export const transactions = pgTable(
+  'transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Deliberately NOT a foreign key: this points at either `dispatches.id`
+     * (a Managed Dispatch's Call) or `relay_dispatches.id` (ADR-0031's
+     * RelayDispatch, always exactly one Transaction) — a single-table FK
+     * can't express "one of two tables." This is the intentional
+     * replacement for that referential-integrity check, not a gap left
+     * open: `Coordinator.maybeAbandon` already resolves which owner a
+     * Transaction belongs to (tries getDispatch, falls back to
+     * getRelayDispatch, throws if neither matches — a genuinely orphaned
+     * row still surfaces loudly). Nothing in this repo ever deletes a
+     * Dispatch/RelayDispatch row, so there's no live risk the dropped FK's
+     * old ON DELETE behavior was actually guarding against.
+     */
+    dispatchId: uuid('dispatch_id').notNull(),
+    callIndex: integer('call_index').notNull(),
+    chain: text('chain').notNull(),
+    signedBytes: text('signed_bytes'),
+    hash: text('hash'),
+    status: text('status').notNull().default('PENDING'),
+    error: jsonb('error').$type<DispatchError | null>(),
+    broadcastAt: timestamp('broadcast_at', { withTimezone: true }),
+    /** issue 10: when this Transaction was marked ABANDONED — what the low-frequency re-watch's bounded window measures elapsed time against. */
+    abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+    /** base-chain-handler issue 07: when this Transaction was last marked CONFIRMED — what the reorg safety net's bounded re-check window measures elapsed time against. */
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /** #109: when this Transaction was marked FAILED — what the timeline reports it at. */
+    failedAt: timestamp('failed_at', { withTimezone: true }),
+    /** #21: when the pending poll last picked this row up — what listPendingTransactions rotates on. */
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    /** #9: when these exact signed bytes were last sent — what the stuck timer measures against. */
+    lastBroadcastAt: timestamp('last_broadcast_at', { withTimezone: true }),
+    /** #9: the fee-bumped predecessor this row replaced (same Call, same nonce). */
+    replacesTransactionId: uuid('replaces_transaction_id'),
+    /** #9: fee-bump attempts made for this Call so far, failed ones included. */
+    feeBumpAttempts: integer('fee_bump_attempts').notNull().default(0),
+    /** ADR-0054: the Proposal a multisig Call belongs to — null for every other Transaction. */
+    proposalId: uuid('proposal_id').references((): AnyPgColumn => proposals.id),
+    /** ADR-0054: this Call's position inside its Proposal. */
+    proposalPosition: integer('proposal_position'),
+  },
+  (table) => [
+    index('transactions_dispatch_id_call_index_idx').on(table.dispatchId, table.callIndex),
+  ],
+);
 
 /**
  * ADR-0054: one multisig transaction proposed for Approvers to decide on,
@@ -126,14 +152,18 @@ export const proposals = pgTable(
   ],
 );
 
-export const attempts = pgTable('attempts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  transactionId: uuid('transaction_id')
-    .notNull()
-    .references(() => transactions.id),
-  broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
-  error: jsonb('error').$type<DispatchError | null>(),
-});
+export const attempts = pgTable(
+  'attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transactionId: uuid('transaction_id')
+      .notNull()
+      .references(() => transactions.id),
+    broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
+    error: jsonb('error').$type<DispatchError | null>(),
+  },
+  (table) => [index('attempts_transaction_id_idx').on(table.transactionId)],
+);
 
 /**
  * base-chain-handler issue 02: a persisted per-(chain, Sender) nonce->hash
@@ -179,6 +209,102 @@ export const relayDispatches = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /** #20: when a worker last claimed this row. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    /** ADR-0056: when an operator cancelled it, before any claim. */
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   },
-  (table) => [uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey)],
+  (table) => [
+    uniqueIndex('relay_dispatches_idempotency_key_idx').on(table.idempotencyKey),
+    index('relay_dispatches_created_at_id_idx').on(table.createdAt, table.id),
+  ],
+);
+
+/** ADR-0057: one row per cancel, release and Flag Rule write, never updated. */
+export const operatorActions = pgTable(
+  'operator_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Not now(): that is when the transaction began, possibly before it waited on the row it changed.
+    at: timestamp('at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    action: text('action').notNull(),
+    targetId: uuid('target_id').notNull(),
+    tokenKind: text('token_kind').notNull(),
+    reason: text('reason'),
+  },
+  (table) => [index('operator_actions_at_id_idx').on(table.at, table.id)],
+);
+
+/** ADR-0058: a Flag Rule's identity. Its content lives in `flag_rule_versions`. */
+export const flagRules = pgTable('flag_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  currentVersion: integer('current_version').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});
+
+/** ADR-0058: forward-only; a row is never updated, and an edit inserts the next version. */
+export const flagRuleVersions = pgTable(
+  'flag_rule_versions',
+  {
+    ruleId: uuid('rule_id')
+      .notNull()
+      .references(() => flagRules.id),
+    version: integer('version').notNull(),
+    name: text('name').notNull(),
+    chain: text('chain').notNull(),
+    /** #149: null applies the version to every Sender on `chain`. */
+    senderAddress: text('sender_address'),
+    enabled: boolean('enabled').notNull(),
+    definition: jsonb('definition').notNull().$type<FlagRuleDefinitionJson>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.ruleId, table.version] })],
+);
+
+/** ADR-0058: why a Dispatch was held. Each match names an immutable rule version. */
+export const dispatchHolds = pgTable('dispatch_holds', {
+  dispatchId: uuid('dispatch_id')
+    .primaryKey()
+    .references(() => dispatches.id),
+  matched: jsonb('matched')
+    .notNull()
+    .$type<{ ruleId: string; ruleVersion: number; items: number[] }[]>(),
+  heldAt: timestamp('held_at', { withTimezone: true }).notNull().defaultNow(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
+});
+/** ADR-0059: what the worker last read from the Signer about each Sender key, so the API never calls the Signer. */
+export const signerKeys = pgTable(
+  'signer_keys',
+  {
+    chain: text('chain').notNull(),
+    address: text('address').notNull(),
+    pins: jsonb('pins').$type<SignerPins>(),
+    error: text('error'),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chain, table.address] }),
+    check('signer_keys_pins_or_error', sql`(${table.pins} IS NULL) <> (${table.error} IS NULL)`),
+  ],
+);
+
+/** The worker's latest run of its setup checks: one row per check, and per chain for a chain check. */
+export const setupChecks = pgTable(
+  'setup_checks',
+  {
+    /** The check's id, with `:<chain>` for a chain check, as `doctor --json` names it. */
+    id: text('id').primaryKey(),
+    area: text('area').notNull(),
+    title: text('title').notNull(),
+    chain: text('chain'),
+    status: text('status').notNull(),
+    finding: text('finding').notNull(),
+    fix: jsonb('fix').$type<Fix>(),
+    ranAt: timestamp('ran_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check('setup_checks_fix_unless_pass', sql`(${table.status} = 'pass') = (${table.fix} IS NULL)`),
+  ],
 );

@@ -3,9 +3,20 @@ import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import type {
+  FlagRule,
+  FlagRuleSpec,
+  FlagRuleVersion,
+  Hold,
+  RuleMatch,
+} from '../domain/flag-rule.js';
+import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
-import type { Transaction } from '../domain/transaction.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { Attempt, Transaction } from '../domain/transaction.js';
+import type { CheckOutcome } from '../setup/run.js';
+import type { SignerPins } from '../signer/client.js';
 
 /** ADR-0054: a multisig Call claimed, validated and funded, to be written down as `UNPROPOSED`. */
 export type NewUnproposedInput = {
@@ -70,6 +81,13 @@ export type ProposalOutcome = {
 /** Whose balance a committed amount is held against: the multisig Sender, or the key that pays the engine's own costs. */
 export type CommittedHolder = 'sender' | 'proposer';
 
+/**
+ * ADR-0056: how a cancel ended. `already_cancelled` is a repeat, not an
+ * error; `already_claimed` when the worker's claim won, whatever has
+ * happened since.
+ */
+export type CancelOutcome = 'cancelled' | 'already_cancelled' | 'already_claimed' | 'not_found';
+
 export type NewDispatchInput<C extends Chain = Chain> = {
   chain: C;
   idempotencyKey: string;
@@ -77,6 +95,10 @@ export type NewDispatchInput<C extends Chain = Chain> = {
   retryPolicy: boolean;
   /** #11: omitted (or null) for the default one-transaction-per-item mode. */
   bulkCall?: BulkCall | null;
+  /** ADR-0058: non-empty stores the Dispatch `held`, with these matches, in the same write. */
+  hold?: RuleMatch[];
+  /** ADR-0060: the Sender that pays. Omitted (or null), the chain's default Sender takes it over before the claim. */
+  senderAddress?: SenderAddress | null;
 };
 
 export type NewTransactionInput = {
@@ -103,11 +125,55 @@ export type NewRelayDispatchInput<C extends Chain = Chain> = {
 };
 
 /**
+ * #110: where a listing page ends, newest first. `createdAt` is the row's
+ * exact stored time (ISO 8601, UTC), finer than a Date holds, so the next
+ * page starts exactly after it.
+ */
+export type DispatchCursor = { createdAt: string; id: string };
+
+export function compareNewestFirst(a: DispatchCursor, b: DispatchCursor): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+export type DispatchListQuery = {
+  after: DispatchCursor | null;
+  limit: number;
+  chain?: Chain;
+  mode?: 'managed' | 'relay';
+  storedStatuses?: readonly ('queued' | 'held' | 'broadcasting' | 'cancelled')[];
+  from?: Date;
+  to?: Date;
+  /** ADR-0060: only Managed Dispatches paid by one of these Senders (so never a Relay Dispatch). */
+  senders?: readonly SenderRef[];
+};
+
+/** ADR-0057: a page of operator actions, newest first, cut on `(at, id)` like the Dispatch listing. */
+export type OperatorActionQuery = { after: DispatchCursor | null; limit: number };
+
+export type ListedOperatorAction = { action: OperatorAction; cursor: DispatchCursor };
+
+export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (
+  { mode: 'managed'; dispatch: Dispatch } | { mode: 'relay'; dispatch: RelayDispatch }
+);
+
+/**
  * #57: every work queue below takes the `chains` the caller can act on and
  * never returns a row for any other chain. A chain removed from
  * ENABLED_CHAINS keeps its rows exactly as they are until it is enabled again.
  */
 export type ChainScope = readonly Chain[];
+
+/** ADR-0059: what the worker last read from the Signer about one Sender key. `error` is a fixed message, never what the Signer said. */
+export type SignerKeyRecord = {
+  chain: Chain;
+  address: string;
+  read: { pins: SignerPins } | { error: string };
+  readAt: Date;
+};
+
+/** One check from the worker's latest run of its setup checks (#137), and when that run finished. */
+export type SetupCheckRecord = CheckOutcome & { ranAt: Date };
 
 /**
  * The Coordinator's — and the API's — only way to touch persistence
@@ -118,10 +184,71 @@ export interface DispatchStore {
   /** Idempotent create (ADR-0021): resubmitting an existing idempotencyKey returns the original Dispatch. */
   createDispatch<C extends Chain>(input: NewDispatchInput<C>): Promise<Dispatch<C>>;
   getDispatch(id: string): Promise<Dispatch | null>;
-  /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/api.md) is built from. */
+  /** All Transactions created so far for a Dispatch's Calls — what a status response (docs/openapi.yaml) is built from. */
   listTransactions(dispatchId: string): Promise<Transaction[]>;
-  /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). */
+  /** #109: every Attempt (rebroadcast) of every Transaction of a Dispatch or Relay Dispatch, oldest first. */
+  listAttempts(dispatchId: string): Promise<Attempt[]>;
+  /** Atomically claims up to `limit` queued Dispatches for the worker to process (ADR-0009). Never a cancelled one. */
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]>;
+  /** ADR-0060: claimQueued for one Sender: only Dispatches it pays for, oldest first, so one Sender's queue never waits on another's. */
+  claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]>;
+  /**
+   * ADR-0060: gives every Dispatch of `sender.chain` stored with no Sender to
+   * `sender` (the chain's default), whatever its status, and returns how many.
+   * Idempotent: the backfill of the rows from before named Senders, and the
+   * guarantee that a claimed Dispatch always has its Sender.
+   */
+  assignUnassignedDispatches(sender: SenderRef): Promise<number>;
+  /**
+   * ADR-0056: cancels the Managed or Relay Dispatch `id` if it is still
+   * unclaimed (`queued` or `held`), in one conditional write against the claim, so a cancel and
+   * a claim can never both win. A cancel that lands records its operator
+   * action in the same write (ADR-0057); a repeat records nothing.
+   */
+  cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome>;
+  listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]>;
+
+  // --- Flag Rules (ADR-0058). Each write records its operator action in the same write (ADR-0057). ---
+
+  /** Writes version 1. */
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule>;
+  /** Writes the next version; the earlier ones stay as they were. */
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'>;
+  /** Marks it deleted, keeping every version. A repeat is `deleted: false` and records nothing. */
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'>;
+  /** Deleted rules included. */
+  getFlagRule(id: string): Promise<FlagRule | null>;
+  /** Every rule not deleted, oldest first. */
+  listFlagRules(): Promise<FlagRule[]>;
+  /** The current version of every rule on `chain` that is enabled and not deleted. */
+  listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]>;
+  /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
+  firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
+  /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches (only `senderAddress`'s, when given: #149) created since `since` and not cancelled. */
+  acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>>;
+  /** #119: up to `limit` of `chain`'s Managed Dispatches created at or after `since`, newest first, whatever their status. */
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]>;
+  /** ADR-0058: why the Dispatch was held, or null if it never was. */
+  getHold(dispatchId: string): Promise<Hold | null>;
+  /**
+   * ADR-0058: moves a held Dispatch to `queued`, recording the release on its
+   * hold and as an operator action, in one write conditional on `held`. A
+   * cancel is conditional on the same row, so of a release and a cancel
+   * racing on a held Dispatch exactly one takes it out of `held`.
+   */
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'>;
   /** Up to `limit` still-PENDING Transactions, least-recently-polled first (never-polled first, then oldest-broadcast), stamping each returned row's `lastCheckedAt` — so successive calls rotate through the whole pending set rather than re-polling the same long-pending rows forever (#21). The Coordinator's own work queue for status-checking and the ABANDONED timeout, across every Dispatch. */
   listPendingTransactions(chains: ChainScope, limit: number): Promise<Transaction[]>;
   /** issue 10 (a Transaction with no hash — a timed-out Proposal's Call, ADR-0054 — is never returned: this queue re-checks sent bytes, and it has none): up to `limit` ABANDONED Transactions whose `abandonedAt` is no earlier than `notAbandonedBefore`, oldest-abandoned first — the Coordinator's own low-frequency re-watch work queue, deliberately separate from listPendingTransactions so its own (much slower) poll cadence governs how often ABANDONED work gets touched at all. A Transaction abandoned before `notAbandonedBefore` (outside the bounded window) is excluded — the engine has genuinely stopped watching it, permanently. */
@@ -192,8 +319,8 @@ export interface DispatchStore {
    * returned as it is, so a reclaimed Dispatch never gets a duplicate row.
    */
   noteUnproposed(inputs: NewUnproposedInput[]): Promise<Transaction[]>;
-  /** `chain`'s `UNPROPOSED` Transactions, first-claimed Dispatch first and by `callIndex` within one, so the caller can propose one Dispatch at a time. */
-  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]>;
+  /** `chain`'s `UNPROPOSED` Transactions (only `senderAddress`'s, when given: ADR-0060), first-claimed Dispatch first and by `callIndex` within one, so the caller can propose one Dispatch at a time. */
+  listUnproposed(chain: Chain, limit: number, senderAddress?: string): Promise<Transaction[]>;
   /**
    * Atomically writes a Proposal at phase `noted` and moves its Transactions
    * from `UNPROPOSED` to `AWAITING_APPROVAL`, setting `proposalId` and
@@ -263,16 +390,29 @@ export interface DispatchStore {
    * (the Funding Check subtracts it): the `committed` of Proposals that are
    * `noted`, `open` or `executing`, or `timed_out` since `timedOutSince` or
    * later (ADR-0053); for `sender`, also the payments of `UNPROPOSED` Calls.
+   * Given `senderAddress`, only that Sender's Proposals and Calls (ADR-0060).
    */
-  listCommitted(chain: Chain, holder: CommittedHolder, timedOutSince: Date): Promise<AssetAmount[]>;
+  listCommitted(
+    chain: Chain,
+    holder: CommittedHolder,
+    timedOutSince: Date,
+    senderAddress?: string,
+  ): Promise<AssetAmount[]>;
   /** Every Proposal that holds one of the Dispatch's Calls, oldest first — what `GET /v1/dispatch/:id` builds the `approval` block from. */
   listProposalsForDispatch(dispatchId: string): Promise<Proposal[]>;
 
   /** Idempotent create (ADR-0021), mirroring createDispatch — a Relay Dispatch's own table (ADR-0031), never squeezed into `dispatches`. */
   createRelayDispatch<C extends Chain>(input: NewRelayDispatchInput<C>): Promise<RelayDispatch<C>>;
   getRelayDispatch(id: string): Promise<RelayDispatch | null>;
+  listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]>;
   /** Atomically claims up to `limit` queued RelayDispatches for the worker to process, mirroring claimQueued. */
   claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]>;
   /** Records which Transaction a RelayDispatch's single broadcast attempt produced — success or failure alike (recordCallFailure and createTransaction both already produce a Transaction id). */
   setRelayDispatchTransaction(relayDispatchId: string, transactionId: string): Promise<void>;
+  /** ADR-0059: replaces whatever was recorded for the record's chain and address. */
+  recordSignerKey(record: SignerKeyRecord): Promise<void>;
+  getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
+  /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
+  recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+  listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

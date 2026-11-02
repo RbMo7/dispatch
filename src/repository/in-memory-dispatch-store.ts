@@ -3,22 +3,44 @@ import { randomUUID } from 'node:crypto';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
 import type { DispatchError } from '../domain/errors.js';
+import {
+  addressKey,
+  type FlagRule,
+  type FlagRuleSpec,
+  type FlagRuleVersion,
+  type Hold,
+} from '../domain/flag-rule.js';
+import type {
+  OperatorAction,
+  OperatorActionKind,
+  OperatorActor,
+} from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
+import type { SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
+import { compareNewestFirst } from './dispatch-store.js';
 import type {
+  CancelOutcome,
   ChainScope,
   CommittedHolder,
+  DispatchCursor,
+  DispatchListQuery,
   DispatchStore,
+  ListedDispatch,
+  ListedOperatorAction,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
   NewRelayDispatchInput,
   NewTransactionInput,
   NewUnproposedInput,
+  OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
+  SetupCheckRecord,
+  SignerKeyRecord,
 } from './dispatch-store.js';
 
 /**
@@ -35,8 +57,11 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly attempts = new Map<string, Attempt[]>();
   private readonly relayDispatches = new Map<string, RelayDispatch>();
   private readonly proposals = new Map<string, Proposal>();
-  /** #20: when each Dispatch / Relay Dispatch was last claimed. */
-  private readonly claimedAt = new Map<string, Date>();
+  private readonly operatorActions: OperatorAction[] = [];
+  private readonly flagRules = new Map<string, FlagRule>();
+  private readonly holds = new Map<string, Hold>();
+  private readonly signerKeys = new Map<string, SignerKeyRecord>();
+  private setupChecks: SetupCheckRecord[] = [];
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -54,11 +79,23 @@ export class InMemoryDispatchStore implements DispatchStore {
       chain: input.chain,
       idempotencyKey: input.idempotencyKey,
       items: input.items,
-      status: 'queued',
+      status: input.hold?.length ? 'held' : 'queued',
       retryPolicy: input.retryPolicy,
       bulkCall: input.bulkCall ?? null,
+      createdAt: this.now(),
+      claimedAt: null,
+      cancelledAt: null,
+      senderAddress: input.senderAddress ?? null,
     };
     this.dispatches.set(dispatch.id, dispatch);
+    if (input.hold?.length) {
+      this.holds.set(dispatch.id, {
+        dispatchId: dispatch.id,
+        matched: input.hold,
+        heldAt: dispatch.createdAt,
+        release: null,
+      });
+    }
 
     return Promise.resolve(dispatch);
   }
@@ -75,19 +112,211 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(matches);
   }
 
+  listAttempts(dispatchId: string): Promise<Attempt[]> {
+    return Promise.resolve(
+      [...this.transactions.values()]
+        .filter((t) => t.dispatchId === dispatchId)
+        .flatMap((t) => this.attempts.get(t.id) ?? [])
+        .sort((a, b) => a.broadcastAt.getTime() - b.broadcastAt.getTime()),
+    );
+  }
+
   claimQueued(chains: ChainScope, limit: number): Promise<Dispatch[]> {
     const claimed: Dispatch[] = [];
     for (const dispatch of this.dispatches.values()) {
       if (claimed.length >= limit) break;
       if (dispatch.status !== 'queued' || !chains.includes(dispatch.chain)) continue;
 
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting' };
+      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
       this.dispatches.set(dispatch.id, broadcasting);
-      this.claimedAt.set(dispatch.id, this.now());
       claimed.push(broadcasting);
     }
 
     return Promise.resolve(claimed);
+  }
+
+  claimQueuedFor(sender: SenderRef, limit: number): Promise<Dispatch[]> {
+    const claimed: Dispatch[] = [];
+    for (const dispatch of this.dispatches.values()) {
+      if (claimed.length >= limit) break;
+      if (
+        dispatch.status !== 'queued' ||
+        dispatch.chain !== sender.chain ||
+        dispatch.senderAddress !== sender.address
+      ) {
+        continue;
+      }
+      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      this.dispatches.set(dispatch.id, broadcasting);
+      claimed.push(broadcasting);
+    }
+    return Promise.resolve(claimed);
+  }
+
+  assignUnassignedDispatches(sender: SenderRef): Promise<number> {
+    let assigned = 0;
+    for (const dispatch of this.dispatches.values()) {
+      if (dispatch.chain !== sender.chain || dispatch.senderAddress !== null) continue;
+      this.dispatches.set(dispatch.id, { ...dispatch, senderAddress: sender.address });
+      assigned++;
+    }
+    return Promise.resolve(assigned);
+  }
+
+  cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome> {
+    const dispatch = this.dispatches.get(id);
+    const relayDispatch = this.relayDispatches.get(id);
+    const status = dispatch?.status ?? relayDispatch?.status;
+    if (status === undefined) return Promise.resolve('not_found');
+    if (status === 'cancelled') return Promise.resolve('already_cancelled');
+    if (status !== 'queued' && status !== 'held') return Promise.resolve('already_claimed');
+    const cancelledAt = this.now();
+    if (dispatch) this.dispatches.set(id, { ...dispatch, status: 'cancelled', cancelledAt });
+    if (relayDispatch) {
+      this.relayDispatches.set(id, { ...relayDispatch, status: 'cancelled', cancelledAt });
+    }
+    this.recordAction('cancel', id, actor);
+    return Promise.resolve('cancelled');
+  }
+
+  private recordAction(action: OperatorActionKind, targetId: string, actor: OperatorActor): void {
+    this.operatorActions.push({ ...actor, id: randomUUID(), at: this.now(), action, targetId });
+  }
+
+  listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]> {
+    const { after } = query;
+    return Promise.resolve(
+      this.operatorActions
+        .map((action) => ({
+          action,
+          cursor: { createdAt: action.at.toISOString(), id: action.id },
+        }))
+        .filter((l) => !after || compareNewestFirst(after, l.cursor) < 0)
+        .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+        .slice(0, query.limit),
+    );
+  }
+
+  createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
+    const id = randomUUID();
+    const current: FlagRuleVersion = { ...spec, ruleId: id, version: 1, createdAt: this.now() };
+    const rule: FlagRule = {
+      id,
+      createdAt: current.createdAt,
+      deletedAt: null,
+      current,
+      versions: [current],
+    };
+    this.flagRules.set(id, rule);
+    this.recordAction('flag_rule_create', id, actor);
+    return Promise.resolve(rule);
+  }
+
+  updateFlagRule(
+    id: string,
+    spec: FlagRuleSpec,
+    actor: OperatorActor,
+  ): Promise<FlagRule | 'not_found' | 'deleted'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve('deleted');
+    const current: FlagRuleVersion = {
+      ...spec,
+      ruleId: id,
+      version: rule.current.version + 1,
+      createdAt: this.now(),
+    };
+    const updated = { ...rule, current, versions: [...rule.versions, current] };
+    this.flagRules.set(id, updated);
+    this.recordAction('flag_rule_update', id, actor);
+    return Promise.resolve(updated);
+  }
+
+  deleteFlagRule(
+    id: string,
+    actor: OperatorActor,
+  ): Promise<{ rule: FlagRule; deleted: boolean } | 'not_found'> {
+    const rule = this.flagRules.get(id);
+    if (!rule) return Promise.resolve('not_found');
+    if (rule.deletedAt) return Promise.resolve({ rule, deleted: false });
+    const deleted = { ...rule, deletedAt: this.now() };
+    this.flagRules.set(id, deleted);
+    this.recordAction('flag_rule_delete', id, actor);
+    return Promise.resolve({ rule: deleted, deleted: true });
+  }
+
+  getFlagRule(id: string): Promise<FlagRule | null> {
+    return Promise.resolve(this.flagRules.get(id) ?? null);
+  }
+
+  listFlagRules(): Promise<FlagRule[]> {
+    return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
+  }
+
+  listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
+    return Promise.resolve(
+      [...this.flagRules.values()]
+        .filter((r) => !r.deletedAt && r.current.enabled && r.current.chain === chain)
+        .map((r) => r.current),
+    );
+  }
+
+  firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>> {
+    const wanted = new Set(recipients);
+    const first = new Map<string, Date>();
+    for (const t of this.transactions.values()) {
+      const dispatch = this.dispatches.get(t.dispatchId);
+      const payment = dispatch?.items[t.callIndex]?.payment;
+      if (t.status !== 'CONFIRMED' || t.chain !== chain || !dispatch || !payment) continue;
+      const key = addressKey(chain, payment.recipient);
+      const at = t.confirmedAt ?? t.broadcastAt ?? dispatch.createdAt;
+      const seen = first.get(key);
+      if (wanted.has(key) && (!seen || at < seen)) first.set(key, at);
+    }
+    return Promise.resolve(first);
+  }
+
+  acceptedVolume(
+    chain: Chain,
+    assets: string[],
+    since: Date,
+    senderAddress?: SenderAddress,
+  ): Promise<Map<string, bigint>> {
+    const totals = new Map<string, bigint>();
+    for (const dispatch of this.dispatches.values()) {
+      if (dispatch.chain !== chain || dispatch.createdAt < since) continue;
+      if (senderAddress !== undefined && dispatch.senderAddress !== senderAddress) continue;
+      if (dispatch.status === 'cancelled') continue;
+      for (const { payment } of dispatch.items) {
+        if (!payment || !assets.includes(payment.asset)) continue;
+        totals.set(payment.asset, (totals.get(payment.asset) ?? 0n) + BigInt(payment.amount));
+      }
+    }
+    return Promise.resolve(totals);
+  }
+
+  listManagedDispatchesSince(chain: Chain, since: Date, limit: number): Promise<Dispatch[]> {
+    return Promise.resolve(
+      [...this.dispatches.values()]
+        .filter((d) => d.chain === chain && d.createdAt >= since)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit),
+    );
+  }
+
+  getHold(dispatchId: string): Promise<Hold | null> {
+    return Promise.resolve(this.holds.get(dispatchId) ?? null);
+  }
+
+  releaseDispatch(id: string, reason: string): Promise<'released' | 'not_held' | 'not_found'> {
+    const dispatch = this.dispatches.get(id);
+    const hold = this.holds.get(id);
+    if (!dispatch && !this.relayDispatches.has(id)) return Promise.resolve('not_found');
+    if (dispatch?.status !== 'held' || !hold) return Promise.resolve('not_held');
+    this.dispatches.set(id, { ...dispatch, status: 'queued' });
+    this.holds.set(id, { ...hold, release: { at: this.now(), reason } });
+    this.recordAction('release', id, { tokenKind: 'operator', reason });
+    return Promise.resolve('released');
   }
 
   createTransaction(input: NewTransactionInput): Promise<Transaction> {
@@ -103,6 +332,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: this.now(),
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: this.now(),
       replacesTransactionId: null,
@@ -131,7 +361,10 @@ export class InMemoryDispatchStore implements DispatchStore {
   }
 
   touchClaims(dispatchIds: string[]): Promise<void> {
-    for (const id of dispatchIds) if (this.claimedAt.has(id)) this.claimedAt.set(id, this.now());
+    for (const id of dispatchIds) {
+      const dispatch = this.dispatches.get(id);
+      if (dispatch?.claimedAt) this.dispatches.set(id, { ...dispatch, claimedAt: this.now() });
+    }
     return Promise.resolve();
   }
 
@@ -148,6 +381,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: null,
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: this.now(),
       lastCheckedAt: null,
       lastBroadcastAt: null,
       replacesTransactionId: null,
@@ -231,7 +465,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       this.attempts.get(transactionId)?.push({
         id: randomUUID(),
         transactionId,
-        broadcastAt: new Date(),
+        broadcastAt: this.now(),
         error: error ?? null,
       });
       this.transactions.set(transactionId, { ...transaction, lastBroadcastAt: this.now() });
@@ -256,6 +490,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       broadcastAt: now,
       abandonedAt: null,
       confirmedAt: null,
+      failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: now,
       replacesTransactionId: predecessor.id,
@@ -303,7 +538,7 @@ export class InMemoryDispatchStore implements DispatchStore {
   ): Promise<Dispatch[]> {
     const stale = [...this.dispatches.values()]
       .filter((dispatch) => {
-        const claimed = this.claimedAt.get(dispatch.id);
+        const claimed = dispatch.claimedAt;
         if (
           dispatch.status !== 'broadcasting' ||
           !chains.includes(dispatch.chain) ||
@@ -319,8 +554,9 @@ export class InMemoryDispatchStore implements DispatchStore {
         return sent.size < dispatch.items.length;
       })
       .slice(0, limit);
-    for (const dispatch of stale) this.claimedAt.set(dispatch.id, this.now());
-    return Promise.resolve(stale);
+    const reclaimed = stale.map((dispatch) => ({ ...dispatch, claimedAt: this.now() }));
+    for (const dispatch of reclaimed) this.dispatches.set(dispatch.id, dispatch);
+    return Promise.resolve(reclaimed);
   }
 
   reclaimStaleRelayDispatches(
@@ -331,7 +567,7 @@ export class InMemoryDispatchStore implements DispatchStore {
     const stale = [...this.relayDispatches.values()]
       .filter((relay) => {
         if (!chains.includes(relay.chain)) return false;
-        const claimed = this.claimedAt.get(relay.id);
+        const claimed = relay.claimedAt;
         // No Transaction row at all — not merely an unwritten link (a crash between the two writes).
         const hasTransaction = [...this.transactions.values()].some(
           (t) => t.dispatchId === relay.id,
@@ -341,8 +577,9 @@ export class InMemoryDispatchStore implements DispatchStore {
         );
       })
       .slice(0, limit);
-    for (const relay of stale) this.claimedAt.set(relay.id, this.now());
-    return Promise.resolve(stale);
+    const reclaimed = stale.map((relay) => ({ ...relay, claimedAt: this.now() }));
+    for (const relay of reclaimed) this.relayDispatches.set(relay.id, relay);
+    return Promise.resolve(reclaimed);
   }
 
   countWaitingWork(chains: ChainScope): Promise<Map<Chain, number>> {
@@ -383,7 +620,12 @@ export class InMemoryDispatchStore implements DispatchStore {
   markFailed(transactionId: string, error: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'FAILED', error });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'FAILED',
+        error,
+        failedAt: this.now(),
+      });
     });
   }
 
@@ -424,6 +666,9 @@ export class InMemoryDispatchStore implements DispatchStore {
       signedTransaction: input.signedTransaction,
       status: 'queued',
       transactionId: null,
+      createdAt: this.now(),
+      claimedAt: null,
+      cancelledAt: null,
     };
     this.relayDispatches.set(relayDispatch.id, relayDispatch);
 
@@ -434,15 +679,60 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(this.relayDispatches.get(id) ?? null);
   }
 
+  listDispatches(query: DispatchListQuery): Promise<ListedDispatch[]> {
+    const { after } = query;
+    const matches = (d: Dispatch | RelayDispatch, cursor: DispatchCursor) =>
+      (!query.chain || d.chain === query.chain) &&
+      (!query.storedStatuses || query.storedStatuses.some((s) => s === d.status)) &&
+      (!query.from || d.createdAt >= query.from) &&
+      (!query.to || d.createdAt < query.to) &&
+      (!after || compareNewestFirst(after, cursor) < 0);
+    const cursorOf = (d: Dispatch | RelayDispatch) => ({
+      createdAt: d.createdAt.toISOString(),
+      id: d.id,
+    });
+    const paidBy = (dispatch: Dispatch) =>
+      !query.senders ||
+      query.senders.some((s) => s.chain === dispatch.chain && s.address === dispatch.senderAddress);
+    const listed = [
+      ...(query.mode === 'relay' ? [] : [...this.dispatches.values()].filter(paidBy)).map(
+        (dispatch) => ({
+          mode: 'managed' as const,
+          dispatch,
+          cursor: cursorOf(dispatch),
+        }),
+      ),
+      ...(query.mode === 'managed' || query.senders ? [] : [...this.relayDispatches.values()]).map(
+        (dispatch) => ({
+          mode: 'relay' as const,
+          dispatch,
+          cursor: cursorOf(dispatch),
+        }),
+      ),
+    ]
+      .filter((l) => matches(l.dispatch, l.cursor))
+      .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+      .slice(0, query.limit);
+    return Promise.all(
+      listed.map(async (l) => ({
+        ...l,
+        transactions: await this.listTransactions(l.dispatch.id),
+      })),
+    );
+  }
+
   claimQueuedRelayDispatches(chains: ChainScope, limit: number): Promise<RelayDispatch[]> {
     const claimed: RelayDispatch[] = [];
     for (const relayDispatch of this.relayDispatches.values()) {
       if (claimed.length >= limit) break;
       if (relayDispatch.status !== 'queued' || !chains.includes(relayDispatch.chain)) continue;
 
-      const broadcasting: RelayDispatch = { ...relayDispatch, status: 'broadcasting' };
+      const broadcasting: RelayDispatch = {
+        ...relayDispatch,
+        status: 'broadcasting',
+        claimedAt: this.now(),
+      };
       this.relayDispatches.set(relayDispatch.id, broadcasting);
-      this.claimedAt.set(relayDispatch.id, this.now());
       claimed.push(broadcasting);
     }
 
@@ -481,6 +771,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         broadcastAt: null,
         abandonedAt: null,
         confirmedAt: null,
+        failedAt: null,
         lastCheckedAt: null,
         lastBroadcastAt: null,
         replacesTransactionId: null,
@@ -495,10 +786,16 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(noted);
   }
 
-  listUnproposed(chain: Chain, limit: number): Promise<Transaction[]> {
+  listUnproposed(chain: Chain, limit: number, senderAddress?: string): Promise<Transaction[]> {
     const dispatchOrder = new Map([...this.dispatches.keys()].map((id, index) => [id, index]));
     const unproposed = [...this.transactions.values()]
-      .filter((t) => t.status === 'UNPROPOSED' && t.chain === chain)
+      .filter(
+        (t) =>
+          t.status === 'UNPROPOSED' &&
+          t.chain === chain &&
+          (senderAddress === undefined ||
+            this.dispatches.get(t.dispatchId)?.senderAddress === senderAddress),
+      )
       .sort(
         (a, b) =>
           (dispatchOrder.get(a.dispatchId) ?? 0) - (dispatchOrder.get(b.dispatchId) ?? 0) ||
@@ -689,6 +986,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           hash: null,
           signedBytes: null,
           error: null,
+          failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
         };
@@ -718,6 +1016,7 @@ export class InMemoryDispatchStore implements DispatchStore {
             ? { signedBytes: null }
             : {}),
           ...(outcome.status === 'CONFIRMED' ? { confirmedAt: now } : {}),
+          ...(outcome.status === 'FAILED' ? { failedAt: now } : {}),
           ...(outcome.status === 'ABANDONED' ? { abandonedAt: now } : {}),
         };
         this.transactions.set(call.id, next);
@@ -737,12 +1036,22 @@ export class InMemoryDispatchStore implements DispatchStore {
     chain: Chain,
     holder: CommittedHolder,
     timedOutSince: Date,
+    senderAddress?: string,
   ): Promise<AssetAmount[]> {
     const proposals = [...this.proposals.values()].filter(
-      (p) => p.chain === chain && holdsCommitment(p, timedOutSince),
+      (p) =>
+        p.chain === chain &&
+        (senderAddress === undefined || p.senderAddress === senderAddress) &&
+        holdsCommitment(p, timedOutSince),
     );
     const unproposedPayments = [...this.transactions.values()]
-      .filter((t) => t.chain === chain && t.status === 'UNPROPOSED')
+      .filter(
+        (t) =>
+          t.chain === chain &&
+          t.status === 'UNPROPOSED' &&
+          (senderAddress === undefined ||
+            this.dispatches.get(t.dispatchId)?.senderAddress === senderAddress),
+      )
       .map((t) => this.dispatches.get(t.dispatchId)?.items[t.callIndex]?.payment ?? null);
     return Promise.resolve(totalCommitted(holder, proposals, unproposedPayments));
   }
@@ -753,6 +1062,25 @@ export class InMemoryDispatchStore implements DispatchStore {
         .filter((p) => p.dispatchId === dispatchId)
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
     );
+  }
+
+  recordSignerKey(record: SignerKeyRecord): Promise<void> {
+    this.signerKeys.set(`${record.chain}:${record.address}`, structuredClone(record));
+    return Promise.resolve();
+  }
+
+  getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null> {
+    const record = this.signerKeys.get(`${chain}:${address}`);
+    return Promise.resolve(record ? structuredClone(record) : null);
+  }
+
+  recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void> {
+    this.setupChecks = structuredClone([...records]);
+    return Promise.resolve();
+  }
+
+  listSetupChecks(): Promise<SetupCheckRecord[]> {
+    return Promise.resolve(structuredClone(this.setupChecks));
   }
 
   /** Test-only inspection — not part of DispatchStore. */

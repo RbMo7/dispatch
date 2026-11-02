@@ -8,7 +8,7 @@ Specs for this repo live as markdown files in `.scratch/`. Implementation ticket
 - The spec is `.scratch/<feature-slug>/spec.md` — this stays local, it's the feature-level design record
 - Implementation tickets are GitHub Issues, one per ticket, opened in dependency order (blockers first) so each can reference its blockers by real issue number
 - Each ticket's body follows: `## Parent` (a reference to the feature's `spec.md`), `## What to build`, `## Acceptance criteria`, `## Blocked by`
-- Triage state is the issue's label (see `triage-labels.md` for the role strings) — apply `ready-for-agent` on publish unless instructed otherwise
+- Status is the issue's one status label (see `triage-labels.md`): on publish, `ready-to-go` when nothing blocks it, `blocked` when its `## Blocked by` list has an open issue. Move it to `in-progress` when work starts and `in-review` when its PR opens.
 - Comments and status changes happen as ordinary GitHub issue comments/labels, not a `## Comments` heading appended to a file
 
 ## When a skill says "publish to the issue tracker"

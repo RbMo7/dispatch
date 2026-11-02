@@ -1,0 +1,30 @@
+.card {
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.link {
+  color: var(--muted);
+  font-size: var(--text-12-5);
+  text-decoration: none;
+}
+
+.link:hover {
+  color: var(--ink);
+}

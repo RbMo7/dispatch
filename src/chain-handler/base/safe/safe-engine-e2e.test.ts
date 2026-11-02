@@ -45,7 +45,7 @@ import { encodeMultiSendCall, MULTI_SEND_CALL_ONLY } from './safe-approval.js';
  * Runs only with RUN_SAFE=1 and SAFE_E2E_KEYS_FILE pointing at a JSON file
  * `{ "o1": "0x..", "o2": "0x..", "o3": "0x..", "engine": "0x.." }`: the
  * three owners of a funded 2-of-3 Safe and the executor, which is a
- * registered delegate of that Safe and not an owner (docs/multisig.md,
+ * registered delegate of that Safe and not an owner (docs/self-hosting/multisig.md,
  * section 4). The Safe and the test token default to the spike #79 ones
  * (`.scratch/safe-multisig-base/spike-findings.md`), overridable with
  * SAFE_E2E_SAFE and SAFE_E2E_TOKEN. Spends a few thousand gwei of gas
@@ -414,7 +414,7 @@ describe.skipIf(!RUN)(
         const approval = awaiting.items[0]?.approval;
         expect(approval).toBeDefined();
         expect(awaiting.items.every((i) => i.transactionHash === null)).toBe(true);
-        expect(awaiting.status).toBe('broadcasting'); // docs/api.md: awaiting approval is still in progress
+        expect(awaiting.status).toBe('broadcasting'); // docs/openapi.yaml: awaiting approval is still in progress
         expect(approval).toMatchObject({
           state: 'awaiting',
           approvals: 0,
@@ -579,7 +579,7 @@ describe.skipIf(!RUN)(
       signerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       closeSigner = () => new Promise((resolve) => server.close(() => resolve()));
 
-      // The engine's own config, as an operator would set it (docs/multisig.md, section 4.6). Read at import.
+      // The engine's own config, as an operator would set it (docs/self-hosting/multisig.md, section 4.6). Read at import.
       Object.assign(process.env, {
         ENABLED_CHAINS: 'base',
         BASE_RPC_URL: BASE_SEPOLIA_RPC_URL,
@@ -647,6 +647,9 @@ describe.skipIf(!RUN)(
         chainRegistry: registry,
         authToken: API_TOKEN,
         defaultRetryPolicy: false,
+        assetDecimals: () => undefined,
+        listSenders: () => Promise.resolve([]),
+        readSetup: () => Promise.reject(new Error('not read in this test')),
       });
     }, 180_000);
 

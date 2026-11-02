@@ -73,6 +73,8 @@ const FALLBACK_GAS_LIMIT = 500_000n;
 
 export type BaseChainHandlerDeps = {
   rpcUrl: string;
+  /** ADR-0060: the chain's one RPC client, shared by every Sender's handler. Built from `rpcUrl` and `fetch` when absent. */
+  client?: PublicClient;
   /** Verified against the connected RPC's own eth_chainId in `create()` — refuses to construct on mismatch. */
   chainId: number;
   /** Single-Sender-per-chain (ADR-0016) — the wallet paymentToCall encodes transfers from, and whose next-nonce this handler owns (issue 02). */
@@ -232,9 +234,9 @@ export class BaseChainHandler implements ChainHandler<'base'> {
    */
   static async create(deps: BaseChainHandlerDeps): Promise<BaseChainHandler> {
     const senderAddress = requireAddress(deps.senderAddress);
-    const client = createPublicClient({
-      transport: http(deps.rpcUrl, { fetchFn: deps.fetch ?? fetch }),
-    });
+    const client =
+      deps.client ??
+      createPublicClient({ transport: http(deps.rpcUrl, { fetchFn: deps.fetch ?? fetch }) });
 
     const actualChainId = await client.getChainId();
     if (actualChainId !== deps.chainId) {

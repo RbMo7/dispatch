@@ -1,0 +1,31 @@
+{
+  "solana": {
+    "default": "payouts",
+    "senders": {
+      "payouts": { "address": "3fJt3SpG7iWcYfo2MnP8b1LaP3eBhzZ57zHBxWSPWoZe" },
+      "treasury": {
+        "mode": "squads",
+        "multisig": "<the Squads multisig account, not its vault>",
+        "memberKey": "<the engine's own key: proposes, executes, pays fees>",
+        "approvalDeadlineMs": 259200000,
+        "approvalRewatchWindowMs": 2592000000
+      }
+    }
+  },
+  "base": {
+    "default": "payouts",
+    "senders": {
+      "payouts": { "address": "0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A" },
+      "treasury": {
+        "mode": "safe",
+        "safe": "<the Safe the payments come from>",
+        "executor": "<the engine's own key: a registered delegate, never an owner>",
+        "txServiceUrl": "https://api.safe.global/tx-service/basesep",
+        "apiKey": "<optional; BASE_SAFE_API_KEY applies when omitted>",
+        "approvalDeadlineMs": 259200000,
+        "approvalRewatchWindowMs": 2592000000,
+        "bundleLimit": 50
+      }
+    }
+  }
+}

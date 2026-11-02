@@ -2,7 +2,7 @@
 
 The Signer holds each Sender's key and answers the engine's `POST /sign` (ADR-0002, ADR-0046), and one read-only route, `GET /keys/{address}/policy` (ADR-0055). It is its own package: the engine never imports it, and vendor SDKs live only here.
 
-This is the reference. To set up and run a production Signer, follow [`docs/signer.md`](../docs/signer.md), the runbook and mainnet checklist.
+This is the reference. To set up and run a production Signer, follow [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md), the runbook, then clear [`docs/self-hosting/mainnet.md`](../docs/self-hosting/mainnet.md).
 
 ## Configuration
 
@@ -36,7 +36,7 @@ Every request is audited as one JSON line on stdout. A signed request has `decis
 
 ## Policy
 
-`GET /keys/{address}/policy`, with the same bearer token, reports what an address is pinned to: `{ address, curve, chainIds?, allowedSafe?, allowedMultisig? }`, each pin only when the policy sets it, and nothing else (no key, key reference, recipients or limits). EVM pins come back lowercase. `401` for a wrong token, `404 no key for address …` for an address the config doesn't hold. The engine reads it at startup for a Multisig Sender and refuses to start unless the pin matches (ADR-0055). See [`docs/signer.md`](../docs/signer.md#reading-a-keys-pins).
+`GET /keys/{address}/policy`, with the same bearer token, reports what an address is pinned to: `{ address, curve, chainIds?, allowedSafe?, allowedMultisig? }`, each pin only when the policy sets it, and nothing else (no key, key reference, recipients or limits). EVM pins come back lowercase. `401` for a wrong token, `404 no key for address …` for an address the config doesn't hold. The engine reads it at startup for a Multisig Sender and refuses to start unless the pin matches (ADR-0055). See [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#reading-a-keys-pins).
 
 An address may carry a `policy`. The Signer then decodes each transaction before signing it and refuses one that breaks a rule, with `403 { "error": "policy refused", "reason": "..." }`. The engine reports that as `SIGNER_REFUSED`, with the reason in the message, and never retries it. The audit line records the decision as `refused`, with the same reason. An address without a policy is signed for unconditionally, though still only for a caller with the bearer token.
 
@@ -111,7 +111,7 @@ For development only. It reads raw private keys from a JSON file, `{ "secp256k1"
 
 - `SIGNER_KEYFILE`: the file's path.
 
-`keys.dev.json` and `signer.config.dev.json` are the committed dev keys and their config, which Compose and `pnpm dev` use.
+`keys.dev.json` and `signer.config.dev.json` are the committed dev keys and their config. `pnpm dev` uses them, and so does Compose until `pnpm dispatch init` sets `SIGNER_CONFIG` to its own config in `signer/local/`.
 
 ### `local`
 
@@ -120,7 +120,7 @@ Keys in encrypted files, decrypted into process memory at startup (ADR-0050). Th
 - `SIGNER_KEYSTORE_DIR`: the directory of key files.
 - `SIGNER_KEYSTORE_PASSPHRASE` or `SIGNER_KEYSTORE_PASSPHRASE_FILE` (one of the two): the passphrase, or the path to a file holding it.
 
-Manage keys with `pnpm signer keys new|import|list|export-public` (`node dist/cli.js keys ...` in the image). `new` and `import` print only the address; `import` reads the private key (64 hex characters) from stdin. No command prints a private key. [`docs/signer.md`](../docs/signer.md#local) has the walkthrough.
+Manage keys with `pnpm signer keys new|import|list|export-public` (`node dist/cli.js keys ...` in the image). `new` and `import` print only the address; `import` reads the private key (64 hex characters) from stdin. No command prints a private key, and `new` and `import` refuse a passphrase that does not open the keys already in the directory. [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#local) has the walkthrough.
 
 The Signer refuses to start on a wrong passphrase, a damaged file or an address that differs from the config. Losing the passphrase loses the keys.
 
@@ -131,7 +131,7 @@ Keys held by Privy server wallets. The private key never leaves Privy; the Signe
 - `PRIVY_APP_ID`, `PRIVY_APP_SECRET`: the app's API credentials.
 - `PRIVY_AUTHORIZATION_KEY` (optional, recommended): the private key of a Privy authorization key, as Privy shows it (`wallet-auth:...`). When set, every signing request is signed with it.
 
-Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. [`docs/signer.md`](../docs/signer.md#privy) shows how to create owned wallets, and its mainnet checklist requires them.
+Make each wallet owned by the authorization key and set `PRIVY_AUTHORIZATION_KEY`. Privy then refuses to sign for the wallet unless the request carries that key's signature, so leaked app credentials alone can't sign. Without an owner, the app secret alone is enough. [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#privy) shows how to create owned wallets, and the [mainnet checklist](../docs/self-hosting/mainnet.md) requires them.
 
 On `secp256k1` the Signer asks Privy to sign the transaction's keccak256 hash (the `secp256k1_sign` RPC; Privy refuses `raw_sign` for Ethereum wallets), lowers a high `s` and finds the recovery bit against the wallet's address. On `ed25519` it sends the Solana message to Privy as an unsigned transaction (`signTransaction`), so Privy's own transaction policies still apply. Either way, a signature that doesn't verify for the wallet's address is never returned.
 
@@ -148,7 +148,7 @@ Each key is an asymmetric signing key (`SIGN_VERIFY`) with the key spec its curv
 | `secp256k1` | Base | `ECC_SECG_P256K1` |
 | `ed25519` | Solana | `ECC_NIST_EDWARDS25519` |
 
-The Signer refuses to start on a key whose spec doesn't match its address's curve, or whose usage isn't `SIGN_VERIFY`, and names the key, its spec and the spec it needs. Its credentials need only `kms:GetPublicKey` and `kms:Sign`, on those keys alone. The key's address comes from its public key: an EVM address for secp256k1, a base58 Solana address for Ed25519. [`docs/signer.md`](../docs/signer.md#aws-kms) has the commands to create a key, its IAM policy, and how to find its address.
+The Signer refuses to start on a key whose spec doesn't match its address's curve, or whose usage isn't `SIGN_VERIFY`, and names the key, its spec and the spec it needs. Its credentials need only `kms:GetPublicKey` and `kms:Sign`, on those keys alone. The key's address comes from its public key: an EVM address for secp256k1, a base58 Solana address for Ed25519. [`docs/self-hosting/signer.md`](../docs/self-hosting/signer.md#aws-kms) has the commands to create a key, its IAM policy, and how to find its address.
 
 The Signer asks KMS to sign the transaction's keccak256 hash as given (`Sign` with `MessageType: DIGEST` and `ECDSA_SHA_256`), turns the DER signature into `r` and `s`, lowers a high `s`, and finds the recovery bit against the key's address. A signature that doesn't recover to that address is never returned.
 

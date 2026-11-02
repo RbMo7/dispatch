@@ -4,12 +4,31 @@ import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { db } from '../db/client.js';
-import { attempts, dispatches, proposals, relayDispatches, transactions } from '../db/schema.js';
+import {
+  attempts,
+  dispatches,
+  dispatchHolds,
+  flagRules,
+  flagRuleVersions,
+  operatorActions,
+  proposals,
+  relayDispatches,
+  setupChecks,
+  signerKeys,
+  transactions,
+} from '../db/schema.js';
 import type { DispatchItem, SolanaCall } from '../domain/call.js';
 import { CHAINS } from '../domain/chain.js';
+import { runCancelConformanceSuite } from './cancel-conformance.js';
 import { runChainScopeConformanceSuite } from './chain-scope-conformance.js';
 import { PostgresDispatchStore } from './postgres-dispatch-store.js';
 import { runProposalStoreConformanceSuite } from './proposal-store-conformance.js';
+import { runListConformanceSuite } from './list-conformance.js';
+import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
+import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
+import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
+import { runTimelineConformanceSuite } from './timeline-conformance.js';
+import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
@@ -26,7 +45,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -39,7 +58,14 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   });
 
   runChainScopeConformanceSuite(() => new PostgresDispatchStore(db));
+  runSenderScopeConformanceSuite(() => new PostgresDispatchStore(db));
+  runCancelConformanceSuite(() => new PostgresDispatchStore(db));
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
+  runListConformanceSuite(() => new PostgresDispatchStore(db));
+  runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
+  runFlagRuleConformanceSuite(() => new PostgresDispatchStore(db));
+  runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
+  runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {
@@ -175,6 +201,182 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       expect(claimed.map((d) => d.id).sort()).toEqual([a.id, b.id].sort());
       expect(claimed.every((d) => d.status === 'broadcasting')).toBe(true);
       expect(await store.claimQueued(CHAINS, 10)).toEqual([]); // already claimed, not re-claimed
+    });
+  });
+
+  describe('cancelDispatch racing claimQueued (ADR-0056)', () => {
+    it('lets exactly one of a concurrent cancel and claim win, and stores the winner', async () => {
+      for (let round = 0; round < 5; round++) {
+        await truncateAll();
+        const created = await Promise.all(
+          Array.from({ length: 20 }, () =>
+            store.createDispatch({
+              chain: 'solana',
+              idempotencyKey: randomUUID(),
+              items: [solanaItem],
+              retryPolicy: false,
+            }),
+          ),
+        );
+
+        const [claimed, ...outcomes] = await Promise.all([
+          store.claimQueued(CHAINS, 100),
+          ...created.map((d) => store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null })),
+        ]);
+
+        const claimedIds = new Set(claimed.map((d) => d.id));
+        for (const [i, dispatch] of created.entries()) {
+          const cancelled = outcomes[i] === 'cancelled';
+          expect(cancelled).toBe(!claimedIds.has(dispatch.id));
+          expect(outcomes[i]).toBe(cancelled ? 'cancelled' : 'already_claimed');
+          expect((await store.getDispatch(dispatch.id))?.status).toBe(
+            cancelled ? 'cancelled' : 'broadcasting',
+          );
+        }
+      }
+    });
+  });
+
+  describe('a held Dispatch (ADR-0058)', () => {
+    it('is never claimed by a claim loop running while Dispatches arrive', async () => {
+      const rule = await store.createFlagRule(
+        {
+          name: 'Everything',
+          chain: 'solana',
+          senderAddress: null,
+          enabled: true,
+          definition: { kind: 'call_target_not_allowlisted', addresses: [] },
+        },
+        { tokenKind: 'operator', reason: null },
+      );
+      const claimed = new Set<string>();
+      let arriving = true;
+      const claimLoop = (async () => {
+        while (arriving) {
+          for (const d of await store.claimQueued(CHAINS, 5)) claimed.add(d.id);
+        }
+        for (const d of await store.claimQueued(CHAINS, 100)) claimed.add(d.id);
+      })();
+
+      const created = await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          store.createDispatch({
+            chain: 'solana',
+            idempotencyKey: randomUUID(),
+            items: [solanaItem],
+            retryPolicy: false,
+            ...(i % 2 === 0 ? { hold: [{ rule: rule.current, items: [0] }] } : {}),
+          }),
+        ),
+      );
+      arriving = false;
+      await claimLoop;
+
+      const held = created.filter((d) => d.status === 'held').map((d) => d.id);
+      const queued = created.filter((d) => d.status === 'queued').map((d) => d.id);
+      expect(held).toHaveLength(20);
+      expect([...claimed].sort()).toEqual([...queued].sort());
+      for (const id of held) expect((await store.getDispatch(id))?.status).toBe('held');
+    });
+
+    const heldDispatches = async (count: number) => {
+      const rule = await store.createFlagRule(
+        {
+          name: 'Everything',
+          chain: 'solana',
+          senderAddress: null,
+          enabled: true,
+          definition: { kind: 'call_target_not_allowlisted', addresses: [] },
+        },
+        { tokenKind: 'operator', reason: null },
+      );
+      return Promise.all(
+        Array.from({ length: count }, () =>
+          store.createDispatch({
+            chain: 'solana',
+            idempotencyKey: randomUUID(),
+            items: [solanaItem],
+            retryPolicy: false,
+            hold: [{ rule: rule.current, items: [0] }],
+          }),
+        ),
+      );
+    };
+
+    const actionsByTarget = async () => {
+      const actions = await store.listOperatorActions({ after: null, limit: 1000 });
+      const byTarget = new Map<string, string[]>();
+      for (const { action } of [...actions].reverse()) {
+        byTarget.set(action.targetId, [...(byTarget.get(action.targetId) ?? []), action.action]);
+      }
+      return byTarget;
+    };
+
+    it('lets exactly one of a concurrent release and cancel take it out of held', async () => {
+      for (let round = 0; round < 5; round++) {
+        await truncateAll();
+        const held = await heldDispatches(20);
+
+        const outcomes = await Promise.all(
+          held.map((d) =>
+            Promise.all([
+              store.releaseDispatch(d.id, 'looked fine'),
+              store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null }),
+            ]),
+          ),
+        );
+
+        const actions = await actionsByTarget();
+        for (const [i, dispatch] of held.entries()) {
+          const [release, cancel] = outcomes[i] ?? [];
+          const hold = await store.getHold(dispatch.id);
+          // Both land only in order: the release first, then a cancel of the queued Dispatch (ADR-0056).
+          expect(cancel).toBe('cancelled');
+          expect((await store.getDispatch(dispatch.id))?.status).toBe('cancelled');
+          if (release === 'released') {
+            expect(hold?.release?.reason).toBe('looked fine');
+            expect(actions.get(dispatch.id)).toEqual(['release', 'cancel']);
+          } else {
+            expect(release).toBe('not_held');
+            expect(hold?.release).toBeNull();
+            expect(actions.get(dispatch.id)).toEqual(['cancel']);
+          }
+        }
+      }
+    });
+
+    it('lets exactly one of two concurrent releases win, and records one release', async () => {
+      const held = await heldDispatches(20);
+
+      const outcomes = await Promise.all(
+        held.map((d) =>
+          Promise.all([store.releaseDispatch(d.id, 'a'), store.releaseDispatch(d.id, 'b')]),
+        ),
+      );
+
+      const actions = await actionsByTarget();
+      for (const [i, dispatch] of held.entries()) {
+        expect([...(outcomes[i] ?? [])].sort()).toEqual(['not_held', 'released']);
+        expect(actions.get(dispatch.id)).toEqual(['release']);
+        expect((await store.getDispatch(dispatch.id))?.status).toBe('queued');
+      }
+    });
+
+    it('never lets a cancel land on a released Dispatch the worker already claimed', async () => {
+      const held = await heldDispatches(20);
+
+      const [, ...outcomes] = await Promise.all([
+        (async () => {
+          await Promise.all(held.map((d) => store.releaseDispatch(d.id, 'go')));
+          return store.claimQueued(CHAINS, 100);
+        })(),
+        ...held.map((d) => store.cancelDispatch(d.id, { tokenKind: 'auth', reason: null })),
+      ]);
+
+      for (const [i, dispatch] of held.entries()) {
+        const status = (await store.getDispatch(dispatch.id))?.status;
+        expect(status).toBe(outcomes[i] === 'cancelled' ? 'cancelled' : 'broadcasting');
+      }
     });
   });
 

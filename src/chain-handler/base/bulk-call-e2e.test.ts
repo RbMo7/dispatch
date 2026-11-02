@@ -51,7 +51,15 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
       (chainRegistry) => ({
         store,
         chainRegistry,
-        app: buildApp({ store, chainRegistry, authToken: AUTH_TOKEN, defaultRetryPolicy: false }),
+        app: buildApp({
+          store,
+          chainRegistry,
+          authToken: AUTH_TOKEN,
+          defaultRetryPolicy: false,
+          assetDecimals: () => undefined,
+          listSenders: () => Promise.resolve([]),
+          readSetup: () => Promise.reject(new Error('not read in this test')),
+        }),
       }),
     );
   }

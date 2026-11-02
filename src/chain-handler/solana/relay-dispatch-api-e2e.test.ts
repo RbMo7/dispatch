@@ -129,6 +129,9 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
         chainRegistry,
         authToken: AUTH_TOKEN,
         defaultRetryPolicy: false,
+        assetDecimals: () => undefined,
+        listSenders: () => Promise.resolve([]),
+        readSetup: () => Promise.reject(new Error('not read in this test')),
       });
 
       const postResponse = await app.inject({
@@ -185,6 +188,9 @@ describe('Solana Relay Dispatch — full API end to end (real devnet)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
+      listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
 
     const idempotencyKey = `relay-e2e-malformed-${Date.now()}`;

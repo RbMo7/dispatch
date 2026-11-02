@@ -1,0 +1,77 @@
+.table {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  font-size: var(--text-13);
+}
+
+.header,
+.row {
+  display: grid;
+  height: 32px;
+  align-items: center;
+  column-gap: var(--space-2);
+  padding: 0 var(--space-3) 0 var(--space-4);
+}
+
+.header {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--text-12);
+  font-weight: 500;
+}
+
+.scroller {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+.spanRow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 32px;
+  align-items: center;
+  padding: 0 var(--space-3) 0 var(--space-4);
+  background: var(--canvas);
+}
+
+.span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+}
+
+.row:hover {
+  background: var(--hover);
+}
+
+.row[data-marked] {
+  background: var(--pill-held-bg);
+}
+
+.cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell[data-align='end'] {
+  text-align: right;
+}

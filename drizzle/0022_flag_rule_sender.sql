@@ -1,0 +1,1 @@
+ALTER TABLE "flag_rule_versions" ADD COLUMN "sender_address" text;

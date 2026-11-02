@@ -301,6 +301,14 @@ describe('SignerClient.readPins (ADR-0055)', () => {
     expect(result.kind).toBe('unreachable');
   });
 
+  it('keeps the status of a Signer that refused the token', async () => {
+    respondWith(new Response('{}', { status: 401 }));
+
+    const result = await new SignerClient('http://signer.local', 'wrong').readPins('0xabc');
+
+    expect(result).toMatchObject({ kind: 'unreachable', status: 401 });
+  });
+
   it('reads a connection failure as unreachable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
 

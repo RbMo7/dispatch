@@ -70,7 +70,7 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
     await releaseDevSenderLock?.();
   });
 
-  /** A transfer signed outside the engine, as raw bytes base64-encoded (docs/api.md's wire format). */
+  /** A transfer signed outside the engine, as raw bytes base64-encoded (docs/openapi.yaml's wire format). */
   async function externallySigned(
     override: Partial<TransactionSerializable> = {},
   ): Promise<string> {
@@ -178,6 +178,9 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
+      listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
 
     for (const signedTransaction of [
@@ -211,6 +214,9 @@ describe('Base Relay Dispatch (real Base Sepolia)', () => {
       chainRegistry,
       authToken: AUTH_TOKEN,
       defaultRetryPolicy: false,
+      assetDecimals: () => undefined,
+      listSenders: () => Promise.resolve([]),
+      readSetup: () => Promise.reject(new Error('not read in this test')),
     });
     const post = await app.inject({
       method: 'POST',

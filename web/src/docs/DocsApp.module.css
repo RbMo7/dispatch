@@ -1,0 +1,230 @@
+.shell {
+  --bar-height: 52px;
+
+  min-height: 100dvh;
+  background: var(--surface);
+}
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--layer-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--bar-height);
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.brand {
+  font-size: var(--text-14);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brandMuted {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.searchButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 260px;
+  height: 32px;
+  margin-left: var(--space-6);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--sunken);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-13);
+  cursor: pointer;
+  transition: border-color 150ms;
+}
+
+.searchButton:hover {
+  border-color: var(--border-strong);
+}
+
+.searchLabel {
+  flex: 1;
+  text-align: left;
+}
+
+.kbd {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  font-size: var(--text-11-5);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.textLink {
+  color: var(--muted);
+  font-size: var(--text-13);
+  text-decoration: none;
+}
+
+.textLink:hover {
+  color: var(--ink);
+}
+
+.iconButton {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.menu {
+  display: none;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr) 208px;
+  gap: var(--space-12);
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 var(--space-6);
+}
+
+.sidebar,
+.rail {
+  position: sticky;
+  top: var(--bar-height);
+  align-self: start;
+  max-height: calc(100dvh - var(--bar-height));
+  padding: var(--space-8) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.appearance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-8);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--text-12);
+  font-weight: 500;
+}
+
+.content {
+  width: 100%;
+  max-width: 720px;
+  min-width: 0;
+  justify-self: center;
+  padding: var(--space-10) 0 var(--space-16);
+}
+
+/* A reference page needs the width for its two columns, so its rail shows only on wide screens. */
+.layout[data-layout='reference'] {
+  grid-template-columns: 248px minmax(0, 1fr);
+  max-width: 1600px;
+}
+
+.layout[data-layout='reference'] .rail {
+  display: none;
+}
+
+.layout[data-layout='reference'] .content {
+  max-width: none;
+}
+
+@media (min-width: 1700px) {
+  .layout[data-layout='reference'] {
+    grid-template-columns: 248px minmax(0, 1fr) 208px;
+    max-width: 1880px;
+  }
+
+  .layout[data-layout='reference'] .rail {
+    display: block;
+  }
+}
+
+@media (max-width: 1100px) {
+  .layout,
+  .layout[data-layout='reference'] {
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: var(--space-10);
+  }
+
+  .rail {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .layout[data-layout='reference'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bar {
+    gap: var(--space-2);
+    padding: 0 var(--space-4);
+  }
+
+  .menu {
+    display: grid;
+  }
+
+  .searchButton {
+    width: 32px;
+    margin-left: auto;
+    padding: 0;
+    justify-content: center;
+    border: 0;
+  }
+
+  .searchLabel,
+  .kbd,
+  .textLink,
+  .actions .iconButton {
+    display: none;
+  }
+
+  .actions {
+    margin-left: 0;
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0 var(--space-4);
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .content {
+    padding-top: var(--space-8);
+  }
+}

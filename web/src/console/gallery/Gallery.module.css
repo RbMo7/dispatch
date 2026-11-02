@@ -1,0 +1,86 @@
+.page {
+  min-width: 1200px;
+  background: var(--canvas);
+}
+
+.screen {
+  display: flex;
+  height: 940px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.primitives {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-5);
+  padding: 36px var(--space-10) var(--space-12);
+}
+
+.span4 {
+  grid-column: span 4;
+}
+
+.span5 {
+  grid-column: span 5;
+}
+
+.span7 {
+  grid-column: span 7;
+}
+
+.smallQuiet {
+  height: 26px;
+  font-size: var(--text-12-5);
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.formRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: 18px;
+}
+
+.formSetting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.settingLabel {
+  font-size: var(--text-12-5);
+  font-weight: 500;
+}
+
+.modalStage {
+  display: flex;
+  height: 330px;
+  grid-column: span 12;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-card);
+  background: var(--scrim);
+}
+
+.inlineModal {
+  width: 520px;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  box-shadow:
+    0 1px 2px var(--shadow),
+    0 16px 40px var(--shadow-lg);
+}

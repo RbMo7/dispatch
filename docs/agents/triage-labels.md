@@ -1,15 +1,24 @@
-# Triage Labels
+# Issue status labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+Every open issue carries exactly one status label, in plain words. When an issue's state changes, swap its label in the same step (remove the old one, add the new one).
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| --------------------------- | --------------------- | ----------------------------------------- |
-| `needs-triage`              | `needs-triage`         | Maintainer needs to evaluate this issue  |
-| `needs-info`                | `needs-info`           | Waiting on reporter for more information |
-| `ready-for-agent`           | `ready-for-agent`      | Fully specified, ready for an AFK agent  |
-| `ready-for-human`           | `ready-for-human`      | Requires human implementation            |
-| `wontfix`                   | `wontfix`              | Will not be actioned                     |
+| Label | Meaning | When to set it |
+|---|---|---|
+| `needs-triage` | Not looked at yet | A new issue whose scope or priority nobody has decided |
+| `ready-to-go` | Fully specified, nothing in the way | The spec and acceptance criteria are written and every blocker is closed |
+| `blocked` | Waiting on another issue | Its `## Blocked by` list still has an open issue |
+| `in-progress` | Being built | Someone (a person or an agent) has started work on a branch |
+| `in-review` | A pull request is open | The PR that closes it is open, not yet merged |
+| `waiting` | Waiting on a person or outside input | It needs a human check, an answer, credentials or a decision from outside the work |
+| `wont-do` | Will not be done | Decided against; close the issue with a comment saying why |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+A merged PR closes its issues; a closed issue needs no status label.
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+Some skills speak in older role names. Map them like this:
+
+| Skill role | Label here |
+|---|---|
+| `needs-triage` | `needs-triage` |
+| `needs-info` | `waiting` |
+| `ready-for-agent`, `ready-for-human` | `ready-to-go` (or `blocked` if a blocker is still open) |
+| `wontfix` | `wont-do` |
