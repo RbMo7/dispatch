@@ -197,6 +197,13 @@
       "when": 1793552867982,
       "tag": "0027_transaction_effects",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793554259275,
+      "tag": "0028_known_contracts",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,7 @@ import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store
 import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import type { TransactionEffects } from '../domain/effects.js';
 import { decodeCall, decodeEffects } from '../effects/decode.js';
-import type { AssetAt, EffectsView } from '../effects/view.js';
+import type { EffectsView, Known } from '../effects/view.js';
 import { toWireDefinition } from './flag-rule-wire.js';
 import { buildTimeline } from './timeline.js';
 
@@ -108,7 +108,7 @@ function toWireRequest(
   chain: Chain,
   { call, payment }: DispatchItem,
   decimalsOf: AssetDecimals,
-  assetAt: AssetAt,
+  known: Known,
   effects: TransactionEffects | undefined,
 ) {
   if (payment) {
@@ -122,7 +122,7 @@ function toWireRequest(
       amount,
     };
   }
-  const decoded = decodeCall(chain, call, assetAt, effects);
+  const decoded = decodeCall(chain, call, known, effects);
   return 'to' in call
     ? { type: 'call' as const, to: call.to, call: decoded }
     : { type: 'call' as const, programId: call.programId, call: decoded };
@@ -133,7 +133,7 @@ async function effectsOf(
   store: DispatchStore,
   chain: Chain,
   transactions: Transaction[],
-  assetAt: AssetAt,
+  known: Known,
 ) {
   const confirmedHash = (t: Transaction | undefined) =>
     t?.status === 'CONFIRMED' && t.hash ? t.hash : undefined;
@@ -149,7 +149,7 @@ async function effectsOf(
     const hash = confirmedHash(t);
     const effects = hash === undefined ? undefined : stored.get(hash);
     if (hash === undefined || !effects) return {};
-    if (!decoded.has(hash)) decoded.set(hash, decodeEffects(effects, assetAt));
+    if (!decoded.has(hash)) decoded.set(hash, decodeEffects(effects, known));
     return { effects: decoded.get(hash)! };
   };
   return { raw, view };
@@ -206,13 +206,13 @@ export async function readDispatchView(
   id: string,
   decimalsOf: AssetDecimals,
   options: {
-    assetAt: AssetAt;
+    known: Known;
     timeline?: boolean;
     nameOf?: SenderNameOf;
     approverLabelOf?: ApproverLabelOf;
   },
 ) {
-  const { assetAt } = options;
+  const { known } = options;
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
     const allVersions = await store.listTransactions(dispatch.id);
@@ -224,7 +224,7 @@ export async function readDispatchView(
       : [];
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
     const hold = await store.getHold(dispatch.id);
-    const effects = await effectsOf(store, dispatch.chain, transactions, assetAt);
+    const effects = await effectsOf(store, dispatch.chain, transactions, known);
 
     const items = dispatch.items.map((item, index) => {
       const transaction = transactionByCallIndex.get(index);
@@ -232,7 +232,7 @@ export async function readDispatchView(
         dispatch.chain,
         item,
         decimalsOf,
-        assetAt,
+        known,
         effects.raw(transaction),
       );
       if (dispatch.status === 'cancelled' || dispatch.status === 'held') {
@@ -285,7 +285,7 @@ export async function readDispatchView(
   if (relayDispatch) {
     const relayTransactions = await store.listTransactions(relayDispatch.id);
     const [transaction] = relayTransactions;
-    const effects = await effectsOf(store, relayDispatch.chain, relayTransactions, assetAt);
+    const effects = await effectsOf(store, relayDispatch.chain, relayTransactions, known);
     return {
       dispatchId: relayDispatch.id,
       mode: 'relay',

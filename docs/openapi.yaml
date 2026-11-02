@@ -6,7 +6,7 @@ info:
   description: |
     The engine's HTTP API. Every `/v1` route needs a bearer token: the engine's API token, or
     its operator token, which the operator-only routes (release, Flag Rule writes, Known Asset
-    writes and the activity record) require.
+    writes, contract registry writes and the activity record) require.
     The reference pages on the docs site are built from this file, and the engine's offline
     tests send each example below to the real routes and check every answer against these schemas.
 
@@ -40,6 +40,12 @@ tags:
       configured, and the tokens added here. Each token's decimals, name and symbol are read from
       the chain, never typed in. Reading takes either token; adding, enabling and disabling take
       the operator token.
+  - name: Contracts
+    description: |
+      The contract registry: ABIs on Base and Anchor IDLs on Solana, each with a label, so a call
+      shows the function it ran and its arguments, and the events it emitted. Calls and their
+      effects are decoded when they are read, so registering a contract explains its earlier calls
+      too. Reading takes either token; registering, enabling and disabling take the operator token.
   - name: Senders
     description: |
       A Sender is a wallet the engine pays from. Each enabled chain has one or more, each named,
@@ -52,7 +58,8 @@ tags:
   - name: Activity
     description: |
       The operator action record: every cancel that landed, every release, every Flag Rule
-      create, edit and delete, and every Known Asset added, disabled or enabled, newest first.
+      create, edit and delete, every Known Asset added, disabled or enabled, and every contract
+      registered, disabled or enabled, newest first.
   - name: Rejected
     description: |
       Requests to create a Dispatch that the engine refused, newest first, so an operator can see a
@@ -2143,6 +2150,411 @@ paths:
                     code: CONFIG_ASSET
                     message: 'this asset comes from the configuration (SOLANA_KNOWN_TOKENS, BASE_KNOWN_TOKENS or the native coin): change it there and restart'
 
+  /v1/contracts:
+    get:
+      tags: [Contracts]
+      operationId: listContracts
+      summary: List registered contracts
+      description: |
+        Returns every contract registered on the engine, enabled or not, newest first. Either token
+        can read. Each one's `functions` and `events` are what its ABI or IDL explains.
+      security:
+        - apiToken: []
+        - operatorToken: []
+      parameters:
+        - name: chain
+          in: query
+          required: false
+          description: Only this chain's contracts.
+          schema: { $ref: '#/components/schemas/Chain' }
+          examples:
+            baseContracts: { value: base }
+      responses:
+        '200':
+          description: The contracts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contracts]
+                properties:
+                  contracts:
+                    type: array
+                    items: { $ref: '#/components/schemas/KnownContract' }
+              examples:
+                baseContracts:
+                  summary: FlowVault, registered from the console
+                  value:
+                    contracts:
+                      - id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                        chain: base
+                        address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                        label: FlowVault
+                        abi:
+                          - type: event
+                            name: Deposited
+                            anonymous: false
+                            inputs:
+                              - { name: from, type: address, indexed: true }
+                              - { name: amount, type: uint256, indexed: false }
+                              - { name: note, type: string, indexed: false }
+                          - type: function
+                            name: deposit
+                            stateMutability: payable
+                            inputs: [{ name: note, type: string }]
+                            outputs: []
+                        functions: ['deposit(string note)']
+                        events: ['Deposited(address indexed from, uint256 amount, string note)']
+                        source: console
+                        enabled: true
+                        addedBy: operator
+                        addedAt: '2026-11-01T16:12:40.318Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Contracts]
+      operationId: addContract
+      summary: Register a contract
+      description: |
+        Registers a contract's ABI (Base) or Anchor IDL (Solana), with a label, so the engine can
+        name the functions its calls run and the events they emit. It takes effect at once, and for
+        earlier calls too: the engine decodes calls and effects when they are read, never when they
+        are sent. Only the operator token can register, and every registration is written to the
+        activity record, with the `reason` if you give one.
+
+        `abi` is a JSON array of ABI items, or a compiler artifact that holds one in `abi`. `idl` is
+        an Anchor IDL, in the format Anchor 0.30 and later write or the older one. Either can be the
+        JSON itself or the pasted text. A malformed one is refused with `INVALID_ABI` or
+        `INVALID_IDL`, and a message that names what is wrong and where. An IDL that names another
+        program in `address` is refused too.
+
+        One enabled registration per address: to replace an ABI or IDL, disable the old one first
+        (`CONTRACT_EXISTS` otherwise). The built-in decoders (ERC-20, ERC-721, ERC-1155, WETH and
+        Multicall3; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute
+        Budget) are tried first, so a registration explains only what they do not, and labels the
+        contract either way.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractRequest'
+            examples:
+              addAbi:
+                summary: FlowVault's ABI, as `solc` writes it
+                value:
+                  chain: base
+                  address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                  label: FlowVault
+                  reason: Explain vault deposits
+                  abi:
+                    - type: event
+                      name: Deposited
+                      anonymous: false
+                      inputs:
+                        - { name: from, type: address, indexed: true }
+                        - { name: amount, type: uint256, indexed: false }
+                        - { name: note, type: string, indexed: false }
+                    - type: function
+                      name: deposit
+                      stateMutability: payable
+                      inputs: [{ name: note, type: string }]
+                      outputs: []
+              addIdl:
+                summary: An Anchor program's IDL
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll
+                  idl:
+                    address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                    metadata: { name: payroll, version: 0.1.0, spec: 0.1.0 }
+                    instructions:
+                      - name: pay
+                        discriminator: [119, 18, 216, 65, 192, 117, 122, 220]
+                        accounts:
+                          - { name: payer, writable: true, signer: true }
+                          - { name: mint }
+                          - { name: to, writable: true }
+                        args:
+                          - { name: amount, type: u64 }
+                          - { name: memo, type: string }
+              invalidAbi:
+                summary: A misspelt type
+                value:
+                  chain: base
+                  address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                  label: FlowVault
+                  abi: '[{"type":"function","name":"deposit","inputs":[{"name":"note","type":"strng"}]}]'
+              alreadyRegistered:
+                summary: A program already registered
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll v2
+                  idl: '{"instructions":[{"name":"pay","accounts":[],"args":[{"name":"amount","type":"u64"}]}]}'
+      responses:
+        '201':
+          description: The contract, enabled. Calls to it, and its events, are decoded from now on, earlier ones included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownContract'
+              examples:
+                addAbi:
+                  summary: Registered
+                  value:
+                    id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                    chain: base
+                    address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                    label: FlowVault
+                    abi:
+                      - type: event
+                        name: Deposited
+                        anonymous: false
+                        inputs:
+                          - { name: from, type: address, indexed: true }
+                          - { name: amount, type: uint256, indexed: false }
+                          - { name: note, type: string, indexed: false }
+                      - type: function
+                        name: deposit
+                        stateMutability: payable
+                        inputs: [{ name: note, type: string }]
+                        outputs: []
+                    functions: ['deposit(string note)']
+                    events: ['Deposited(address indexed from, uint256 amount, string note)']
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:12:40.318Z'
+                addIdl:
+                  summary: Registered
+                  value:
+                    id: 0d6b3c2a-91e4-4a8f-b7d2-5e6f8a9c1b30
+                    chain: solana
+                    address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                    label: Payroll
+                    idl:
+                      address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                      metadata: { name: payroll, version: 0.1.0, spec: 0.1.0 }
+                      instructions:
+                        - name: pay
+                          discriminator: [119, 18, 216, 65, 192, 117, 122, 220]
+                          accounts:
+                            - { name: payer, writable: true, signer: true }
+                            - { name: mint }
+                            - { name: to, writable: true }
+                          args:
+                            - { name: amount, type: u64 }
+                            - { name: memo, type: string }
+                    functions: ['pay(amount: u64, memo: string)']
+                    events: []
+                    source: console
+                    enabled: true
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:14:02.551Z'
+        '400':
+          description: The body is not a registration, or its ABI or IDL is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                invalidAbi:
+                  summary: Not a Solidity type
+                  value:
+                    code: INVALID_ABI
+                    message: 'abi[0].inputs[0].type: "strng" is not a Solidity type'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '409':
+          description: An enabled registration already has this address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyRegistered:
+                  summary: Already registered
+                  value:
+                    code: CONTRACT_EXISTS
+                    message: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB is already registered on solana, as Payroll: disable it first to replace its IDL'
+
+  /v1/contracts/preview:
+    post:
+      tags: [Contracts]
+      operationId: previewContract
+      summary: Preview a contract registration
+      description: |
+        Reads the ABI or IDL and answers with what it would explain, or with the same refusal
+        Register a contract would give. Nothing is stored or recorded. Takes the same body as
+        Register a contract, and the operator token.
+      security:
+        - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractRequest'
+            examples:
+              previewArtifact:
+                summary: A compiler artifact, pasted whole
+                value:
+                  chain: base
+                  address: '0xb4AE694A6b3Bc58CC4C31d983a74dBC3947eA318'
+                  label: FlowAggregator
+                  abi:
+                    abi:
+                      - type: function
+                        name: aggregate3Value
+                        stateMutability: payable
+                        inputs:
+                          - name: calls
+                            type: tuple[]
+                            components:
+                              - { name: target, type: address }
+                              - { name: allowFailure, type: bool }
+                              - { name: value, type: uint256 }
+                              - { name: callData, type: bytes }
+                        outputs: []
+                    bytecode: { object: '0x6080' }
+              invalidIdl:
+                summary: A type the IDL never defines
+                value:
+                  chain: solana
+                  address: GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB
+                  label: Payroll
+                  idl:
+                    instructions:
+                      - name: pay
+                        accounts: []
+                        args: [{ name: schedule, type: { defined: Schedule } }]
+      responses:
+        '200':
+          description: What registering it would explain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractPreview'
+              examples:
+                previewArtifact:
+                  summary: Its one function
+                  value:
+                    chain: base
+                    address: '0xb4AE694A6b3Bc58CC4C31d983a74dBC3947eA318'
+                    label: FlowAggregator
+                    functions: ['aggregate3Value((address target, bool allowFailure, uint256 value, bytes callData)[] calls)']
+                    events: []
+        '400':
+          description: The body is not a registration, or its ABI or IDL is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PlainError'
+              examples:
+                invalidIdl:
+                  summary: A missing type
+                  value:
+                    code: INVALID_IDL
+                    message: 'idl.types: has no type named "Schedule"'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+
+  /v1/contracts/{id}:
+    patch:
+      tags: [Contracts]
+      operationId: updateContract
+      summary: Enable or disable a registered contract
+      description: |
+        Disables a registration, so its ABI or IDL no longer explains calls and the contract loses
+        its label, or enables it again. Nothing is ever deleted. To correct an ABI or IDL, disable
+        it and register the right one. Enabling is refused while another enabled registration has
+        the address (`CONTRACT_EXISTS`). Only the operator token can change one, and each change is
+        written to the activity record, with the `reason` if you give one. Setting what it already
+        is records nothing.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContractId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: string, minLength: 1, description: Why, for the activity record. }
+            examples:
+              disableContract:
+                summary: Retire an ABI
+                value: { enabled: false, reason: FlowVault v2 deployed with a new ABI }
+              notFound:
+                summary: No such contract
+                value: { enabled: false }
+      responses:
+        '200':
+          description: The contract as it now is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownContract'
+              examples:
+                disableContract:
+                  summary: Disabled
+                  value:
+                    id: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4
+                    chain: base
+                    address: '0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793'
+                    label: FlowVault
+                    abi:
+                      - type: event
+                        name: Deposited
+                        anonymous: false
+                        inputs:
+                          - { name: from, type: address, indexed: true }
+                          - { name: amount, type: uint256, indexed: false }
+                          - { name: note, type: string, indexed: false }
+                      - type: function
+                        name: deposit
+                        stateMutability: payable
+                        inputs: [{ name: note, type: string }]
+                        outputs: []
+                    functions: ['deposit(string note)']
+                    events: ['Deposited(address indexed from, uint256 amount, string note)']
+                    source: console
+                    enabled: false
+                    addedBy: operator
+                    addedAt: '2026-11-01T16:12:40.318Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OperatorOnly'
+        '404':
+          description: No registered contract has this id. An id that is not a UUID gets the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlainError'
+              examples:
+                notFound:
+                  summary: No such contract
+                  value: { error: not found }
+
   /v1/setup:
     get:
       tags: [Setup]
@@ -2596,6 +3008,18 @@ components:
         unauthorized: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
         notOperator: { value: f1c40b26-3c95-44a8-a06b-5bc06b5272dd }
 
+    ContractId:
+      name: id
+      in: path
+      required: true
+      description: The `id` of a registered contract, from List registered contracts or Register a contract.
+      schema: { type: string, format: uuid }
+      examples:
+        disableContract: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
+        notFound: { value: 00000000-0000-4000-8000-000000000000 }
+        unauthorized: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
+        notOperator: { value: 6b1f4f0e-2c55-4f7e-9a51-3d0a7c2e81d4 }
+
   responses:
     Unauthorized:
       description: The `Authorization` header is missing, or its token is not the engine's `AUTH_TOKEN`.
@@ -2821,6 +3245,9 @@ components:
             - SYMBOL_TAKEN
             - ASSET_EXISTS
             - CONFIG_ASSET
+            - INVALID_ABI
+            - INVALID_IDL
+            - CONTRACT_EXISTS
           description: What went wrong. Switch on this. [Errors](./errors.md) lists what to do about each.
         message: { type: string, description: The most specific reason available, for people. On Base it is often the node's own words. }
         chainDetail: { description: The raw detail from the chain or the check, such as a shortfall, a JSON-RPC code or revert data. Its shape depends on the code. }
@@ -2993,11 +3420,11 @@ components:
       type: object
       additionalProperties: false
       required: [name, type, value]
-      description: One argument, named and typed as its decoder defines it. Numbers are strings. An amount of a Known Asset also has `asset` and `formatted`.
+      description: One argument, named and typed as its decoder defines it. Numbers are strings. An amount of a Known Asset also has `asset` and `formatted`; for a registered ABI or IDL that is an argument named like an amount (`amount`, `value`, `...Amount`; `...lamports` in SOL) when the call names exactly one Known Asset.
       properties:
         name: { type: string }
-        type: { type: string, description: 'The ABI type on Base (`address`, `uint256`, `bytes`, ...). On Solana `pubkey` for an account, or `u8`, `u32`, `u64`, `string`.' }
-        value: { description: A string, a boolean, or an array or object of them. }
+        type: { type: string, description: 'The ABI type on Base (`address`, `uint256`, `bytes`, ...). On Solana `pubkey` for an account, or the IDL type (`u8`, `u64`, `string`, `vec<u16>`, ...).' }
+        value: { description: 'A string, a boolean, or an array or object of them. `null` is an empty Anchor option; Anchor bytes are base64; an Anchor enum is its variant name, or an object keyed by it.' }
         asset: { $ref: '#/components/schemas/AssetRef' }
         formatted: { type: string }
 
@@ -3005,14 +3432,16 @@ components:
       type: object
       required: [target, decoded]
       description: |
-        What a call does, read by the engine's built-in decoders: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana.
-        When none knows it, `decoded` is `false` and the call shows its `selector` and raw `data`. The engine never asks a third-party service to guess a function.
+        What a call does, read by the engine's built-in decoders first: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana. Then by the ABI or IDL registered for the target (Register a contract), which also gives the target its `label`.
+        Decoding happens when the Dispatch is read, so a contract registered later explains earlier calls too. When nothing knows the call, `decoded` is `false` and it shows its `selector` and raw `data`. The engine never asks a third-party service to guess a function.
       properties:
         target: { type: string, description: The contract (Base) or program (Solana) called. }
+        label: { type: string, description: The target's label, when it is a registered contract. }
         decoded: { type: boolean, description: '`true` when a decoder named the function, or when the call carries no data. `function` is left out then.' }
         decoder:
           type: string
-          enum: [erc20, erc721, erc1155, weth, multicall3, system, spl-token, token-2022, associated-token-account, memo, compute-budget]
+          description: A built-in decoder, or `abi` or `idl` for the target's registered ABI or IDL.
+          enum: [erc20, erc721, erc1155, weth, multicall3, system, spl-token, token-2022, associated-token-account, memo, compute-budget, abi, idl]
         function: { type: string }
         args:
           type: array
@@ -3055,7 +3484,8 @@ components:
       properties:
         kind: { type: string, enum: [log, instruction] }
         source: { type: string, description: The contract that emitted the log, or the program that ran. }
-        decoder: { type: string }
+        label: { type: string, description: The source's label, when it is a registered contract. }
+        decoder: { type: string, description: 'A built-in decoder, or `abi` or `idl`.' }
         name: { type: string }
         args: { type: array, items: { $ref: '#/components/schemas/CallArg' } }
 
@@ -3080,16 +3510,17 @@ components:
           properties:
             payer: { type: string }
         events: { type: array, items: { $ref: '#/components/schemas/Event' } }
-        undecodedEvents: { type: integer, description: Logs or instructions no built-in decoder knows. }
+        undecodedEvents: { type: integer, description: Logs or instructions neither a built-in decoder nor a registered ABI or IDL explains. }
         undecodedEventSources:
           type: array
-          description: Where the undecoded ones came from, most first.
+          description: Where the undecoded ones came from, most first. Registering a source's ABI or IDL explains them.
           items:
             type: object
             additionalProperties: false
             required: [source, count]
             properties:
               source: { type: string }
+              label: { type: string, description: The source's label, when it is registered but its ABI does not name the event. }
               count: { type: integer }
         truncated: { type: boolean, description: 'Part of what the transaction did was too large to store: past 128 logs or instructions, 2 KiB of data each, or 100 log lines.' }
 
@@ -3636,9 +4067,12 @@ components:
               asset_add,
               asset_disable,
               asset_enable,
+              contract_add,
+              contract_disable,
+              contract_enable,
             ]
         targetId:
-          { type: string, format: uuid, description: The Dispatch, Flag Rule or Known Asset acted on. }
+          { type: string, format: uuid, description: 'The Dispatch, Flag Rule, Known Asset or registered contract acted on.' }
         tokenKind:
           type: string
           enum: [auth, operator]
@@ -3695,6 +4129,49 @@ components:
             symbol: { type: string }
             name: { type: string }
         supply: { type: string, pattern: '^\d+$', description: The total supply, in the smallest unit. }
+
+    KnownContract:
+      type: object
+      additionalProperties: false
+      required: [id, chain, address, label, functions, events, source, enabled, addedBy, addedAt]
+      description: A registered contract, with `abi` on Base or `idl` on Solana as it was given.
+      properties:
+        id: { type: string, format: uuid }
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: 'The contract (Base, checksummed) or program (Solana).' }
+        label: { type: string, maxLength: 64, description: What the console and decoded calls call it. }
+        abi: { type: array, description: The ABI items. }
+        idl: { type: object, description: The Anchor IDL. }
+        functions: { type: array, items: { type: string }, description: 'What it explains, as signatures: Base functions, or Solana instructions.' }
+        events: { type: array, items: { type: string }, description: The Base events it explains. Empty on Solana. }
+        source: { type: string, enum: [console], description: Registered through the API. }
+        enabled: { type: boolean, description: Whether it explains calls and events. At most one enabled registration per address. }
+        addedBy: { type: string, enum: [auth, operator] }
+        addedAt: { type: string, format: date-time }
+
+    ContractRequest:
+      type: object
+      additionalProperties: false
+      required: [chain, address, label]
+      description: '`abi` on Base, `idl` on Solana. Each may be the JSON itself or the text that was pasted.'
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The contract or program address. }
+        label: { type: string, minLength: 1, maxLength: 64 }
+        abi: { type: [array, object, string], description: 'An ABI array, or a compiler artifact holding one in `abi`.' }
+        idl: { type: [object, string], description: 'An Anchor IDL, in the 0.30 format or the older one.' }
+        reason: { type: string, minLength: 1, description: Why, for the activity record. Register only. }
+
+    ContractPreview:
+      type: object
+      additionalProperties: false
+      required: [chain, address, label, functions, events]
+      properties:
+        chain: { $ref: '#/components/schemas/Chain' }
+        address: { type: string, description: The address as it would be stored. }
+        label: { type: string }
+        functions: { type: array, items: { type: string } }
+        events: { type: array, items: { type: string } }
 
     ActivityPage:
       type: object

@@ -7,7 +7,7 @@ import { decodeCall, decodeEffects } from './decode.js';
 import {
   AGGREGATOR,
   asset,
-  assetAt,
+  known,
   BASE_PAYOUTS,
   BASE_REFUNDS,
   BASE_RELAY,
@@ -40,7 +40,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('Base effects and calls, from recorded transactions (ADR-0063)', () => {
   it('row 2: an ERC-20 payment moves 1.5 FLOW from the Sender, and its call is transfer(to, amount)', async () => {
     const effects = await readRecorded('erc20-payment');
-    const view = decodeEffects(effects, assetAt);
+    const view = decodeEffects(effects, known);
 
     expect(view.transfers).toEqual([
       {
@@ -63,7 +63,7 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
     expect(view.value).toBeUndefined();
     expect(view.undecodedEvents).toBe(0);
 
-    expect(decodeCall('base', baseInput('erc20-payment'), assetAt)).toEqual({
+    expect(decodeCall('base', baseInput('erc20-payment'), known)).toEqual({
       target: FLOW,
       decoded: true,
       decoder: 'erc20',
@@ -84,10 +84,10 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
 
   it('row 4: a call no decoder knows shows its selector and raw data, and its log counts as undecoded', async () => {
     const effects = await readRecorded('base-call-with-value');
-    const view = decodeEffects(effects, assetAt);
+    const view = decodeEffects(effects, known);
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
-    const call = decodeCall('base', baseInput('base-call-with-value'), assetAt);
+    const call = decodeCall('base', baseInput('base-call-with-value'), known);
 
     expect(call).toEqual({
       target: VAULT,
@@ -117,7 +117,7 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
   it('row 7: a Bulk Call is aggregate3Value with each inner call decoded, and moves both payments', async () => {
     const effects = await readRecorded('bulk-call');
 
-    expect(decodeCall('base', baseInput('bulk-call'), assetAt)).toMatchObject({
+    expect(decodeCall('base', baseInput('bulk-call'), known)).toMatchObject({
       target: AGGREGATOR,
       decoded: true,
       decoder: 'multicall3',
@@ -143,7 +143,7 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
         },
       ],
     });
-    expect(decodeEffects(effects, assetAt).transfers).toEqual([
+    expect(decodeEffects(effects, known).transfers).toEqual([
       expect.objectContaining({ standard: 'native', from: BASE_PAYOUTS, to: AGGREGATOR }),
       expect.objectContaining({
         standard: 'erc20',
@@ -157,7 +157,7 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
   });
 
   it('row 6: a Relay transaction is recorded too, its fee paid by the wallet that signed it', async () => {
-    const view = decodeEffects(await readRecorded('base-relay'), assetAt);
+    const view = decodeEffects(await readRecorded('base-relay'), known);
 
     expect(view.transfers).toEqual([
       expect.objectContaining({
@@ -173,7 +173,7 @@ describe('Base effects and calls, from recorded transactions (ADR-0063)', () => 
 
 describe('Solana effects and calls, from recorded transactions (ADR-0063)', () => {
   it('row 1: SPL and Token-2022 payments move 1.5 FSPL and 2.5 F22 between the wallets, and every instruction decodes', async () => {
-    const view = decodeEffects(await readRecorded('spl-and-token-2022-payments'), assetAt);
+    const view = decodeEffects(await readRecorded('spl-and-token-2022-payments'), known);
 
     expect(view.transfers).toEqual([
       {
@@ -215,7 +215,7 @@ describe('Solana effects and calls, from recorded transactions (ADR-0063)', () =
         accounts: [],
         data: Buffer.from('flows row 5').toString('base64'),
       },
-      assetAt,
+      known,
       effects,
     );
     const instruction =
@@ -233,7 +233,7 @@ describe('Solana effects and calls, from recorded transactions (ADR-0063)', () =
         })),
         data: instruction!.data,
       },
-      assetAt,
+      known,
       effects,
     );
 
@@ -258,7 +258,7 @@ describe('Solana effects and calls, from recorded transactions (ADR-0063)', () =
         { name: 'decimals', value: '6' },
       ],
     });
-    expect(decodeEffects(effects, assetAt).transfers).toEqual([
+    expect(decodeEffects(effects, known).transfers).toEqual([
       expect.objectContaining({
         standard: 'spl',
         from: SOL_PAYOUTS,
@@ -270,7 +270,7 @@ describe('Solana effects and calls, from recorded transactions (ADR-0063)', () =
   });
 
   it('row 6: a Relay transfer moves 0.001 SOL from the relay wallet, which pays the fee', async () => {
-    const view = decodeEffects(await readRecorded('solana-relay'), assetAt);
+    const view = decodeEffects(await readRecorded('solana-relay'), known);
 
     expect(view.transfers).toEqual([
       {
@@ -296,7 +296,7 @@ describe('Solana effects and calls, from recorded transactions (ADR-0063)', () =
       decodeCall(
         'solana',
         { programId: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf', accounts: [], data },
-        assetAt,
+        known,
       ),
     ).toEqual({
       target: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf',

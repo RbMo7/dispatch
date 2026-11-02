@@ -12,6 +12,7 @@ import type {
   RuleMatch,
 } from '../domain/flag-rule.js';
 import type { ConfigAsset, KnownAsset, NewKnownAsset } from '../domain/known-asset.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
 import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
@@ -274,6 +275,24 @@ export interface DispatchStore {
     enabled: boolean,
     actor: OperatorActor,
   ): Promise<{ asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'>;
+  // --- The contract registry (ADR-0063). Each write records its operator action in the same write. ---
+
+  /** Every row of every chain, enabled or not. */
+  listKnownContracts(): Promise<KnownContract[]>;
+  /** Adds an enabled row, unless an enabled row already has its chain and address. */
+  addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'>;
+  /**
+   * Enables or disables a row. Setting what it already is records nothing
+   * (`changed: false`). Enabling is refused while another enabled row has its address.
+   */
+  setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'>;
   /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
   firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
   /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches (only `senderAddress`'s, when given: #149) created since `since` and not cancelled. */

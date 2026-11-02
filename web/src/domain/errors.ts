@@ -295,6 +295,24 @@ export const CATALOGUE = {
     text: "This asset comes from the engine's configuration, so the console cannot change it.",
     next: 'Change the *_KNOWN_TOKENS setting and restart the engine.',
   },
+  INVALID_ABI: {
+    title: 'ABI not readable',
+    text: 'The engine could not read this ABI.',
+    next: 'Fix what the message names and preview again. Paste the ABI array, or the whole compiler artifact.',
+    quote: true,
+  },
+  INVALID_IDL: {
+    title: 'IDL not readable',
+    text: 'The engine could not read this Anchor IDL.',
+    next: 'Fix what the message names and preview again. Paste the IDL file Anchor wrote.',
+    quote: true,
+  },
+  CONTRACT_EXISTS: {
+    title: 'Already registered',
+    text: (_, ctx) => `A contract at this address is already registered on ${chainName(ctx)}.`,
+    next: 'To replace its ABI or IDL, disable the one registered, then add this one.',
+    quote: true,
+  },
   FST_ERR_VALIDATION: {
     title: 'Request does not match the API',
     next: 'Fix the field the message names, then send it again.',
