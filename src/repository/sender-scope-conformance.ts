@@ -72,6 +72,16 @@ export function runSenderScopeConformanceSuite(makeStore: () => DispatchStore): 
       }
     });
 
+    it('returns a claimed batch oldest first, the order the Funding Check admits it in (#132)', async () => {
+      const store = makeStore();
+      const seeded = [];
+      for (let i = 0; i < 6; i++) seeded.push(await seed(store, PAYOUTS));
+
+      const claimed = await store.claimQueuedFor(PAYOUTS, 10);
+
+      expect(claimed.map((d) => d.id)).toEqual(seeded.map((d) => d.id));
+    });
+
     it("gives a chain's Dispatches stored with no Sender to one Sender, whatever their status, once", async () => {
       const store = makeStore();
       const inFlight = await seed(store, null);

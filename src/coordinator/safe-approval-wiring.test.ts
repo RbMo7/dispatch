@@ -289,9 +289,11 @@ describe('the Funding Check for a Safe Sender (#85)', () => {
 
     const second = await t.dispatch([nativeItem('30'), usdcItem(30n)]);
     await t.coordinator.processQueuedDispatches(10);
+    // ADR-0068: the whole Dispatch fails, every item naming its first short requirement.
+    const shortEth = { asset: 'ETH', short: '10', holder: 'safe', address: SAFE, committed: '80' };
     expect(await t.outcome(second.id)).toEqual([
-      ['FAILED', { asset: 'ETH', short: '10', holder: 'safe', address: SAFE, committed: '80' }],
-      ['FAILED', { asset: 'USDC', short: '10', holder: 'safe', address: SAFE, committed: '80' }],
+      ['FAILED', shortEth],
+      ['FAILED', shortEth],
     ]);
   });
 

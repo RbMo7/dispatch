@@ -305,6 +305,49 @@ describe('Funding Check for a Multisig Sender (ADR-0043, ADR-0054)', () => {
       ]);
     });
 
+    it('admits Dispatches claimed together one at a time against what open Proposals leave (#132)', async () => {
+      const ctx = setup();
+      committing(ctx, '0');
+      ctx.fund(VAULT, 'USDC', '250');
+      ctx.fund(MEMBER, 'SOL', '100');
+      const open = await ctx.dispatch([pay(1, 'USDC', '100')]);
+      await ctx.coordinator.processQueuedDispatches(10);
+      expect(await ctx.errors(open.id)).toEqual([['AWAITING_APPROVAL', undefined]]);
+
+      // 250 - 100 committed = 150: the first fits, the second is short by 50 on top of it.
+      const first = await ctx.dispatch([pay(2, 'USDC', '100')]);
+      const second = await ctx.dispatch([pay(3, 'USDC', '100')]);
+      const third = await ctx.dispatch([pay(4, 'USDC', '50')]);
+      await ctx.coordinator.processQueuedDispatches(10);
+
+      expect(await ctx.errors(first.id)).toEqual([['AWAITING_APPROVAL', undefined]]);
+      expect(await ctx.errors(second.id)).toEqual([
+        [
+          'FAILED',
+          { asset: 'USDC', short: '50', holder: 'vault', address: VAULT, committed: '100' },
+        ],
+      ]);
+      expect(await ctx.errors(third.id)).toEqual([['AWAITING_APPROVAL', undefined]]);
+    });
+
+    it("counts each Dispatch's proposal cost on the member key in claim order (#132)", async () => {
+      const ctx = setup();
+      ctx.fund(VAULT, 'USDC', '1000');
+      ctx.fund(MEMBER, 'SOL', '15');
+      const first = await ctx.dispatch([pay(1, 'USDC', '100')]);
+      const second = await ctx.dispatch([pay(2, 'USDC', '100')]);
+
+      await ctx.coordinator.processQueuedDispatches(10);
+
+      expect(await ctx.errors(first.id)).toEqual([['AWAITING_APPROVAL', undefined]]);
+      expect(await ctx.errors(second.id)).toEqual([
+        [
+          'FAILED',
+          { asset: 'SOL', short: '5', holder: 'memberKey', address: MEMBER, committed: '0' },
+        ],
+      ]);
+    });
+
     it('rent locked on the member key counts against its balance', async () => {
       const ctx = setup();
       committing(ctx, '4');

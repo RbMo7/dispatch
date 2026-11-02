@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 
 import type {
+  Balance,
   BundleSlotStatus,
   ChainHandler,
   PreparedTransaction,
@@ -78,15 +79,20 @@ function isTransientBroadcastFailure(error: DispatchError): boolean {
 /** A (Dispatch, callIndex) pointer to one Call — the Funding Check's own grouping unit, and issue 13's bundling grouping unit. */
 type CallRef = { dispatch: Dispatch; callIndex: number };
 
+/** What one Dispatch needs from one payer in one asset (ADR-0068). */
 type FundingRequirement = {
   /** Who holds the funds, when not the Sender (#11). */
   fundedBy: string | null;
   asset: string;
   required: bigint;
-  items: CallRef[];
   /** ADR-0054, a Multisig Sender only: which of its two balances this requirement is paid from. */
   holder?: CommittedHolder;
 };
+
+/** A control character, not a real asset symbol, so an asset name can never collide with the delimiter. */
+function requirementKey(fundedBy: string | null, asset: string): string {
+  return `${fundedBy ?? ''}\u0000${asset}`;
+}
 
 export type StuckHandlingConfig = { stuckAfterMs: number; maxFeeBumps: number };
 
@@ -497,19 +503,27 @@ export class Coordinator {
   }
 
   /**
-   * Aggregates the required amount per (chain, asset) across the whole
-   * claimed batch — from each item's original Payment (ADR-0028's
-   * DispatchItem), never by trying to decode an opaque Call — and compares
-   * it against the Sender's real balance via getBalance, before any of
-   * those Calls are prepared/signed/broadcast (ADR-0024). A `call`-type
-   * item (no Payment) has no inferable funding requirement and is skipped
-   * entirely: the caller owns that data, not the engine (ADR-0018).
+   * The Funding Check (ADR-0024, ADR-0068): admits the claimed Dispatches
+   * one at a time, in claim order, before any of their Calls are
+   * prepared/signed/broadcast. Each Dispatch's requirement per payer and
+   * asset comes from its items' original Payments (ADR-0028's DispatchItem),
+   * never from decoding an opaque Call, plus what sending it costs
+   * (ADR-0043). A `call`-type item (no Payment) adds nothing of its own: the
+   * caller owns that data, not the engine (ADR-0018).
    *
-   * A shortfall — or a getBalance failure itself, since an unverifiable
-   * balance is exactly the "discover it one Call at a time" outcome this
-   * check exists to prevent — fails every affected Call immediately via
-   * recordCallFailure. Returns which (dispatchId, callIndex) pairs were
-   * failed this way, so the caller skips them in the main processing loop.
+   * A Dispatch fits when, for every requirement, what the Dispatches already
+   * admitted from this batch use plus what it needs is within the balance
+   * (less what open Proposals hold back, ADR-0053). One that fits is
+   * admitted and its amounts count against the next; one that doesn't fails
+   * whole, every item with the same `INSUFFICIENT_FUNDS` naming the first
+   * short requirement, and the check goes on to the next Dispatch. So one
+   * oversized Dispatch never fails the small ones claimed with it (#132).
+   *
+   * Each balance is read once per batch. A read that fails, or a cost that
+   * cannot be estimated, fails every Dispatch that needs it, since an
+   * unverifiable balance is exactly the "discover it one Call at a time"
+   * outcome this check exists to prevent. Returns which (dispatchId,
+   * callIndex) pairs were failed, so the caller skips them.
    */
   private async runFundingCheck(
     sender: CoordinatorSender,
@@ -519,65 +533,17 @@ export class Coordinator {
     const { chain, address: senderAddress } = sender.ref;
     const approval = handler.approval;
     const failedKeys = new Set<string>();
-    const requirements = new Map<string, FundingRequirement>();
 
-    for (const dispatch of dispatches) {
-      dispatch.items.forEach((item, callIndex) => {
-        if (!item.payment) return;
-        const { asset, amount } = item.payment;
-        // #11: a Bulk Call ERC-20 item spends its aggregator's balance, not the Sender's.
-        const fundedBy = item.fundedBy ?? null;
-        // A control character, not a real asset symbol, so an asset name can never collide with the delimiter.
-        const key = `${fundedBy ?? ''}\u0000${asset}`;
-        const existing = requirements.get(key);
-        if (existing) {
-          existing.required += BigInt(amount);
-          existing.items.push({ dispatch, callIndex });
-        } else {
-          requirements.set(key, {
-            fundedBy,
-            asset,
-            required: BigInt(amount),
-            items: [{ dispatch, callIndex }],
-          });
-        }
-      });
-    }
-
-    // #40 (ADR-0043): what sending costs beyond the payments themselves
-    // (fees, rent), paid by the Sender in the chain's native asset. Shared
-    // by every Call of the batch, so a shortfall fails them all.
-    // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
-    if (approval || handler.networkCost) {
-      const refs = dispatches.flatMap((dispatch) =>
-        dispatch.items.map((_item, callIndex) => ({ dispatch, callIndex })),
-      );
-      const calls = refs.flatMap(({ dispatch, callIndex }) => {
-        const call = dispatch.items[callIndex]?.call;
-        return call ? [call] : [];
-      });
-      const cost = approval
-        ? await approval.estimateApprovalCost(calls, senderAddress)
-        : await handler.networkCost?.(calls, senderAddress);
-      if (cost && !cost.ok) {
-        this.logger.warn(
-          { chain, sender: senderAddress, error: cost.error },
-          'funding check: networkCost failed, failing affected calls',
-        );
-        await this.failFundingItems(refs, cost.error, failedKeys);
-      } else if (cost) {
-        const fundedBy = approval ? approval.proposerAddress : null;
-        const key = `${fundedBy ?? ''}\u0000${cost.value.asset}`;
-        const existing = requirements.get(key);
-        requirements.set(key, {
-          fundedBy,
-          asset: cost.value.asset,
-          required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
-          items: refs,
-          ...(approval ? { holder: 'proposer' as const } : {}),
-        });
+    const balanceCache = new Map<string, Promise<Result<Balance, DispatchError>>>();
+    const balanceOf = (address: string, asset: string) => {
+      const key = `${address}\u0000${asset}`;
+      let cached = balanceCache.get(key);
+      if (!cached) {
+        cached = handler.getBalance(address, asset);
+        balanceCache.set(key, cached);
       }
-    }
+      return cached;
+    };
 
     // ADR-0053/0054: what this Sender's open Proposals already hold back, read once per holder per check.
     const committedCache = new Map<CommittedHolder, Promise<AssetAmount[]>>();
@@ -592,46 +558,63 @@ export class Coordinator {
       return cached;
     };
 
-    for (const { fundedBy, asset, required, items, holder } of requirements.values()) {
-      // A Multisig Sender's payments come out of the vault or Safe, less what open Proposals already hold.
-      const committedHolder: CommittedHolder | null = approval
-        ? (holder ?? (fundedBy === null ? 'sender' : null))
-        : null;
-      const address = fundedBy ?? senderAddress;
+    /** What the Dispatches admitted so far use, per requirement key. */
+    const admitted = new Map<string, bigint>();
 
-      const balanceResult = await handler.getBalance(address, asset);
-      if (!balanceResult.ok) {
+    for (const dispatch of dispatches) {
+      const refs = dispatch.items.map((_item, callIndex) => ({ dispatch, callIndex }));
+      const requirements = await this.fundingRequirements(sender, dispatch);
+      if (!requirements.ok) {
         this.logger.warn(
-          { chain, sender: senderAddress, asset, error: balanceResult.error },
-          'funding check: getBalance failed, failing affected calls',
+          { chain, sender: senderAddress, dispatchId: dispatch.id, error: requirements.error },
+          'funding check: networkCost failed, failing the dispatch',
         );
-        await this.failFundingItems(items, balanceResult.error, failedKeys);
+        await this.failFundingItems(refs, requirements.error, failedKeys);
         continue;
       }
 
-      const committed = committedHolder
-        ? BigInt(
-            (await committedFor(committedHolder)).find((c) => c.asset === asset)?.amount ?? '0',
-          )
-        : 0n;
-      const available = BigInt(balanceResult.value.amount) - committed;
-      if (available < required) {
-        const short = (required - available).toString();
-        this.logger.warn(
-          {
-            chain,
-            sender: senderAddress,
-            asset,
-            required: required.toString(),
-            available: available.toString(),
-            committed: committed.toString(),
-            short,
-          },
-          'funding check: insufficient balance, failing affected calls',
-        );
-        await this.failFundingItems(
-          items,
-          {
+      let failure: DispatchError | null = null;
+      for (const [key, { fundedBy, asset, required, holder }] of requirements.value) {
+        // A Multisig Sender's payments come out of the vault or Safe, less what open Proposals already hold.
+        const committedHolder: CommittedHolder | null = approval
+          ? (holder ?? (fundedBy === null ? 'sender' : null))
+          : null;
+        const address = fundedBy ?? senderAddress;
+
+        const balanceResult = await balanceOf(address, asset);
+        if (!balanceResult.ok) {
+          this.logger.warn(
+            { chain, sender: senderAddress, asset, error: balanceResult.error },
+            'funding check: getBalance failed, failing the dispatch',
+          );
+          failure = balanceResult.error;
+          break;
+        }
+
+        const committed = committedHolder
+          ? BigInt(
+              (await committedFor(committedHolder)).find((c) => c.asset === asset)?.amount ?? '0',
+            )
+          : 0n;
+        const available = BigInt(balanceResult.value.amount) - committed;
+        const before = admitted.get(key) ?? 0n;
+        if (before + required > available) {
+          const short = (before + required - available).toString();
+          this.logger.warn(
+            {
+              chain,
+              sender: senderAddress,
+              dispatchId: dispatch.id,
+              asset,
+              required: required.toString(),
+              admitted: before.toString(),
+              available: available.toString(),
+              committed: committed.toString(),
+              short,
+            },
+            'funding check: insufficient balance, failing the dispatch',
+          );
+          failure = {
             code: 'INSUFFICIENT_FUNDS',
             message: `insufficient ${asset} balance`,
             chainDetail:
@@ -646,13 +629,70 @@ export class Coordinator {
                 : fundedBy
                   ? { asset, short, fundedBy }
                   : { asset, short },
-          },
-          failedKeys,
-        );
+          };
+          break;
+        }
+      }
+
+      if (failure) {
+        await this.failFundingItems(refs, failure, failedKeys);
+        continue;
+      }
+      for (const [key, { required }] of requirements.value) {
+        admitted.set(key, (admitted.get(key) ?? 0n) + required);
       }
     }
 
     return failedKeys;
+  }
+
+  /**
+   * One Dispatch's requirements, keyed by payer and asset: its payments, then
+   * what sending its Calls costs, estimated for this Dispatch alone. Bundling
+   * across Dispatches can make the sum of these estimates over-ask, which
+   * ADR-0043 allows; it never under-asks.
+   */
+  private async fundingRequirements(
+    sender: CoordinatorSender,
+    dispatch: Dispatch,
+  ): Promise<Result<Map<string, FundingRequirement>, DispatchError>> {
+    const { handler } = sender;
+    const approval = handler.approval;
+    const requirements = new Map<string, FundingRequirement>();
+
+    for (const item of dispatch.items) {
+      if (!item.payment) continue;
+      const { asset, amount } = item.payment;
+      // #11: a Bulk Call ERC-20 item spends its aggregator's balance, not the Sender's.
+      const fundedBy = item.fundedBy ?? null;
+      const key = requirementKey(fundedBy, asset);
+      const existing = requirements.get(key);
+      if (existing) existing.required += BigInt(amount);
+      else requirements.set(key, { fundedBy, asset, required: BigInt(amount) });
+    }
+
+    // #40 (ADR-0043): what sending costs beyond the payments themselves (fees, rent), in the native asset.
+    // ADR-0054: a Multisig Sender's cost is paid by the proposer key (member key or executor), not the vault or Safe.
+    if (approval || handler.networkCost) {
+      const calls = dispatch.items.map((item) => item.call);
+      const cost = approval
+        ? await approval.estimateApprovalCost(calls, sender.ref.address)
+        : await handler.networkCost?.(calls, sender.ref.address);
+      if (cost && !cost.ok) return err(cost.error);
+      if (cost) {
+        const fundedBy = approval ? approval.proposerAddress : null;
+        const key = requirementKey(fundedBy, cost.value.asset);
+        const existing = requirements.get(key);
+        requirements.set(key, {
+          fundedBy,
+          asset: cost.value.asset,
+          required: (existing?.required ?? 0n) + BigInt(cost.value.amount),
+          ...(approval ? { holder: 'proposer' as const } : {}),
+        });
+      }
+    }
+
+    return ok(requirements);
   }
 
   /** Records the same failure reason for every (dispatch, callIndex) a Funding Check requirement covers, and marks each skipped in the caller's main processing loop. */
