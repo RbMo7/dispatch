@@ -20,7 +20,7 @@ An unexplained call shows its 4-byte selector (Base) or its instruction discrimi
 1. Open the Dispatch and its Items or Details tab. A call no decoder knows reads "Selector 0xa26e1186, no ABI", and its transaction's effects read "1 event with no ABI".
 2. Choose **Add ABI** (or **Add IDL** on Solana). It needs an operator session. It opens the Contracts page with the chain and address filled in.
 3. Give the contract a label, paste the ABI or IDL, and choose **Preview**. The preview lists the functions and events it explains, or says what is wrong with what you pasted.
-4. Choose **Add ABI**. Go back to the Dispatch: the call now reads `deposit(note: "flows row 4")` under the label, and its event is named.
+4. Choose **Add ABI**. Go back to the Dispatch: the call now reads `deposit(note: "invoice 2041")` under the label, and its event is named.
 
 The Contracts page lists every registration per chain. Disable one to stop it explaining calls. To correct an ABI, disable the old registration and add the new one: an address has at most one enabled registration.
 
@@ -74,7 +74,7 @@ Each `call` item of `GET /v1/dispatch/{id}` carries a `call` block. After regist
   "decoded": true,
   "decoder": "abi",
   "function": "deposit",
-  "args": [{ "name": "note", "type": "string", "value": "flows row 4" }],
+  "args": [{ "name": "note", "type": "string", "value": "invoice 2041" }],
   "selector": "0xa26e1186",
   "value": { "amount": "1000000000000", "asset": { "symbol": "ETH", "name": "Ether", "decimals": 18, "address": "native" }, "formatted": "0.000001" }
 }

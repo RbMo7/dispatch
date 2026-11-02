@@ -577,7 +577,7 @@ Anything else reads `decoded: false`, with its selector and raw data. The engine
 
 ## Register your own ABI or IDL
 
-Coming with the contract registry. Until then, a call to your own contract or program shows its selector and raw data, and its logs are counted in `undecodedEvents`.
+A call to your own contract or program shows its selector and raw data until you register it, and its logs are counted in `undecodedEvents`. Add its ABI (Base) or Anchor IDL (Solana) from the console's Contracts page or through `POST /v1/contracts`, and the call reads by function and arguments from then on, including calls already sent. [Register an ABI or IDL](./register-a-contract.md) walks through both.
 
 ## What the engine checks, and what it does not
 
