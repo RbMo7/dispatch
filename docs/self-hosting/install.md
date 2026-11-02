@@ -128,7 +128,7 @@ Each line is a check, its status and what it found. Under each warning and failu
 
 Run `pnpm dispatch init` again to change one chain or add another. It shows the current setup, changes only what you pick, and keeps every token that passes `doctor`.
 
-To pay from more than one Sender on a chain, such as a hot wallet beside a multisig, write a senders file. [Send from more than one Sender](../guides/multiple-senders.md) shows how.
+To pay from more than one Sender on a chain, such as a hot wallet beside a multisig, add a named Sender. `init` can do it: `--solana-sender-name` or `--base-sender-name` adds a Sender beside the ones the chain has, in the senders file (`SENDERS_FILE`, default `senders.json`), and `--solana-default` or `--base-default` names the one that pays when a request names none. `pnpm dispatch init --help` lists them. You can also write the senders file yourself. [Send from more than one Sender](../guides/multiple-senders.md) shows how.
 
 ## Run without init
 
@@ -196,7 +196,8 @@ curl -s "$DISPATCH_URL/health"
 ## Where things run in production
 
 - Run the API and the worker against the same `DATABASE_URL`. The API stores Dispatches and the worker claims them from the same tables.
-- Run one worker per engine. The worker owns each Sender's nonce, and nothing else may send from a Sender while the engine runs.
+- Run one worker per engine. The worker owns each Sender's nonce and its pending transactions.
+- Run one engine per Sender. Never point two engines at the same Sender key, and never send from a Sender's address with anything else, such as a wallet app or a script, while the engine runs. Two senders that share a key use the same Base nonces, and each fails the other's transactions with `NONCE_ALREADY_USED`. To split work, such as payroll and refunds, give one engine several [named Senders](../guides/multiple-senders.md), each with its own key.
 - Put the Signer on a private network that only the worker can reach. The API needs no Signer settings. [Set up a Signer](./signer.md#6-place-the-signer-on-a-private-network) has the details.
 - Serve the API, the console and the docs over TLS, through a proxy in front of port 8420.
 - Run `pnpm dispatch doctor` in your deploy, and stop when it exits `1`.

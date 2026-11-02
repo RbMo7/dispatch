@@ -10,7 +10,7 @@ Put the token in the `Authorization` header of every request:
 curl -s "$DISPATCH_URL/v1/senders" -H "Authorization: Bearer $DISPATCH_TOKEN"
 ```
 
-`GET /health` and the docs at `/docs` need no token. The web console signs in with the same token and sends it on every request it makes.
+`GET /health` and the docs at `/docs` need no token. The web console signs in with either token and sends it on every request it makes. An operator token session also shows the operator pages.
 
 ## A wrong or missing token
 
@@ -32,8 +32,9 @@ The operator can set a second token, `OPERATOR_TOKEN`. It does everything `AUTH_
 
 - [Release a held Dispatch](./openapi.yaml#release-a-held-dispatch).
 - Create, edit, delete and preview [Flag Rules](./guides/flag-rules.md).
-- Preview, add, disable and enable Known Assets (`POST /v1/assets`). Either token can list them.
+- Preview, add, disable and enable [Known Assets](./guides/assets.md). Either token can list them.
 - [List operator actions](./openapi.yaml#list-operator-actions), the activity record.
+- [List refused requests](./openapi.yaml#list-refused-requests), the record of requests the engine refused.
 
 `AUTH_TOKEN` gets `403` on those routes, so a client that holds only the API token cannot release its own Dispatch:
 

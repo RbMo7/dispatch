@@ -4,6 +4,10 @@ An engine can hold several named Senders on one chain, each with its own key, si
 
 A Sender that is stuck, short of funds, or waiting for approval never delays another Sender's Dispatches. The engine claims, funds, signs and bundles each Sender's Dispatches on their own, and a bundle or a Proposal never mixes Senders.
 
+## One engine per Sender
+
+A Sender belongs to one engine. The engine's worker tracks the Sender's nonce and its pending transactions, so a second engine, a wallet app or a script that sends from the same key breaks that tracking. On Base the two collide on nonces, and items fail with `NONCE_ALREADY_USED`. Named Senders are how you split work: one engine, several Senders, each with its own key and balance. Run a second engine only for a separate set of keys, such as one engine for testnet and one for mainnet.
+
 ## 1. Write the senders file
 
 Name the Senders in a JSON file, keyed by chain. The engine reads `senders.json` from the folder it starts in, or the file `SENDERS_FILE` names:
