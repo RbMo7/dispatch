@@ -39,7 +39,7 @@ Submit with [Create a Dispatch](../openapi.yaml#create-a-dispatch), exactly as f
 
 ## 4. Read the approval while you wait
 
-While the engine has not put a Call into a Proposal, the item is `queued`. On Base it also stays `queued`, with no `approval` block, while an earlier Proposal holds the Safe. Once the Call is in a Proposal, the item is `awaiting_approval`, with `transactionHash: null` because nothing has executed, and it carries an `approval` block. This example is an illustration, not a live run:
+While the engine has not put a Call into a Proposal, the item is `queued`. On Base it also stays `queued`, with no `approval` block, while an earlier Proposal holds the Safe. Once the Call is in a Proposal, the item is `awaiting_approval`, with `transactionHash: null` because nothing has executed, and it carries an `approval` block. This example is an illustration with the fields a live run returns, not a recorded answer:
 
 ```json
 {
@@ -55,6 +55,12 @@ While the engine has not put a Call into a Proposal, the item is `queued`. On Ba
     "state": "awaiting",
     "approvals": 1,
     "threshold": 2,
+    "remaining": 1,
+    "approvers": [
+      { "address": "2xUDRfJQTDjPuokctLdyAStss7fU3Cv1bZCgtRidCXwt", "label": "Priya, finance", "decision": "approved" },
+      { "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", "decision": "pending" },
+      { "address": "HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH", "label": "Sam, operations", "decision": "pending" }
+    ],
     "deadline": "2026-11-04T09:00:00.000Z",
     "expected": { "recipients": 12, "totals": [{ "asset": "USDC", "amount": "180000000" }] },
     "chainRef": { "kind": "squads", "multisig": "<multisig>", "proposal": "<proposal>", "transactionIndex": 42 }
@@ -66,13 +72,45 @@ While the engine has not put a Call into a Proposal, the item is `queued`. On Ba
 | --- | --- |
 | `state` | `awaiting`: the Proposal has not reached its threshold. `approved`: it has, and is waiting out a time lock or being executed. `approved_after_deadline`: only on an `abandoned` item. The Proposal was approved after the deadline, and the engine will not execute it. |
 | `approvals`, `threshold` | The votes so far, and the votes needed. |
+| `remaining` | The approvals still needed: `threshold` less `approvals`, never below 0. |
+| `approvers` | Every member who can approve, in the multisig's own order, each with a `decision`: `approved`, `rejected` or `pending`. On Squads these are the members with the Vote permission, and a vote to reject or to cancel reads `rejected`. On Base these are the Safe's owners, and an owner is `approved` or `pending`, because a Safe has no per-owner rejection. `label` is the name the senders file gives the Approver, left out when it gives none. The list is empty until the engine first reads the Proposal. |
 | `deadline` | When the engine stops waiting. 72 hours from the Proposal's creation by default (`SOLANA_APPROVAL_DEADLINE_MS`, `BASE_APPROVAL_DEADLINE_MS`), one setting for the whole engine, with no per-request override. |
 | `chainRef` | The multisig's own handle for the Proposal, to open it in the app: `{ "kind": "squads", "multisig", "proposal", "transactionIndex" }` or `{ "kind": "safe", "safe", "safeTxHash", "nonce" }`. |
 | `expected` | What the engine says this Proposal pays: how many distinct recipients, and the total per asset in the smallest unit. Each Proposal of a large Dispatch carries its own share. |
 
+Who has not approved yet is every entry whose `decision` is `pending`. Chase those people, not the whole list.
+
 `expected` helps an Approver notice a wrong file, but the same engine that wrote the Proposal wrote it, so it proves nothing about what the Proposal's bytes do. Do not show it to Approvers as a check. They compare the Proposal with their own record of the payments.
 
 The `approval` block stays on the item after it is `confirmed`, `failed` or `abandoned`. The Dispatch reads `broadcasting` the whole time its items await approval: there is no top-level status for it. Poll these Dispatches every minute or so, not every few seconds.
+
+### Name the Approvers
+
+An address is hard to chase. The operator can give each Approver a label in the senders file, under the Multisig Sender's `approvers`:
+
+```json
+{
+  "solana": {
+    "senders": {
+      "treasury": {
+        "mode": "squads",
+        "multisig": "4AzEDD9wGkvTs4hpRNGZ44tgt2xCZbwoFWNKZs28UkuC",
+        "memberKey": "8DyMoRsmCavhT6Ev8kxsX7YjzJaD6hUdjxirr1yqDgwV",
+        "approvers": {
+          "2xUDRfJQTDjPuokctLdyAStss7fU3Cv1bZCgtRidCXwt": "Priya, finance",
+          "HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH": "Sam, operations"
+        }
+      }
+    }
+  }
+}
+```
+
+A label is 1 to 40 characters. It changes only how the Approver is shown. Who may approve is still the multisig's own member or owner list, read from the chain. [The senders file](../self-hosting/configuration.md#the-senders-file) has the rules.
+
+### What the console shows
+
+In the console, the Dispatch's **Flow** tab reads like "1 of 2 approved, 1 more needed". It lists each Approver by label, or by address without one, with their decision, shows the deadline, and links to the Proposal in the Squads app or the Safe app. The **Items** and **Details** tabs show the same block for each Proposal the items sit in. The Overview's **Needs attention** counts the Proposals awaiting approval.
 
 ## 5. Read the outcome
 

@@ -129,6 +129,139 @@ For `APPROVAL_TIMEOUT`, `chainDetail` is `{ "deadlineAt": "<ISO 8601>" }`. For a
 
 A `failed` item's `transactionHash` is `null` when it failed before anything was signed, as with the Funding Check above. It is set when the transaction was signed and then refused, because the engine writes every transaction down, hash included, before it sends it.
 
+## A failed item and a partial Dispatch
+
+Each item has its own status and its own `error`, so one Dispatch can hold a confirmed item and a failed one. This Base Dispatch paid 0.000001 ETH and called a contract function that always reverts:
+
+```sh
+curl -s "$DISPATCH_URL/v1/dispatch/46e3aef7-40ec-46ed-a3b9-78a24407afe8" -H "Authorization: Bearer $DISPATCH_TOKEN"
+```
+
+```json
+{
+  "dispatchId": "46e3aef7-40ec-46ed-a3b9-78a24407afe8",
+  "mode": "managed",
+  "chain": "base",
+  "sender": { "name": "payouts", "address": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e" },
+  "createdAt": "2026-11-01T17:27:16.940Z",
+  "status": "partial",
+  "items": [
+    {
+      "type": "payment",
+      "recipient": "0xdbe86A4aC69c964DdD83eeb47EaD3Ec41a73D434",
+      "asset": "ETH",
+      "decimals": 18,
+      "amount": "1000000000000",
+      "status": "confirmed",
+      "transactionHash": "0x5a52c16e1da7c2c2cbb60f989d7df930447eeec66ac8de174d2dd0997940f820",
+      "error": null,
+      "effects": {
+        "transfers": [
+          {
+            "standard": "native",
+            "token": "native",
+            "from": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e",
+            "to": "0xdbe86A4aC69c964DdD83eeb47EaD3Ec41a73D434",
+            "amount": "1000000000000",
+            "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+            "formatted": "0.000001"
+          }
+        ],
+        "value": {
+          "amount": "1000000000000",
+          "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+          "formatted": "0.000001"
+        },
+        "fee": {
+          "amount": "126000000094",
+          "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+          "formatted": "0.000000126000000094",
+          "payer": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e"
+        },
+        "events": [],
+        "undecodedEvents": 0,
+        "undecodedEventSources": [],
+        "truncated": false
+      }
+    },
+    {
+      "type": "call",
+      "to": "0xbb7d2b970a48c03ed02238dadca3a1e6b1c49867",
+      "call": {
+        "target": "0xbB7d2b970A48c03ed02238dAdcA3a1e6B1C49867",
+        "decoded": false,
+        "selector": "0x975af67a",
+        "data": "0x975af67a"
+      },
+      "status": "failed",
+      "transactionHash": "0x6fd2eead12d550cb7d633e5a97c5561db336f4df6bae1b580a50ee5f0af96e1b",
+      "error": {
+        "code": "CHAIN_REJECTED",
+        "message": "reverted: always reverts",
+        "chainDetail": {
+          "block": "53160855",
+          "reason": "always reverts",
+          "gasUsed": "21485",
+          "gasLimit": "500000",
+          "revertData": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e616c776179732072657665727473000000000000000000000000000000000000"
+        }
+      }
+    }
+  ]
+}
+```
+
+- The Dispatch reads `partial`: every item is final, and some but not all are `confirmed`.
+- Item 0, the payment, is `confirmed`, with its `effects`.
+- Item 1, the call, is `failed` with `CHAIN_REJECTED`. Its `transactionHash` is set, because the transaction was signed, sent and mined, and then reverted. `message` starts with `reverted:` and `chainDetail.reason` is the contract's own `require` message.
+
+To finish the work, send only the failed items again, in a new Dispatch with a new `Idempotency-Key`, once you have fixed the cause. Sending the whole Dispatch again would pay item 0 twice.
+
+## Refused requests
+
+A refused request stores no Dispatch, so your own logs are one record of it. The engine keeps another: every `POST /v1/dispatch` it refused with a `4xx` other than `401`, with the body exactly as sent. Only the operator token can read it, with [List refused requests](./openapi.yaml#list-refused-requests):
+
+```sh
+curl -s "$DISPATCH_URL/v1/rejected?limit=1" -H "Authorization: Bearer $OPERATOR_TOKEN"
+```
+
+```json
+{
+  "rejected": [
+    {
+      "id": "57d98363-5629-4b87-a251-5cc93ac4602f",
+      "at": "2026-11-01T17:31:40.064Z",
+      "status": 400,
+      "chain": "base",
+      "idempotencyKey": "vendor-usdc-2026-11-01",
+      "tokenKind": "auth",
+      "code": "UNKNOWN_ASSET",
+      "message": "no known token configured for asset \"USDC\"",
+      "chainDetail": { "asset": "USDC" },
+      "body": {
+        "chain": "base",
+        "items": [
+          {
+            "type": "payment",
+            "asset": "USDC",
+            "amount": "1000000",
+            "recipient": "0x8ba1f109551bD432803012645Ac136ddd64DBA72"
+          }
+        ]
+      }
+    }
+  ],
+  "nextCursor": "WyIyMDI2LTExLTAxVDE3OjMxOjQwLjA2NDU1MVoiLCI1N2Q5ODM2My01NjI5LTRiODctYTI1MS01Y2M5M2FjNDYwMmYiXQ",
+  "last24Hours": 3
+}
+```
+
+`code` is the error's code, or `null` for a plain error. `last24Hours` counts the refusals of the last 24 hours, whatever the page. Pass `nextCursor` back as `cursor` for the next page. The API token gets `403`.
+
+The console's **Rejected** page shows the same records to an operator session, newest first, by day. Each row explains the error in plain words, says what to do, and shows the body on demand. An `UNKNOWN_ASSET` row links to the Assets page with the chain and the symbol filled in. The Overview's **Needs attention** shows how many requests were refused in the last 24 hours.
+
+The worker keeps the records for 30 days, and at most 10,000 of them, dropping the oldest first. Set `REJECTED_RETENTION_DAYS` on the worker to keep them for a different number of days. The records hold request bodies, so addresses and amounts, which is the reason to keep them short.
+
 ## Retry safely
 
 - **`failed`** means the payment did not happen and will not. Fix the cause and send it again with a new `Idempotency-Key`.

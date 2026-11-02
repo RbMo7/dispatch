@@ -19,7 +19,7 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch" \
 ```
 
 ```json
-{ "dispatchId": "ec4a9228-b427-4f4e-9792-44ab1b8fcbd6", "status": "queued" }
+{ "dispatchId": "e93df02f-e533-4218-9cda-f4f1b41f24c9", "status": "queued" }
 ```
 
 ## 2. Poll it with its timeline
@@ -30,14 +30,15 @@ Ask for the Dispatch with `include=timeline`:
 curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID?include=timeline" -H "Authorization: Bearer $DISPATCH_TOKEN"
 ```
 
-Before the worker claims it, every item is `queued` and the timeline has one entry. This is a real answer from a moment when the worker was stopped:
+Before the worker claims it, every item is `queued` and the timeline has one entry. This answer came back right after the submit:
 
 ```json
 {
-  "dispatchId": "ec4a9228-b427-4f4e-9792-44ab1b8fcbd6",
+  "dispatchId": "e93df02f-e533-4218-9cda-f4f1b41f24c9",
   "mode": "managed",
   "chain": "solana",
-  "createdAt": "2026-11-01T02:13:35.704Z",
+  "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
+  "createdAt": "2026-11-01T17:40:27.585Z",
   "status": "queued",
   "items": [
     {
@@ -61,7 +62,7 @@ Before the worker claims it, every item is `queued` and the timeline has one ent
       "error": null
     }
   ],
-  "timeline": [{ "kind": "created", "at": "2026-11-01T02:13:35.704Z" }]
+  "timeline": [{ "kind": "created", "at": "2026-11-01T17:40:27.585Z" }]
 }
 ```
 
@@ -73,21 +74,21 @@ Once the worker ran, the same request returns both items `confirmed`, and a time
 
 ```json
 "timeline": [
-  { "kind": "created", "at": "2026-11-01T02:13:35.704Z" },
-  { "kind": "claimed", "at": "2026-11-01T02:13:48.803Z" },
-  { "kind": "written", "at": "2026-11-01T02:13:49.345Z", "hash": "5gfGwrcSAxoQn1a4o2uwh3VGQSvccmQ47CyFfE7FGWsfT4HH5DVD9uzD7pcDMXGXyHJBEpM2DYgeu5AokZ1nvzG9", "items": [0, 1], "replaces": null },
-  { "kind": "sent", "at": "2026-11-01T02:13:51.650Z", "hash": "5gfGwrcSAxoQn1a4o2uwh3VGQSvccmQ47CyFfE7FGWsfT4HH5DVD9uzD7pcDMXGXyHJBEpM2DYgeu5AokZ1nvzG9", "items": [0, 1] },
-  { "kind": "confirmed", "at": "2026-11-01T02:13:52.971Z", "hash": "5gfGwrcSAxoQn1a4o2uwh3VGQSvccmQ47CyFfE7FGWsfT4HH5DVD9uzD7pcDMXGXyHJBEpM2DYgeu5AokZ1nvzG9", "items": [0, 1] }
+  { "kind": "created", "at": "2026-11-01T17:40:27.585Z" },
+  { "kind": "claimed", "at": "2026-11-01T17:40:29.058Z" },
+  { "kind": "written", "at": "2026-11-01T17:40:31.289Z", "hash": "2jAz4GkWuUUwMzWFM3f4Rk4uNp1xCSGEAAV6isr9g3D8HTX8y23nmo5NnVV24esiChjNeFrYBjvivoaUqzQv9PD6", "items": [0, 1], "replaces": null },
+  { "kind": "sent", "at": "2026-11-01T17:40:31.804Z", "hash": "2jAz4GkWuUUwMzWFM3f4Rk4uNp1xCSGEAAV6isr9g3D8HTX8y23nmo5NnVV24esiChjNeFrYBjvivoaUqzQv9PD6", "items": [0, 1] },
+  { "kind": "confirmed", "at": "2026-11-01T17:40:33.386Z", "hash": "2jAz4GkWuUUwMzWFM3f4Rk4uNp1xCSGEAAV6isr9g3D8HTX8y23nmo5NnVV24esiChjNeFrYBjvivoaUqzQv9PD6", "items": [0, 1] }
 ]
 ```
 
 Read it top to bottom:
 
 1. `created`: the API stored the Dispatch.
-2. `claimed`: the worker claimed it 13 seconds later, because it was restarted. A running worker claims within a few seconds.
-3. `written`: one signed transaction carrying items 0 and 1 was written down, before it was sent. On Solana the engine packs several payments into one transaction.
-4. `sent`: the node accepted it 2.3 seconds later.
-5. `confirmed`: the chain confirmed it 1.3 seconds after that.
+2. `claimed`: the worker claimed it 1.5 seconds later.
+3. `written`: 2.2 seconds after that, one signed transaction carrying items 0 and 1 was written down, before it was sent. On Solana the engine packs several payments into one transaction.
+4. `sent`: the node accepted it 0.5 seconds later.
+5. `confirmed`: the chain confirmed it 1.6 seconds after that.
 
 Both items carry the same `transactionHash`. Open it in an explorer: `https://explorer.solana.com/tx/<transactionHash>?cluster=devnet`, or on Base Sepolia `https://sepolia.basescan.org/tx/<transactionHash>`.
 
@@ -114,66 +115,49 @@ This Dispatch paid ETH and a test token, `FLOW`, of which the Sender held too li
 
 ## When a transaction is replaced
 
-A fee bump on Base, or a resubmission after a Solana blockhash expired, makes a new transaction with a new hash. The timeline shows every version. This sequence is an illustration with shortened hashes, not a live run:
+A fee bump on Base, or a resubmission after a Solana blockhash expired, makes a new transaction with a new hash. The timeline shows every version.
+
+This Base payment had [Retry Policy](../lifecycle.md#retry-policy-and-stuck-transactions) on, and its first version was priced under the network's base fee, so it stayed pending. 30 seconds later the engine signed a replacement at the same nonce with higher fees, and the replacement confirmed:
 
 ```json
 "timeline": [
-  { "at": "2026-10-31T10:00:00.000Z", "kind": "created" },
-  { "at": "2026-10-31T10:00:01.200Z", "kind": "claimed" },
-  { "at": "2026-10-31T10:00:01.900Z", "kind": "written", "hash": "0xaa…", "items": [0], "replaces": null },
-  { "at": "2026-10-31T10:01:02.000Z", "kind": "attempt", "hash": "0xaa…", "items": [0], "error": null },
-  { "at": "2026-10-31T10:02:03.000Z", "kind": "written", "hash": "0xbb…", "items": [0], "replaces": "0xaa…" },
-  { "at": "2026-10-31T10:02:03.000Z", "kind": "replaced", "hash": "0xaa…", "items": [0], "by": "0xbb…" },
-  { "at": "2026-10-31T10:02:03.400Z", "kind": "sent", "hash": "0xbb…", "items": [0] },
-  { "at": "2026-10-31T10:02:20.000Z", "kind": "confirmed", "hash": "0xbb…", "items": [0] },
-  { "at": "2026-10-31T10:02:20.000Z", "kind": "dropped", "hash": "0xaa…", "items": [0], "by": "0xbb…" }
+  { "kind": "created", "at": "2026-11-01T17:28:39.802Z" },
+  { "kind": "claimed", "at": "2026-11-01T17:28:40.136Z" },
+  { "kind": "written", "at": "2026-11-01T17:28:41.050Z", "hash": "0x555bcfa75a49d9de6df8941105d398d948c5ef0a98b946873b49c1720bd47bde", "items": [0], "replaces": null },
+  { "kind": "sent", "at": "2026-11-01T17:28:41.345Z", "hash": "0x555bcfa75a49d9de6df8941105d398d948c5ef0a98b946873b49c1720bd47bde", "items": [0] },
+  { "kind": "written", "at": "2026-11-01T17:29:12.323Z", "hash": "0x3a3f77cb5290998eceb477dc512c33458ea60ec444bb14d3fea23adff1be933c", "items": [0], "replaces": "0x555bcfa75a49d9de6df8941105d398d948c5ef0a98b946873b49c1720bd47bde" },
+  { "kind": "dropped", "at": "2026-11-01T17:29:12.323Z", "hash": "0x555bcfa75a49d9de6df8941105d398d948c5ef0a98b946873b49c1720bd47bde", "items": [0], "by": "0x3a3f77cb5290998eceb477dc512c33458ea60ec444bb14d3fea23adff1be933c" },
+  { "kind": "sent", "at": "2026-11-01T17:29:12.618Z", "hash": "0x3a3f77cb5290998eceb477dc512c33458ea60ec444bb14d3fea23adff1be933c", "items": [0] },
+  { "kind": "confirmed", "at": "2026-11-01T17:29:14.876Z", "hash": "0x3a3f77cb5290998eceb477dc512c33458ea60ec444bb14d3fea23adff1be933c", "items": [0] }
 ]
 ```
 
-The first version was resent once (`attempt`), replaced by a higher-fee version a minute later, and the replacement confirmed, which dropped the original. While this happens, the item's `transactionHash` is the latest version, and it can change between polls. Once a version lands, `transactionHash` is the one that landed, which may be the original. [Retry Policy and stuck transactions](../lifecycle.md#retry-policy-and-stuck-transactions) explains when the engine does this.
+The second `written` entry names the version it `replaces`. While both versions were pending, the first one read `replaced`, because either could still land. Once the replacement confirmed, the first one can never land, so it reads `dropped`, at the time it was replaced. While this happens, the item's `transactionHash` is the latest version, and it can change between polls. Once a version lands, `transactionHash` is the one that landed, which may be the original.
+
+A Solana transaction that expires looks the same, with `dropped` straight away, because an expired blockhash can never land. This payment was signed over a blockhash that had already expired, so the engine resubmitted it with a fresh one:
+
+```json
+"timeline": [
+  { "kind": "created", "at": "2026-11-01T17:29:56.328Z" },
+  { "kind": "claimed", "at": "2026-11-01T17:29:57.590Z" },
+  { "kind": "written", "at": "2026-11-01T17:29:58.264Z", "hash": "54AfcqJiA5SyvxdfXsdYh7fxdu3UoqrhyiWPFjQQLNxSTiL4V3tCNayQLiZUN6F3ABDA4CjFUiKkqFQVBPfkoHjV", "items": [0], "replaces": null },
+  { "kind": "sent", "at": "2026-11-01T17:29:58.271Z", "hash": "54AfcqJiA5SyvxdfXsdYh7fxdu3UoqrhyiWPFjQQLNxSTiL4V3tCNayQLiZUN6F3ABDA4CjFUiKkqFQVBPfkoHjV", "items": [0] },
+  { "kind": "written", "at": "2026-11-01T17:30:00.818Z", "hash": "QgwBSWJPLngXgdUXkkicXnC2qh4JA5ypd4P9Ybmfn5w1a9GwkBzqDJ3yGeWxH9uecQji1D3YbrVmx3guMzdMWTE", "items": [0], "replaces": "54AfcqJiA5SyvxdfXsdYh7fxdu3UoqrhyiWPFjQQLNxSTiL4V3tCNayQLiZUN6F3ABDA4CjFUiKkqFQVBPfkoHjV" },
+  { "kind": "dropped", "at": "2026-11-01T17:30:00.818Z", "hash": "54AfcqJiA5SyvxdfXsdYh7fxdu3UoqrhyiWPFjQQLNxSTiL4V3tCNayQLiZUN6F3ABDA4CjFUiKkqFQVBPfkoHjV", "items": [0], "by": "QgwBSWJPLngXgdUXkkicXnC2qh4JA5ypd4P9Ybmfn5w1a9GwkBzqDJ3yGeWxH9uecQji1D3YbrVmx3guMzdMWTE" },
+  { "kind": "sent", "at": "2026-11-01T17:30:01.145Z", "hash": "QgwBSWJPLngXgdUXkkicXnC2qh4JA5ypd4P9Ybmfn5w1a9GwkBzqDJ3yGeWxH9uecQji1D3YbrVmx3guMzdMWTE", "items": [0] },
+  { "kind": "confirmed", "at": "2026-11-01T17:30:05.451Z", "hash": "QgwBSWJPLngXgdUXkkicXnC2qh4JA5ypd4P9Ybmfn5w1a9GwkBzqDJ3yGeWxH9uecQji1D3YbrVmx3guMzdMWTE", "items": [0] }
+]
+```
+
+When the engine sends the same bytes again, because a send got no answer or a Base transaction is stuck with Retry Policy off, the timeline adds an `attempt` entry for the same `hash` instead of a new `written` one.
 
 ## What a call did
 
-A `call` item carries `call`, what the call does, read by the engine's built-in decoders: ERC-20, ERC-721, ERC-1155, WETH and Multicall3 on Base; System, SPL Token, Token-2022, Associated Token Account, Memo and Compute Budget on Solana. Once an item's transaction is confirmed, the worker reads it from the chain once, and the item gains `effects`: what moved, the fee and who paid it, and every log or instruction a decoder knows. A Relay Dispatch gets `effects` too, at the top level.
-
-This is the raw SPL `transferChecked` of a Dispatch with a Memo and a transfer, trimmed (each `asset` and the `events` left out):
-
-```json
-"call": {
-  "target": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-  "decoded": true,
-  "decoder": "spl-token",
-  "function": "transferChecked",
-  "args": [
-    { "name": "source", "type": "pubkey", "value": "H8TQ5afyGZnpaha1vRaYE8e4tK6LWCcAV7QdBdaL2HvA" },
-    { "name": "mint", "type": "pubkey", "value": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P" },
-    { "name": "destination", "type": "pubkey", "value": "9nCFF3E1VXZFhw3bdvPEy6umze28SKf6qMjYL7Fqz9uM" },
-    { "name": "authority", "type": "pubkey", "value": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH" },
-    { "name": "amount", "type": "u64", "value": "250000", "asset": { "address": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P", "symbol": "FSPL", "name": "FSPL", "decimals": 6 }, "formatted": "0.25" },
-    { "name": "decimals", "type": "u8", "value": "6" }
-  ],
-  "selector": "0c"
-},
-"effects": {
-  "transfers": [
-    { "standard": "spl", "token": "8JT4gPRofGbe1UWhm2NKMFj1RLwkfdGT2KXqHoSrp9P", "from": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH", "to": "GP2AWqx49PtpcqChfWjpQWCpmxQsn29PVwdF1AezeWRd", "amount": "250000", "formatted": "0.25" }
-  ],
-  "fee": { "amount": "5000", "formatted": "0.000005", "payer": "A5NFXd9Na4vByXkUZpoYz4efigSGFTsUbbduphKiSWtH" },
-  "undecodedEvents": 0,
-  "undecodedEventSources": [],
-  "truncated": false
-}
-```
-
-- An amount in a Known Asset carries the asset and `formatted`, the amount in whole units.
-- A call no decoder knows has `decoded: false`, its `selector` (the 4-byte function selector on Base, the first bytes of the instruction on Solana) and its raw `data`. The engine never asks a third-party service to guess what a function is.
-- A log from a contract no decoder knows is counted in `undecodedEvents`, by contract in `undecodedEventSources`.
-- Items that share one transaction, such as a Solana bundle or a Bulk Call, show the same `effects`. On Base, ETH a contract forwards inside the call does not show as a transfer, because no log records it.
-- The engine stores at most 128 logs or instructions per transaction, each cut to 2 KiB, and 100 log lines. `truncated: true` says something was cut.
+A `call` item also carries `call`, what the call does, and once it is confirmed, `effects`, what its transaction changed on chain. [Call a contract or program](./call-a-contract.md#3-read-back-what-the-calls-did) reads both back on each chain.
 
 ## Every kind of entry
 
-Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of the items an entry is about, several when one transaction carries a bundle. A Relay Dispatch's one transaction is item `0`. `hash` names one version of a transaction. The timeline is rebuilt from times the engine stores as each step happens, oldest first.
+Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of the items an entry is about, several when one transaction carries a bundle. A Relay Dispatch's one transaction is item `0`. `hash` names one version of a transaction. The timeline is rebuilt from times the engine stores as each step happens, oldest first. Entries with the same time follow the order the steps happen in: `created`, `claimed`, `cancelled`, `proposal_created`, `proposal_approval`, `written`, `sent`, `attempt`, the outcome, `replaced` or `dropped`, then `proposal_timed_out` and `proposal_resolved`. So a `written` entry comes before the `dropped` entry of the version it replaced.
 
 | `kind` | When | Extra fields |
 | --- | --- | --- |
@@ -183,7 +167,7 @@ Every entry has `at`, an ISO 8601 time, and `kind`. `items` are the positions of
 | `written` | A transaction version was signed and written down, before it was sent. | `hash`, `items`, `replaces`: the hash it replaced, or `null` |
 | `sent` | The node first accepted it. Later resends are `attempt` entries. | `hash`, `items` |
 | `attempt` | The same bytes were sent again. `error` is the node's answer if it refused. | `hash`, `items`, `error` |
-| `replaced` | A newer version took its place: a fee bump. It may still be the one that lands. | `hash`, `items`, `by` |
+| `replaced` | A newer version took its place: a fee bump. It may still be the one that lands. Once the item settles on another version, this entry reads `dropped`. | `hash`, `items`, `by` |
 | `dropped` | It can never land: a newer version replaced it after expiry, or another version settled the item. | `hash`, `items`, `by` or `null` |
 | `confirmed`, `failed`, `abandoned` | Its outcome. A `failed` entry with `hash: null` failed before anything was signed. | `hash`, `items`, and `error` for `failed` and `abandoned` |
 | `proposal_created` | A Multisig Sender's Proposal was written down. | `proposalId`, `chainRef`, `items` |
