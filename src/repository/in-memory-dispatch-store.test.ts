@@ -10,8 +10,13 @@ import { runProposalStoreConformanceSuite } from './proposal-store-conformance.j
 import { runListConformanceSuite } from './list-conformance.js';
 import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
+import { runEffectsConformanceSuite } from './effects-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
+import { runForeignNonceConformanceSuite } from './foreign-nonce-conformance.js';
+import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
+import { runKnownContractConformanceSuite } from './known-contract-conformance.js';
+import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
 const solanaCall: SolanaCall = { programId: 'prog', accounts: [], data: 'ZGF0YQ==' };
 const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
@@ -29,7 +34,12 @@ describe('InMemoryDispatchStore', () => {
   runProposalStoreConformanceSuite(() => new InMemoryDispatchStore());
   runListConformanceSuite(() => new InMemoryDispatchStore());
   runTimelineConformanceSuite(() => new InMemoryDispatchStore());
+  runEffectsConformanceSuite(() => new InMemoryDispatchStore());
   runFlagRuleConformanceSuite(() => new InMemoryDispatchStore());
+  runKnownAssetConformanceSuite(() => new InMemoryDispatchStore());
+  runKnownContractConformanceSuite(() => new InMemoryDispatchStore());
+  runRejectedRequestConformanceSuite(() => new InMemoryDispatchStore());
+  runForeignNonceConformanceSuite(() => new InMemoryDispatchStore());
   runSignerKeyConformanceSuite(() => new InMemoryDispatchStore());
   runSetupCheckConformanceSuite(() => new InMemoryDispatchStore());
 

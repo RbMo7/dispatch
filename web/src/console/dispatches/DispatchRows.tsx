@@ -111,21 +111,29 @@ export function DispatchRows<Row extends DispatchSummary>({
                 </span>
                 <span className={styles.spacer} />
                 {statusOf ? statusOf(row) : <StatusPill status={row.status} />}
-                <span className={styles.rowAmount}>
-                  {row.totals[0] ? (
-                    <Amount {...row.totals[0]} />
-                  ) : (
-                    <span className={styles.rowSub}>
-                      {row.mode === 'relay' ? 'Relay' : 'Calls'}
-                    </span>
-                  )}
-                </span>
               </button>
+              <RowTotals row={row} />
             </motion.div>
           )),
         ])}
       </AnimatePresence>
       {footer}
     </div>
+  );
+}
+
+/**
+ * Every asset total of a list row, each with its name on hover. It sits beside
+ * the row's button, not in it, so each asset's tooltip can take focus.
+ */
+export function RowTotals({ row }: { row: DispatchSummary }) {
+  return (
+    <span className={styles.rowAmount}>
+      {row.totals.length > 0 ? (
+        row.totals.map((total) => <Amount key={total.asset} {...total} />)
+      ) : (
+        <span className={styles.rowSub}>{row.mode === 'relay' ? 'Relay' : 'Calls'}</span>
+      )}
+    </span>
   );
 }

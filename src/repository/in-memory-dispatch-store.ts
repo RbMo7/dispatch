@@ -2,6 +2,16 @@ import { randomUUID } from 'node:crypto';
 
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import { EFFECTS_READ, type TransactionEffects, type TransactionRef } from '../domain/effects.js';
+import {
+  applyConfigSeed,
+  planConfigSeed,
+  symbolKey,
+  type ConfigAsset,
+  type KnownAsset,
+  type NewKnownAsset,
+} from '../domain/known-asset.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
 import type { DispatchError } from '../domain/errors.js';
 import {
   addressKey,
@@ -16,8 +26,15 @@ import type {
   OperatorActor,
 } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
+import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import { ok, type Result } from '../domain/result.js';
+import {
+  senderKey,
+  type ForeignActivity,
+  type SenderAddress,
+  type SenderRef,
+} from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import { holdsCommitment, totalCommitted } from './committed.js';
 import { compareNewestFirst } from './dispatch-store.js';
@@ -30,6 +47,7 @@ import type {
   DispatchStore,
   ListedDispatch,
   ListedOperatorAction,
+  ListedRejectedRequest,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -39,6 +57,7 @@ import type {
   OperatorActionQuery,
   ProposalOutcome,
   ProposalPatch,
+  RejectedRequestQuery,
   SetupCheckRecord,
   SignerKeyRecord,
 } from './dispatch-store.js';
@@ -59,9 +78,16 @@ export class InMemoryDispatchStore implements DispatchStore {
   private readonly proposals = new Map<string, Proposal>();
   private readonly operatorActions: OperatorAction[] = [];
   private readonly flagRules = new Map<string, FlagRule>();
+  private readonly knownAssets = new Map<string, KnownAsset>();
+  private readonly knownContracts = new Map<string, KnownContract>();
   private readonly holds = new Map<string, Hold>();
   private readonly signerKeys = new Map<string, SignerKeyRecord>();
   private setupChecks: SetupCheckRecord[] = [];
+  private rejectedRequests: RejectedRequest[] = [];
+  private readonly effects = new Map<
+    string,
+    { effects: TransactionEffects | null; readFailures: number; readAt: Date }
+  >();
 
   /** Injectable so orchestration tests (e.g. the ABANDONED timeout) can control elapsed time deterministically. */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -84,6 +110,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       bulkCall: input.bulkCall ?? null,
       createdAt: this.now(),
       claimedAt: null,
+      firstClaimedAt: null,
       cancelledAt: null,
       senderAddress: input.senderAddress ?? null,
     };
@@ -127,7 +154,13 @@ export class InMemoryDispatchStore implements DispatchStore {
       if (claimed.length >= limit) break;
       if (dispatch.status !== 'queued' || !chains.includes(dispatch.chain)) continue;
 
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      const now = this.now();
+      const broadcasting: Dispatch = {
+        ...dispatch,
+        status: 'broadcasting',
+        claimedAt: now,
+        firstClaimedAt: now,
+      };
       this.dispatches.set(dispatch.id, broadcasting);
       claimed.push(broadcasting);
     }
@@ -146,7 +179,13 @@ export class InMemoryDispatchStore implements DispatchStore {
       ) {
         continue;
       }
-      const broadcasting: Dispatch = { ...dispatch, status: 'broadcasting', claimedAt: this.now() };
+      const now = this.now();
+      const broadcasting: Dispatch = {
+        ...dispatch,
+        status: 'broadcasting',
+        claimedAt: now,
+        firstClaimedAt: now,
+      };
       this.dispatches.set(dispatch.id, broadcasting);
       claimed.push(broadcasting);
     }
@@ -195,6 +234,56 @@ export class InMemoryDispatchStore implements DispatchStore {
         .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
         .slice(0, query.limit),
     );
+  }
+
+  getCancellation(dispatchId: string): Promise<OperatorAction | null> {
+    const cancel = this.operatorActions.find(
+      (a) => a.action === 'cancel' && a.targetId === dispatchId,
+    );
+    return Promise.resolve(cancel ? { ...cancel } : null);
+  }
+
+  recordRejectedRequest(request: NewRejectedRequest): Promise<void> {
+    // Strictly later than the last record, as Postgres's clock_timestamp() is, so newest-first is insertion order.
+    const last = this.rejectedRequests.at(-1)?.at.getTime() ?? -Infinity;
+    const at = new Date(Math.max(this.now().getTime(), last + 1));
+    this.rejectedRequests.push({ ...structuredClone(request), id: randomUUID(), at });
+    return Promise.resolve();
+  }
+
+  listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]> {
+    const { after } = query;
+    return Promise.resolve(
+      this.rejectedRequests
+        .map((request) => ({
+          request: structuredClone(request),
+          cursor: { createdAt: request.at.toISOString(), id: request.id },
+        }))
+        .filter((l) => !after || compareNewestFirst(after, l.cursor) < 0)
+        .sort((a, b) => compareNewestFirst(a.cursor, b.cursor))
+        .slice(0, query.limit),
+    );
+  }
+
+  countRejectedRequestsSince(since: Date): Promise<number> {
+    return Promise.resolve(
+      this.rejectedRequests.filter((r) => r.at.getTime() >= since.getTime()).length,
+    );
+  }
+
+  pruneRejectedRequests(before: Date, keep: number): Promise<number> {
+    const kept = this.rejectedRequests
+      .filter((r) => r.at.getTime() >= before.getTime())
+      .sort((a, b) =>
+        compareNewestFirst(
+          { createdAt: a.at.toISOString(), id: a.id },
+          { createdAt: b.at.toISOString(), id: b.id },
+        ),
+      )
+      .slice(0, keep);
+    const dropped = this.rejectedRequests.length - kept.length;
+    this.rejectedRequests = kept;
+    return Promise.resolve(dropped);
   }
 
   createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
@@ -251,6 +340,121 @@ export class InMemoryDispatchStore implements DispatchStore {
 
   listFlagRules(): Promise<FlagRule[]> {
     return Promise.resolve([...this.flagRules.values()].filter((r) => !r.deletedAt));
+  }
+
+  listKnownAssets(): Promise<KnownAsset[]> {
+    return Promise.resolve([...this.knownAssets.values()]);
+  }
+
+  seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>> {
+    const existing = [...this.knownAssets.values()];
+    const plan = planConfigSeed(existing, configured);
+    if (!plan.ok) return Promise.resolve(plan);
+    const rows = applyConfigSeed(existing, plan.value, () => ({
+      id: randomUUID(),
+      addedAt: this.now(),
+    }));
+    for (const row of rows) this.knownAssets.set(row.id, row);
+    return Promise.resolve(ok(undefined));
+  }
+
+  private symbolHeld(chain: Chain, symbol: string, except?: string): boolean {
+    return [...this.knownAssets.values()].some(
+      (row) =>
+        row.chain === chain &&
+        row.enabled &&
+        row.id !== except &&
+        symbolKey(row.symbol) === symbolKey(symbol),
+    );
+  }
+
+  addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'> {
+    const rows = [...this.knownAssets.values()];
+    if (rows.some((row) => row.chain === asset.chain && row.address === asset.address)) {
+      return Promise.resolve('address_taken');
+    }
+    if (this.symbolHeld(asset.chain, asset.symbol)) return Promise.resolve('symbol_taken');
+    const row = {
+      ...asset,
+      id: randomUUID(),
+      source: 'console',
+      addedBy: actor.tokenKind,
+      addedAt: this.now(),
+      enabled: true,
+    } as KnownAsset;
+    this.knownAssets.set(row.id, row);
+    this.recordAction('asset_add', row.id, actor);
+    return Promise.resolve(row);
+  }
+
+  setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<
+    { asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'
+  > {
+    const row = this.knownAssets.get(id);
+    if (!row) return Promise.resolve('not_found');
+    if (row.source === 'config') return Promise.resolve('config_row');
+    if (row.enabled === enabled) return Promise.resolve({ asset: row, changed: false });
+    if (enabled && this.symbolHeld(row.chain, row.symbol, id)) {
+      return Promise.resolve('symbol_taken');
+    }
+    const updated = { ...row, enabled };
+    this.knownAssets.set(id, updated);
+    this.recordAction(enabled ? 'asset_enable' : 'asset_disable', id, actor);
+    return Promise.resolve({ asset: updated, changed: true });
+  }
+
+  listKnownContracts(): Promise<KnownContract[]> {
+    return Promise.resolve([...this.knownContracts.values()]);
+  }
+
+  private contractAddressHeld(chain: Chain, address: string): boolean {
+    return [...this.knownContracts.values()].some(
+      (row) => row.chain === chain && row.address === address && row.enabled,
+    );
+  }
+
+  addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'> {
+    if (this.contractAddressHeld(contract.chain, contract.address)) {
+      return Promise.resolve('address_taken');
+    }
+    const row = {
+      ...contract,
+      id: randomUUID(),
+      source: 'console',
+      addedBy: actor.tokenKind,
+      addedAt: this.now(),
+      enabled: true,
+    } as KnownContract;
+    this.knownContracts.set(row.id, row);
+    this.recordAction('contract_add', row.id, actor);
+    return Promise.resolve(row);
+  }
+
+  setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'> {
+    const row = this.knownContracts.get(id);
+    if (!row) return Promise.resolve('not_found');
+    if (row.enabled === enabled) return Promise.resolve({ contract: row, changed: false });
+    if (enabled && this.contractAddressHeld(row.chain, row.address)) {
+      return Promise.resolve('address_taken');
+    }
+    const updated = { ...row, enabled };
+    this.knownContracts.set(id, updated);
+    this.recordAction(enabled ? 'contract_enable' : 'contract_disable', id, actor);
+    return Promise.resolve({ contract: updated, changed: true });
   }
 
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
@@ -335,6 +539,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: this.now(),
+      sentAt: null,
       replacesTransactionId: null,
       feeBumpAttempts: 0,
       proposalId: null,
@@ -384,6 +589,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: this.now(),
       lastCheckedAt: null,
       lastBroadcastAt: null,
+      sentAt: null,
       replacesTransactionId: null,
       feeBumpAttempts: 0,
       proposalId: null,
@@ -493,6 +699,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       failedAt: null,
       lastCheckedAt: null,
       lastBroadcastAt: now,
+      sentAt: null,
       replacesTransactionId: predecessor.id,
       feeBumpAttempts: predecessor.feeBumpAttempts + 1,
     };
@@ -513,10 +720,15 @@ export class InMemoryDispatchStore implements DispatchStore {
     });
   }
 
-  recordSent(transactionId: string, hash: string): Promise<void> {
+  recordSent(transactionId: string, hash: string, sentAt = this.now()): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, hash, lastBroadcastAt: this.now() });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        hash,
+        lastBroadcastAt: sentAt,
+        sentAt: transaction.sentAt ?? sentAt,
+      });
     });
   }
 
@@ -598,10 +810,14 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(counts);
   }
 
-  markDropped(transactionId: string): Promise<void> {
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void> {
     return this.settle(() => {
       const transaction = this.requireTransaction(transactionId);
-      this.transactions.set(transactionId, { ...transaction, status: 'DROPPED' });
+      this.transactions.set(transactionId, {
+        ...transaction,
+        status: 'DROPPED',
+        ...(reason ? { error: reason } : {}),
+      });
     });
   }
 
@@ -668,6 +884,7 @@ export class InMemoryDispatchStore implements DispatchStore {
       transactionId: null,
       createdAt: this.now(),
       claimedAt: null,
+      firstClaimedAt: null,
       cancelledAt: null,
     };
     this.relayDispatches.set(relayDispatch.id, relayDispatch);
@@ -731,6 +948,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         ...relayDispatch,
         status: 'broadcasting',
         claimedAt: this.now(),
+        firstClaimedAt: this.now(),
       };
       this.relayDispatches.set(relayDispatch.id, broadcasting);
       claimed.push(broadcasting);
@@ -774,6 +992,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         failedAt: null,
         lastCheckedAt: null,
         lastBroadcastAt: null,
+        sentAt: null,
         replacesTransactionId: null,
         feeBumpAttempts: 0,
         proposalId: null,
@@ -847,6 +1066,7 @@ export class InMemoryDispatchStore implements DispatchStore {
         phase: 'noted',
         approvalState: 'awaiting',
         approvals: 0,
+        approvers: [],
         timedOutAt: null,
         resolvedAt: null,
         closeState: null,
@@ -961,6 +1181,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           signedBytes,
           broadcastAt: now,
           lastBroadcastAt: now,
+          sentAt: null,
         };
         this.transactions.set(call.id, executing);
         return executing;
@@ -989,6 +1210,7 @@ export class InMemoryDispatchStore implements DispatchStore {
           failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
+          sentAt: null,
         };
         this.transactions.set(call.id, reopened);
         return reopened;
@@ -1083,6 +1305,34 @@ export class InMemoryDispatchStore implements DispatchStore {
     return Promise.resolve(structuredClone(this.setupChecks));
   }
 
+  private readonly foreignNonces = new Map<string, Map<number, Date>>();
+
+  recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]> {
+    const key = senderKey(sender);
+    const seen = this.foreignNonces.get(key) ?? new Map<number, Date>();
+    this.foreignNonces.set(key, seen);
+    const added = [...new Set(nonces)].filter((nonce) => !seen.has(nonce)).sort((a, b) => a - b);
+    for (const nonce of added) seen.set(nonce, seenAt);
+    return Promise.resolve(added);
+  }
+
+  foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null> {
+    const recent = [...(this.foreignNonces.get(senderKey(sender)) ?? [])].filter(
+      ([, seenAt]) => seenAt >= since,
+    );
+    if (recent.length === 0) return Promise.resolve(null);
+    const nonces = recent.map(([nonce]) => nonce);
+    return Promise.resolve({
+      lastSeenAt: new Date(Math.max(...recent.map(([, seenAt]) => seenAt.getTime()))),
+      nonces: [Math.min(...nonces), Math.max(...nonces)],
+      count: recent.length,
+    });
+  }
+
   /** Test-only inspection — not part of DispatchStore. */
   getTransaction(transactionId: string): Transaction | null {
     return this.transactions.get(transactionId) ?? null;
@@ -1141,4 +1391,71 @@ export class InMemoryDispatchStore implements DispatchStore {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
   }
+
+  listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]> {
+    const due = new Map<string, { ref: TransactionRef; confirmedAt: Date }>();
+    for (const t of this.transactions.values()) {
+      if (t.status !== 'CONFIRMED' || !t.hash || !t.confirmedAt) continue;
+      if (!chains.includes(t.chain)) continue;
+      if (t.confirmedAt.getTime() < now.getTime() - EFFECTS_READ.windowMs) continue;
+      const read = this.effects.get(effectsKey(t.chain, t.hash));
+      const waiting =
+        !read ||
+        (read.effects === null &&
+          read.readFailures < EFFECTS_READ.maxFailures &&
+          read.readAt.getTime() + read.readFailures * EFFECTS_READ.retryAfterMs <= now.getTime());
+      if (!waiting) continue;
+      const key = effectsKey(t.chain, t.hash);
+      const held = due.get(key);
+      if (!held || t.confirmedAt < held.confirmedAt) {
+        due.set(key, { ref: { chain: t.chain, hash: t.hash }, confirmedAt: t.confirmedAt });
+      }
+    }
+    return Promise.resolve(
+      [...due.values()]
+        .sort((a, b) => a.confirmedAt.getTime() - b.confirmedAt.getTime())
+        .slice(0, limit)
+        .map(({ ref }) => ref),
+    );
+  }
+
+  recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void> {
+    const key = effectsKey(ref.chain, ref.hash);
+    const held = this.effects.get(key);
+    if (!held?.effects)
+      this.effects.set(key, { effects, readFailures: held?.readFailures ?? 0, readAt: at });
+    return Promise.resolve();
+  }
+
+  recordEffectsReadFailure(ref: TransactionRef, _error: string, at: Date): Promise<void> {
+    const key = effectsKey(ref.chain, ref.hash);
+    const held = this.effects.get(key);
+    if (!held?.effects) {
+      this.effects.set(key, {
+        effects: null,
+        readFailures: (held?.readFailures ?? 0) + 1,
+        readAt: at,
+      });
+    }
+    return Promise.resolve();
+  }
+
+  listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>> {
+    return Promise.resolve(
+      new Map(
+        hashes.flatMap((hash) => {
+          const effects = this.effects.get(effectsKey(chain, hash))?.effects;
+          return effects ? [[hash, effects] as const] : [];
+        }),
+      ),
+    );
+  }
+}
+
+function effectsKey(chain: Chain, hash: string): string {
+  return `${chain}\u0000${hash}`;
 }

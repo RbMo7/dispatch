@@ -1,5 +1,7 @@
 # Fee-bump is Coordinator-driven, via an optional Chain Handler method
 
+Amended by ADR-0041 (transactions are written down before they are sent, which closes the crash window below).
+
 A stuck EVM transaction only shows up while it's pending, and only the Coordinator's poll loop sees that phase, so the Coordinator decides when to act. The Chain Handler interface gains one **optional** method, `prepareReplacement(signed, senderAddress)`: given the latest signed bytes, it returns an unsigned transaction at the same nonce with both EIP-1559 fee fields raised to max(previous × (1 + `feeBumpPercent`), a fresh estimate). The Coordinator then runs the existing `sign` → `broadcast` pipeline and persists the result. The method is optional so no other Chain Handler changes. ADR-0015 flags interface changes made to add a chain, but Retry Policy is an engine-level concept (CONTEXT.md, ADR-0003), not a Base one, and handler-internal bumping (Solana's `broadcast`-time blockhash refresh pattern) can't work here: the Coordinator would never learn the new hash and would keep polling the dead original.
 
 A chain opts in through a per-chain `{ stuckAfterMs, maxFeeBumps }` config; Base uses `{ 60s, 5 }`. A chain without that config (Solana) is never touched. For an opted-in chain, a transaction still pending `stuckAfterMs` after its latest broadcast is handled as follows:

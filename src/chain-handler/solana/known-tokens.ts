@@ -1,37 +1,16 @@
-/**
- * The symbol -> {mint, decimals} registry `paymentToCall` (ADR-0028) resolves
- * a Payment's `asset` against for an SPL transfer. Deliberately not
- * RPC-fetched (ADR-0028: paymentToCall does no RPC) — decimals must be known
- * up front to build a correct `TransferChecked` instruction, so it's
- * operator config, like `ENABLED_CHAINS` (ADR-0019), not chain state.
- *
- * `SOL` is reserved for the native transfer path (issue 02) and is never a
- * key here. No mint is hardcoded by default — an operator configures
- * exactly the tokens they actually disburse, mirroring the "activated by
- * config, not by code" discipline this project already applies to chains.
- */
-/** #41: which token program the mint lives under — classic Token unless configured `token-2022`. */
-export type KnownToken = { mint: string; decimals: number; tokenProgram?: 'token-2022' };
-export type SolanaTokenRegistry = Readonly<Record<string, KnownToken>>;
+import { NATIVE_ASSETS, refuseRepeatedAsset, type ConfigAsset } from '../../domain/known-asset.js';
 
-export const NATIVE_ASSET_SYMBOL = 'SOL';
-
-export function resolveKnownToken(
-  registry: SolanaTokenRegistry,
-  asset: string,
-): KnownToken | undefined {
-  return registry[asset];
-}
+export const NATIVE_ASSET_SYMBOL = NATIVE_ASSETS.solana.symbol;
 
 /**
- * Parses the `SOLANA_KNOWN_TOKENS` config value — a comma-separated list of
- * `SYMBOL:mint:decimals` triples, e.g. `USDC:EPjF...:6` — the same
- * config-driven-activation shape as `ENABLED_CHAINS` (ADR-0019). Throws on
- * a malformed entry: a misconfigured operator env var is a startup-time
+ * Parses `SOLANA_KNOWN_TOKENS`, a comma-separated list of
+ * `SYMBOL:mint:decimals`, with `:token-2022` appended for a Token-2022 mint,
+ * into the config rows the Known Asset registry is seeded with (ADR-0061).
+ * Throws on a malformed entry: a misconfigured variable is a startup-time
  * configuration bug, not a business-relevant outcome (ADR-0010).
  */
-export function parseSolanaKnownTokens(raw: string): SolanaTokenRegistry {
-  const registry: Record<string, KnownToken> = {};
+export function parseSolanaKnownTokens(raw: string): ConfigAsset<'solana'>[] {
+  const assets: ConfigAsset<'solana'>[] = [];
   for (const entry of raw
     .split(',')
     .map((s) => s.trim())
@@ -55,7 +34,15 @@ export function parseSolanaKnownTokens(raw: string): SolanaTokenRegistry {
         `SOLANA_KNOWN_TOKENS cannot redefine the reserved "${NATIVE_ASSET_SYMBOL}" symbol.`,
       );
     }
-    registry[symbol] = program ? { mint, decimals, tokenProgram: program } : { mint, decimals };
+    refuseRepeatedAsset('SOLANA_KNOWN_TOKENS', assets, symbol, mint);
+    assets.push({
+      chain: 'solana',
+      kind: program === 'token-2022' ? 'token-2022' : 'spl',
+      address: mint,
+      symbol,
+      name: symbol,
+      decimals,
+    });
   }
-  return registry;
+  return assets;
 }

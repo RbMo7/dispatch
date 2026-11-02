@@ -83,6 +83,8 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID?include=timeline" -H "Authorizat
 }
 ```
 
+The Dispatch also reads back `bulkCall`: the `aggregator`, its `label` when the [contract registry](./register-a-contract.md) has one, `maxBatchSize` and `allowFailure` as the engine resolved them. The console labels the transaction as a Bulk Call and names the aggregator.
+
 ## Choose the batch size
 
 `maxBatchSize` is the most items per transaction. It defaults to, and cannot exceed, the operator's `BASE_BULK_CALL_MAX_BATCH_SIZE`, 50 by default. A Dispatch with more items is split into several transactions, never truncated: 120 items at 50 per batch are three transactions of 50, 50 and 20.

@@ -1,5 +1,7 @@
 # Signing lives behind a network boundary (a separate Signer process), not an in-process interface
 
+Amended by ADR-0046 (the Signer gets the whole unsigned transaction, authenticates the engine, and can refuse).
+
 The engine's stated identity is "just an execution engine" — it should not need to handle signing at all. An earlier design (a same-process `SigningProvider` interface calling a vendor SDK like Turnkey/Privy directly) still coupled the engine's dependency tree and runtime to specific signing vendors, even though it never held raw keys itself. Instead, the engine calls a minimal HTTP contract (`POST /sign {chain, curve, address, unsignedTxBytes} -> {signature}`) against a Signer the operator runs as a separate process. The core repo ships zero signing-vendor SDKs and holds no key material; reference Signers (a trivial local-keyfile one for dev/testnet, examples for KMS/HSM/custody vendors) live outside the core dependency tree.
 
 ## Considered Options

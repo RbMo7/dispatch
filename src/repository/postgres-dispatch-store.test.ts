@@ -10,8 +10,11 @@ import {
   dispatchHolds,
   flagRules,
   flagRuleVersions,
+  knownAssets,
+  knownContracts,
   operatorActions,
   proposals,
+  rejectedRequests,
   relayDispatches,
   setupChecks,
   signerKeys,
@@ -27,8 +30,13 @@ import { runListConformanceSuite } from './list-conformance.js';
 import { runSetupCheckConformanceSuite } from './setup-check-conformance.js';
 import { runSenderScopeConformanceSuite } from './sender-scope-conformance.js';
 import { runSignerKeyConformanceSuite } from './signer-key-conformance.js';
+import { runEffectsConformanceSuite } from './effects-conformance.js';
 import { runTimelineConformanceSuite } from './timeline-conformance.js';
 import { runFlagRuleConformanceSuite } from './flag-rule-conformance.js';
+import { runForeignNonceConformanceSuite } from './foreign-nonce-conformance.js';
+import { runKnownAssetConformanceSuite } from './known-asset-conformance.js';
+import { runKnownContractConformanceSuite } from './known-contract-conformance.js';
+import { runRejectedRequestConformanceSuite } from './rejected-request-conformance.js';
 
 /**
  * ADR-0034: `PostgresDispatchStore` exercised against a real local Postgres
@@ -45,7 +53,7 @@ const solanaItem: DispatchItem<'solana'> = { call: solanaCall, payment: null };
 
 async function truncateAll(): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks} RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE ${attempts}, ${transactions}, ${proposals}, ${relayDispatches}, ${dispatches}, ${operatorActions}, ${dispatchHolds}, ${flagRuleVersions}, ${flagRules}, ${signerKeys}, ${setupChecks}, ${knownAssets}, ${knownContracts}, ${rejectedRequests} RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -63,9 +71,14 @@ describe('PostgresDispatchStore (real Postgres)', () => {
   runProposalStoreConformanceSuite(() => new PostgresDispatchStore(db));
   runListConformanceSuite(() => new PostgresDispatchStore(db));
   runTimelineConformanceSuite(() => new PostgresDispatchStore(db));
+  runEffectsConformanceSuite(() => new PostgresDispatchStore(db));
   runFlagRuleConformanceSuite(() => new PostgresDispatchStore(db));
   runSignerKeyConformanceSuite(() => new PostgresDispatchStore(db));
   runSetupCheckConformanceSuite(() => new PostgresDispatchStore(db));
+  runKnownAssetConformanceSuite(() => new PostgresDispatchStore(db));
+  runKnownContractConformanceSuite(() => new PostgresDispatchStore(db));
+  runRejectedRequestConformanceSuite(() => new PostgresDispatchStore(db));
+  runForeignNonceConformanceSuite(() => new PostgresDispatchStore(db));
 
   describe('createDispatch', () => {
     it('persists a new Dispatch as queued', async () => {

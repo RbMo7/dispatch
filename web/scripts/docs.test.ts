@@ -184,6 +184,28 @@ describe('buildDocs', () => {
     expect(text).toContain('Can be one of: small, large');
   });
 
+  it('expands a schema that contains itself once, and names it where it recurs', async () => {
+    const spec = SPEC.replace(
+      'components:\n',
+      [
+        'components:',
+        '  schemas:',
+        '    Node:',
+        '      type: object',
+        "      properties: { children: { type: array, items: { $ref: '#/components/schemas/Node' } } }",
+        '',
+      ].join('\n'),
+    ).replace(
+      'description: How big. }\n',
+      "description: How big. }\n                tree: { $ref: '#/components/schemas/Node' }\n",
+    );
+    const { manifest } = await buildDocs(repo({ ...VALID, 'docs/openapi.yaml': spec }), NAV);
+    const text = manifest.sections[1]!.pages[0]!.html.replace(/<[^>]+>/g, '');
+
+    expect(text).toContain('Properties of tree');
+    expect(text).toContain('childrenarray of Nodes');
+  });
+
   it('indexes headings and body text for search, but not the reference samples', async () => {
     const { searchIndex } = await buildDocs(repo(VALID), NAV);
     const index = JSON.parse(searchIndex) as { documentIds: Record<string, string> };

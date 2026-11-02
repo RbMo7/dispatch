@@ -102,7 +102,7 @@ describe('the flow of one Dispatch', () => {
     expect(flow.stages[0]!.detail).toEqual([
       '1 payment',
       ', ',
-      { asset: 'USDC', decimals: 6, raw: '25000000' },
+      { asset: 'USDC', name: 'USDC', decimals: 6, raw: '25000000' },
     ]);
   });
 
@@ -130,6 +130,7 @@ describe('the flow of one Dispatch', () => {
               hash: H_AA,
               items: [0],
               replaces: null,
+              fee: { maxFeePerGas: '12000000', maxPriorityFeePerGas: '1000000' },
             },
             {
               at: '2026-10-31T10:01:02.000Z',
@@ -144,6 +145,7 @@ describe('the flow of one Dispatch', () => {
               hash: H_BB,
               items: [0],
               replaces: H_AA,
+              fee: { maxFeePerGas: '15000000', maxPriorityFeePerGas: '1250000' },
             },
             {
               at: '2026-10-31T10:02:03.000Z',
@@ -161,9 +163,9 @@ describe('the flow of one Dispatch', () => {
       clock('2026-10-31T11:00:00Z'),
     );
     const [bump] = branches(flow);
-    expect(bump).toMatchObject({ kind: 'branch-done', title: 'Fee bumped', at: '10:02:03' });
+    expect(bump).toMatchObject({ kind: 'branch-done', title: 'Fee bumped once', at: '10:02:03' });
     expect(bump!.detail).toBe(
-      'No block in time, so it was repriced at the same nonce: 0xaa1f…5d7f replaced by 0xbb4c…4b6c.',
+      'No block in time, so it was repriced at the same nonce. 0xaa1f…5d7f to 0xbb4c…4b6c: max fee 0.012 to 0.015 gwei, tip 0.001 to 0.00125 gwei.',
     );
     expect(titled(flow, 'Signed and sent').detail).toBe(
       '1 transaction, sent again 1 time while waiting',
@@ -231,6 +233,147 @@ describe('the flow of one Dispatch', () => {
     ]);
   });
 
+  it('branches off a resend when another sender took the nonce, and ends at the version that landed', () => {
+    const takenBy = (nonce: number, resentNonce: number) => ({
+      code: 'NONCE_ALREADY_USED',
+      message: `Nonce ${nonce} was taken by another sender. Sent again with nonce ${resentNonce}.`,
+      chainDetail: { reason: 'nonce_taken', nonce, resentNonce },
+    });
+    const flow = dispatchFlow(
+      load(
+        {
+          mode: 'managed',
+          chain: 'base',
+          status: 'confirmed',
+          createdAt: '2026-10-31T10:00:00.000Z',
+          itemCount: 1,
+          totals: [{ asset: 'USDC', decimals: 6, amount: '25000000' }],
+        },
+        {
+          mode: 'managed',
+          status: 'confirmed',
+          items: [usdc('25000000', { status: 'confirmed', transactionHash: H_BB, error: null })],
+          timeline: [
+            { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
+            { at: '2026-10-31T10:00:01.200Z', kind: 'claimed' },
+            {
+              at: '2026-10-31T10:00:01.900Z',
+              kind: 'written',
+              hash: H_AA,
+              items: [0],
+              replaces: null,
+            },
+            {
+              at: '2026-10-31T10:00:02.400Z',
+              kind: 'written',
+              hash: H_BB,
+              items: [0],
+              replaces: H_AA,
+            },
+            {
+              at: '2026-10-31T10:00:02.400Z',
+              kind: 'dropped',
+              hash: H_AA,
+              items: [0],
+              by: H_BB,
+              error: takenBy(8, 12),
+            },
+            { at: '2026-10-31T10:00:02.700Z', kind: 'sent', hash: H_BB, items: [0] },
+            { at: '2026-10-31T10:00:16.000Z', kind: 'confirmed', hash: H_BB, items: [0] },
+          ],
+        },
+      ),
+      clock('2026-10-31T11:00:00Z'),
+    );
+    expect(branches(flow)).toEqual([
+      {
+        kind: 'branch-done',
+        title: 'Nonce taken',
+        at: '10:00:02',
+        detail: 'Nonce 8 was taken by another sender. Sent again with nonce 12.',
+      },
+    ]);
+    expect(main(flow)).toEqual([
+      'done Submitted',
+      'done Claimed',
+      'done Signed and sent',
+      'done Confirmed',
+      'end-done Transaction hash',
+    ]);
+    expect(end(flow).hash).toBe(H_BB);
+  });
+
+  it('counts the taken nonces of a large Dispatch in one branch', () => {
+    const hashes = Array.from({ length: 8 }, (_, i) => `0x${String(i).repeat(64)}`);
+    const timeline: object[] = [
+      { at: '2026-10-31T10:00:00.000Z', kind: 'created' },
+      { at: '2026-10-31T10:00:01.000Z', kind: 'claimed' },
+    ];
+    for (let item = 0; item < 4; item++) {
+      const [first, second] = [hashes[item * 2]!, hashes[item * 2 + 1]!];
+      timeline.push(
+        {
+          at: '2026-10-31T10:00:02.000Z',
+          kind: 'written',
+          hash: first,
+          items: [item],
+          replaces: null,
+        },
+        {
+          at: '2026-10-31T10:00:03.000Z',
+          kind: 'written',
+          hash: second,
+          items: [item],
+          replaces: first,
+        },
+        {
+          at: '2026-10-31T10:00:03.000Z',
+          kind: 'dropped',
+          hash: first,
+          items: [item],
+          by: second,
+          error: {
+            code: 'NONCE_ALREADY_USED',
+            message: 'taken',
+            chainDetail: { reason: 'nonce_taken', nonce: 40 + item, resentNonce: 50 + item },
+          },
+        },
+        { at: '2026-10-31T10:00:20.000Z', kind: 'confirmed', hash: second, items: [item] },
+      );
+    }
+    const flow = dispatchFlow(
+      load(
+        {
+          mode: 'managed',
+          chain: 'base',
+          status: 'confirmed',
+          createdAt: '2026-10-31T10:00:00.000Z',
+          itemCount: 4,
+          totals: [{ asset: 'USDC', decimals: 6, amount: '4000000' }],
+        },
+        {
+          mode: 'managed',
+          status: 'confirmed',
+          items: [0, 1, 2, 3].map((item) =>
+            usdc('1000000', {
+              status: 'confirmed',
+              transactionHash: hashes[item * 2 + 1],
+              error: null,
+            }),
+          ),
+          timeline,
+        },
+      ),
+      clock('2026-10-31T11:00:00Z'),
+    );
+    expect(branches(flow).map((s) => [s.title, s.detail])).toEqual([
+      [
+        'Nonces taken, 4',
+        'Another sender took 4 nonces, 40 to 43. The engine sent each of those again with a fresh nonce.',
+      ],
+    ]);
+  });
+
   it('waits on Approvers for a Multisig Sender, with the deadline and a link to Squads', () => {
     const chainRef = {
       kind: 'squads',
@@ -238,10 +381,22 @@ describe('the flow of one Dispatch', () => {
       proposal: '8xQyR1sT2uV3wX4yZ5a6B7c8D9e1F2g3H4i5J6k7L8m9',
       transactionIndex: 4,
     };
+    const approvers = [
+      {
+        address: 'HvT3kLm9qPz2Rb8sWc4xYd7eFg1hJn5oKp6uVa2bCd3E',
+        label: 'Priya',
+        decision: 'approved',
+      },
+      { address: '7sWq2Rt5yUi8oPa1sDf4gHj6kLz9xCv3bNm2QwE5rTy8', decision: 'pending' },
+      { address: '4dFg7hJk1lZx3cVb6nMq9wEr2tYu5iOp8aSd1fGh4jKl', decision: 'rejected' },
+      { address: '9mNb2vCx5zLk8jHg1fDs4aPo7iUy3tRe6wQq9sDf2gHj', decision: 'pending' },
+    ];
     const approval = {
       state: 'awaiting',
       approvals: 1,
       threshold: 3,
+      remaining: 2,
+      approvers,
       deadline: '2026-10-24T12:00:00.000Z',
       expected: { recipients: 2, totals: [{ asset: 'USDC', amount: '30' }] },
       chainRef,
@@ -302,14 +457,20 @@ describe('the flow of one Dispatch', () => {
       'done Submitted',
       'done Claimed',
       'done Proposed',
-      'current Approvals, 1 of 3',
+      'current 1 of 3 approved, 2 more needed',
       'todo Executed',
       'todo Confirmed',
       'end-todo Transaction hash',
     ]);
     expect(flow.summary).toBe('Stage 4 of 7, waiting on Approvers');
-    const approvals = titled(flow, 'Approvals, 1 of 3');
+    const approvals = titled(flow, '1 of 3 approved, 2 more needed');
     expect(approvals.detail).toBe('Deadline 12:00:00, in 2 days. The engine never approves.');
+    expect(approvals.approvers).toEqual([
+      { address: approvers[0]!.address, label: 'Priya', decision: 'approved' },
+      { address: approvers[1]!.address, label: null, decision: 'pending' },
+      { address: approvers[2]!.address, label: null, decision: 'rejected' },
+      { address: approvers[3]!.address, label: null, decision: 'pending' },
+    ]);
     expect(approvals.links).toEqual([
       {
         label: 'Open #4 in Squads',
@@ -409,7 +570,7 @@ describe('the flow of one Dispatch', () => {
         kind: 'branch-failed',
         title: 'Item failures, 1',
         at: '10:00:01',
-        detail: 'INVALID_RECIPIENT: The address is the zero address.',
+        detail: 'The address is the zero address. Fix the address and send it again.',
         links: [{ label: 'Show in Items', items: 'failed' }],
       },
     ]);
@@ -501,12 +662,20 @@ describe('the flow of one Dispatch', () => {
             { at: '2026-10-30T10:04:51.000Z', kind: 'created' },
             { at: '2026-10-30T10:06:10.000Z', kind: 'cancelled' },
           ],
+          cancellation: {
+            at: '2026-10-30T10:06:10.000Z',
+            tokenKind: 'operator',
+            reason: 'duplicate of refund 7730',
+          },
         },
       ),
       clock('2026-10-31T11:00:00Z'),
     );
     expect(main(flow)).toEqual(['done Submitted', 'end-cancelled Cancelled']);
     expect(flow.elapsed).toBe('Ended at 10:06:10');
+    expect(titled(flow, 'Cancelled').detail).toBe(
+      'Withdrawn before the engine claimed it, so nothing was signed or sent. Cancelled with the operator token: duplicate of refund 7730.',
+    );
   });
 
   it('abandons a Proposal nobody decided on, and says it may still be executed', () => {
@@ -543,6 +712,11 @@ describe('the flow of one Dispatch', () => {
                 state: 'awaiting',
                 approvals: 1,
                 threshold: 2,
+                remaining: 1,
+                approvers: [
+                  { address: '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a', decision: 'approved' },
+                  { address: '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b', decision: 'pending' },
+                ],
                 deadline: '2026-10-24T12:00:00.000Z',
                 expected: { recipients: 1, totals: [{ asset: 'USDC', amount: '15000000' }] },
                 chainRef,
@@ -592,6 +766,10 @@ describe('the flow of one Dispatch', () => {
     expect(titled(flow, 'Timed out').detail).toContain(
       'may still be approved and executed in Safe',
     );
+    expect(titled(flow, 'Timed out').approvers?.map((a) => a.decision)).toEqual([
+      'approved',
+      'pending',
+    ]);
     expect(titled(flow, 'Timed out').links).toEqual([
       {
         label: 'Open nonce 12 in Safe',
@@ -656,9 +834,12 @@ describe('the flow of one Dispatch', () => {
     ]);
     expect(branches(flow)).toEqual([]);
     expect(titled(flow, 'Failed').detail).toEqual([
-      'The Funding Check found the Sender short by ',
-      { asset: 'SOL', raw: '11115845377', decimals: 9 },
+      'The Sender is short ',
+      { asset: 'SOL', name: 'SOL', raw: '11115845377', decimals: 9 },
       '. Nothing was signed.',
+    ]);
+    expect(titled(flow, 'Failed').links).toEqual([
+      { label: 'Open Senders & Keys', href: '/console/senders' },
     ]);
   });
 

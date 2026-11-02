@@ -12,7 +12,6 @@ import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SignerClient } from '../../signer/client.js';
-import type { SolanaTokenRegistry } from './known-tokens.js';
 import { SolanaChainHandler } from './solana-chain-handler.js';
 import {
   getDevnetConnection,
@@ -23,6 +22,7 @@ import {
   testMintDecimals,
   type TestSignerHandle,
 } from './test-support/devnet-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 /** #40, #41 against real devnet (ADR-0013): the SOL a token payout costs, and a Token-2022 payout. */
 describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => {
@@ -41,7 +41,9 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
     const handler = new SolanaChainHandler({
       connection,
       senderAddress,
-      knownTokens: { TEST: { mint: mint.toBase58(), decimals: testMintDecimals() } },
+      assets: registryFromConfig({
+        solana: `TEST:${mint.toBase58()}:${testMintDecimals()}`,
+      }).forChain('solana'),
     });
     const payTo = async (recipient: string) => {
       const call = await handler.paymentToCall({ recipient, asset: 'TEST', amount: '1' });
@@ -66,9 +68,9 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
       connection,
       signerClient: new SignerClient(signer.url, signer.token),
       senderAddress,
-      knownTokens: {
-        T22: { mint: mint.toBase58(), decimals: testMintDecimals(), tokenProgram: 'token-2022' },
-      },
+      assets: registryFromConfig({
+        solana: `T22:${mint.toBase58()}:${testMintDecimals()}:token-2022`,
+      }).forChain('solana'),
     });
     const recipient = Keypair.generate().publicKey;
 
@@ -106,25 +108,18 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
     const classic = (await getTestMint()).toBase58();
     const t22 = (await getTestMint2022()).toBase58();
     const decimals = testMintDecimals();
-    const verify = (knownTokens: SolanaTokenRegistry) =>
+    const verify = (knownTokens: string) =>
       new SolanaChainHandler({
         connection,
         senderAddress: sender.publicKey.toBase58(),
-        knownTokens,
+        assets: registryFromConfig({ solana: knownTokens }).forChain('solana'),
       }).verifyKnownTokens();
 
     await expect(
-      verify({
-        A: { mint: classic, decimals },
-        B: { mint: t22, decimals, tokenProgram: 'token-2022' },
-      }),
+      verify(`A:${classic}:${decimals},B:${t22}:${decimals}:token-2022`),
     ).resolves.toBeUndefined();
-    await expect(verify({ A: { mint: classic, decimals: decimals + 1 } })).rejects.toThrow(
-      /decimals/,
-    );
-    await expect(verify({ B: { mint: t22, decimals } })).rejects.toThrow(
-      /not a classic Token mint/,
-    );
+    await expect(verify(`A:${classic}:${decimals + 1}`)).rejects.toThrow(/decimals/);
+    await expect(verify(`B:${t22}:${decimals}`)).rejects.toThrow(/not a classic Token mint/);
 
     // A Token-2022 mint charging a 1% transfer fee: recipients would get less than paid.
     const feeMint = Keypair.generate();
@@ -166,7 +161,7 @@ describe('Solana token accounts: network cost and Token-2022 (#40, #41)', () => 
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
     await expect(
-      verify({ FEE: { mint: feeMint.publicKey.toBase58(), decimals, tokenProgram: 'token-2022' } }),
+      verify(`FEE:${feeMint.publicKey.toBase58()}:${decimals}:token-2022`),
     ).rejects.toThrow(/transfer fee/);
   }, 120_000);
 });

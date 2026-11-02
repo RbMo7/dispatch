@@ -210,7 +210,7 @@
   flex: 1;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-4) 0 0;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -243,8 +243,13 @@
 }
 
 .rowAmount {
+  display: flex;
   min-width: 130px;
-  text-align: right;
+  flex: none;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-right: var(--space-4);
+  font-size: var(--text-13);
 }
 
 .noRows {
@@ -312,6 +317,13 @@
 .kv dd {
   min-width: 0;
   margin: 0;
+}
+
+.paidIn {
+  margin: 0;
+  padding: var(--space-2) var(--space-4) 0;
+  color: var(--muted);
+  font-size: var(--text-12-5);
 }
 
 .items {
@@ -557,6 +569,11 @@
   display: contents;
 }
 
+.totalsDetail {
+  display: grid;
+  gap: var(--space-1);
+}
+
 .senderDetail {
   display: inline-flex;
   align-items: baseline;
@@ -683,7 +700,21 @@
   border-radius: var(--radius-control);
   color: var(--ink);
   font-size: var(--text-13);
+}
+
+.recentLink {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-3);
+  color: inherit;
   text-decoration: none;
+}
+
+.recentRow .rowAmount {
+  padding-right: 0;
 }
 
 .recentRow:hover {
@@ -730,6 +761,19 @@
   margin-bottom: var(--space-3);
 }
 
+.foreignTitle {
+  color: var(--warn-text);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.foreignText {
+  max-width: 68ch;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-13);
+  line-height: 1.5;
+}
+
 .holdingName {
   font-size: var(--text-13);
   font-weight: 600;
@@ -761,6 +805,11 @@
 
 .balanceTable tbody th {
   font-weight: 500;
+}
+
+.assetName {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .short {
@@ -979,4 +1028,77 @@
   .checkWhen {
     grid-area: when;
   }
+}
+
+.proposals {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.proposal {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-stage);
+  background: var(--surface);
+}
+
+.proposalHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-13);
+  font-weight: 600;
+}
+
+.proposalProgress {
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: var(--text-12-5);
+}
+
+.proposalFoot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.proposalLink {
+  color: var(--accent-text);
+  font-size: var(--text-12-5);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.proposalLink:hover {
+  text-decoration: underline;
+}
+
+.paneApprovals {
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.detailsApprovals {
+  margin-top: var(--space-5);
+}
+
+.detailsHeading {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-13);
+  font-weight: 400;
+}
+
+/* Why an item failed, on the line under it in the Items table, aligned with its recipient. */
+.itemError {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 44px;
+  color: var(--danger);
+  font-size: var(--text-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -1,5 +1,7 @@
 # The Signer sees the whole transaction, authenticates the engine, and can refuse
 
+Amended by ADR-0059 (the API never calls the Signer; only the worker does).
+
 ADR-0002 put signing behind a network boundary so a compromised engine can't take the keys. On its own that only protects the key material, not the funds. On EVM the engine sends the Signer a 32-byte keccak hash, so the Signer can't tell what it is signing. And `/sign` has no authentication, so anything that can reach it gets signatures. A compromised engine, or any process on its network, can have any transaction signed.
 
 ## Decision

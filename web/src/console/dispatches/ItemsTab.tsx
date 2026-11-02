@@ -1,5 +1,5 @@
 import { CaretDown, CaretRight, DownloadSimple } from '@phosphor-icons/react';
-import { useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 
 import { Amount } from '../../components/Amount';
 import { Menu } from '../../components/Menu';
@@ -7,11 +7,14 @@ import { MonoValue } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { StatusPill } from '../../components/StatusPill';
 import { type Column, VirtualTable } from '../../components/VirtualTable';
+import type { Chain } from '../../domain/chains';
 import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
+import { type ErrorContext, errorRow, explainError } from '../../domain/errors';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
-import { filterItems, type ItemRow, itemRows, statusCounts } from './itemRows';
+import { CallCell, CallLine } from './CallView';
+import { filterItems, type ItemRow, itemRows, paidIn, statusCounts } from './itemRows';
 
 const count = new Intl.NumberFormat('en-US');
 
@@ -25,10 +28,15 @@ const COLUMNS: readonly Column<ItemRow>[] = [
   },
   {
     id: 'target',
-    header: 'Recipient',
+    header: 'To',
     width: 'minmax(0, 1fr)',
     render: (row) =>
-      row.kind === 'item' && <MonoValue value={itemTarget(row.item)} head={5} tail={4} />,
+      row.kind === 'item' &&
+      (row.item.type === 'call' ? (
+        <CallCell item={row.item} />
+      ) : (
+        <MonoValue value={itemTarget(row.item)} head={5} tail={4} />
+      )),
   },
   {
     id: 'amount',
@@ -36,7 +44,11 @@ const COLUMNS: readonly Column<ItemRow>[] = [
     width: '100px',
     align: 'end',
     render: (row) => {
-      if (row.kind !== 'item' || row.item.type !== 'payment') return null;
+      if (row.kind !== 'item') return null;
+      if (row.item.type === 'call') {
+        const value = row.item.call.value?.money;
+        return value ? <Amount {...value} /> : null;
+      }
       return row.item.amount ? (
         <Amount {...row.item.amount} />
       ) : (
@@ -67,6 +79,9 @@ const COLUMNS: readonly Column<ItemRow>[] = [
 ];
 
 interface ItemsTabProps {
+  chain: Chain;
+  /** What items sharing a hash went out as, for the bundle heading: "Bulk Call" or "transaction". */
+  bundled?: string | undefined;
   items: readonly Item[];
   filter: ItemFilter;
   onFilter: (filter: ItemFilter) => void;
@@ -74,13 +89,40 @@ interface ItemsTabProps {
   onSearch: (search: string) => void;
   /** Exports what the table shows: the current filter and search. */
   onExport: (format: ExportFormat, items: readonly Item[]) => void;
+  /** The Proposals these items sit in, with their Approvers. */
+  approvals?: ReactNode;
+  /** Where an item's error happened, so its row can say why in plain words. */
+  errors: ErrorContext;
 }
 
-export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }: ItemsTabProps) {
+/** The error catalogue's one line on why an item failed, under the item; the next step on hover. */
+function ErrorLine({ item, errors }: { item: Item; errors: ErrorContext }) {
+  if (!item.error) return null;
+  const line = errorRow(item.error, errors);
+  return (
+    <span className={styles.itemError} title={`${line}. ${explainError(item.error, errors).next}`}>
+      {line}
+    </span>
+  );
+}
+
+export function ItemsTab({
+  chain,
+  bundled = 'transaction',
+  items,
+  filter,
+  onFilter,
+  search,
+  onSearch,
+  onExport,
+  approvals,
+  errors,
+}: ItemsTabProps) {
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const counts = useMemo(() => statusCounts(items), [items]);
   const shown = useMemo(() => filterItems(items, filter, search), [items, filter, search]);
   const rows = useMemo(() => itemRows(shown, toggled), [shown, toggled]);
+  const assets = useMemo(() => paidIn(items), [items]);
 
   const chips: { id: ItemFilter; label: string; n: number }[] = [
     { id: 'all', label: 'All', n: items.length },
@@ -96,6 +138,7 @@ export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }
 
   return (
     <div className={styles.items}>
+      {approvals && <div className={styles.paneApprovals}>{approvals}</div>}
       <div className={styles.chips} role="group" aria-label="Filter items by status">
         {chips.map((chip) => (
           <button
@@ -110,10 +153,11 @@ export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }
           </button>
         ))}
       </div>
+      {assets && <p className={styles.paidIn}>Paid in {assets}</p>}
       <div className={styles.itemsBar}>
         <SearchField
           label="Search items"
-          placeholder="Recipient, target or hash"
+          placeholder="Recipient, target, function or hash"
           value={search}
           onChange={onSearch}
           width={280}
@@ -133,9 +177,19 @@ export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }
         label={`Items, ${count.format(shown.length)} shown`}
         rows={rows}
         columns={COLUMNS}
-        rowKey={(row) => (row.kind === 'bundle' ? `bundle-${row.hash}` : row.item.index)}
+        rowKey={(row) =>
+          row.kind === 'bundle'
+            ? `bundle-${row.hash}`
+            : row.kind === 'item'
+              ? row.item.index
+              : `${row.kind}-${row.item.index}`
+        }
         span={(row) =>
-          row.kind === 'bundle' ? (
+          row.kind === 'error' ? (
+            <ErrorLine item={row.item} errors={errors} />
+          ) : row.kind === 'call' ? (
+            <CallLine item={row.item} chain={chain} />
+          ) : row.kind === 'bundle' ? (
             <button
               type="button"
               className={styles.bundle}
@@ -148,7 +202,7 @@ export function ItemsTab({ items, filter, onFilter, search, onSearch, onExport }
                 <CaretRight size={12} aria-hidden="true" />
               )}
               <span className={styles.bundleLabel}>
-                {count.format(row.count)} items in one transaction
+                {count.format(row.count)} items in one {bundled}
               </span>
               <span className={styles.bundleHash}>{row.hash}</span>
             </button>

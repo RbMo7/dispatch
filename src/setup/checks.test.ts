@@ -326,4 +326,15 @@ describe('the check runner', () => {
       'console.built',
     );
   });
+
+  it('checks the tokens in the API, which holds them, and never in the worker', () => {
+    const context = fakeContext();
+
+    expect(planChecks(CHECKS, context, { place: 'api' }).map((p) => p.id)).toContain(
+      'configuration.tokens',
+    );
+    expect(planChecks(CHECKS, context, { place: 'worker' }).map((p) => p.id)).not.toContain(
+      'configuration.tokens',
+    );
+  });
 });

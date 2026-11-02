@@ -15,6 +15,11 @@ export const ITEM_COLUMNS: readonly ExportColumn<Item>[] = [
   { header: 'Type', width: 10, cell: (item) => text(item.type) },
   { header: 'Recipient or target', width: 46, cell: (item) => text(itemTarget(item)) },
   { header: 'Asset', width: 8, cell: (item) => text(itemAsset(item)) },
+  {
+    header: 'Asset name',
+    width: 24,
+    cell: (item) => text(itemAmount(item)?.name ?? itemAsset(item)),
+  },
   { header: 'Amount', width: 30, cell: (item) => amount(itemAmount(item)) },
   { header: 'Status', width: 18, cell: (item) => text(STATUSES[item.status].label) },
   { header: 'Transaction hash', width: 68, cell: (item) => text(item.transactionHash) },

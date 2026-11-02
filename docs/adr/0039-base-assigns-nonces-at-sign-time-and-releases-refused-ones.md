@@ -1,5 +1,7 @@
 # Base assigns nonces at sign time, and releases one whose send was refused
 
+Amended by ADR-0064 (a "nonce too low" answer for a transaction that never landed is sent again).
+
 Issues #2 and #3 assigned every nonce in `prepare`, up front, and the Coordinator then signed and broadcast each transaction in turn. Any failure after `prepare` leaked a nonce:
 
 - the rest of the batch failing in `prepare` itself (e.g. an RPC outage on item 3);

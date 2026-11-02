@@ -24,6 +24,7 @@ import { Coordinator } from '../coordinator/coordinator.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import { SignerClient } from './client.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const API_TOKEN = 'test-token';
 const SIGNER_TOKEN = randomBytes(16).toString('hex');
@@ -94,7 +95,8 @@ describe('a Signer policy refusing a Managed Dispatch (real Base Sepolia)', () =
       chainRegistry,
       authToken: API_TOKEN,
       defaultRetryPolicy: false,
-      assetDecimals: () => undefined,
+      assets: registryFromConfig(),
+      readToken: {},
       listSenders: () => Promise.resolve([]),
       readSetup: () => Promise.reject(new Error('not read in this test')),
     });

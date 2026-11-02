@@ -5,6 +5,7 @@ import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import { StubChainHandler } from '../chain-handler/stub-chain-handler.js';
 import { CHAINS } from '../domain/chain.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 const CLIENT = { authorization: 'Bearer client-token' };
 const OPERATOR = { authorization: 'Bearer operator-token' };
@@ -22,8 +23,8 @@ async function buildTestApp() {
     authToken: 'client-token',
     operatorToken: 'operator-token',
     defaultRetryPolicy: false,
-    assetDecimals: (chain, asset) =>
-      ({ base: { USDC: 6, ETH: 18 }, solana: { SOL: 9 } })[chain][asset as never],
+    assets: registryFromConfig({ base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6' }),
+    readToken: {},
     listSenders: () => Promise.resolve([]),
     readSetup: () => Promise.reject(new Error('not read in this test')),
   });
@@ -261,6 +262,25 @@ describe('POST /v1/dispatch against Flag Rules (ADR-0058)', () => {
     expect(
       response.json<{ dispatches: { dispatchId: string; status: string }[] }>().dispatches,
     ).toEqual([expect.objectContaining({ dispatchId: held.dispatchId, status: 'held' })]);
+  });
+
+  it('names the rules holding a held row, once each, and nothing on any other row', async () => {
+    const { app } = await buildTestApp();
+    await addRule(app, bigUsdc);
+    await addRule(app, { ...bigUsdc, name: 'Very big USDC', limit: '6000' });
+    const held = await submit(app, 'k1', {
+      chain: 'base',
+      items: [payment('9000000000'), payment('8000000000')],
+    });
+    const queued = await submit(app, 'k2', { chain: 'base', items: [payment('1')] });
+
+    const rows = (
+      await app.inject({ method: 'GET', url: '/v1/dispatches', headers: CLIENT })
+    ).json<{ dispatches: { dispatchId: string; heldBy?: string[] }[] }>().dispatches;
+
+    const heldBy = (id: string) => rows.find((row) => row.dispatchId === id)?.heldBy;
+    expect(heldBy(held.dispatchId)?.sort()).toEqual(['Big USDC', 'Very big USDC']);
+    expect(heldBy(queued.dispatchId)).toBeUndefined();
   });
 });
 

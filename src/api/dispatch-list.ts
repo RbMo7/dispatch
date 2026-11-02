@@ -5,7 +5,7 @@ import type {
   DispatchListQuery,
   DispatchStore,
 } from '../repository/dispatch-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
 import { summarizeDispatch, type SenderNameOf } from './dispatch-view.js';
 import { isUuid } from './uuid.js';
 
@@ -54,6 +54,15 @@ export type DispatchListFilter = Omit<DispatchListQuery, 'after' | 'storedStatus
   cursor: DispatchCursor | null;
   status?: ListStatus;
 };
+
+type Summary = ReturnType<typeof summarizeDispatch> & { heldBy?: string[] };
+
+/** A held row names the rules holding it, so the Held queue says why without opening each one. */
+async function withHeldBy(store: DispatchStore, summary: Summary): Promise<Summary> {
+  const hold = await store.getHold(summary.dispatchId);
+  if (!hold) return summary;
+  return { ...summary, heldBy: [...new Set(hold.matched.map(({ rule }) => rule.name))] };
+}
 
 const EXACT_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
 
@@ -129,7 +138,7 @@ export async function listDispatchPage(
   nameOf?: SenderNameOf,
 ) {
   const { cursor, status, ...query } = filter;
-  const dispatches: ReturnType<typeof summarizeDispatch>[] = [];
+  const dispatches: Summary[] = [];
   let lastReturned: DispatchCursor | null = null;
   let after = cursor;
   let scanned = 0;
@@ -147,7 +156,7 @@ export async function listDispatchPage(
       if (dispatches.length === filter.limit) {
         return { dispatches, nextCursor: lastReturned && encodeCursor(lastReturned) };
       }
-      dispatches.push(summary);
+      dispatches.push(summary.status === 'held' ? await withHeldBy(store, summary) : summary);
       lastReturned = listed.cursor;
     }
     scanned += batch.length;

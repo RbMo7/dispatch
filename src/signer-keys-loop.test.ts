@@ -11,6 +11,7 @@ import { ok } from './domain/result.js';
 import { InMemoryDispatchStore } from './repository/in-memory-dispatch-store.js';
 import { SignerClient } from './signer/client.js';
 import { SIGNER_KEYS_TICK_MS, signerKeysLoop } from './signer-keys-loop.js';
+import { registryFromConfig } from './asset-registry/configured-assets.js';
 
 const TOKEN = 'signer-token-0123456789';
 const LEAK = 'internal-detail-9876543210';
@@ -19,8 +20,7 @@ const sender: SenderConfig = {
   chain: 'base',
   network: 'base-sepolia',
   address: '0xSender',
-  assets: ['ETH'],
-  assetDecimals: () => 18,
+  assets: registryFromConfig(),
 };
 
 type Answer = { status: number; body: string };
@@ -59,12 +59,14 @@ async function engine() {
     chainRegistry: await ChainRegistry.load([], {}),
     authToken: 'api-token',
     defaultRetryPolicy: false,
-    assetDecimals: () => 18,
+    assets: registryFromConfig(),
+    readToken: {},
     listSenders: cachedSenders([sender], {
       getBalance: (_chain, _address, asset) => Promise.resolve(ok({ asset, amount: '1' })),
       getSignerKey: (chain, address) => store.getSignerKey(chain, address),
       readThreshold: () => Promise.resolve(ok(1)),
       listCommitted: () => Promise.resolve([]),
+      foreignActivity: () => Promise.resolve(null),
       now,
     }),
     readSetup: () => Promise.reject(new Error('not read in this test')),

@@ -34,7 +34,8 @@ import type {
 } from '../../chain-handler.js';
 import { extractMessage, isBlockhashExpiryMessage, mapSolanaFailure } from '../error-mapping.js';
 import { createdTokenAccount, toTransactionInstructions } from '../instruction-codec.js';
-import { NATIVE_ASSET_SYMBOL, type SolanaTokenRegistry } from '../known-tokens.js';
+import { AssetRegistry, type AssetLookup } from '../../../asset-registry/asset-registry.js';
+import { NATIVE_ASSET_SYMBOL } from '../known-tokens.js';
 import {
   BLOCKHASH_VALIDITY_BLOCKS,
   decodeInstruction,
@@ -56,7 +57,11 @@ import {
   SQUADS_PROGRAM_ID,
   type SolanaMultisigConfig,
 } from './multisig-config.js';
-import { decodeProposalAccount, type ProposalAccount } from './proposal-account.js';
+import {
+  decodeProposalAccount,
+  type ProposalAccount,
+  squadsApprovers,
+} from './proposal-account.js';
 import { summarizeTransfer, type TransferSummary } from './transfer-calls.js';
 import {
   compileVaultMessage,
@@ -122,7 +127,7 @@ export type SquadsApprovalDeps = {
   signerClient: Pick<SignerClient, 'requestSignature'>;
   /** The validated #73 config: the multisig, its vault (the Sender) and the member key. */
   multisig: Pick<SolanaMultisigConfig, 'multisigAddress' | 'memberAddress' | 'vaultAddress'>;
-  knownTokens?: SolanaTokenRegistry;
+  assets?: AssetLookup<'solana'>;
   /** Opt-in priority fee in micro-lamports per compute unit for the propose transaction (ADR-0003). Default none. */
   computeUnitPriceMicroLamports?: number;
   /** How often `submitProposal` checks the transaction's status. The devnet RPC has no websocket, so it polls. */
@@ -198,7 +203,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
   private readonly multisig: PublicKey;
   private readonly member: PublicKey;
   private readonly vault: string;
-  private readonly knownTokens: SolanaTokenRegistry;
+  private readonly assets: AssetLookup<'solana'>;
   private readonly computeUnitPrice: number;
   private readonly pollIntervalMs: number;
   private readonly resendIntervalMs: number;
@@ -214,7 +219,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     this.member = new PublicKey(deps.multisig.memberAddress);
     this.proposerAddress = deps.multisig.memberAddress;
     this.vault = deps.multisig.vaultAddress;
-    this.knownTokens = deps.knownTokens ?? {};
+    this.assets = deps.assets ?? AssetRegistry.of([]).forChain('solana');
     this.computeUnitPrice = deps.computeUnitPriceMicroLamports ?? 0;
     if (!Number.isSafeInteger(this.computeUnitPrice) || this.computeUnitPrice < 0) {
       throw new Error(
@@ -241,7 +246,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
   planBundles(calls: SolanaCall[]): Result<number[][], DispatchError> {
     const perCall: TransactionInstruction[][] = [];
     for (const call of calls) {
-      const summary = summarizeTransfer(call, this.vault, this.knownTokens);
+      const summary = summarizeTransfer(call, this.vault, this.assets);
       if (!summary.ok) return summary;
       perCall.push(toTransactionInstructions(call, new PublicKey(this.vault)));
     }
@@ -462,7 +467,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     const summaries: TransferSummary[] = [];
     const inner: TransactionInstruction[] = [];
     for (const call of calls) {
-      const summary = summarizeTransfer(call, this.vault, this.knownTokens);
+      const summary = summarizeTransfer(call, this.vault, this.assets);
       if (!summary.ok) return summary;
       summaries.push(summary.value);
       inner.push(...toTransactionInstructions(call, vault));
@@ -882,6 +887,7 @@ export class SquadsApproval implements ApprovalCapability<'solana'> {
     const base = {
       approvals: proposal.approved.length,
       threshold: multisig.threshold,
+      approvers: squadsApprovers(proposal, multisig),
       executable: false,
     };
     switch (proposal.status) {

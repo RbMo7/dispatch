@@ -1,0 +1,27 @@
+.trigger {
+  border-radius: 3px;
+  cursor: help;
+  text-decoration: underline dotted var(--faint);
+  text-underline-offset: 3px;
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tip {
+  position: fixed;
+  z-index: var(--layer-popover);
+  max-width: 280px;
+  padding: 5px 8px;
+  border-radius: var(--radius-segment);
+  background: var(--ink);
+  color: var(--surface);
+  font-size: var(--text-12);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  transform: translate(-50%, calc(-100% - 6px));
+  white-space: nowrap;
+}

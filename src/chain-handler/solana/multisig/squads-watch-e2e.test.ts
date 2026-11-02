@@ -24,6 +24,7 @@ import fixture from './squads-watch-fixture.json' with { type: 'json' };
 import { SQUADS_PROGRAM_ID } from './multisig-config.js';
 import { SquadsApproval } from './squads-approval.js';
 import { deriveProposalPda, deriveTransactionPda } from './vault-transaction.js';
+import { registryFromConfig } from '../../../asset-registry/configured-assets.js';
 
 /**
  * Live (ADR-0013), opt-in: RUN_SQUADS_WATCH=1 and SQUADS_WATCH_KEYS_DIR, a
@@ -98,7 +99,7 @@ describe.runIf(RUN)(
           memberAddress: fixture.member,
           vaultAddress: fixture.vault,
         },
-        knownTokens: { TEST: { mint: fixture.mint, decimals: 6 } },
+        assets: registryFromConfig({ solana: `TEST:${fixture.mint}:${6}` }).forChain('solana'),
         pollIntervalMs: 1_500,
       });
       const handler = new SolanaChainHandler({

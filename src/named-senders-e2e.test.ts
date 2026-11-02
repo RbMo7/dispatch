@@ -60,8 +60,9 @@ async function engineFor(chain: Chain, env: Record<string, string>, senders: obj
   const { buildApp } = await import('./app.js');
   const { cachedSenders } = await import('./api/senders.js');
 
-  const registry = await loaders.loadChainRegistry(loaders.workerSignerClient());
   const store = new PostgresDispatchStore(db);
+  const assets = await loaders.loadAssetRegistry(store);
+  const registry = await loaders.loadChainRegistry(assets, loaders.workerSignerClient());
   const config = loaders.coordinatorConfigFor(registry);
   const coordinator = new Coordinator({
     store,
@@ -73,15 +74,15 @@ async function engineFor(chain: Chain, env: Record<string, string>, senders: obj
   });
   await coordinator.assignUnassignedDispatches();
   await coordinator.restoreReservations();
-  const assetDecimals = loaders.assetDecimalsFromConfig();
   const app = buildApp({
     store,
     chainRegistry: registry,
     authToken: API_TOKEN,
     defaultRetryPolicy: false,
-    assetDecimals,
+    assets,
+    readToken: loaders.tokenReadersFor(registry),
     listSenders: cachedSenders(
-      await loaders.senderConfigsFor(registry, assetDecimals),
+      await loaders.senderConfigsFor(registry, assets),
       loaders.senderReadsFor(registry, store),
     ),
     readSetup: () => Promise.reject(new Error('not read in this test')),

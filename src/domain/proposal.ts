@@ -26,6 +26,11 @@ export type CloseState = 'pending' | 'closed' | 'abandoned';
 /** What the Approvers have done so far (docs/openapi.yaml's `approval.state`). `approved_after_deadline` is only ever seen on a `timed_out` Proposal (ADR-0053). */
 export type ApprovalState = 'awaiting' | 'approved' | 'approved_after_deadline';
 
+/** How one member who can approve stands on a Proposal. Safe has no per-owner rejection, so a Safe owner is only ever `approved` or `pending`. */
+export type ApproverDecision = 'approved' | 'rejected' | 'pending';
+
+export type Approver = { address: string; decision: ApproverDecision };
+
 /** The chain's own handle for a Proposal — what an operator opens in the multisig's app. */
 export type ChainProposalRef =
   | { kind: 'squads'; multisig: string; proposal: string; transactionIndex: number }
@@ -62,6 +67,8 @@ export type Proposal = {
   approvalState: ApprovalState;
   approvals: number;
   threshold: number;
+  /** Every member who can approve (Squads voters, Safe owners) and how they stand, as last read. Empty until the watch first reads it. */
+  approvers: Approver[];
   /** When the engine stops waiting for approval and abandons the Calls (ADR-0053). */
   deadlineAt: Date;
   /** The multisig's time lock: no execution before this. */

@@ -17,9 +17,10 @@ import {
   parseListQuery,
   type RawListQuery,
 } from './dispatch-list.js';
-import { readDispatchView } from './dispatch-view.js';
+import { type ApproverLabelOf, readDispatchView } from './dispatch-view.js';
 import { findHoldMatches } from './hold-check.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
+import type { Known } from '../effects/view.js';
 import {
   type ApiTokens,
   authedTokenKind,
@@ -28,6 +29,7 @@ import {
   requireOperator,
   requireToken,
 } from './operator-auth.js';
+import { recordRejection } from './rejected-routes.js';
 import { isUuid } from './uuid.js';
 
 export type DispatchRouteDeps = {
@@ -37,6 +39,8 @@ export type DispatchRouteDeps = {
   /** Applied when a request omits its own `retryPolicy` (ADR-0003). */
   defaultRetryPolicy: boolean;
   assetDecimals: AssetDecimals;
+  /** ADR-0063: the Known Assets that name decoded amounts, and the registered contracts that explain calls and events. */
+  known: Known;
 };
 
 type RouteError = { status: number; body: Record<string, unknown> };
@@ -144,13 +148,15 @@ async function translateItem(
 }
 
 export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (app, deps) => {
-  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals } = deps;
+  const { store, chainRegistry, tokens, defaultRetryPolicy, assetDecimals, known } = deps;
   const auth = requireToken(tokens);
   const nameOf = (chain: Chain, address: string) => chainRegistry.nameOf(chain, address);
+  const approverLabelOf: ApproverLabelOf = (chain, sender, approver) =>
+    chainRegistry.approverLabel(chain, sender, approver);
 
   app.post<{ Body: PostDispatchBody }>(
     '/v1/dispatch',
-    { schema: postDispatchSchema, onRequest: auth },
+    { schema: postDispatchSchema, onRequest: auth, onSend: recordRejection(store, tokens) },
     async (request, reply) => {
       const idempotencyKey = request.headers['idempotency-key'];
       if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {
@@ -317,8 +323,10 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
     async (request, reply) => {
       if (!isUuid(request.params.id)) return reply.code(404).send({ error: 'not found' });
       const view = await readDispatchView(store, request.params.id, assetDecimals, {
+        known,
         timeline: request.query.include === 'timeline',
         nameOf,
+        approverLabelOf,
       });
       if (!view) return reply.code(404).send({ error: 'not found' });
       return reply.send(view);
@@ -343,7 +351,11 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         });
       }
       return reply.send(
-        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+        await readDispatchView(store, request.params.id, assetDecimals, {
+          known,
+          nameOf,
+          approverLabelOf,
+        }),
       );
     },
   );
@@ -371,7 +383,11 @@ export const registerDispatchRoutes: FastifyPluginAsync<DispatchRouteDeps> = (ap
         reason: reason.value,
       });
       return reply.send(
-        await readDispatchView(store, request.params.id, assetDecimals, { nameOf }),
+        await readDispatchView(store, request.params.id, assetDecimals, {
+          known,
+          nameOf,
+          approverLabelOf,
+        }),
       );
     },
   );

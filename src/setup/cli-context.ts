@@ -8,15 +8,16 @@ import pino from 'pino';
 import { createPublicClient, http, TransactionReceiptNotFoundError, type Hex } from 'viem';
 
 import { BaseChainHandler } from '../chain-handler/base/base-chain-handler.js';
-import { parseBaseKnownTokens } from '../chain-handler/base/known-tokens.js';
 import { readSafeState } from '../chain-handler/base/safe/safe-reads.js';
 import { SafeTxServiceClient } from '../chain-handler/base/safe/tx-service-client.js';
 import type { ChainHandler } from '../chain-handler/chain-handler.js';
-import { parseSolanaKnownTokens } from '../chain-handler/solana/known-tokens.js';
 import { readMultisigState } from '../chain-handler/solana/multisig/multisig-account.js';
 import { SolanaChainHandler } from '../chain-handler/solana/solana-chain-handler.js';
+import { AssetRegistry } from '../asset-registry/asset-registry.js';
+import { configuredAssets } from '../asset-registry/configured-assets.js';
 import { configFrom, type Config, type Env } from '../config.js';
 import type { Chain } from '../domain/chain.js';
+import { applyConfigSeed, planConfigSeed, type KnownAsset } from '../domain/known-asset.js';
 import { err } from '../domain/result.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
 import { fetchWithTimeout } from '../rpc-timeout.js';
@@ -55,12 +56,15 @@ export function cliContext(env: Env): { context: CheckContext; close: () => Prom
       : MAX_READ_TIMEOUT_MS;
   const database = postgresReads(config.databaseUrl, timeoutMs);
   const signer = new SignerClient(config.signerUrl, config.signerAuthToken, timeoutMs);
+  let assets: Promise<AssetRegistry> | undefined;
+  const knownAssets = () => (assets ??= assetsAsSeeded(config, () => database.knownAssets()));
   // A balance read takes its address; the handler it goes through only needs to be buildable, so any Sender's accounts do.
   const chains = memo((chain: Chain) =>
     CHAIN_READS[chain](
       config,
       timeoutMs,
       settings.senders.find((sender) => sender.chain === chain && sender.accounts)?.accounts,
+      knownAssets,
     ),
   );
   let apiEnvironment: Promise<ApiEnvironment> | undefined;
@@ -107,10 +111,49 @@ type ChainAccessFactory = (
   config: Config,
   timeoutMs: number,
   anySender: SenderAccounts | undefined,
+  knownAssets: () => Promise<AssetRegistry>,
 ) => ChainAccess;
 
+/**
+ * ADR-0061: the registry as the engine's startup seed would leave it: the
+ * stored rows with the configuration applied. With no database to read,
+ * the configuration alone.
+ */
+async function assetsAsSeeded(
+  config: Config,
+  readStored: () => Promise<KnownAsset[]>,
+): Promise<AssetRegistry> {
+  let configured: ReturnType<typeof configuredAssets>;
+  try {
+    configured = configuredAssets({
+      solana: config.solana.knownTokens,
+      base: config.base.knownTokens,
+    });
+  } catch {
+    // A malformed variable is the configuration check's finding, not this one's.
+    configured = [];
+  }
+  const stored = await readStored().catch(() => []);
+  const plan = planConfigSeed(stored, configured);
+  const writes = plan.ok ? plan.value : [];
+  let next = 0;
+  return AssetRegistry.of(
+    applyConfigSeed(stored, writes, () => ({ id: `unseeded-${next++}`, addedAt: new Date(0) })),
+  );
+}
+
+/** The enabled tokens of `chain`, for the token balance check. */
+function tokensOf(knownAssets: () => Promise<AssetRegistry>, chain: Chain) {
+  return async () =>
+    (await knownAssets())
+      .forChain(chain)
+      .all()
+      .filter((asset) => asset.enabled && asset.kind !== 'native')
+      .map(({ symbol, decimals }) => ({ symbol, decimals }));
+}
+
 const CHAIN_READS: Record<Chain, ChainAccessFactory> = {
-  solana: (config, timeoutMs, anySender) => {
+  solana: (config, timeoutMs, anySender, knownAssets) => {
     let connection: Connection | undefined;
     const connect = () =>
       (connection ??= new Connection(config.solana.rpcUrl, {
@@ -124,16 +167,16 @@ const CHAIN_READS: Record<Chain, ChainAccessFactory> = {
           chain: 'solana',
           genesisHash: await (genesisHash ??= connect().getGenesisHash()),
         }),
-        balance: balanceFrom(() =>
-          Promise.resolve(
+        balance: balanceFrom(
+          async () =>
             new SolanaChainHandler({
               connection: connect(),
               senderAddress: anySender?.address ?? config.solana.senderAddress,
-              knownTokens: parseSolanaKnownTokens(config.solana.knownTokens),
+              assets: (await knownAssets()).forChain('solana'),
               logger: silent,
             }),
-          ),
         ),
+        tokens: tokensOf(knownAssets, 'solana'),
         feePaid: async (signature) => {
           const transaction = await connect().getTransaction(signature, {
             commitment: 'confirmed',
@@ -155,7 +198,7 @@ const CHAIN_READS: Record<Chain, ChainAccessFactory> = {
       },
     };
   },
-  base: (config, timeoutMs, anySender) => {
+  base: (config, timeoutMs, anySender, knownAssets) => {
     const fetchFn = fetchWithTimeout(fetch, timeoutMs);
     let client: ReturnType<typeof createPublicClient> | undefined;
     const connect = () =>
@@ -169,12 +212,13 @@ const CHAIN_READS: Record<Chain, ChainAccessFactory> = {
           chain: 'base',
           chainId: await (chainId ??= connect().getChainId()),
         }),
-        balance: balanceFrom(() =>
+        tokens: tokensOf(knownAssets, 'base'),
+        balance: balanceFrom(async () =>
           BaseChainHandler.create({
             rpcUrl: config.base.rpcUrl,
             chainId: config.base.chainId,
             senderAddress: anySender?.feePayer ?? config.base.senderAddress,
-            knownTokens: parseBaseKnownTokens(config.base.knownTokens),
+            assets: (await knownAssets()).forChain('base'),
             nonceHistoryStore: new InMemoryNonceHistoryStore(),
             fetch: fetchFn,
             logger: silent,

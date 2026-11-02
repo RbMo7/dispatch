@@ -2,6 +2,7 @@ import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
 import type { DispatchItem } from '../domain/call.js';
 import type { Dispatch } from '../domain/dispatch.js';
+import type { TransactionEffects, TransactionRef } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
   FlagRule,
@@ -10,10 +11,14 @@ import type {
   Hold,
   RuleMatch,
 } from '../domain/flag-rule.js';
+import type { ConfigAsset, KnownAsset, NewKnownAsset } from '../domain/known-asset.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
 import type { OperatorAction, OperatorActor } from '../domain/operator-action.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
+import type { NewRejectedRequest, RejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { Result } from '../domain/result.js';
+import type { ForeignActivity, SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
 import type { CheckOutcome } from '../setup/run.js';
 import type { SignerPins } from '../signer/client.js';
@@ -29,7 +34,7 @@ export type NewUnproposedInput = {
  * ADR-0054/0041: a Proposal written down before it is sent. `transactionIds`
  * are the Dispatch's `UNPROPOSED` Transactions it holds, in position order.
  * Everything else about the row starts at its defaults (phase `noted`,
- * approvals 0, `nextCheckAt` now).
+ * approvals 0, no approvers read yet, `nextCheckAt` now).
  */
 export type NewProposalInput = Pick<
   Proposal,
@@ -57,6 +62,7 @@ export type ProposalPatch = Partial<
     | 'approvalState'
     | 'approvals'
     | 'threshold'
+    | 'approvers'
     | 'executeAfter'
     | 'timedOutAt'
     | 'resolvedAt'
@@ -153,6 +159,11 @@ export type OperatorActionQuery = { after: DispatchCursor | null; limit: number 
 
 export type ListedOperatorAction = { action: OperatorAction; cursor: DispatchCursor };
 
+/** ADR-0062: a page of refused requests, newest first, cut on `(at, id)`. */
+export type RejectedRequestQuery = { after: DispatchCursor | null; limit: number };
+
+export type ListedRejectedRequest = { request: RejectedRequest; cursor: DispatchCursor };
+
 export type ListedDispatch = { transactions: Transaction[]; cursor: DispatchCursor } & (
   { mode: 'managed'; dispatch: Dispatch } | { mode: 'relay'; dispatch: RelayDispatch }
 );
@@ -207,6 +218,16 @@ export interface DispatchStore {
    */
   cancelDispatch(id: string, actor: OperatorActor): Promise<CancelOutcome>;
   listOperatorActions(query: OperatorActionQuery): Promise<ListedOperatorAction[]>;
+  /** The cancel recorded for a Managed or Relay Dispatch: who cancelled it, when and why. Null when it was never cancelled. */
+  getCancellation(dispatchId: string): Promise<OperatorAction | null>;
+
+  // --- Refused requests (ADR-0062). ---
+
+  recordRejectedRequest(request: NewRejectedRequest): Promise<void>;
+  listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]>;
+  countRejectedRequestsSince(since: Date): Promise<number>;
+  /** Drops every record from before `before`, then all but the newest `keep`. Returns how many it dropped. */
+  pruneRejectedRequests(before: Date, keep: number): Promise<number>;
 
   // --- Flag Rules (ADR-0058). Each write records its operator action in the same write (ADR-0057). ---
 
@@ -229,6 +250,49 @@ export interface DispatchStore {
   listFlagRules(): Promise<FlagRule[]>;
   /** The current version of every rule on `chain` that is enabled and not deleted. */
   listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]>;
+  // --- Known Assets (ADR-0061). A console write records its operator action in the same write (ADR-0057). ---
+
+  /** Every row of every chain, enabled or not. */
+  listKnownAssets(): Promise<KnownAsset[]>;
+  /**
+   * Makes the config rows match `configured` (`planConfigSeed`). Idempotent,
+   * and safe for the API and the worker to run at the same time. An error
+   * names a symbol the configuration and a console row both claim.
+   */
+  seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>>;
+  /** Adds an enabled console row, unless its address is already a row or its symbol is an enabled one's. */
+  addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'>;
+  /**
+   * Enables or disables a console row. A config row is refused. Setting what
+   * it already is records nothing (`changed: false`). Enabling is refused
+   * while another enabled row has its symbol.
+   */
+  setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'>;
+  // --- The contract registry (ADR-0063). Each write records its operator action in the same write. ---
+
+  /** Every row of every chain, enabled or not. */
+  listKnownContracts(): Promise<KnownContract[]>;
+  /** Adds an enabled row, unless an enabled row already has its chain and address. */
+  addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'>;
+  /**
+   * Enables or disables a row. Setting what it already is records nothing
+   * (`changed: false`). Enabling is refused while another enabled row has its address.
+   */
+  setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'>;
   /** Of `recipients` (by `addressKey`), those with a CONFIRMED payment on `chain`, each with when it first confirmed. */
   firstConfirmedPayments(chain: Chain, recipients: string[]): Promise<Map<string, Date>>;
   /** Per asset of `assets`, the smallest-unit total of payments in `chain`'s Managed Dispatches (only `senderAddress`'s, when given: #149) created since `since` and not cancelled. */
@@ -287,7 +351,7 @@ export interface DispatchStore {
   /** #9: records a failed (or exhausted) fee-bump attempt against the cap without creating a replacement. */
   setFeeBumpAttempts(transactionId: string, feeBumpAttempts: number): Promise<void>;
   /** #20 (ADR-0041): a Transaction written down before sending was actually sent — stamps lastBroadcastAt, and takes the hash the chain reported if it differs (Solana re-signing with a fresh blockhash). */
-  recordSent(transactionId: string, hash: string): Promise<void>;
+  recordSent(transactionId: string, hash: string, sentAt?: Date): Promise<void>;
   /** #20: a fee-bump replacement written down before sending was refused — it becomes DROPPED, and its predecessor PENDING again. */
   undoReplacement(replacementId: string): Promise<void>;
   /** #20: Dispatches still `broadcasting` whose claim is older than `claimedBefore` (or was never stamped) and that still have items with no Transaction (so were never sent) — re-stamped as claimed now, so each is reclaimed by one worker at a time. */
@@ -302,8 +366,8 @@ export interface DispatchStore {
     claimedBefore: Date,
     limit: number,
   ): Promise<RelayDispatch[]>;
-  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. */
-  markDropped(transactionId: string): Promise<void>;
+  /** #9: another version at the same nonce settled this Transaction's Call — it can never land. ADR-0064: `reason` says why when nothing settled it (another sender took its nonce). */
+  markDropped(transactionId: string, reason?: DispatchError): Promise<void>;
   /** `error` (ADR-0053's APPROVAL_TIMEOUT) is recorded when given; omitted leaves the row's error untouched, as before. */
   markAbandoned(transactionId: string, error?: DispatchError): Promise<void>;
   markFailed(transactionId: string, error: DispatchError): Promise<void>;
@@ -414,5 +478,30 @@ export interface DispatchStore {
   getSignerKey(chain: Chain, address: string): Promise<SignerKeyRecord | null>;
   /** #137: replaces the worker's last run of its setup checks with this one, so a check the run no longer has is dropped. */
   recordSetupChecks(records: readonly SetupCheckRecord[]): Promise<void>;
+
+  /**
+   * ADR-0063: CONFIRMED transactions on `chains` whose effects the worker
+   * should read now, oldest confirmation first, each once however many Calls
+   * share it (`EFFECTS_READ` says which are due).
+   */
+  listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]>;
+  /** Stores a transaction's effects. Effects already stored are kept, so a second read changes nothing. */
+  recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void>;
+  /** Counts one failed read, so the next waits longer and the reads stop after `EFFECTS_READ.maxFailures`. */
+  recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void>;
+  /** The stored effects of these transactions on `chain`, by hash; a hash with none is left out. */
+  listEffects(chain: Chain, hashes: readonly string[]): Promise<Map<string, TransactionEffects>>;
+  /** ADR-0064 (#172): nonces of `sender`'s wallet another sender used, first seen at `seenAt`. Returns the ones not recorded before, ascending. */
+  recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]>;
+  /** ADR-0064 (#172): the foreign nonces of `sender` first seen at or after `since`; null when there are none. */
+  foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null>;
   listSetupChecks(): Promise<SetupCheckRecord[]>;
 }

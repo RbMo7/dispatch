@@ -5,7 +5,7 @@ An open-source, self-hosted execution engine for blockchain transactions. You ha
 The documentation is in [`docs/`](./docs/), and the API process serves it as a site at `/docs`:
 
 - [`docs/about.md`](./docs/about.md) and the rest of Get started: what this is, the [Quickstart](./docs/quickstart.md) to a confirmed payment on Base Sepolia or Solana devnet, authentication, requests, errors, the Dispatch lifecycle, pagination and polling
-- [`docs/guides/`](./docs/guides/): task walk-throughs, from a batch of payments to Relay, Bulk Call, a multisig, cancelling and tracking
+- [`docs/guides/`](./docs/guides/): task walk-throughs, from a batch of payments to Relay, Bulk Call, contract calls, a multisig, more than one Sender, Known Assets, registering a contract's ABI or IDL, Flag Rules, cancelling and tracking
 - [`docs/openapi.yaml`](./docs/openapi.yaml): the HTTP API, every route, parameter, status and body, with real examples. The site's reference pages are built from it, and `src/api/openapi.contract.test.ts` holds the routes to it
 - [`docs/self-hosting/`](./docs/self-hosting/): install, every environment variable, the Signer, a multisig Sender, the console, troubleshooting and the mainnet checklist
 - [`CONTEXT.md`](./CONTEXT.md): vocabulary (Managed vs Relay Dispatch, Sender, Signer, Call, Retry Policy, and the rest)

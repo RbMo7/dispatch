@@ -90,11 +90,26 @@ export function slugify(text: string): string {
 
 export function loadOpenApi(root: string, source: string): ApiSpec {
   const spec = parse(readFileSync(path.join(root, source), 'utf8')) as Schema;
-  const deref = (node: Json): Json => {
-    if (Array.isArray(node)) return node.map(deref);
+  // A schema that contains itself, such as DecodedCall's Multicall3 `calls`, is expanded once:
+  // inside its own expansion it stays a `$ref`, and the expansion is titled with its name.
+  const recursive = new Set<string>();
+  const deref = (node: Json, open: readonly string[]): Json => {
+    if (Array.isArray(node)) return node.map((item) => deref(item, open));
     if (node === null || typeof node !== 'object') return node;
-    if (typeof node.$ref === 'string') return deref(at(spec, node.$ref));
-    return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, deref(value)]));
+    const ref = node.$ref;
+    if (typeof ref === 'string') {
+      if (open.includes(ref)) {
+        recursive.add(ref);
+        return { $ref: ref };
+      }
+      const expanded = deref(at(spec, ref), [...open, ref]);
+      return recursive.has(ref) && isSchema(expanded) && expanded.title === undefined
+        ? { title: schemaName(ref), ...expanded }
+        : expanded;
+    }
+    return Object.fromEntries(
+      Object.entries(node).map(([key, value]) => [key, deref(value, open)]),
+    );
   };
 
   const operations: ApiOperation[] = [];
@@ -102,7 +117,7 @@ export function loadOpenApi(root: string, source: string): ApiSpec {
     for (const method of HTTP_METHODS) {
       const raw = item[method] as Schema | undefined;
       if (!raw) continue;
-      const op = deref(raw) as Schema;
+      const op = deref(raw, []) as Schema;
       const parameters = ((op.parameters ?? []) as Schema[]).map((p): ApiParameter => ({
         name: asText(p.name),
         in: p.in as ApiParameter['in'],
@@ -200,6 +215,15 @@ export function loadOpenApi(root: string, source: string): ApiSpec {
       operations: operations.filter((op) => op.tag === tag.name),
     })),
   };
+}
+
+/** `#/components/schemas/DecodedCall` is `DecodedCall`. */
+export function schemaName(ref: string): string {
+  return ref.slice(ref.lastIndexOf('/') + 1);
+}
+
+function isSchema(node: Json): node is Schema {
+  return node !== null && typeof node === 'object' && !Array.isArray(node);
 }
 
 function at(spec: Schema, ref: string): Json {

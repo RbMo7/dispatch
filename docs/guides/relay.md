@@ -119,6 +119,8 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
 
 Its status is one of `queued`, `broadcasting`, `confirmed`, `failed`, `abandoned` or `cancelled`. With `include=timeline`, its one transaction is item `0`.
 
+The engine also reads the signed bytes and returns what they say, with no call to the chain: `signer`, the address that signed it; `target`, the `to` address on Base, or on Solana the recipient of a System transfer, else the first program it calls; and `value`, the native coin it moves (on Solana, only for a System transfer). A field it cannot read is left out.
+
 ## What the engine cannot do for you
 
 The engine holds no key for a Relay Dispatch, so:

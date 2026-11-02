@@ -31,7 +31,8 @@ export function DocsApp() {
   }, [page]);
 
   useEffect(() => {
-    const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    const target =
+      location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
     if (target) target.scrollIntoView();
     else window.scrollTo(0, 0);
   }, [page, location.hash]);
@@ -68,7 +69,11 @@ export function DocsApp() {
         >
           Dispatch <span className={styles.brandMuted}>Docs</span>
         </a>
-        <button type="button" className={styles.searchButton} onClick={() => setSearch({ query: '' })}>
+        <button
+          type="button"
+          className={styles.searchButton}
+          onClick={() => setSearch({ query: '' })}
+        >
           <MagnifyingGlass size={14} aria-hidden="true" />
           <span className={styles.searchLabel}>Search</span>
           <kbd className={styles.kbd}>{IS_MAC ? '⌘K' : 'Ctrl K'}</kbd>

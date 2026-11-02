@@ -22,6 +22,7 @@ import {
   type TestSignerHandle,
   type TestTokenInfo,
 } from './test-support/base-fixtures.js';
+import { registryFromConfig } from '../../asset-registry/configured-assets.js';
 
 const AUTH_TOKEN = 'test-token';
 /** A tracing-capable Base Sepolia RPC — the public one and Alchemy's free tier both refuse debug_traceTransaction. */
@@ -56,7 +57,8 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
           chainRegistry,
           authToken: AUTH_TOKEN,
           defaultRetryPolicy: false,
-          assetDecimals: () => undefined,
+          assets: registryFromConfig(),
+          readToken: {},
           listSenders: () => Promise.resolve([]),
           readSetup: () => Promise.reject(new Error('not read in this test')),
         }),
@@ -70,9 +72,9 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
       chainId: BASE_SEPOLIA_CHAIN_ID,
       senderAddress: sender.address,
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
-      knownTokens: {
-        TEST: { contractAddress: '0x000000000000000000000000000000000000dEaD', decimals: 6 },
-      },
+      assets: registryFromConfig({
+        base: 'TEST:0x000000000000000000000000000000000000dEaD:6',
+      }).forChain('base'),
       // Only enables Bulk Call for this check; nothing here is ever traced.
       traceRpcUrl: BASE_SEPOLIA_RPC_URL,
     });
@@ -169,7 +171,9 @@ describe('Base Bulk Call (real Base Sepolia)', () => {
         senderAddress: sender.address,
         signerClient: new SignerClient(testSigner.url, testSigner.token),
         nonceHistoryStore: new InMemoryNonceHistoryStore(),
-        knownTokens: { TEST: { contractAddress: token.address, decimals: token.decimals } },
+        assets: registryFromConfig({ base: `TEST:${token.address}:${token.decimals}` }).forChain(
+          'base',
+        ),
         ...(TRACE_RPC_URL ? { traceRpcUrl: TRACE_RPC_URL } : {}),
       });
     }, DEV_SENDER_LOCK_HOOK_TIMEOUT_MS);

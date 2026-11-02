@@ -39,6 +39,8 @@ An error reaches you in one of two places. If the API refuses your request, the 
 | `FST_ERR_CTP_INVALID_JSON_BODY` | `400` | The body is not valid JSON. |
 | `FST_ERR_CTP_BODY_TOO_LARGE` | `413` | The body is over 1 MiB. Split the run into several Dispatches. |
 
+The engine records every refused request to create a Dispatch, except a `401`, with its body, for the operator to read with [List refused requests](./openapi.yaml#list-refused-requests) or on the console's Rejected page. A refusal still stores no Dispatch and does not use up its key.
+
 Branch on `code` when the body has one of the [error codes](#error-codes) below. Otherwise branch on the HTTP status, and show `error` or `message` to people.
 
 ## HTTP status codes
@@ -51,8 +53,9 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `400` | The request is invalid. Nothing was stored, and the `Idempotency-Key` is not used up. |
 | `401` | The `Authorization` header is missing, or its token is neither the engine's `AUTH_TOKEN` nor its `OPERATOR_TOKEN`. |
 | `403` | The route needs the [operator token](./authentication.md#the-operator-token), and the request sent `AUTH_TOKEN`, or the engine has no `OPERATOR_TOKEN`. |
-| `404` | No Dispatch or Flag Rule has this id. An id that is not a UUID gets the same answer. |
-| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). |
+| `404` | No Dispatch, Flag Rule, Known Asset or contract registration has this id. An id that is not a UUID gets the same answer. |
+| `409` | Too late to cancel: the worker already claimed the Dispatch (`ALREADY_CLAIMED`). Or nothing to release (`NOT_HELD`), or an edit to a deleted Flag Rule (`RULE_DELETED`). For a Known Asset: the address or the symbol is taken (`ASSET_EXISTS`, `SYMBOL_TAKEN`), or the asset comes from the configuration (`CONFIG_ASSET`). For a contract: an enabled registration already has the address (`CONTRACT_EXISTS`). |
+| `503` | Adding or previewing a Known Asset: the chain could not be read (`RPC_UNAVAILABLE`). |
 | `413` | The body is over 1 MiB. |
 
 ## Error codes
@@ -61,7 +64,7 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | --- | --- | --- | --- |
 | `INSUFFICIENT_FUNDS` | An item, `failed` | The payer cannot cover it. The [Funding Check](./lifecycle.md#the-funding-check) caught it before signing, or the chain refused it. On Solana the check counts the SOL for fees and for new token accounts too. | Top up the payer by at least `chainDetail.short`, then send the failed payments again in a new Dispatch with a new key. |
 | `INVALID_RECIPIENT` | `400` | A malformed or unusable address: a recipient, or a Bulk Call aggregator with no contract code. | Fix the address. |
-| `UNKNOWN_ASSET` | `400` | A `payment` names an asset this chain has no configured encoding for. | Use `ETH`, `SOL`, or a token the operator listed in `BASE_KNOWN_TOKENS` or `SOLANA_KNOWN_TOKENS`. |
+| `UNKNOWN_ASSET` | `400` | A `payment` names an asset that is not an enabled Known Asset on its chain. | Use `ETH`, `SOL`, or a symbol `GET /v1/assets` lists as enabled. The operator can add a token with `POST /v1/assets`. |
 | `CHAIN_REJECTED` | `400`, or an item, `failed` | At submission: malformed calldata, relay bytes that are not a valid transaction, a Bulk Call the engine cannot send, or a call a Multisig Sender cannot propose. On an item: the chain definitely refused or reverted it. For a Multisig Sender also a refusal from the Safe Transaction Service (`401` for a bad API key, `422` for an unregistered delegate) or a Safe execute whose simulation fails (`GS013`). | Read `message` and `chainDetail`, fix the cause, and send it in a new Dispatch. Sending the same thing again fails the same way. |
 | `RPC_UNAVAILABLE` | An item, `failed` | The chain's RPC could not be reached or did not answer: a timeout, a rate limit or a `5xx`. If the engine cannot read a balance for the Funding Check, it fails the items rather than send them unchecked. | Send them again later with a new key. Operators should use their own RPC provider for real traffic. |
 | `SIGNER_UNREACHABLE` | An item, `failed` | The worker could not reach the Signer, or got back an unusable signature. Nothing was sent. | The operator checks the Signer ([troubleshooting](./self-hosting/signer.md#10-troubleshoot-from-the-engines-side)). Then send again with a new key. |
@@ -69,12 +72,21 @@ Branch on `code` when the body has one of the [error codes](#error-codes) below.
 | `CHAIN_NOT_ENABLED` | `400` | The `chain` is valid but not in the engine's `ENABLED_CHAINS`. | Use an enabled chain. [List Senders](./openapi.yaml#list-senders) shows them. |
 | `UNKNOWN_SENDER` | `400` | The request's `sender`, or a list's `sender` filter, names a Sender the chain does not have. | Use a name [List Senders](./openapi.yaml#list-senders) shows. |
 | `SENDER_REQUIRED` | `400` | A Managed Dispatch names no `sender` on a chain whose senders file names no default. | Name the Sender with `sender`. |
-| `NONCE_ALREADY_USED` | An item, `failed` | Base only. The transaction's nonce was already used on chain, usually because something else sent from the Sender. | Make sure only the engine sends from the Sender, then send again. |
+| `NONCE_ALREADY_USED` | An item, `failed` | Base only. Another sender keeps using the Sender's wallet: each time the engine sent the payment, its nonce had already been used by someone else, and the engine sent it again at a fresh nonce, 3 times. Nothing was paid. A single taken nonce is not an error: the engine sends the payment again by itself, and the item's timeline shows it. | Stop whatever else sends from the Sender, or give this engine a Sender of its own, then send again. One engine per Sender. |
 | `APPROVAL_REJECTED` | An item, `failed` | Multisig only. The Approvers rejected or cancelled the Proposal before its deadline, or it went stale. A Safe whose nonce was taken by a different transaction counts as rejected. It is definite: `transactionHash` is `null` and nothing was paid. | Send it again only if the Approvers want it. |
 | `APPROVAL_TIMEOUT` | An item, `abandoned` | Multisig only. Nobody decided on the Proposal by its deadline. The Proposal may still be approved and executed by someone else. | Check the multisig before you send the payment again, or it may happen twice. |
 | `ALREADY_CLAIMED` | `409` | You tried to cancel a Dispatch the worker already claimed. | Nothing. The Dispatch is being sent. |
 | `NOT_HELD` | `409` | You tried to release a Dispatch that is not `held`: already released, cancelled, never held, or a Relay Dispatch. | Nothing. Read the Dispatch to see where it is. |
 | `RULE_DELETED` | `409` | You tried to edit a deleted Flag Rule. | Create a new rule. |
+| `NOT_A_TOKEN` | `400` | Adding a Known Asset: the address is not a token. On Base it has no contract, or does not answer `decimals()` and `totalSupply()`. On Solana it is not a mint. | Check the address and the chain. |
+| `NOT_PAYABLE` | `400` | Adding a Known Asset: a Solana mint the engine can't pay out correctly, one with a transfer fee, a transfer hook, no transfers, or new accounts frozen. | Pay in another token. |
+| `SYMBOL_REQUIRED` | `400` | Adding a Known Asset: the token publishes no usable symbol. | Send `symbol`. |
+| `SYMBOL_TAKEN` | `409` | Adding or enabling a Known Asset: another enabled asset on the chain has the symbol, ignoring case. | Send another `symbol`, or disable the other asset first. |
+| `ASSET_EXISTS` | `409` | Adding a Known Asset that is already one, enabled or not. | Enable it with `PATCH /v1/assets/{id}`. |
+| `CONFIG_ASSET` | `409` | Enabling or disabling an asset that comes from `*_KNOWN_TOKENS` or is a native coin. | Change the variable and restart. |
+| `INVALID_ABI` | `400` | Registering a Base contract: the ABI is not JSON, or an item or parameter is malformed. `message` says where, as in `abi[0].inputs[0].type: "strng" is not a Solidity type`. | Fix the ABI at the place `message` names. |
+| `INVALID_IDL` | `400` | Registering a Solana program: the IDL is not JSON, uses a type it never defines, uses generics, or names another program. | Use the Anchor IDL your build wrote for this program. |
+| `CONTRACT_EXISTS` | `409` | Registering or enabling a contract whose address already has an enabled registration. | Disable the old registration with `PATCH /v1/contracts/{id}`, then add the new one. |
 
 The engine has one more code, `ALREADY_KNOWN`, which it never reports. It means the node already had the exact bytes, so the item stays `broadcasting` until it resolves.
 
@@ -98,11 +110,162 @@ For a Multisig Sender it also names which balance is short, its address, and how
 
 `holder` is `vault` or `memberKey` on Solana, and `safe` or `executor` on Base. The vault or the Safe pays the payments. The engine's own key, the Squads member key or the Safe executor, pays the network fees and any Proposal rent. `committed` is the amount of that asset already held back on that balance, in the smallest unit, by Proposals in flight or timed out and still watched, by Calls waiting to be proposed, and on the proposing key by Proposal rent that stays locked until the Proposal is closed. `short` is the extra the holder needs, `committed` included.
 
+For `CHAIN_REJECTED` on a Base transaction that reverted, the engine replays it with `eth_call` at its block to read why, and `message` starts with `reverted:`. `chainDetail` has the block, the gas used and the gas limit, plus `reason` and the raw `revertData`. A `require` message is the reason as written, a `Panic` is named by its meaning, and a custom error by its selector. A transaction that used all its gas says it ran out of gas. When the chain cannot be read, the item fails with the plain message and no reason:
+
+```json
+{
+  "code": "CHAIN_REJECTED",
+  "message": "reverted: always reverts",
+  "chainDetail": {
+    "block": "53146767",
+    "reason": "always reverts",
+    "gasUsed": "21485",
+    "gasLimit": "500000",
+    "revertData": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e616c776179732072657665727473000000000000000000000000000000000000"
+  }
+}
+```
+
+For `NONCE_ALREADY_USED`, `chainDetail` is `{ "reason": "nonce_taken", "resends": 3 }`. Each time before that, the engine found the transaction's nonce used by another sender and its own hash never landed, so nothing was paid. It sent the same Calls again with a fresh nonce, and the item stayed `broadcasting`. The item's timeline shows each of those as a `dropped` entry whose `error` has the same code and `chainDetail` `{ "reason": "nonce_taken", "nonce": 3124, "resentNonce": 3127 }`, and the console's Flow tab shows it as "Nonce 3124 was taken by another sender. Sent again with nonce 3127." The worker also records the nonces another sender used, and warns about them in the [`sender.exclusive`](./self-hosting/doctor.md#used-only-by-this-engine) setup check and in `foreignActivity` on [List Senders](./openapi.yaml#list-senders). Only one engine may send from a Sender ([One engine per Sender](./self-hosting/configuration.md#one-engine-per-sender)).
+
 For `APPROVAL_TIMEOUT`, `chainDetail` is `{ "deadlineAt": "<ISO 8601>" }`. For an `APPROVAL_REJECTED` the engine found while watching a Proposal, it is `{ "status": "rejected" }`, `"cancelled"` or `"stale"`.
 
 ## Failed before or after signing
 
 A `failed` item's `transactionHash` is `null` when it failed before anything was signed, as with the Funding Check above. It is set when the transaction was signed and then refused, because the engine writes every transaction down, hash included, before it sends it.
+
+## A failed item and a partial Dispatch
+
+Each item has its own status and its own `error`, so one Dispatch can hold a confirmed item and a failed one. This Base Dispatch paid 0.000001 ETH and called a contract function that always reverts:
+
+```sh
+curl -s "$DISPATCH_URL/v1/dispatch/46e3aef7-40ec-46ed-a3b9-78a24407afe8" -H "Authorization: Bearer $DISPATCH_TOKEN"
+```
+
+```json
+{
+  "dispatchId": "46e3aef7-40ec-46ed-a3b9-78a24407afe8",
+  "mode": "managed",
+  "chain": "base",
+  "sender": { "name": "payouts", "address": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e" },
+  "createdAt": "2026-11-01T17:27:16.940Z",
+  "status": "partial",
+  "items": [
+    {
+      "type": "payment",
+      "recipient": "0xdbe86A4aC69c964DdD83eeb47EaD3Ec41a73D434",
+      "asset": "ETH",
+      "decimals": 18,
+      "amount": "1000000000000",
+      "status": "confirmed",
+      "transactionHash": "0x5a52c16e1da7c2c2cbb60f989d7df930447eeec66ac8de174d2dd0997940f820",
+      "error": null,
+      "effects": {
+        "transfers": [
+          {
+            "standard": "native",
+            "token": "native",
+            "from": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e",
+            "to": "0xdbe86A4aC69c964DdD83eeb47EaD3Ec41a73D434",
+            "amount": "1000000000000",
+            "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+            "formatted": "0.000001"
+          }
+        ],
+        "value": {
+          "amount": "1000000000000",
+          "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+          "formatted": "0.000001"
+        },
+        "fee": {
+          "amount": "126000000094",
+          "asset": { "address": "native", "symbol": "ETH", "name": "Ether", "decimals": 18 },
+          "formatted": "0.000000126000000094",
+          "payer": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e"
+        },
+        "events": [],
+        "undecodedEvents": 0,
+        "undecodedEventSources": [],
+        "truncated": false
+      }
+    },
+    {
+      "type": "call",
+      "to": "0xbb7d2b970a48c03ed02238dadca3a1e6b1c49867",
+      "call": {
+        "target": "0xbB7d2b970A48c03ed02238dAdcA3a1e6B1C49867",
+        "decoded": false,
+        "selector": "0x975af67a",
+        "data": "0x975af67a"
+      },
+      "status": "failed",
+      "transactionHash": "0x6fd2eead12d550cb7d633e5a97c5561db336f4df6bae1b580a50ee5f0af96e1b",
+      "error": {
+        "code": "CHAIN_REJECTED",
+        "message": "reverted: always reverts",
+        "chainDetail": {
+          "block": "53160855",
+          "reason": "always reverts",
+          "gasUsed": "21485",
+          "gasLimit": "500000",
+          "revertData": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e616c776179732072657665727473000000000000000000000000000000000000"
+        }
+      }
+    }
+  ]
+}
+```
+
+- The Dispatch reads `partial`: every item is final, and some but not all are `confirmed`.
+- Item 0, the payment, is `confirmed`, with its `effects`.
+- Item 1, the call, is `failed` with `CHAIN_REJECTED`. Its `transactionHash` is set, because the transaction was signed, sent and mined, and then reverted. `message` starts with `reverted:` and `chainDetail.reason` is the contract's own `require` message.
+
+To finish the work, send only the failed items again, in a new Dispatch with a new `Idempotency-Key`, once you have fixed the cause. Sending the whole Dispatch again would pay item 0 twice.
+
+## Refused requests
+
+A refused request stores no Dispatch, so your own logs are one record of it. The engine keeps another: every `POST /v1/dispatch` it refused with a `4xx` other than `401`, with the body exactly as sent. Only the operator token can read it, with [List refused requests](./openapi.yaml#list-refused-requests):
+
+```sh
+curl -s "$DISPATCH_URL/v1/rejected?limit=1" -H "Authorization: Bearer $OPERATOR_TOKEN"
+```
+
+```json
+{
+  "rejected": [
+    {
+      "id": "57d98363-5629-4b87-a251-5cc93ac4602f",
+      "at": "2026-11-01T17:31:40.064Z",
+      "status": 400,
+      "chain": "base",
+      "idempotencyKey": "vendor-usdc-2026-11-01",
+      "tokenKind": "auth",
+      "code": "UNKNOWN_ASSET",
+      "message": "no known token configured for asset \"USDC\"",
+      "chainDetail": { "asset": "USDC" },
+      "body": {
+        "chain": "base",
+        "items": [
+          {
+            "type": "payment",
+            "asset": "USDC",
+            "amount": "1000000",
+            "recipient": "0x8ba1f109551bD432803012645Ac136ddd64DBA72"
+          }
+        ]
+      }
+    }
+  ],
+  "nextCursor": "WyIyMDI2LTExLTAxVDE3OjMxOjQwLjA2NDU1MVoiLCI1N2Q5ODM2My01NjI5LTRiODctYTI1MS01Y2M5M2FjNDYwMmYiXQ",
+  "last24Hours": 3
+}
+```
+
+`code` is the error's code, or `null` for a plain error. `last24Hours` counts the refusals of the last 24 hours, whatever the page. Pass `nextCursor` back as `cursor` for the next page. The API token gets `403`.
+
+The console's **Rejected** page shows the same records to an operator session, newest first, by day. Each row explains the error in plain words, says what to do, and shows the body on demand. An `UNKNOWN_ASSET` row links to the Assets page with the chain and the symbol filled in. The Overview's **Needs attention** shows how many requests were refused in the last 24 hours.
+
+The worker keeps the records for 30 days, and at most 10,000 of them, dropping the oldest first. Set `REJECTED_RETENTION_DAYS` on the worker to keep them for a different number of days. The records hold request bodies, so addresses and amounts, which is the reason to keep them short.
 
 ## Retry safely
 

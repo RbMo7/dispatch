@@ -29,7 +29,8 @@ export const tokens: Check = {
   id: 'configuration.tokens',
   area: 'configuration',
   title: 'Tokens',
-  runsIn: ['cli', 'worker'],
+  // The API is the process that checks both tokens; the worker is never given them.
+  runsIn: ['cli', 'api'],
   scope: 'engine',
   run: ({ env }) => judgeTokens(env.AUTH_TOKEN, env.OPERATOR_TOKEN),
 };

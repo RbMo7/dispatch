@@ -1,6 +1,7 @@
 import { useBalances } from '../balances';
 import { formatAmount, type Money, splitAmount } from '../domain/assets';
 import styles from './Amount.module.css';
+import { Tooltip } from './Tooltip';
 
 export type AmountVariant = 'row' | 'raised' | 'plain';
 
@@ -13,37 +14,56 @@ interface AmountProps extends Money {
   variant?: AmountVariant;
   /** `plain` only: follow the figure with its unit, as in "0.4182 SOL". */
   unit?: boolean;
+  /**
+   * The asset's name as a tooltip on its symbol. Off inside a link or button,
+   * where a second focusable element can't live.
+   */
+  tip?: boolean;
 }
 
 const MASK = '••••';
 
-export function Amount({ variant = 'row', unit = false, ...money }: AmountProps) {
+export function Amount({ variant = 'row', unit = false, tip = true, ...money }: AmountProps) {
   const { hidden } = useBalances();
-  const label = hidden ? `Hidden ${money.asset} amount` : `${formatAmount(money)} ${money.asset}`;
+  const symbol =
+    tip && money.name !== money.asset ? (
+      <Tooltip tip={money.name}>{money.asset}</Tooltip>
+    ) : (
+      money.asset
+    );
+  const mask = (
+    <>
+      <span className="visually-hidden">Hidden amount</span>
+      <span className={styles.mask} aria-hidden="true">
+        {MASK}
+      </span>
+    </>
+  );
 
   if (variant === 'plain') {
     return (
-      <span className={styles.plain} aria-label={label}>
-        {hidden ? MASK : formatAmount(money)}
-        {unit && ` ${money.asset}`}
+      <span className={styles.plain}>
+        {hidden ? mask : formatAmount(money)}
+        {unit && <> {symbol}</>}
       </span>
     );
   }
 
   const { whole, fraction } = splitAmount(money);
   return (
-    <span className={`${styles.amount} ${styles[variant]}`} aria-label={label}>
-      <span aria-hidden="true">
-        {hidden ? (
-          <span className={styles.mask}>{MASK}</span>
-        ) : (
-          <>
+    <span className={`${styles.amount} ${styles[variant]}`}>
+      {hidden ? (
+        mask
+      ) : (
+        <>
+          <span className="visually-hidden">{formatAmount(money)} </span>
+          <span aria-hidden="true">
             {whole}
             <span className={styles.fraction}>{fraction}</span>
-          </>
-        )}
-        <span className={styles.unit}>{money.asset}</span>
-      </span>
+          </span>
+        </>
+      )}
+      <span className={styles.unit}>{symbol}</span>
     </span>
   );
 }

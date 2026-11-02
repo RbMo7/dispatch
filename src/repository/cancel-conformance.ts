@@ -53,6 +53,22 @@ export function runCancelConformanceSuite(makeStore: () => DispatchStore): void 
       ]);
     });
 
+    it('reads back who cancelled a Dispatch, when and why, and nothing for one never cancelled', async () => {
+      const store = makeStore();
+      const cancelled = await newDispatch(store);
+      const kept = await newDispatch(store);
+      await store.cancelDispatch(cancelled.id, { tokenKind: 'operator', reason: 'paid twice' });
+
+      expect(await store.getCancellation(cancelled.id)).toMatchObject({
+        action: 'cancel',
+        targetId: cancelled.id,
+        tokenKind: 'operator',
+        reason: 'paid twice',
+        at: expect.any(Date) as Date,
+      });
+      expect(await store.getCancellation(kept.id)).toBeNull();
+    });
+
     it('records nothing for a refused cancel', async () => {
       const store = makeStore();
       const dispatch = await newDispatch(store);

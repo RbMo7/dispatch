@@ -94,8 +94,7 @@ describe('the Flow tab from an engine response', () => {
       </BalancesProvider>,
     );
     const submitted = screen.getByText('Submitted').closest('li')!;
-    expect(submitted.textContent).toContain('1 payment, ••••');
+    expect(submitted.textContent).toContain('1 payment, Hidden amount•••• USDC');
     expect(submitted.textContent).not.toContain('12,480.00');
-    expect(within(submitted).getByLabelText('Hidden USDC amount')).toBeTruthy();
   });
 });

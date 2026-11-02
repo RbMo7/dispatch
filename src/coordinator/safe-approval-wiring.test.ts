@@ -31,6 +31,7 @@ import type { DispatchError } from '../domain/errors.js';
 import { err, ok, type Result } from '../domain/result.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { Coordinator } from './coordinator.js';
+import { registryFromConfig } from '../asset-registry/configured-assets.js';
 
 /**
  * #84/#85 wired end to end offline: the real Safe approval capability over a
@@ -111,7 +112,7 @@ async function setup() {
       signSafeTransaction: () => Promise.resolve(ok(`0x${'11'.repeat(64)}1b` as `0x${string}`)),
     },
     service: new SafeTxServiceClient({ baseUrl: service.url }),
-    knownTokens: { USDC: { contractAddress: USDC, decimals: 6 } },
+    assets: registryFromConfig({ base: `USDC:${USDC}:${6}` }).forChain('base'),
     prepare: (items) =>
       Promise.resolve(
         ok(

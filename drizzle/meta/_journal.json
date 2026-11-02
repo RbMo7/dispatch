@@ -162,6 +162,55 @@
       "when": 1793537283495,
       "tag": "0022_flag_rule_sender",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793545923927,
+      "tag": "0023_known_assets",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793548993573,
+      "tag": "0024_proposal_approvers",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793549837602,
+      "tag": "0025_rejected_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793552851038,
+      "tag": "0026_timeline_times",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793552867982,
+      "tag": "0027_transaction_effects",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793554373844,
+      "tag": "0028_sender_foreign_nonces",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793583422740,
+      "tag": "0029_known_contracts",
+      "breakpoints": true
     }
   ]
 }

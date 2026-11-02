@@ -1,0 +1,7 @@
+version: 2
+
+secret:
+  # Recorded testnet receipts and transactions. Their hashes, signatures and
+  # block hashes are public chain data that the entropy detector mistakes for secrets.
+  ignored_paths:
+    - 'src/effects/fixtures/**'

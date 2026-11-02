@@ -8,7 +8,8 @@
         "multisig": "<the Squads multisig account, not its vault>",
         "memberKey": "<the engine's own key: proposes, executes, pays fees>",
         "approvalDeadlineMs": 259200000,
-        "approvalRewatchWindowMs": 2592000000
+        "approvalRewatchWindowMs": 2592000000,
+        "approvers": { "<an Approver's address>": "<their name, shown in the console>" }
       }
     }
   },
@@ -24,7 +25,8 @@
         "apiKey": "<optional; BASE_SAFE_API_KEY applies when omitted>",
         "approvalDeadlineMs": 259200000,
         "approvalRewatchWindowMs": 2592000000,
-        "bundleLimit": 50
+        "bundleLimit": 50,
+        "approvers": { "<an owner's address>": "<their name, shown in the console>" }
       }
     }
   }

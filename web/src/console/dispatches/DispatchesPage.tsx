@@ -9,6 +9,7 @@ import { MonoValue, truncateMiddle } from '../../components/MonoValue';
 import { SearchField } from '../../components/SearchField';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
+import { proposalApprovals } from '../../domain/approval';
 import { CHAINS, type Chain, proposalApp, proposalUrl, txLink } from '../../domain/chains';
 import {
   dispatchName,
@@ -16,7 +17,9 @@ import {
   type EntryOf,
   type Item,
   type LoadedDispatch,
+  relayItem,
 } from '../../domain/dispatch';
+import { errorContext } from '../../domain/errors';
 import { dispatchFlow } from '../../domain/dispatchFlow';
 import { senderChoices } from '../../domain/sender';
 import { STATUSES } from '../../domain/status';
@@ -37,8 +40,15 @@ import { useEnabledChains, useSenders, useSharedChains } from '../senderData';
 import { useApi, useOperator } from '../session';
 import { PageBar } from '../Shell';
 import { CancelModal } from './CancelModal';
+import { ProposalApprovals } from './ProposalApprovals';
 import { useDispatch, useDispatchList } from './data';
-import { DispatchPane, type PaneHead, SenderDetail } from './DispatchPane';
+import {
+  BulkCallDetail,
+  DispatchPane,
+  type PaneHead,
+  SenderDetail,
+  TotalsDetail,
+} from './DispatchPane';
 import { dayHeading, DispatchRows } from './DispatchRows';
 import { collectDispatches, matchesSearch } from './exportList';
 import {
@@ -483,16 +493,31 @@ function Pane({
       };
 
   const detail = loaded?.detail;
-  const items = detail?.mode === 'managed' ? detail.items : null;
+  const items = useMemo(() => {
+    if (detail?.mode === 'managed') return detail.items;
+    const relay = detail && relayItem(detail);
+    return relay ? [relay] : null;
+  }, [detail]);
+  const errors = useMemo(
+    () =>
+      errorContext(
+        loaded?.summary.chain ?? 'base',
+        detail?.mode === 'managed' ? detail.sender : null,
+        items ?? [],
+      ),
+    [loaded, detail, items],
+  );
   const claimed = detail?.timeline.findLast((e): e is EntryOf<'claimed'> => e.kind === 'claimed');
   // ADR-0056: a held Dispatch was never claimed, so either token can cancel it.
   const cancellable =
     detail !== undefined && !claimed && (detail.status === 'queued' || detail.status === 'held');
   const reviewHold = operator && detail?.status === 'held';
   const openProposal = items?.find((i) => i.status === 'awaiting_approval' && i.approval)?.approval;
-  const hashes = items
-    ? items.map((i) => i.transactionHash)
-    : [detail?.mode === 'relay' ? detail.transactionHash : null];
+  const proposals = useMemo(() => (items ? proposalApprovals(items) : []), [items]);
+  const hashes =
+    detail?.mode === 'relay'
+      ? [detail.transactionHash]
+      : (items ?? []).map((i) => i.transactionHash);
   const firstHash = hashes.find((h) => h !== null) ?? null;
   const proposalHref = openProposal && proposalUrl(network, openProposal.chainRef);
 
@@ -500,16 +525,32 @@ function Pane({
     ? [
         { label: 'Chain', value: CHAINS[loaded.summary.chain].label },
         { label: 'Mode', value: loaded.summary.mode === 'relay' ? 'Relay' : 'Managed' },
-        {
-          label: 'Sender',
-          value:
-            loaded.summary.mode === 'relay' ? (
-              'Signed by the caller'
-            ) : (
-              <SenderDetail sender={loaded.summary.sender} />
-            ),
-        },
-        { label: 'Items', value: count.format(loaded.summary.itemCount) },
+        ...(detail?.mode === 'relay'
+          ? [
+              {
+                label: 'Signer',
+                value: detail.signer ? <MonoValue value={detail.signer} /> : 'Signed by the caller',
+              },
+              ...(detail.target
+                ? [{ label: 'Target', value: <MonoValue value={detail.target} /> }]
+                : []),
+              ...(detail.value
+                ? [{ label: 'Value', value: <TotalsDetail totals={[detail.value]} /> }]
+                : []),
+            ]
+          : [
+              { label: 'Sender', value: <SenderDetail sender={loaded.summary.sender} /> },
+              { label: 'Items', value: count.format(loaded.summary.itemCount) },
+              ...(loaded.summary.totals.length > 0
+                ? [{ label: 'Total', value: <TotalsDetail totals={loaded.summary.totals} /> }]
+                : []),
+              ...(detail?.mode === 'managed' && detail.retryPolicy !== undefined
+                ? [{ label: 'Retry Policy', value: detail.retryPolicy ? 'On' : 'Off' }]
+                : []),
+              ...(detail?.mode === 'managed' && detail.bulkCall
+                ? [{ label: 'Bulk Call', value: <BulkCallDetail bulk={detail.bulkCall} /> }]
+                : []),
+            ]),
         { label: 'Created', value: full.format(loaded.summary.createdAt) },
         { label: 'Claimed', value: claimed ? full.format(claimed.at) : 'Not yet' },
         { label: 'Id', value: <MonoValue value={id} head={13} tail={6} /> },
@@ -524,9 +565,12 @@ function Pane({
   return (
     <>
       <DispatchPane
+        chain={loaded?.summary.chain ?? 'base'}
         head={head}
         flow={flow}
         items={items}
+        bundled={detail?.mode === 'managed' && detail.bulkCall ? 'Bulk Call' : 'transaction'}
+        errors={errors}
         details={details}
         body={
           !loaded ? (
@@ -559,6 +603,11 @@ function Pane({
             <Button variant="quiet" href={proposalHref} target="_blank" rel="noreferrer">
               Reject it in {proposalApp(openProposal.chainRef)} ›
             </Button>
+          ) : undefined
+        }
+        approvals={
+          proposals.length > 0 ? (
+            <ProposalApprovals proposals={proposals} network={network} />
           ) : undefined
         }
         onClose={onClose}

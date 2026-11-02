@@ -1,5 +1,6 @@
 import {
   and,
+  count,
   desc,
   eq,
   gte,
@@ -8,6 +9,8 @@ import {
   isNull,
   lt,
   lte,
+  max,
+  min,
   ne,
   notInArray,
   or,
@@ -22,15 +25,21 @@ import {
   dispatchHolds,
   flagRules,
   flagRuleVersions,
+  knownAssets,
+  knownContracts,
   operatorActions,
+  rejectedRequests,
   proposals,
   relayDispatches,
+  senderForeignNonces,
   setupChecks,
   signerKeys,
+  transactionEffects,
   transactions,
 } from '../db/schema.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus } from '../domain/dispatch.js';
+import { EFFECTS_READ, type TransactionEffects, type TransactionRef } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import {
   definitionFromJson,
@@ -40,7 +49,22 @@ import {
   type FlagRuleVersion,
   type Hold,
 } from '../domain/flag-rule.js';
-import type { OperatorActionKind, OperatorActor, TokenKind } from '../domain/operator-action.js';
+import {
+  planConfigSeed,
+  symbolKey,
+  type AssetSource,
+  type ConfigAsset,
+  type KnownAsset,
+  type NewKnownAsset,
+} from '../domain/known-asset.js';
+import type {
+  OperatorAction,
+  OperatorActionKind,
+  OperatorActor,
+  TokenKind,
+} from '../domain/operator-action.js';
+import type { KnownContract, NewKnownContract } from '../domain/known-contract.js';
+import { ok, type Result } from '../domain/result.js';
 import type {
   ApprovalState,
   AssetAmount,
@@ -48,8 +72,9 @@ import type {
   Proposal,
   ProposalPhase,
 } from '../domain/proposal.js';
+import type { NewRejectedRequest } from '../domain/rejected-request.js';
 import type { RelayDispatch, RelayDispatchStatus } from '../domain/relay-dispatch.js';
-import type { SenderAddress, SenderRef } from '../domain/sender.js';
+import type { ForeignActivity, SenderAddress, SenderRef } from '../domain/sender.js';
 import type { Area } from '../setup/check.js';
 import type { Attempt, Transaction, TransactionStatus } from '../domain/transaction.js';
 import { totalCommitted } from './committed.js';
@@ -62,6 +87,7 @@ import type {
   DispatchStore,
   ListedDispatch,
   ListedOperatorAction,
+  ListedRejectedRequest,
   NewDispatchInput,
   NewFailedCallInput,
   NewProposalInput,
@@ -69,6 +95,7 @@ import type {
   NewTransactionInput,
   NewUnproposedInput,
   OperatorActionQuery,
+  RejectedRequestQuery,
   ProposalOutcome,
   ProposalPatch,
   SetupCheckRecord,
@@ -91,6 +118,7 @@ function toDispatch(row: DispatchRow): Dispatch {
     bulkCall: row.bulkCall ?? null,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
     senderAddress: row.senderAddress as SenderAddress | null,
   };
@@ -112,6 +140,7 @@ function toTransaction(row: TransactionRow): Transaction {
     failedAt: row.failedAt,
     lastCheckedAt: row.lastCheckedAt,
     lastBroadcastAt: row.lastBroadcastAt,
+    sentAt: row.sentAt,
     replacesTransactionId: row.replacesTransactionId,
     feeBumpAttempts: row.feeBumpAttempts,
     proposalId: row.proposalId,
@@ -133,6 +162,7 @@ function toProposal(row: ProposalRow): Proposal {
     approvalState: row.approvalState as ApprovalState,
     approvals: row.approvals,
     threshold: row.threshold,
+    approvers: row.approvers,
     deadlineAt: row.deadlineAt,
     executeAfter: row.executeAfter,
     timedOutAt: row.timedOutAt,
@@ -162,11 +192,71 @@ function toRelayDispatch(row: RelayDispatchRow): RelayDispatch {
     transactionId: row.transactionId,
     createdAt: row.createdAt,
     claimedAt: row.claimedAt,
+    firstClaimedAt: row.firstClaimedAt,
     cancelledAt: row.cancelledAt,
   };
 }
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+function toKnownAsset(row: typeof knownAssets.$inferSelect): KnownAsset {
+  return {
+    ...row,
+    chain: row.chain as Chain,
+    kind: row.kind,
+    source: row.source as AssetSource,
+    addedBy: row.addedBy as TokenKind | null,
+  } as KnownAsset;
+}
+
+function toKnownContract(row: typeof knownContracts.$inferSelect): KnownContract {
+  const { definition, ...rest } = row;
+  return {
+    ...rest,
+    chain: row.chain as Chain,
+    source: 'console',
+    addedBy: row.addedBy as TokenKind,
+    ...(row.chain === 'base' ? { abi: definition } : { idl: definition }),
+  } as KnownContract;
+}
+
+/** Every contract registry write takes this lock, so two writers never both enable one address. */
+async function lockKnownContracts(tx: Tx): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('known_contracts'))`);
+}
+
+async function contractAddressHeld(tx: Tx, chain: string, address: string): Promise<boolean> {
+  const [held] = await tx
+    .select({ id: knownContracts.id })
+    .from(knownContracts)
+    .where(
+      and(
+        eq(knownContracts.chain, chain),
+        eq(knownContracts.address, address),
+        eq(knownContracts.enabled, true),
+      ),
+    );
+  return held !== undefined;
+}
+
+/** Every Known Asset write takes this lock, so two writers never both pass the same check (ADR-0061). */
+async function lockKnownAssets(tx: Tx): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('known_assets'))`);
+}
+
+async function symbolHeld(tx: Tx, chain: string, symbol: string): Promise<boolean> {
+  const [held] = await tx
+    .select({ id: knownAssets.id })
+    .from(knownAssets)
+    .where(
+      and(
+        eq(knownAssets.chain, chain),
+        eq(knownAssets.enabled, true),
+        eq(sql`upper(${knownAssets.symbol})`, symbolKey(symbol)),
+      ),
+    );
+  return held !== undefined;
+}
 
 function toVersionRow(ruleId: string, version: number, spec: FlagRuleSpec) {
   return {
@@ -351,9 +441,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(dispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             dispatches.id,
@@ -462,6 +553,82 @@ export class PostgresDispatchStore implements DispatchStore {
     }));
   }
 
+  async getCancellation(dispatchId: string): Promise<OperatorAction | null> {
+    const [row] = await this.db
+      .select()
+      .from(operatorActions)
+      .where(and(eq(operatorActions.targetId, dispatchId), eq(operatorActions.action, 'cancel')))
+      .orderBy(operatorActions.at)
+      .limit(1);
+    return row ? { ...row, action: 'cancel', tokenKind: row.tokenKind as TokenKind } : null;
+  }
+
+  async recordRejectedRequest(request: NewRejectedRequest): Promise<void> {
+    const { error, ...rest } = request;
+    await this.db.insert(rejectedRequests).values({
+      ...rest,
+      code: error.code,
+      message: error.message,
+      chainDetail: error.chainDetail ?? null,
+    });
+  }
+
+  async listRejectedRequests(query: RejectedRequestQuery): Promise<ListedRejectedRequest[]> {
+    const { after } = query;
+    const rows = await this.db
+      .select({
+        row: rejectedRequests,
+        exactAt: sql<string>`to_char(${rejectedRequests.at} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(rejectedRequests)
+      .where(
+        after
+          ? sql`(${rejectedRequests.at}, ${rejectedRequests.id}) < (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+          : undefined,
+      )
+      .orderBy(desc(rejectedRequests.at), desc(rejectedRequests.id))
+      .limit(query.limit);
+    return rows.map(({ row, exactAt }) => ({
+      request: {
+        id: row.id,
+        at: row.at,
+        status: row.status,
+        chain: row.chain as Chain | null,
+        idempotencyKey: row.idempotencyKey,
+        tokenKind: row.tokenKind as TokenKind,
+        error: {
+          code: row.code,
+          message: row.message,
+          ...(row.chainDetail === null ? {} : { chainDetail: row.chainDetail }),
+        },
+        body: row.body,
+      },
+      cursor: { createdAt: exactAt, id: row.id },
+    }));
+  }
+
+  async countRejectedRequestsSince(since: Date): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(rejectedRequests)
+      .where(gte(rejectedRequests.at, since));
+    return row?.count ?? 0;
+  }
+
+  async pruneRejectedRequests(before: Date, keep: number): Promise<number> {
+    const old = await this.db
+      .delete(rejectedRequests)
+      .where(lt(rejectedRequests.at, before))
+      .returning({ id: rejectedRequests.id });
+    const over = await this.db.execute<{ id: string }>(sql`
+      DELETE FROM ${rejectedRequests} WHERE ${rejectedRequests.id} IN (
+        SELECT ${rejectedRequests.id} FROM ${rejectedRequests}
+        ORDER BY ${rejectedRequests.at} DESC, ${rejectedRequests.id} DESC
+        OFFSET ${keep}
+      ) RETURNING ${rejectedRequests.id}`);
+    return old.length + over.length;
+  }
+
   async createFlagRule(spec: FlagRuleSpec, actor: OperatorActor): Promise<FlagRule> {
     return this.db.transaction(async (tx) => {
       const [rule] = await tx.insert(flagRules).values({ currentVersion: 1 }).returning();
@@ -519,6 +686,138 @@ export class PostgresDispatchStore implements DispatchStore {
     const rows = await this.db.select().from(flagRules).where(eq(flagRules.id, id));
     const [rule] = await withVersions(this.db, rows);
     return rule ?? null;
+  }
+
+  async listKnownAssets(): Promise<KnownAsset[]> {
+    return (await this.db.select().from(knownAssets)).map(toKnownAsset);
+  }
+
+  async seedConfigAssets(configured: readonly ConfigAsset[]): Promise<Result<void, string>> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const existing = (await tx.select().from(knownAssets)).map(toKnownAsset);
+      const plan = planConfigSeed(existing, configured);
+      if (!plan.ok) return plan;
+      for (const write of plan.value) {
+        if (write.op === 'disable') {
+          await tx.update(knownAssets).set({ enabled: false }).where(eq(knownAssets.id, write.id));
+        } else {
+          const values = { ...write.asset, source: 'config', addedBy: null, enabled: true };
+          if (write.op === 'insert') await tx.insert(knownAssets).values(values);
+          else await tx.update(knownAssets).set(values).where(eq(knownAssets.id, write.id));
+        }
+      }
+      return ok(undefined);
+    });
+  }
+
+  async addKnownAsset(
+    asset: NewKnownAsset,
+    actor: OperatorActor,
+  ): Promise<KnownAsset | 'address_taken' | 'symbol_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const [atAddress] = await tx
+        .select({ id: knownAssets.id })
+        .from(knownAssets)
+        .where(and(eq(knownAssets.chain, asset.chain), eq(knownAssets.address, asset.address)));
+      if (atAddress) return 'address_taken';
+      if (await symbolHeld(tx, asset.chain, asset.symbol)) return 'symbol_taken';
+      const [row] = await tx
+        .insert(knownAssets)
+        .values({ ...asset, source: 'console', addedBy: actor.tokenKind, enabled: true })
+        .returning();
+      if (!row) throw new Error('Failed to add a Known Asset');
+      await tx.insert(operatorActions).values({ ...actor, action: 'asset_add', targetId: row.id });
+      return toKnownAsset(row);
+    });
+  }
+
+  async setKnownAssetEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<
+    { asset: KnownAsset; changed: boolean } | 'not_found' | 'config_row' | 'symbol_taken'
+  > {
+    return this.db.transaction(async (tx) => {
+      await lockKnownAssets(tx);
+      const [row] = await tx.select().from(knownAssets).where(eq(knownAssets.id, id));
+      if (!row) return 'not_found';
+      if (row.source === 'config') return 'config_row';
+      if (row.enabled === enabled) return { asset: toKnownAsset(row), changed: false };
+      if (enabled && (await symbolHeld(tx, row.chain, row.symbol))) return 'symbol_taken';
+      const [updated] = await tx
+        .update(knownAssets)
+        .set({ enabled })
+        .where(eq(knownAssets.id, id))
+        .returning();
+      await tx.insert(operatorActions).values({
+        ...actor,
+        action: enabled ? 'asset_enable' : 'asset_disable',
+        targetId: id,
+      });
+      return { asset: toKnownAsset(updated!), changed: true };
+    });
+  }
+
+  async listKnownContracts(): Promise<KnownContract[]> {
+    return (await this.db.select().from(knownContracts)).map(toKnownContract);
+  }
+
+  async addKnownContract(
+    contract: NewKnownContract,
+    actor: OperatorActor,
+  ): Promise<KnownContract | 'address_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownContracts(tx);
+      if (await contractAddressHeld(tx, contract.chain, contract.address)) return 'address_taken';
+      const definition = contract.chain === 'base' ? contract.abi : contract.idl;
+      const [row] = await tx
+        .insert(knownContracts)
+        .values({
+          chain: contract.chain,
+          address: contract.address,
+          label: contract.label,
+          definition,
+          source: 'console',
+          addedBy: actor.tokenKind,
+          enabled: true,
+        })
+        .returning();
+      if (!row) throw new Error('Failed to add a contract');
+      await tx
+        .insert(operatorActions)
+        .values({ ...actor, action: 'contract_add', targetId: row.id });
+      return toKnownContract(row);
+    });
+  }
+
+  async setKnownContractEnabled(
+    id: string,
+    enabled: boolean,
+    actor: OperatorActor,
+  ): Promise<{ contract: KnownContract; changed: boolean } | 'not_found' | 'address_taken'> {
+    return this.db.transaction(async (tx) => {
+      await lockKnownContracts(tx);
+      const [row] = await tx.select().from(knownContracts).where(eq(knownContracts.id, id));
+      if (!row) return 'not_found';
+      if (row.enabled === enabled) return { contract: toKnownContract(row), changed: false };
+      if (enabled && (await contractAddressHeld(tx, row.chain, row.address))) {
+        return 'address_taken';
+      }
+      const [updated] = await tx
+        .update(knownContracts)
+        .set({ enabled })
+        .where(eq(knownContracts.id, id))
+        .returning();
+      await tx.insert(operatorActions).values({
+        ...actor,
+        action: enabled ? 'contract_enable' : 'contract_disable',
+        targetId: id,
+      });
+      return { contract: toKnownContract(updated!), changed: true };
+    });
   }
 
   async listEnabledFlagRules(chain: Chain): Promise<FlagRuleVersion[]> {
@@ -772,10 +1071,14 @@ export class PostgresDispatchStore implements DispatchStore {
       .where(eq(transactions.id, transactionId));
   }
 
-  async recordSent(transactionId: string, hash: string): Promise<void> {
+  async recordSent(transactionId: string, hash: string, sentAt = new Date()): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ hash, lastBroadcastAt: new Date() })
+      .set({
+        hash,
+        lastBroadcastAt: sentAt,
+        sentAt: sql`coalesce(${transactions.sentAt}, ${sentAt.toISOString()}::timestamptz)`,
+      })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -887,10 +1190,10 @@ export class PostgresDispatchStore implements DispatchStore {
     return counts;
   }
 
-  async markDropped(transactionId: string): Promise<void> {
+  async markDropped(transactionId: string, reason?: DispatchError): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ status: 'DROPPED' })
+      .set({ status: 'DROPPED', ...(reason ? { error: reason } : {}) })
       .where(eq(transactions.id, transactionId));
   }
 
@@ -1201,7 +1504,14 @@ export class PostgresDispatchStore implements DispatchStore {
       await tx.update(proposals).set({ phase: 'executing' }).where(eq(proposals.id, proposalId));
       const rows = await tx
         .update(transactions)
-        .set({ status: 'PENDING', hash, signedBytes, broadcastAt: now, lastBroadcastAt: now })
+        .set({
+          status: 'PENDING',
+          hash,
+          signedBytes,
+          broadcastAt: now,
+          lastBroadcastAt: now,
+          sentAt: null,
+        })
         .where(
           inArray(
             transactions.id,
@@ -1236,6 +1546,7 @@ export class PostgresDispatchStore implements DispatchStore {
           failedAt: null,
           broadcastAt: null,
           lastBroadcastAt: null,
+          sentAt: null,
         })
         .where(
           inArray(
@@ -1400,6 +1711,47 @@ export class PostgresDispatchStore implements DispatchStore {
     });
   }
 
+  async recordForeignNonces(
+    sender: SenderRef,
+    nonces: readonly number[],
+    seenAt: Date,
+  ): Promise<number[]> {
+    if (nonces.length === 0) return [];
+    const rows = await this.db
+      .insert(senderForeignNonces)
+      .values(
+        [...new Set(nonces)].map((nonce) => ({
+          chain: sender.chain,
+          senderAddress: sender.address,
+          nonce,
+          firstSeenAt: seenAt,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ nonce: senderForeignNonces.nonce });
+    return rows.map(({ nonce }) => nonce).sort((a, b) => a - b);
+  }
+
+  async foreignActivity(sender: SenderRef, since: Date): Promise<ForeignActivity | null> {
+    const [row] = await this.db
+      .select({
+        lastSeenAt: max(senderForeignNonces.firstSeenAt),
+        first: min(senderForeignNonces.nonce),
+        last: max(senderForeignNonces.nonce),
+        count: count(),
+      })
+      .from(senderForeignNonces)
+      .where(
+        and(
+          eq(senderForeignNonces.chain, sender.chain),
+          eq(senderForeignNonces.senderAddress, sender.address),
+          gte(senderForeignNonces.firstSeenAt, since),
+        ),
+      );
+    if (!row?.lastSeenAt || row.first === null || row.last === null) return null;
+    return { lastSeenAt: row.lastSeenAt, nonces: [row.first, row.last], count: row.count };
+  }
+
   async listSetupChecks(): Promise<SetupCheckRecord[]> {
     const rows = await this.db.select().from(setupChecks).orderBy(setupChecks.id);
     return rows.map((row) => ({
@@ -1561,9 +1913,10 @@ export class PostgresDispatchStore implements DispatchStore {
 
       if (claimable.length === 0) return [];
 
+      const now = new Date();
       const rows = await tx
         .update(relayDispatches)
-        .set({ status: 'broadcasting', claimedAt: new Date() })
+        .set({ status: 'broadcasting', claimedAt: now, firstClaimedAt: now })
         .where(
           inArray(
             relayDispatches.id,
@@ -1581,5 +1934,87 @@ export class PostgresDispatchStore implements DispatchStore {
       .update(relayDispatches)
       .set({ transactionId })
       .where(eq(relayDispatches.id, relayDispatchId));
+  }
+
+  async listTransactionsAwaitingEffects(
+    chains: ChainScope,
+    now: Date,
+    limit: number,
+  ): Promise<TransactionRef[]> {
+    const confirmedAfter = new Date(now.getTime() - EFFECTS_READ.windowMs);
+    const rows = await this.db
+      .select({ chain: transactions.chain, hash: sql<string>`${transactions.hash}` })
+      .from(transactions)
+      .leftJoin(
+        transactionEffects,
+        and(
+          eq(transactionEffects.chain, transactions.chain),
+          eq(transactionEffects.hash, transactions.hash),
+        ),
+      )
+      .where(
+        and(
+          eq(transactions.status, 'CONFIRMED'),
+          isNotNull(transactions.hash),
+          inArray(transactions.chain, chains),
+          gte(transactions.confirmedAt, confirmedAfter),
+          or(
+            isNull(transactionEffects.hash),
+            and(
+              isNull(transactionEffects.effects),
+              lt(transactionEffects.readFailures, EFFECTS_READ.maxFailures),
+              sql`${transactionEffects.readAt} + ${transactionEffects.readFailures} * ${`${EFFECTS_READ.retryAfterMs} milliseconds`}::interval <= ${now.toISOString()}::timestamptz`,
+            ),
+          ),
+        ),
+      )
+      .groupBy(transactions.chain, transactions.hash)
+      .orderBy(sql`min(${transactions.confirmedAt})`)
+      .limit(limit);
+    return rows.map(({ chain, hash }) => ({ chain: chain as Chain, hash }));
+  }
+
+  async recordEffects(ref: TransactionRef, effects: TransactionEffects, at: Date): Promise<void> {
+    await this.db
+      .insert(transactionEffects)
+      .values({ ...ref, effects, readAt: at })
+      .onConflictDoUpdate({
+        target: [transactionEffects.chain, transactionEffects.hash],
+        set: { effects, readAt: at, lastError: null },
+        where: isNull(transactionEffects.effects),
+      });
+  }
+
+  async recordEffectsReadFailure(ref: TransactionRef, error: string, at: Date): Promise<void> {
+    await this.db
+      .insert(transactionEffects)
+      .values({ ...ref, readFailures: 1, lastError: error, readAt: at })
+      .onConflictDoUpdate({
+        target: [transactionEffects.chain, transactionEffects.hash],
+        set: {
+          readFailures: sql`${transactionEffects.readFailures} + 1`,
+          lastError: error,
+          readAt: at,
+        },
+        where: isNull(transactionEffects.effects),
+      });
+  }
+
+  async listEffects(
+    chain: Chain,
+    hashes: readonly string[],
+  ): Promise<Map<string, TransactionEffects>> {
+    if (hashes.length === 0) return new Map();
+    const rows = await this.db
+      .select({ hash: transactionEffects.hash, effects: transactionEffects.effects })
+      .from(transactionEffects)
+      .where(
+        and(
+          eq(transactionEffects.chain, chain),
+          inArray(transactionEffects.hash, [...hashes]),
+          isNotNull(transactionEffects.effects),
+        ),
+      );
+    return new Map(rows.flatMap(({ hash, effects }) => (effects ? [[hash, effects]] : [])));
   }
 }

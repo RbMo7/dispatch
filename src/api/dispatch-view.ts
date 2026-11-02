@@ -7,12 +7,23 @@ import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
 import { sumAssetAmounts } from '../repository/committed.js';
 import type { DispatchStore, ListedDispatch } from '../repository/dispatch-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import type { AssetDecimals } from '../asset-registry/asset-registry.js';
+import type { TransactionEffects } from '../domain/effects.js';
+import { decodeCall, decodeEffects } from '../effects/decode.js';
+import { labelOf, type EffectsView, type Known } from '../effects/view.js';
 import { toWireDefinition } from './flag-rule-wire.js';
+import { relaySignedView } from './signed-view.js';
 import { buildTimeline } from './timeline.js';
 
 /** ADR-0060: the configured name of the Sender at an address, or null when no Sender has it any more. */
 export type SenderNameOf = (chain: Chain, address: string) => string | null;
+
+/** The senders file's label for an Approver of a Multisig Sender, or null when it gives none. */
+export type ApproverLabelOf = (
+  chain: Chain,
+  senderAddress: string,
+  approver: string,
+) => string | null;
 
 /**
  * ADR-0060: who pays, by address (its identity) and by name. Absent only for
@@ -94,7 +105,13 @@ function deriveDispatchStatus(dispatch: Dispatch, transactions: Transaction[]): 
   return 'partial';
 }
 
-function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf: AssetDecimals) {
+function toWireRequest(
+  chain: Chain,
+  { call, payment }: DispatchItem,
+  decimalsOf: AssetDecimals,
+  known: Known,
+  effects: TransactionEffects | undefined,
+) {
   if (payment) {
     const { recipient, asset, amount } = payment;
     const decimals = decimalsOf(chain, asset);
@@ -106,19 +123,66 @@ function toWireRequest(chain: Chain, { call, payment }: DispatchItem, decimalsOf
       amount,
     };
   }
+  const decoded = decodeCall(chain, call, known, effects);
   return 'to' in call
-    ? { type: 'call' as const, to: call.to }
-    : { type: 'call' as const, programId: call.programId };
+    ? { type: 'call' as const, to: call.to, call: decoded }
+    : { type: 'call' as const, programId: call.programId, call: decoded };
 }
 
-function toWireApproval(proposal: Proposal) {
+/** ADR-0063: each confirmed transaction's stored effects, decoded once per read however many items share it. */
+async function effectsOf(
+  store: DispatchStore,
+  chain: Chain,
+  transactions: Transaction[],
+  known: Known,
+) {
+  const confirmedHash = (t: Transaction | undefined) =>
+    t?.status === 'CONFIRMED' && t.hash ? t.hash : undefined;
+  const stored = await store.listEffects(chain, [
+    ...new Set(transactions.flatMap((t) => confirmedHash(t) ?? [])),
+  ]);
+  const decoded = new Map<string, EffectsView>();
+  const raw = (t: Transaction | undefined) => {
+    const hash = confirmedHash(t);
+    return hash === undefined ? undefined : stored.get(hash);
+  };
+  const view = (t: Transaction | undefined): { effects?: EffectsView } => {
+    const hash = confirmedHash(t);
+    const effects = hash === undefined ? undefined : stored.get(hash);
+    if (hash === undefined || !effects) return {};
+    if (!decoded.has(hash)) decoded.set(hash, decodeEffects(effects, known));
+    return { effects: decoded.get(hash)! };
+  };
+  return { raw, view };
+}
+
+function toWireApproval(proposal: Proposal, labelOf: ApproverLabelOf | undefined) {
   return {
     state: proposal.approvalState,
     approvals: proposal.approvals,
     threshold: proposal.threshold,
+    remaining: Math.max(0, proposal.threshold - proposal.approvals),
+    approvers: proposal.approvers.map(({ address, decision }) => {
+      const label = labelOf?.(proposal.chain, proposal.senderAddress, address) ?? null;
+      return { address, ...(label === null ? {} : { label }), decision };
+    }),
     deadline: proposal.deadlineAt.toISOString(),
     expected: proposal.expected,
     chainRef: proposal.chainRef,
+  };
+}
+
+/** ADR-0056: who cancelled a cancelled Dispatch, when and why, from the operator action the cancel recorded. */
+async function cancellationView(store: DispatchStore, id: string, status: string) {
+  if (status !== 'cancelled') return {};
+  const cancel = await store.getCancellation(id);
+  if (!cancel) return {};
+  return {
+    cancellation: {
+      at: cancel.at.toISOString(),
+      tokenKind: cancel.tokenKind,
+      reason: cancel.reason,
+    },
   };
 }
 
@@ -142,8 +206,14 @@ export async function readDispatchView(
   store: DispatchStore,
   id: string,
   decimalsOf: AssetDecimals,
-  options: { timeline?: boolean; nameOf?: SenderNameOf } = {},
+  options: {
+    known: Known;
+    timeline?: boolean;
+    nameOf?: SenderNameOf;
+    approverLabelOf?: ApproverLabelOf;
+  },
 ) {
+  const { known } = options;
   const dispatch = await store.getDispatch(id);
   if (dispatch) {
     const allVersions = await store.listTransactions(dispatch.id);
@@ -155,13 +225,20 @@ export async function readDispatchView(
       : [];
     const proposalById = new Map(proposals.map((p) => [p.id, p]));
     const hold = await store.getHold(dispatch.id);
+    const effects = await effectsOf(store, dispatch.chain, transactions, known);
 
     const items = dispatch.items.map((item, index) => {
-      const request = toWireRequest(dispatch.chain, item, decimalsOf);
+      const transaction = transactionByCallIndex.get(index);
+      const request = toWireRequest(
+        dispatch.chain,
+        item,
+        decimalsOf,
+        known,
+        effects.raw(transaction),
+      );
       if (dispatch.status === 'cancelled' || dispatch.status === 'held') {
         return { ...request, status: dispatch.status, transactionHash: null, error: null };
       }
-      const transaction = transactionByCallIndex.get(index);
       if (!transaction) {
         return { ...request, status: 'queued', transactionHash: null, error: null };
       }
@@ -173,7 +250,8 @@ export async function readDispatchView(
         status: toWireItemStatus(transaction.status),
         transactionHash: transaction.hash,
         error: transaction.error,
-        ...(proposal ? { approval: toWireApproval(proposal) } : {}),
+        ...(proposal ? { approval: toWireApproval(proposal, options.approverLabelOf) } : {}),
+        ...effects.view(transaction),
       };
     });
 
@@ -184,8 +262,20 @@ export async function readDispatchView(
       ...senderView(dispatch, options.nameOf),
       createdAt: dispatch.createdAt,
       status: deriveDispatchStatus(dispatch, transactions),
+      retryPolicy: dispatch.retryPolicy,
+      ...(dispatch.bulkCall
+        ? {
+            bulkCall: {
+              aggregator: dispatch.bulkCall.aggregator,
+              ...labelOf(known, dispatch.chain, dispatch.bulkCall.aggregator),
+              maxBatchSize: dispatch.bulkCall.maxBatchSize,
+              allowFailure: dispatch.bulkCall.allowFailure,
+            },
+          }
+        : {}),
       items,
       ...(hold ? { hold: toWireHold(hold) } : {}),
+      ...(await cancellationView(store, dispatch.id, dispatch.status)),
       ...(options.timeline
         ? {
             timeline: buildTimeline({
@@ -207,6 +297,7 @@ export async function readDispatchView(
   if (relayDispatch) {
     const relayTransactions = await store.listTransactions(relayDispatch.id);
     const [transaction] = relayTransactions;
+    const effects = await effectsOf(store, relayDispatch.chain, relayTransactions, known);
     return {
       dispatchId: relayDispatch.id,
       mode: 'relay',
@@ -215,6 +306,9 @@ export async function readDispatchView(
       status: deriveRelayStatus(relayDispatch, relayTransactions),
       transactionHash: transaction?.hash ?? null,
       error: transaction?.error ?? null,
+      ...(await relaySignedView(relayDispatch.chain, relayDispatch.signedTransaction)),
+      ...(await cancellationView(store, relayDispatch.id, relayDispatch.status)),
+      ...effects.view(transaction),
       ...(options.timeline
         ? {
             timeline: buildTimeline({
@@ -259,6 +353,7 @@ export function summarizeDispatch(
     status: deriveDispatchStatus(dispatch, listed.transactions.filter(isCurrentVersion)),
     createdAt: dispatch.createdAt,
     itemCount: dispatch.items.length,
+    callCount: dispatch.items.filter((item) => item.payment === null).length,
     totals: sumAssetAmounts([
       dispatch.items.flatMap(({ payment }) =>
         payment ? [{ asset: payment.asset, amount: payment.amount }] : [],

@@ -1,8 +1,11 @@
 import type { CallForChain, DispatchItem, Payment } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { BulkCall } from '../domain/dispatch.js';
+import type { NewKnownAsset } from '../domain/known-asset.js';
+import type { TransactionEffects } from '../domain/effects.js';
 import type { DispatchError } from '../domain/errors.js';
 import type {
+  Approver,
   ChainProposalRef,
   CommittedAmounts,
   ExpectedTotals,
@@ -53,7 +56,27 @@ export type BundleSlotStatus = { status: ChainStatus; detail?: unknown };
 
 export type BroadcastResult = {
   hash: string;
+  /** #169: when the node accepted the bytes, for a broadcast that waits on past that (Solana waits for confirmation). Absent: just now. */
+  sentAt?: Date;
 };
+
+/**
+ * ADR-0061: what the chain says about a token address an operator wants to
+ * add. `symbol` and `name` are empty when the token publishes none.
+ * `supply` is in the token's smallest unit.
+ */
+export type TokenRead<C extends Chain = Chain> = NewKnownAsset<C> & { supply: string };
+
+/** Why an address can't be a Known Asset: it isn't a token, the engine can't pay it out, or the chain could not be read. */
+export type TokenReadError = {
+  code: 'NOT_A_TOKEN' | 'NOT_PAYABLE' | 'RPC_UNAVAILABLE';
+  message: string;
+};
+
+/** Reads one token's decimals, name, symbol and supply from the chain. */
+export type ReadToken<C extends Chain = Chain> = (
+  address: string,
+) => Promise<Result<TokenRead<C>, TokenReadError>>;
 
 export type Balance = {
   asset: string;
@@ -108,6 +131,8 @@ export type ProposalSnapshot = {
   status: 'unknown' | 'active' | 'approved' | 'rejected' | 'executed' | 'cancelled' | 'stale';
   approvals: number;
   threshold: number;
+  /** Every member who can approve and how they stand. Absent when the chain no longer says, as for a closed Squads proposal: the last read stands. */
+  approvers?: Approver[];
   executeAfter?: Date;
   /** Set when the status is `executed`: the hash that executed it. */
   executedHash?: string;
@@ -282,11 +307,24 @@ export interface ChainHandler<C extends Chain = Chain> {
     senderAddress: string,
   ): Promise<Result<Balance, DispatchError>>;
 
+  /**
+   * ADR-0063, optional: what a confirmed transaction changed, read once by the
+   * worker and stored raw. An error is retried a few times, then given up.
+   */
+  readEffects?(hash: string): Promise<Result<TransactionEffects, DispatchError>>;
+
   /** A rejected/unreachable broadcast is a structured DispatchError (ADR-0010), never a thrown exception. */
   broadcast(signed: SignedTransaction): Promise<Result<BroadcastResult, DispatchError>>;
 
   /** Never reports CONFIRMED for a hash that hasn't actually confirmed on-chain, including one never broadcast. */
   getStatus(hash: string): Promise<Result<ChainStatus, DispatchError>>;
+
+  /**
+   * #169, optional: why a transaction `getStatus` reported `FAILED`, read from
+   * the chain, as the `CHAIN_REJECTED` the Call fails with. Null when the chain
+   * cannot say, and the Coordinator then reports the plain failure.
+   */
+  failureReason?(hash: string): Promise<DispatchError | null>;
 
   /**
    * #9 (ADR-0037), optional: only a chain that can fee-bump implements it.
@@ -300,6 +338,29 @@ export interface ChainHandler<C extends Chain = Chain> {
     signed: SignedTransaction,
     senderAddress: string,
   ): Promise<Result<PreparedTransaction, DispatchError>>;
+
+  /**
+   * #171 (ADR-0064), optional: only a chain with account nonces implements
+   * it. The same Calls as `signed`, unsigned and with no nonce, so `sign`
+   * gives them a fresh one: the resend after another sender took the nonce.
+   * Keeps `signed`'s fees, or prices them afresh when `reprice` (Retry
+   * Policy on). Must never mutate `signed`.
+   */
+  prepareResend?(
+    signed: SignedTransaction,
+    senderAddress: string,
+    options: { reprice: boolean },
+  ): Promise<Result<PreparedTransaction, DispatchError>>;
+
+  /** #171 (ADR-0064), optional: the account nonce `signed` carries. No RPC. */
+  nonceOf?(signed: SignedTransaction): number | undefined;
+
+  /**
+   * #172 (ADR-0064), optional: only a chain with account nonces implements
+   * it. Nonces of this handler's Sender that the chain shows used since the
+   * last call, and that this engine never sent. Each is reported once.
+   */
+  foreignNonces?(): Promise<Result<number[], DispatchError>>;
 
   /**
    * #11 (ADR-0038), optional: only a chain with Bulk Call implements it —

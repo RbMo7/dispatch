@@ -8,8 +8,6 @@ import { parse } from 'yaml';
 
 import { buildApp } from '../app.js';
 import { BaseChainHandler } from '../chain-handler/base/base-chain-handler.js';
-import { parseBaseKnownTokens } from '../chain-handler/base/known-tokens.js';
-import { parseSolanaKnownTokens } from '../chain-handler/solana/known-tokens.js';
 import { SolanaChainHandler } from '../chain-handler/solana/solana-chain-handler.js';
 import { ChainRegistry } from '../chain-registry/chain-registry.js';
 import { CHAINS } from '../domain/chain.js';
@@ -17,7 +15,10 @@ import { err, ok } from '../domain/result.js';
 import type { SenderAddress, SenderName } from '../domain/sender.js';
 import { InMemoryDispatchStore } from '../repository/in-memory-dispatch-store.js';
 import { InMemoryNonceHistoryStore } from '../repository/in-memory-nonce-history-store.js';
-import type { AssetDecimals } from './asset-decimals.js';
+import { AssetRegistry } from '../asset-registry/asset-registry.js';
+import { configuredAssets, registryFromConfig } from '../asset-registry/configured-assets.js';
+import type { ReadToken, TokenRead } from '../chain-handler/chain-handler.js';
+import { FLOW, FSPL, readRecorded, recorded } from '../effects/test-support/recorded.js';
 import { readSender, type SenderConfig, type SenderReads } from './senders.js';
 import { setupReader } from './setup-routes.js';
 
@@ -160,8 +161,10 @@ const fakeBaseRpc: typeof fetch = (_input, init) => {
   return Promise.resolve(Response.json({ jsonrpc: '2.0', id, result: results[method] }));
 };
 
-const assetDecimals: AssetDecimals = (chain, asset) =>
-  ({ base: { ETH: 18, USDC: 6 }, solana: { SOL: 9, USDC: 6 } })[chain][asset as 'USDC'];
+const assets = registryFromConfig({
+  base: 'USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6',
+  solana: 'USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
+});
 
 const senderConfigs: SenderConfig[] = [
   {
@@ -170,8 +173,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: true,
     network: 'base-sepolia',
     address: '0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A',
-    assets: ['ETH', 'USDC'],
-    assetDecimals,
+    assets,
   },
   {
     chain: 'solana',
@@ -179,8 +181,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: true,
     network: 'devnet',
     address: 'Vault1111111111111111111111111111111111111',
-    assets: ['SOL', 'USDC'],
-    assetDecimals,
+    assets,
     approval: {
       mode: 'squads',
       multisigAddress: 'Msig1111111111111111111111111111111111111',
@@ -195,8 +196,7 @@ const senderConfigs: SenderConfig[] = [
     isDefault: false,
     network: { chainId: 31337 },
     address: '0x5afe000000000000000000000000000000005afe',
-    assets: ['ETH'],
-    assetDecimals,
+    assets: registryFromConfig(),
     approval: {
       mode: 'safe',
       multisigAddress: '0x5afe000000000000000000000000000000005afe',
@@ -236,6 +236,7 @@ const senderReads: SenderReads = {
   readThreshold: (chain) =>
     Promise.resolve(chain === 'solana' ? ok(2) : err({ code: 'RPC_UNAVAILABLE', message: 'down' })),
   listCommitted: () => Promise.resolve([{ asset: 'SOL', amount: '2039280' }]),
+  foreignActivity: () => Promise.resolve(null),
   now: () => new Date('2026-11-01T02:09:20.649Z'),
 };
 
@@ -280,14 +281,69 @@ const readSetup = setupReader({
   now: () => new Date('2026-11-01T10:07:12.000Z'),
 });
 
+/** The chain's answers for the addresses the Assets examples name, as a live engine read them. */
+const onChain: Record<string, TokenRead> = {
+  '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027': {
+    chain: 'base',
+    kind: 'erc20',
+    address: '0xB6501Ccdcd1c2aA6C63AF2975f38fE5B58c73027',
+    symbol: 'LUSD',
+    name: 'Live Dollar',
+    decimals: 6,
+    supply: '1000000000000',
+  },
+  '4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ': {
+    chain: 'solana',
+    kind: 'token-2022',
+    address: '4Z2yz3LXTxu8SgTfaLmwjyabgD6PxaZKK97U6RuwMCdJ',
+    symbol: 'LEUR',
+    name: 'Live Euro',
+    decimals: 6,
+    supply: '1000000000',
+  },
+  DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4: {
+    chain: 'solana',
+    kind: 'spl',
+    address: 'DmzLGKjKuYb9Sa2aQ6D7nv51ixj8akwDzujYA8wC1Ne4',
+    symbol: '',
+    name: '',
+    decimals: 6,
+    supply: '1000000000',
+  },
+  '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU': {
+    chain: 'solana',
+    kind: 'spl',
+    address: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    symbol: '',
+    name: '',
+    decimals: 6,
+    supply: '1000000000',
+  },
+};
+const readToken: ReadToken = (address) =>
+  Promise.resolve(
+    onChain[address]
+      ? ok(onChain[address])
+      : err({ code: 'NOT_A_TOKEN', message: `${address} has no contract code on this chain` }),
+  );
+
 async function buildContractApp() {
   const store = new InMemoryDispatchStore();
+  await store.seedConfigAssets(
+    configuredAssets({
+      // FLOW and FSPL are the test tokens of the live run the timeline and call examples come from.
+      base: `USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6,FLOW:${FLOW}:6`,
+      solana: `FSPL:${FSPL}:6`,
+    }),
+  );
+  const known = new AssetRegistry(() => store.listKnownAssets());
+  await known.refresh();
   const baseHandler = (senderAddress: string) =>
     BaseChainHandler.create({
       rpcUrl: 'http://base.invalid',
       chainId: 84532,
       senderAddress,
-      knownTokens: parseBaseKnownTokens('USDC:0x036CbD53842c5426634e7929541eC2318f3dCF7e:6'),
+      assets: known.forChain('base'),
       nonceHistoryStore: new InMemoryNonceHistoryStore(),
       bulkCallMaxBatchSize: 50,
       fetch: fakeBaseRpc,
@@ -305,15 +361,16 @@ async function buildContractApp() {
       handler: await baseHandler('0x7499BC37AcA4f0F4a7A982Afdfea340AfDd74e6A'),
     },
     {
-      ...sender('base', 'treasury', '0x5afe000000000000000000000000000000005afe', false),
-      handler: await baseHandler('0x5afe000000000000000000000000000000005afe'),
+      ...sender('base', 'treasury', SAFE_SENDER, false),
+      handler: await baseHandler(SAFE_SENDER),
+      approverLabels: { [OWNER_A.toLowerCase()]: 'Priya, finance' },
     },
     {
       ...sender('solana', 'payouts', '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf', true),
       handler: new SolanaChainHandler({
         connection: new Connection('http://solana.invalid'),
         senderAddress: '33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf',
-        knownTokens: parseSolanaKnownTokens('USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6'),
+        assets: known.forChain('solana'),
       }),
     },
   ]);
@@ -324,7 +381,8 @@ async function buildContractApp() {
     authToken: TOKEN,
     operatorToken: OPERATOR_TOKEN,
     defaultRetryPolicy: false,
-    assetDecimals,
+    assets: known,
+    readToken: { base: readToken, solana: readToken },
     listSenders: () => Promise.all(senderConfigs.map((config) => readSender(config, senderReads))),
     readSetup,
   });
@@ -337,6 +395,10 @@ async function buildContractApp() {
   await app.ready();
   return { app, store, routes };
 }
+
+const SAFE_SENDER = '0x5afe000000000000000000000000000000005afe';
+const OWNER_A = '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a';
+const OWNER_B = '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b';
 
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 // ajv-formats is CommonJS, so under NodeNext its plugin is the default export's own default.
@@ -457,7 +519,7 @@ describe('docs/openapi.yaml against the real routes', () => {
   it('answers every example with its documented status and a body that matches the schema', async () => {
     // Creates first, so the reads and cancels below find the Dispatches the examples name. Flag
     // Rules before Dispatches, so the held example has a rule to match.
-    const creates = ['createFlagRule', 'createDispatch'].flatMap((id) =>
+    const creates = ['createFlagRule', 'addAsset', 'addContract', 'createDispatch'].flatMap((id) =>
       all.filter((s) => s.operationId === id),
     );
     // A 409 needs a claimed Dispatch or a deleted rule, so it runs last, after everything else is claimed.
@@ -474,13 +536,22 @@ describe('docs/openapi.yaml against the real routes', () => {
           `${s.operationId} ${s.name}: ${response.statusCode} (documented ${s.status}) ${problems.join('; ')} ${response.body}`,
         );
       }
-      type Ids = { dispatchId?: string; ruleId?: string } | undefined;
+      type Ids =
+        { dispatchId?: string; ruleId?: string; id?: string; assets?: AssetIds[] } | undefined;
+      type AssetIds = { id: string; chain: string; address: string };
       const example = s.responseExample as Ids;
       const real = body as Ids;
-      for (const key of ['dispatchId', 'ruleId'] as const) {
+      for (const key of ['dispatchId', 'ruleId', 'id'] as const) {
         const exampleId = example?.[key];
         const realId = real?.[key];
         if (exampleId && realId) ids.set(exampleId, realId);
+      }
+      // A listed asset maps by what it is, since the test engine gave it its own id.
+      for (const listed of example?.assets ?? []) {
+        const same = real?.assets?.find(
+          (a) => a.chain === listed.chain && a.address === listed.address,
+        );
+        if (same) ids.set(listed.id, same.id);
       }
     };
 
@@ -492,4 +563,146 @@ describe('docs/openapi.yaml against the real routes', () => {
     expect(failures).toEqual([]);
     expect(tooLate).not.toHaveLength(0);
   });
+
+  it("answers a Multisig Sender's item with its Approvers, their labels and the approvals remaining", async () => {
+    const dispatch = await store.createDispatch({
+      chain: 'base',
+      idempotencyKey: 'approvers-contract',
+      items: [{ call: { to: OWNER_B, data: '0x', value: '1' }, payment: null }],
+      retryPolicy: false,
+      senderAddress: SAFE_SENDER as SenderAddress,
+    });
+    await store.claimQueued(CHAINS, 100);
+    const [call] = await store.noteUnproposed([
+      { dispatchId: dispatch.id, callIndex: 0, chain: 'base' },
+    ]);
+    const chainRef = {
+      kind: 'safe',
+      safe: SAFE_SENDER,
+      safeTxHash: `0x${'ab'.repeat(32)}`,
+      nonce: 3,
+    } as const;
+    const proposal = await store.createProposal({
+      dispatchId: dispatch.id,
+      chain: 'base',
+      senderAddress: SAFE_SENDER,
+      chainRef,
+      payload: 'payload',
+      proposalRef: chainRef.safeTxHash,
+      sequence: 3,
+      threshold: 2,
+      deadlineAt: new Date('2026-11-04T12:00:00.000Z'),
+      executeAfter: null,
+      proposeSignedBytes: null,
+      proposeHash: null,
+      expected: { recipients: 1, totals: [{ asset: 'ETH', amount: '1' }] },
+      committed: { sender: [], proposer: [] },
+      transactionIds: [call!.id],
+    });
+    await store.updateProposal(proposal.id, {
+      phase: 'open',
+      approvals: 1,
+      approvers: [
+        { address: OWNER_A, decision: 'approved' },
+        { address: OWNER_B, decision: 'pending' },
+      ],
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/dispatch/${dispatch.id}`,
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const body = response.json<{ items: { approval: unknown }[] }>();
+
+    expect(
+      validate(
+        pointer(
+          'paths',
+          '/v1/dispatch/{id}',
+          'get',
+          'responses',
+          '200',
+          'content',
+          'application/json',
+          'schema',
+        ),
+        body,
+      ),
+    ).toEqual([]);
+    expect(body.items[0]?.approval).toMatchObject({
+      approvals: 1,
+      threshold: 2,
+      remaining: 1,
+      approvers: [
+        { address: OWNER_A, label: 'Priya, finance', decision: 'approved' },
+        { address: OWNER_B, decision: 'pending' },
+      ],
+    });
+    expect(body.items[0]?.approval).not.toHaveProperty(['approvers', 1, 'label']);
+  });
+  it.each([
+    ['callExplainedSolana', 'memo-and-spl-call'],
+    ['callUndecodedBase', 'base-call-with-value'],
+  ])(
+    'answers the %s example exactly, once its recorded transaction confirmed and the worker read it',
+    async (example, transaction) => {
+      const get = (SPEC.paths as Record<string, Record<string, Operation>>)['/v1/dispatch/{id}']!
+        .get!;
+      const documented = resolve(get.responses['200']!).content!['application/json'].examples![
+        example
+      ]!.value as { chain: 'base' | 'solana'; items: { status: string }[] };
+      const request = (SPEC.paths as Record<string, Record<string, Operation>>)['/v1/dispatch']!
+        .post!.requestBody!.content['application/json'].examples![example]!.value as {
+        items: Record<string, unknown>[];
+      };
+      const { hash } = recorded(transaction);
+      const dispatch = await store.createDispatch({
+        chain: documented.chain,
+        idempotencyKey: `effects-${example}`,
+        items: request.items.map(({ type: _type, ...call }) => ({ call, payment: null })) as never,
+        retryPolicy: false,
+      });
+      await store.claimQueued(CHAINS, 100);
+      const rows = await store.createTransactions(
+        documented.items.map((_, callIndex) => ({
+          dispatchId: dispatch.id,
+          callIndex,
+          chain: documented.chain,
+          signedBytes: 'signed',
+          hash,
+        })),
+      );
+      for (const row of rows) await store.markConfirmed(row.id);
+      await store.recordEffects(
+        { chain: documented.chain, hash },
+        await readRecorded(transaction),
+        new Date(),
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/dispatch/${dispatch.id}`,
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      const body = response.json<{ items: unknown[] }>();
+
+      expect(
+        validate(
+          pointer(
+            'paths',
+            '/v1/dispatch/{id}',
+            'get',
+            'responses',
+            '200',
+            'content',
+            'application/json',
+            'schema',
+          ),
+          body,
+        ),
+      ).toEqual([]);
+      expect(body.items).toEqual(documented.items);
+    },
+  );
 });

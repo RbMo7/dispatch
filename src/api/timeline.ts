@@ -1,6 +1,7 @@
 import type { DispatchError } from '../domain/errors.js';
 import type { ApprovalState, ChainProposalRef, Proposal } from '../domain/proposal.js';
 import type { Attempt, Transaction } from '../domain/transaction.js';
+import { feeOf, type FeeView } from './signed-view.js';
 
 /**
  * #109: one moment in a Dispatch's history, rebuilt from timestamps the
@@ -12,11 +13,27 @@ export type TimelineEntry =
   | { kind: 'created'; at: Date }
   | { kind: 'claimed'; at: Date }
   | { kind: 'cancelled'; at: Date }
-  | { kind: 'written'; at: Date; hash: string; items: number[]; replaces: string | null }
+  | {
+      kind: 'written';
+      at: Date;
+      hash: string;
+      items: number[];
+      replaces: string | null;
+      /** Base: the fees this version was signed with, so a fee bump shows before and after. */
+      fee?: FeeView;
+    }
   | { kind: 'sent'; at: Date; hash: string; items: number[] }
   | { kind: 'attempt'; at: Date; hash: string; items: number[]; error: DispatchError | null }
   | { kind: 'replaced'; at: Date; hash: string; items: number[]; by: string | null }
-  | { kind: 'dropped'; at: Date; hash: string; items: number[]; by: string | null }
+  | {
+      kind: 'dropped';
+      at: Date;
+      hash: string;
+      items: number[];
+      by: string | null;
+      /** ADR-0064: why, when nothing else settled the Call (another sender took its nonce). */
+      error?: DispatchError;
+    }
   | { kind: 'confirmed'; at: Date; hash: string | null; items: number[] }
   | { kind: 'failed'; at: Date; hash: string | null; items: number[]; error: DispatchError | null }
   | {
@@ -51,7 +68,7 @@ export type TimelineEntry =
     };
 
 export type TimelineSource = {
-  dispatch: { createdAt: Date; claimedAt: Date | null; cancelledAt: Date | null };
+  dispatch: { createdAt: Date; firstClaimedAt: Date | null; cancelledAt: Date | null };
   /** Every version, REPLACED and DROPPED included. */
   transactions: Transaction[];
   attempts: Attempt[];
@@ -70,7 +87,7 @@ export function buildTimeline({
   proposals,
 }: TimelineSource): TimelineEntry[] {
   const entries: TimelineEntry[] = [{ kind: 'created', at: dispatch.createdAt }];
-  if (dispatch.claimedAt) entries.push({ kind: 'claimed', at: dispatch.claimedAt });
+  if (dispatch.firstClaimedAt) entries.push({ kind: 'claimed', at: dispatch.firstClaimedAt });
   if (dispatch.cancelledAt) entries.push({ kind: 'cancelled', at: dispatch.cancelledAt });
 
   const byId = new Map(transactions.map((t) => [t.id, t]));
@@ -101,21 +118,16 @@ export function buildTimeline({
       const predecessor = first.replacesTransactionId
         ? byId.get(first.replacesTransactionId)
         : undefined;
+      const fee = feeOf(first.chain, first.signedBytes);
       entries.push({
         kind: 'written',
         at: first.broadcastAt,
         hash,
         items,
         replaces: predecessor?.hash ?? null,
+        ...(fee ? { fee } : {}),
       });
-      // Each resend overwrites lastBroadcastAt, so the first send's moment survives only until one.
-      if (
-        rowAttempts.length === 0 &&
-        first.lastBroadcastAt &&
-        first.lastBroadcastAt > first.broadcastAt
-      ) {
-        entries.push({ kind: 'sent', at: first.lastBroadcastAt, hash, items });
-      }
+      if (first.sentAt) entries.push({ kind: 'sent', at: first.sentAt, hash, items });
       for (const attempt of rowAttempts) {
         entries.push({
           kind: 'attempt',
@@ -163,7 +175,14 @@ export function buildTimeline({
             row.lastBroadcastAt ??
             row.broadcastAt;
           if (hash !== null && droppedAt) {
-            add({ kind: 'dropped', at: droppedAt, hash, items: item, by: successor?.hash ?? null });
+            add({
+              kind: 'dropped',
+              at: droppedAt,
+              hash,
+              items: item,
+              by: successor?.hash ?? null,
+              ...(row.error ? { error: row.error } : {}),
+            });
           }
           break;
         }

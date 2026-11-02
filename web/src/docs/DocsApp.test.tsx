@@ -19,6 +19,10 @@ function open(path: string) {
   return user;
 }
 
+// The Dispatches reference renders every example of every operation, which takes
+// jsdom several seconds on a CI runner; #170 tracks making the page itself lighter.
+const REFERENCE_PAGE_MS = 30_000;
+
 const title = () => screen.getByRole('heading', { level: 1 }).textContent;
 const sideNav = () => within(screen.getByRole('navigation', { name: 'Docs' }));
 
@@ -48,7 +52,7 @@ describe('the docs site', () => {
       'href',
       'https://github.com/RbMo7/dispatch/blob/main/docs/openapi.yaml',
     );
-  });
+  }, REFERENCE_PAGE_MS);
 
   it('switches every sample on the page to the language you choose', async () => {
     const user = open('/docs/rest/dispatches');
@@ -59,7 +63,7 @@ describe('the docs site', () => {
     for (const tab of screen.getAllByRole('tab', { name: 'Python' })) {
       expect(tab.getAttribute('aria-selected')).toBe('true');
     }
-  });
+  }, REFERENCE_PAGE_MS);
 
   it('shows the request and response of the example you pick', async () => {
     const user = open('/docs/rest/dispatches');
@@ -73,7 +77,7 @@ describe('the docs site', () => {
     expect(shown.dataset.example).toBe('unknownAsset');
     expect(shown.textContent).toContain('Status: 400');
     expect(shown.textContent).toContain('UNKNOWN_ASSET');
-  });
+  }, REFERENCE_PAGE_MS);
 
   it('follows a link between Markdown files to its site route', async () => {
     const user = open('/docs/self-hosting/signer');
