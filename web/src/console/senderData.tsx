@@ -102,7 +102,10 @@ export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null
                 : `${sender.signerKey.value.curve}${pinned ? ', pinned' : ''}`,
           },
     ...(sender.foreignActivity && {
-      warning: `Another sender used ${foreignNonces(sender.foreignActivity)}`,
+      warning:
+        sender.foreignActivity.count === 1
+          ? `Another sender used ${foreignNonces(sender.foreignActivity)}`
+          : `Another sender used ${sender.foreignActivity.count} nonces`,
     }),
   };
 }

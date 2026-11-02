@@ -59,7 +59,7 @@ Read `error.code`. Nothing that failed before signing was sent, so after you fix
 
 ## Another sender uses a Sender's wallet
 
-The `sender.exclusive` check warns, the Sender's card in the console says "Another sender used 3 nonces, 3124 to 3126", or a Dispatch's Flow tab shows "Nonce 3124 was taken by another sender". Something other than this engine sent from the Base Sender's address in the last 24 hours, and the warning names the nonces it used.
+The `sender.exclusive` check warns, the Sender's card in the console says "Another sender used 3 nonces", or a Dispatch's Flow tab shows "Nonce 3124 was taken by another sender". Something other than this engine sent from the Base Sender's address in the last 24 hours, and the warning names the nonces it used.
 
 Each payment whose nonce was taken was sent again with a fresh nonce, so it is paid once. Payments can land out of order, and a payment whose nonce is taken 3 times fails with `NONCE_ALREADY_USED`.
 
