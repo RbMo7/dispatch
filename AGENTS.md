@@ -67,22 +67,20 @@ The chain engine, through PR #108:
 - The Tokens setup check runs in the API and doctor, not the worker, which is never given the tokens.
 - The console names a Dispatch by what it carries, shows a Relay's signer, target and value, labels a Bulk Call with its aggregator and `allowFailure`, gives each fee bump's fees, keeps the Held stage in the flow after a release or cancel, lists every hash in a partial, and headlines a Sender's native coin (#168). The API adds the optional fields this needs: `retryPolicy`, `bulkCall`, a Relay's `signer`, `target` and `value`, a Base `written` entry's `fee`, and `callCount` and `heldBy` on list rows.
 - Timeline entries follow the order things happened, from stored times rather than inferred ones; a cancelled Dispatch returns `cancellation` (`at`, `tokenKind`, `reason`); a Base revert names its reason from an `eth_call` replay (#169). Rows 4, 6 to 10 and 13 of `scripts/flows/` ran after these changes.
+- `scripts/flows/` covers every row of the spec's table, 1 to 14 (#167). It creates a fresh 2-of-3 Squads multisig on devnet and a fresh 2-of-3 Safe 1.4.1 on Base Sepolia, with the Safe's executor registered as a delegate, and sends through them as `treasury` Senders in the senders file, beside the plain `payouts` and `refunds` Senders, with the dev Signer holding their keys under the pinned policies. Every row ran on `main` after #185, and the examples in the Assets, contract, multisig and error docs were run against that engine.
 
 ### Unproven
 
-- The multisig live runs (`RUN_SQUADS=1`, `RUN_SAFE=1`) with a Multisig Sender in a senders file, and so the Signer pin check against a live Signer.
+- The opt-in multisig e2e tests (`RUN_SQUADS=1`, `RUN_SAFE=1`) themselves, against a Multisig Sender in a senders file. The same paths, and the Signer pin check against a live Signer, ran in `scripts/flows/` rows 11 and 12.
 - `init` starting the services under Docker Compose, and the setup checks against live Base.
 - The AWS KMS backend against a real key (#61).
-- The flow-coverage rows for Squads and Safe, and the after-change run of every flow (#167).
 - Anything on mainnet.
 
 ### Open issues
 
 Every open issue carries one status label (see above).
 
-- `needs-triage`: #132 (one oversized Dispatch fails the others claimed in its Funding Check batch).
-- `ready-to-go`: #157 (Compose does not pass the senders file to the API and the worker), #159 (the fee balance check should count only its own Sender's fees), #170 (Postgres-tier and `src/setup/init.test.ts` tests fail intermittently under load: Node's clock against Postgres `now()`, and the docs reference tests).
-- `in-progress`: #167 (the live run of every flow after the changes, including the Squads and Safe rows).
-- `in-review`: #145, whose live criterion (one run per chain through a plain and a multisig Sender) is still unmet.
+- `in-progress`: #170 (Postgres-tier and `src/setup/init.test.ts` tests fail intermittently under load: Node's clock against Postgres `now()`, and the docs reference tests).
+- `in-review`: #167 (the live run of every flow, including Squads and Safe). #145, whose live criterion (one run per chain through a plain and a multisig Sender) the #167 run meets.
 - `blocked`: #175 (the Safe executor key, the foreign-nonce record write, duplicate warnings).
 - `waiting`: #61 (needs operator AWS keys), #91 (a human checks that the Squads app shows a batch's contents), #96 (human checks before mainnet: Squads app labels and rent collector, Safe plan quotas, delegate removal, self-hosting).

@@ -39,15 +39,15 @@ Submit with [Create a Dispatch](../openapi.yaml#create-a-dispatch), exactly as f
 
 ## 4. Read the approval while you wait
 
-While the engine has not put a Call into a Proposal, the item is `queued`. On Base it also stays `queued`, with no `approval` block, while an earlier Proposal holds the Safe. Once the Call is in a Proposal, the item is `awaiting_approval`, with `transactionHash: null` because nothing has executed, and it carries an `approval` block. This example is an illustration with the fields a live run returns, not a recorded answer:
+While the engine has not put a Call into a Proposal, the item is `queued`. On Base it also stays `queued`, with no `approval` block, while an earlier Proposal holds the Safe. Once the Call is in a Proposal, the item is `awaiting_approval`, with `transactionHash: null` because nothing has executed, and it carries an `approval` block. This item is from a run on Solana devnet: a 2-of-3 Squads multisig whose senders file names its three Approvers, a 3-minute deadline, and one vote cast so far:
 
 ```json
 {
   "type": "payment",
   "recipient": "Dmp2B7tvZKohJCYoD7YRk4aTo5k1Ndz2Wh7pGYsSCaT2",
-  "asset": "USDC",
+  "asset": "FSPL",
   "decimals": 6,
-  "amount": "15000000",
+  "amount": "1500000",
   "status": "awaiting_approval",
   "transactionHash": null,
   "error": null,
@@ -57,13 +57,18 @@ While the engine has not put a Call into a Proposal, the item is `queued`. On Ba
     "threshold": 2,
     "remaining": 1,
     "approvers": [
-      { "address": "2xUDRfJQTDjPuokctLdyAStss7fU3Cv1bZCgtRidCXwt", "label": "Priya, finance", "decision": "approved" },
-      { "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", "decision": "pending" },
-      { "address": "HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH", "label": "Sam, operations", "decision": "pending" }
+      { "address": "5oc3tmLAXhEjnUXf3Mw93coercYxu53GfWb8rPzrSYxj", "label": "Ana, finance", "decision": "approved" },
+      { "address": "DgSvUQGpEmKJsMMJ6ek3HVPvAHX4Ziz2PcwQMt2GgVPS", "label": "Cy, audit", "decision": "pending" },
+      { "address": "HWbqsdW5KLHwAsMCJQ6tTTbvFtin9TmmapeEwjSi3oAt", "label": "Ben, operations", "decision": "pending" }
     ],
-    "deadline": "2026-11-04T09:00:00.000Z",
-    "expected": { "recipients": 12, "totals": [{ "asset": "USDC", "amount": "180000000" }] },
-    "chainRef": { "kind": "squads", "multisig": "<multisig>", "proposal": "<proposal>", "transactionIndex": 42 }
+    "deadline": "2026-11-02T05:51:22.716Z",
+    "expected": { "totals": [{ "asset": "FSPL", "amount": "1500000" }], "recipients": 1 },
+    "chainRef": {
+      "kind": "squads",
+      "multisig": "3WPGptKeHKNwg5TJQmhs7mTGjXTUogNj4Zex1TvK3u8v",
+      "proposal": "BdrEqGjtMnUtaxCBzdpZBQaAXCjTMtw4dpcMvHwakazH",
+      "transactionIndex": 3
+    }
   }
 }
 ```

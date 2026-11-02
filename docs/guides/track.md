@@ -40,6 +40,7 @@ Before the worker claims it, every item is `queued` and the timeline has one ent
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:40:27.585Z",
   "status": "queued",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",

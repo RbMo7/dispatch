@@ -236,6 +236,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:30:55.690Z",
   "status": "queued",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",

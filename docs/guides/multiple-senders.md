@@ -124,6 +124,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/ea2d0802-a93a-4dc1-8a4e-e80c5e5d5ecc" -H "Aut
   "sender": { "name": "treasury", "address": "CPV2hjMmyjg9NvVC9tSGuNfG2AUzSK76ieC5rZ5dk2oW" },
   "createdAt": "2026-11-01T12:50:46.202Z",
   "status": "confirmed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
@@ -162,6 +163,7 @@ curl -s "$DISPATCH_URL/v1/dispatches?chain=solana&sender=treasury" -H "Authoriza
       "status": "confirmed",
       "createdAt": "2026-11-01T12:50:46.202Z",
       "itemCount": 1,
+      "callCount": 0,
       "totals": [{ "asset": "SOL", "amount": "20000000", "decimals": 9 }]
     }
   ],

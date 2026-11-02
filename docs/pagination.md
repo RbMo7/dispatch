@@ -20,6 +20,7 @@ curl -s "$DISPATCH_URL/v1/dispatches?limit=2" -H "Authorization: Bearer $DISPATC
       "status": "confirmed",
       "createdAt": "2026-11-01T02:13:35.704Z",
       "itemCount": 2,
+      "callCount": 0,
       "totals": [{ "asset": "SOL", "amount": "4650000", "decimals": 9 }]
     },
     {
@@ -29,6 +30,7 @@ curl -s "$DISPATCH_URL/v1/dispatches?limit=2" -H "Authorization: Bearer $DISPATC
       "status": "cancelled",
       "createdAt": "2026-11-01T02:13:21.921Z",
       "itemCount": 1,
+      "callCount": 0,
       "totals": [{ "asset": "USDC", "amount": "12500000", "decimals": 6 }]
     }
   ],
@@ -36,7 +38,7 @@ curl -s "$DISPATCH_URL/v1/dispatches?limit=2" -H "Authorization: Bearer $DISPATC
 }
 ```
 
-Each row is the Dispatch without its items, plus `itemCount` and `totals`: the sum per asset of the payment items, in the asset's smallest unit, with the asset's `decimals`. Call items carry no amount, and a Relay Dispatch has none, so its `totals` is empty. A Relay row also has `transactionHash` and `error`.
+Each row is the Dispatch without its items, plus `itemCount`, `callCount` (how many of the items are calls) and `totals`: the sum per asset of the payment items, in the asset's smallest unit, with the asset's `decimals`. Call items carry no amount, and a Relay Dispatch has none, so its `totals` is empty. A Relay row also has `transactionHash` and `error`.
 
 ## Follow `nextCursor`
 

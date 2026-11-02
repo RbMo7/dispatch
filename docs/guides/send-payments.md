@@ -75,6 +75,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "chain": "base",
   "createdAt": "2026-11-01T02:12:17.619Z",
   "status": "failed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",

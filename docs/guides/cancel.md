@@ -36,6 +36,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:38:24.333Z",
   "status": "held",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
@@ -83,6 +84,7 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID/cancel" \
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:38:24.333Z",
   "status": "cancelled",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
@@ -160,6 +162,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID?include=timeline" -H "Authorizat
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:38:24.333Z",
   "status": "cancelled",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",

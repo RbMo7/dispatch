@@ -48,14 +48,38 @@ curl -X POST http://localhost:8420/v1/contracts \
   }'
 ```
 
-The answer lists what it explains:
+The answer is `201` with the registration, the ABI as stored, and what it explains in `functions` and `events`:
 
 ```json
 {
+  "id": "86ae64a7-5371-47b2-903c-e209b4b4bce1",
+  "chain": "base",
+  "address": "0x79bB95AEF7f032144A9A5C6933B8d13a98e6D793",
   "label": "FlowVault",
+  "abi": [
+    {
+      "name": "Deposited",
+      "type": "event",
+      "inputs": [
+        { "name": "from", "type": "address", "indexed": true },
+        { "name": "amount", "type": "uint256" },
+        { "name": "note", "type": "string" }
+      ]
+    },
+    {
+      "name": "deposit",
+      "type": "function",
+      "inputs": [{ "name": "note", "type": "string" }],
+      "outputs": [],
+      "stateMutability": "payable"
+    }
+  ],
   "functions": ["deposit(string note)"],
   "events": ["Deposited(address indexed from, uint256 amount, string note)"],
-  "enabled": true
+  "source": "console",
+  "enabled": true,
+  "addedBy": "operator",
+  "addedAt": "2026-11-02T05:47:30.182Z"
 }
 ```
 

@@ -273,6 +273,7 @@ Within a few seconds the worker claims it and sends the transaction. The item is
   "chain": "base",
   "createdAt": "2026-11-01T02:12:18.094Z",
   "status": "confirmed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
@@ -295,6 +296,7 @@ Within a few seconds the worker claims it and sends the transaction. The item is
   "chain": "solana",
   "createdAt": "2026-11-01T02:12:18.124Z",
   "status": "confirmed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
