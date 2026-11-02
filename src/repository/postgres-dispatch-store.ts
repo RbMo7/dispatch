@@ -453,7 +453,11 @@ export class PostgresDispatchStore implements DispatchStore {
         )
         .returning();
 
-      return rows.map(toDispatch);
+      // RETURNING promises no order; the Funding Check admits a batch oldest first (ADR-0068).
+      const position = new Map(claimable.map((row, index) => [row.id, index]));
+      return rows
+        .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0))
+        .map(toDispatch);
     });
   }
 

@@ -67,7 +67,7 @@ for item in dispatch["items"]:
 For that Dispatch it prints:
 
 ```text
-confirmed 0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896
+failed INSUFFICIENT_FUNDS
 failed INSUFFICIENT_FUNDS
 ```
 

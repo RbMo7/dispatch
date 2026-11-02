@@ -74,7 +74,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "mode": "managed",
   "chain": "base",
   "createdAt": "2026-11-01T02:12:17.619Z",
-  "status": "partial",
+  "status": "failed",
   "items": [
     {
       "type": "payment",
@@ -82,9 +82,13 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
       "asset": "ETH",
       "decimals": 18,
       "amount": "50000000000000",
-      "status": "confirmed",
-      "transactionHash": "0x7e00aec4eafe72c4c852ff1517ddc1492b4581f117e9a9bbd88602f674735896",
-      "error": null
+      "status": "failed",
+      "transactionHash": null,
+      "error": {
+        "code": "INSUFFICIENT_FUNDS",
+        "message": "insufficient USDC balance",
+        "chainDetail": { "asset": "USDC", "short": "40000000" }
+      }
     },
     {
       "type": "payment",
@@ -104,14 +108,16 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
 }
 ```
 
-The items come back in the order you sent them, each with its own status. `partial` means every item is final and some, but not all, are `confirmed`. [Polling for results](../polling.md) has a loop you can reuse.
+The items come back in the order you sent them, each with its own status. `failed` means every item is final and none is `confirmed`. A Dispatch whose items end differently reads `partial`. [Polling for results](../polling.md) has a loop you can reuse.
 
 ## 6. Send the failed payments again
 
-The ETH payment landed. The USDC payment failed the Funding Check before anything was signed, so `transactionHash` is `null` and nothing left the Sender. `chainDetail.short` is how much more the Sender needs: 40000000, or 40 USDC.
+The Sender could cover the ETH but not the USDC, so the whole Dispatch failed the [Funding Check](../lifecycle.md#the-funding-check) before anything was signed. Every item carries the same error, `transactionHash` is `null`, and nothing left the Sender. `chainDetail.short` is how much more the Sender needs: 40000000, or 40 USDC.
 
 1. Top up the Sender by at least `short`.
-2. Send only the failed items, in a new Dispatch with a new key, such as `payroll-2026-11-01-retry-1`. The old key returns the old Dispatch.
+2. Send the failed items again, in a new Dispatch with a new key, such as `payroll-2026-11-01-retry-1`. The old key returns the old Dispatch.
+
+When a Dispatch ends `partial` instead, send only its failed items again.
 
 Never send again an item that is `broadcasting`, and check the chain first for one that is `abandoned`. [Errors](../errors.md#error-codes) says what to do about each code.
 

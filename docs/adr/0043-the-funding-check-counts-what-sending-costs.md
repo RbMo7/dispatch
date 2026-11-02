@@ -1,5 +1,7 @@
 # The Funding Check counts what sending costs, not only what is paid
 
+Amended by ADR-0068: the cost is estimated per Dispatch, and a shortfall fails only the Dispatch that does not fit, not every Call of the batch.
+
 The Funding Check (ADR-0024) summed payment amounts per asset. On Solana that misses the SOL a payout costs to send: a base fee per transaction, the priority fee, and rent for every recipient token account a token payment creates (about 0.002 SOL each). A 300-recipient token payout from a Sender holding enough tokens but too little SOL passed the check and then failed partway through, which is the outcome the check exists to prevent.
 
 ## Decision

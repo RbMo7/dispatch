@@ -626,7 +626,7 @@ describe('Coordinator Funding Check', () => {
     expect(handler.validateCall).not.toHaveBeenCalled();
   });
 
-  it('aggregates the required amount across separate Dispatches claimed in the same batch', async () => {
+  it('admits the first of two Dispatches claimed together and fails only the one that no longer fits', async () => {
     const { store, handler, coordinator } = setup();
     handler.getBalance.mockResolvedValueOnce(ok({ asset: 'USDC', amount: '150' }));
     const first = await store.createDispatch({
@@ -645,11 +645,135 @@ describe('Coordinator Funding Check', () => {
     await coordinator.processQueuedDispatches(10);
 
     expect(handler.getBalance).toHaveBeenCalledTimes(1);
-    const [firstTransaction] = await store.listTransactions(first.id);
+    expect((await store.listTransactions(first.id))[0]?.status).not.toBe('FAILED');
     const [secondTransaction] = await store.listTransactions(second.id);
-    expect(firstTransaction?.status).toBe('FAILED');
     expect(secondTransaction?.status).toBe('FAILED');
-    expect(firstTransaction?.error?.chainDetail).toEqual({ asset: 'USDC', short: '10' });
+    expect(secondTransaction?.error?.chainDetail).toEqual({ asset: 'USDC', short: '10' });
+  });
+
+  describe('per Dispatch, in claim order (#132)', () => {
+    function withBalances(balances: Record<string, string>) {
+      const ctx = setup();
+      ctx.handler.getBalance.mockImplementation((_address: string, asset: string) =>
+        Promise.resolve(ok({ asset, amount: balances[asset] ?? '0' })),
+      );
+      let keys = 0;
+      const dispatch = (items: DispatchItem<'solana'>[]) =>
+        ctx.store.createDispatch({
+          chain: 'solana',
+          idempotencyKey: `per-dispatch-${keys++}`,
+          items,
+          retryPolicy: false,
+        });
+      const outcome = async (dispatchId: string) =>
+        (await ctx.store.listTransactions(dispatchId)).map((t) =>
+          t.status === 'FAILED' ? (t.error?.chainDetail ?? t.error?.code) : 'sent',
+        );
+      return { ...ctx, dispatch, outcome };
+    }
+
+    it('fails only an oversized Dispatch, not the small ones claimed with it', async () => {
+      const { coordinator, handler, dispatch, outcome } = withBalances({ SOL: '100' });
+      const big = await dispatch([paymentItem('SOL', '2130')]);
+      const small = await dispatch([paymentItem('SOL', '10')]);
+      const smaller = await dispatch([paymentItem('SOL', '20')]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(await outcome(big.id)).toEqual([{ asset: 'SOL', short: '2030' }]);
+      expect(await outcome(small.id)).toEqual(['sent']);
+      expect(await outcome(smaller.id)).toEqual(['sent']);
+      expect(handler.getBalance).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps going past an oversized Dispatch claimed between two small ones', async () => {
+      const { coordinator, dispatch, outcome } = withBalances({ SOL: '100' });
+      const first = await dispatch([paymentItem('SOL', '10')]);
+      const big = await dispatch([paymentItem('SOL', '2130')]);
+      const last = await dispatch([paymentItem('SOL', '20')]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(await outcome(first.id)).toEqual(['sent']);
+      // Short by what it needs on top of what the Dispatches admitted before it use.
+      expect(await outcome(big.id)).toEqual([{ asset: 'SOL', short: '2040' }]);
+      expect(await outcome(last.id)).toEqual(['sent']);
+    });
+
+    it('fails a Dispatch short of SOL as a whole, its token items too, and leaves their tokens to later Dispatches', async () => {
+      const { coordinator, dispatch, outcome } = withBalances({ SOL: '100', USDC: '150' });
+      const short = await dispatch([
+        paymentItem('USDC', '100'),
+        paymentItem('SOL', '500'),
+        paymentItem('USDC', '50'),
+      ]);
+      const later = await dispatch([paymentItem('USDC', '150')]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      const shortSol = { asset: 'SOL', short: '400' };
+      expect(await outcome(short.id)).toEqual([shortSol, shortSol, shortSol]);
+      expect(await outcome(later.id)).toEqual(['sent']);
+    });
+
+    it("estimates each Dispatch's network cost from its own Calls and adds it to that Dispatch's SOL", async () => {
+      const { coordinator, handler, dispatch, outcome } = withBalances({ SOL: '1000' });
+      const networkCost = vi.fn((calls: Call[], _sender: string) =>
+        Promise.resolve(ok({ asset: 'SOL', amount: String(calls.length * 150) })),
+      );
+      Object.assign(handler, { networkCost });
+      const first = await dispatch([paymentItem('SOL', '200'), paymentItem('SOL', '300')]);
+      const second = await dispatch([paymentItem('SOL', '100')]);
+      const callOnly = await dispatch([solanaItem]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(networkCost.mock.calls.map(([calls]) => calls.length)).toEqual([2, 1, 1]);
+      expect(await outcome(first.id)).toEqual(['sent', 'sent']); // 500 + 300
+      expect(await outcome(second.id)).toEqual([{ asset: 'SOL', short: '50' }]); // 800 + 250
+      expect(await outcome(callOnly.id)).toEqual(['sent']); // 800 + 150
+    });
+
+    it('fails only the Dispatch whose network cost cannot be estimated', async () => {
+      const { coordinator, handler, dispatch, outcome } = withBalances({ SOL: '1000' });
+      const networkCost = vi.fn(
+        (_calls: Call[], _sender: string): Promise<Result<Balance, DispatchError>> =>
+          Promise.resolve(ok({ asset: 'SOL', amount: '1' })),
+      );
+      networkCost.mockResolvedValueOnce(err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' }));
+      Object.assign(handler, { networkCost });
+      const first = await dispatch([paymentItem('SOL', '10'), solanaItem]);
+      const second = await dispatch([paymentItem('SOL', '10')]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(await outcome(first.id)).toEqual(['RPC_UNAVAILABLE', 'RPC_UNAVAILABLE']);
+      expect(await outcome(second.id)).toEqual(['sent']);
+    });
+
+    it('reads each balance once, and an unreadable one fails every Dispatch that needs it', async () => {
+      const { coordinator, handler, dispatch, outcome } = withBalances({ SOL: '100' });
+      handler.getBalance.mockImplementation((_address: string, asset: string) =>
+        Promise.resolve(
+          asset === 'USDC'
+            ? err({ code: 'RPC_UNAVAILABLE', message: 'rpc down' })
+            : ok({ asset, amount: '100' }),
+        ),
+      );
+      const first = await dispatch([paymentItem('USDC', '1'), paymentItem('SOL', '1')]);
+      const solOnly = await dispatch([paymentItem('SOL', '1')]);
+      const third = await dispatch([paymentItem('USDC', '1')]);
+
+      await coordinator.processQueuedDispatches(10);
+
+      expect(await outcome(first.id)).toEqual(['RPC_UNAVAILABLE', 'RPC_UNAVAILABLE']);
+      expect(await outcome(solOnly.id)).toEqual(['sent']);
+      expect(await outcome(third.id)).toEqual(['RPC_UNAVAILABLE']);
+      expect(handler.getBalance.mock.calls.map(([, asset]) => asset).sort()).toEqual([
+        'SOL',
+        'USDC',
+      ]);
+    });
   });
 
   it('never fund-checks a call-type item, since it has no Payment to derive a required amount from', async () => {
