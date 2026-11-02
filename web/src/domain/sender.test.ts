@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Chain } from './chains';
-import { type Sender, senderChoices, sharedChains } from './sender';
+import { cardBalances, type Sender, senderChoices, sharedChains } from './sender';
 
 function sender(chain: Chain, name: string): Sender {
   return {
@@ -39,5 +39,35 @@ describe('the Sender filter', () => {
     expect(
       senderChoices([sender('solana', 'default'), sender('base', 'default')], 'all'),
     ).toBeNull();
+  });
+});
+
+describe("a Sender card's balances", () => {
+  const money = (asset: string, raw: string, decimals: number) => ({
+    asset,
+    name: asset,
+    raw,
+    decimals,
+  });
+  const asset = (symbol: string, balance: string, committed: string, decimals = 6) => ({
+    asset: symbol,
+    decimals,
+    balance: { ok: true as const, value: money(symbol, balance, decimals) },
+    committed: money(symbol, committed, decimals),
+  });
+
+  it('leads with the native coin even when a token carries the committed work', () => {
+    const { native, tokens } = cardBalances({
+      holder: 'sender',
+      address: 'Payer111',
+      assets: [
+        asset('SOL', '2000000000', '0', 9),
+        asset('CASPL', '5000000', '4000000'),
+        asset('HBD', '0', '0'),
+        asset('USDC', '1', '0'),
+      ],
+    });
+    expect(native?.asset).toBe('SOL');
+    expect(tokens.map((t) => t.asset)).toEqual(['CASPL', 'USDC']);
   });
 });

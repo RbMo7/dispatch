@@ -1,5 +1,14 @@
 /* Held, Flag Rules and Activity: the operator token's pages (ADR-0057). */
 
+.heldBy {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-12-5);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .heldFor {
   min-width: 96px;
   color: var(--muted);

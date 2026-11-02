@@ -5,6 +5,7 @@ import { type Chain, type Network, proposalApp, proposalUrl, txLink } from './ch
 import {
   type Approval,
   type ApprovalState,
+  type BulkCallSettings,
   type Cancellation,
   type ChainRef,
   type DispatchError,
@@ -19,7 +20,9 @@ import {
   type TimelineEntry,
 } from './dispatch';
 import { type ErrorContext, errorContext, explainError } from './errors';
-import type { Flow, Stage, StageKind, StageLink, Text } from './flow';
+import { holdReason } from './flagRules';
+import type { Flow, Stage, StageHash, StageKind, StageLink, Text } from './flow';
+import { STATUSES } from './status';
 
 /** How the caller formats a clock time; the flow itself stays free of time zones. */
 export interface FlowClock {
@@ -164,12 +167,15 @@ function cancelledFlow(
   };
 }
 
-function heldFlow(base: Stage[], created: Date, clock: FlowClock): Flow {
+function heldFlow(base: Stage[], detail: ManagedDetail, created: Date, clock: FlowClock): Flow {
+  const why = detail.hold
+    ? holdReason(detail.hold, detail.chain, detail.items.length)
+    : 'It matched a Flag Rule.';
   const stages = [
     ...base,
     stage('current', 'Held', {
-      at: clock.time(created),
-      detail: 'It matched a Flag Rule. Nothing is signed until an operator releases it.',
+      at: clock.time(detail.hold?.heldAt ?? created),
+      detail: `${why} Nothing is signed until an operator releases it.`,
     }),
     stage('todo', 'Claimed'),
     stage('todo', 'Signed and sent'),
@@ -384,10 +390,12 @@ function managedFlow(
     stage('done', 'Submitted', { at: clock.time(created), detail: submitted(summary, items) }),
   ];
 
+  if (detail.status === 'held') return heldFlow(base, detail, created, clock);
+  const held = settledHold(detail, clock);
+  if (held) base.push(held);
   if (detail.status === 'cancelled') {
     return cancelledFlow(base, first(timeline, 'cancelled')?.at, clock, detail.cancellation);
   }
-  if (detail.status === 'held') return heldFlow(base, created, clock);
 
   const claimed = last(timeline, 'claimed');
   const tally = new Map<ItemStatus, number>();
@@ -462,7 +470,8 @@ function managedFlow(
         : 'done';
   const sendDetail: string[] = [];
   const [only] = items;
-  if (items.length === 1 && only?.type === 'call') sendDetail.push(callPhrase(only.call));
+  if (detail.bulkCall) sendDetail.push(bulkPhrase(detail.bulkCall));
+  else if (items.length === 1 && only?.type === 'call') sendDetail.push(callPhrase(only.call));
   if (versions.length > 0) {
     sendDetail.push(
       versions.length < sentItems
@@ -472,19 +481,23 @@ function managedFlow(
   }
   if (attempts > 0) sendDetail.push(`sent again ${plural(attempts, 'time')} while waiting`);
   stages.push(
-    stage(sendKind, multisig ? 'Executed' : 'Signed and sent', {
-      ...(written[0]
-        ? { at: sendKind === 'current' ? 'now' : clock.time(written[0].at) }
-        : sendKind === 'current'
-          ? { at: 'now' }
-          : {}),
-      ...(sendDetail.length > 0
-        ? { detail: capitalise(sendDetail.join(', ')) }
-        : multisig && sentItems === 0
-          ? { detail: 'The engine executes once the threshold is met' }
-          : {}),
-      ...(total > 1 && sentItems > 0 && { count: { reached: sentItems, of: total } }),
-    }),
+    stage(
+      sendKind,
+      multisig ? 'Executed' : detail.bulkCall ? 'Sent as a Bulk Call' : 'Signed and sent',
+      {
+        ...(written[0]
+          ? { at: sendKind === 'current' ? 'now' : clock.time(written[0].at) }
+          : sendKind === 'current'
+            ? { at: 'now' }
+            : {}),
+        ...(sendDetail.length > 0
+          ? { detail: capitalise(sendDetail.join(', ')) }
+          : multisig && sentItems === 0
+            ? { detail: 'The engine executes once the threshold is met' }
+            : {}),
+        ...(total > 1 && sentItems > 0 && { count: { reached: sentItems, of: total } }),
+      },
+    ),
   );
 
   const taken = of(timeline, 'dropped').filter((d) => d.taken !== null);
@@ -515,15 +528,13 @@ function managedFlow(
             ? 'Resubmitted'
             : `Resubmitted, ${n(repriced.length)}`
           : one
-            ? 'Fee bumped'
-            : `Fee bumped, ${n(repriced.length)}`,
+            ? 'Fee bumped once'
+            : `Fee bumped ${n(repriced.length)} times`,
         {
           at: clock.time(repriced[0]!.at),
           detail: solana
             ? 'The blockhash expired before it landed, so the engine signed it again with a fresh one. The expired version can never land and cost nothing.'
-            : one
-              ? `No block in time, so it was repriced at the same nonce: ${shortHash(one.replaces!)} replaced by ${shortHash(one.hash)}.`
-              : 'No block in time, so these were repriced at the same nonce.',
+            : bumpDetail(repriced, written),
         },
       ),
     );
@@ -623,6 +634,7 @@ function managedFlow(
     ),
   ];
   const firstHash = landed[0];
+  const sent = sentHashes(items, network);
   if (open) {
     stages.push(
       firstHash
@@ -634,6 +646,13 @@ function managedFlow(
         : stage('end-todo', 'Transaction hash', {
             detail: multisig ? 'Appears after execution' : 'Appears once it lands',
           }),
+    );
+  } else if (sent.length > 1 && sent.length <= LISTED_HASHES && sent.some((h) => h.failed)) {
+    // A partial Dispatch: every transaction it sent, each with how it ended.
+    stages.push(
+      stage(firstHash ? 'end-done' : 'end-failed', `${n(sent.length)} transaction hashes`, {
+        hashes: sent,
+      }),
     );
   } else if (firstHash) {
     stages.push(
@@ -653,6 +672,7 @@ function managedFlow(
         detail: multisig
           ? 'Nothing was executed.'
           : 'Nothing confirmed on chain for this Dispatch.',
+        ...(sent.length > 0 && sent.length <= LISTED_HASHES && { hashes: sent }),
       }),
     );
   }
@@ -687,6 +707,72 @@ function managedFlow(
         : 'Ended',
     stages,
   };
+}
+
+/** A finished Dispatch lists every hash it sent, up to this many; past it, the first and Items. */
+const LISTED_HASHES = 10;
+
+/** Each distinct hash the items carry, in item order, with the status of the items it carried. */
+function sentHashes(items: readonly Item[], network: Network): StageHash[] {
+  const byHash = new Map<string, ItemStatus>();
+  for (const item of items) {
+    if (item.transactionHash && !byHash.has(item.transactionHash)) {
+      byHash.set(item.transactionHash, item.status);
+    }
+  }
+  return [...byHash].map(([hash, status]) => ({
+    hash,
+    outcome: STATUSES[status].label,
+    failed: status === 'failed' || status === 'abandoned',
+    links: explorer(network, hash),
+  }));
+}
+
+/** "through the aggregator FlowAggregator (0x5a1f…9c2e), allowFailure false" (ADR-0038). */
+function bulkPhrase(bulk: BulkCallSettings): string {
+  const name = bulk.label
+    ? `${bulk.label} (${shortHash(bulk.aggregator)})`
+    : shortHash(bulk.aggregator);
+  return `through the aggregator ${name}, allowFailure ${bulk.allowFailure}`;
+}
+
+const gweiFormat = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 4 });
+
+/** Wei as gwei to four significant digits: Base fees are often a fraction of one. */
+export function gwei(wei: string): string {
+  const value = BigInt(wei);
+  const whole = value / 1_000_000_000n;
+  const fraction = Number(value % 1_000_000_000n) / 1e9;
+  return gweiFormat.format(Number(whole) + fraction);
+}
+
+/** Each bump's fees before and after: "0x12ab…34cd to 0x56ef…78ab: max fee 0.012 to 0.015 gwei, tip 0.001 to 0.0012 gwei." */
+function bumpDetail(
+  repriced: readonly EntryOf<'written'>[],
+  written: readonly EntryOf<'written'>[],
+): string {
+  const feeOf = new Map(written.map((w) => [w.hash, w.fee ?? null]));
+  const lines = repriced.map((w) => {
+    const before = feeOf.get(w.replaces!) ?? null;
+    const after = w.fee ?? null;
+    const step = `${shortHash(w.replaces!)} to ${shortHash(w.hash)}`;
+    if (!before || !after) return `${step}.`;
+    return `${step}: max fee ${gwei(before.maxFeePerGas)} to ${gwei(after.maxFeePerGas)} gwei, tip ${gwei(before.maxPriorityFeePerGas)} to ${gwei(after.maxPriorityFeePerGas)} gwei.`;
+  });
+  return `No block in time, so it was repriced at the same nonce. ${lines.join(' ')}`;
+}
+
+/** A hold that ended: kept in the flow with why it held, and who released it, when and why. */
+function settledHold(detail: ManagedDetail, clock: FlowClock): Stage | null {
+  const { hold } = detail;
+  if (!hold) return null;
+  const why = holdReason(hold, detail.chain, detail.items.length);
+  const ended = hold.releasedAt
+    ? ` Released with the operator token at ${clock.time(hold.releasedAt)}, after ${duration(hold.releasedAt.getTime() - hold.heldAt.getTime())}: ${hold.reason ?? 'no reason given'}.`
+    : detail.status === 'cancelled'
+      ? ' Cancelled while held, so it was never released.'
+      : '';
+  return stage('done', 'Held', { at: clock.time(hold.heldAt), detail: `${why}${ended}` });
 }
 
 /** "payouts is short 11.1158 SOL. Fund 0x8b21…44fe.", with the shortfall as an amount when its decimals are known. */

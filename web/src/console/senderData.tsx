@@ -2,9 +2,9 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo } from 
 
 import { SenderCard, type SenderCardProps } from '../components/SenderCard';
 import {
+  cardBalances,
   feePayer,
   foreignNonces,
-  headlineAsset,
   HOLDER_LABEL,
   payer,
   pinnedToMultisig,
@@ -73,10 +73,15 @@ export function useSharedChains(): Set<Chain> {
   return useMemo(() => sharedChains(data ?? []), [data]);
 }
 
-/** One Sender as a sidebar card: its headline balance, what is committed, and who pays fees. */
+/**
+ * One Sender as a sidebar card: its native balance first, as that pays the
+ * fees, what is committed of it, its token balances, and who pays fees.
+ */
 export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null {
   const holding = payer(sender);
-  const headline = holding && headlineAsset(holding);
+  const { native: headline, tokens } = holding
+    ? cardBalances(holding)
+    : { native: undefined, tokens: [] };
   if (!holding || !headline) return null;
   const fees = feePayer(sender);
   const feeAsset = fees?.assets[0];
@@ -87,6 +92,11 @@ export function senderCard(sender: Sender): Omit<SenderCardProps, 'href'> | null
     name: sender.name,
     balance: headline.balance.ok ? headline.balance.value : { error: headline.balance.error },
     committed: headline.committed,
+    tokens: tokens.map((token) =>
+      token.balance.ok
+        ? { balance: token.balance.value, committed: token.committed }
+        : { asset: token.asset, error: token.balance.error },
+    ),
     footer:
       fees && feeAsset?.balance.ok
         ? {

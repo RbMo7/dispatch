@@ -14,7 +14,7 @@ import {
   undecodedLine,
 } from '../../domain/calls';
 import type { Chain } from '../../domain/chains';
-import type { CallItem, Item } from '../../domain/dispatch';
+import { type CallItem, type Item, RELAY_DECODER } from '../../domain/dispatch';
 import styles from '../console.module.css';
 import { Link } from '../router';
 import { useOperator } from '../session';
@@ -88,10 +88,12 @@ export function CallLine({ item, chain }: { item: CallItem; chain: Chain }) {
     <span className={css.line}>
       <Pill tone="queued" label="Call" />
       <span className={css.lineCall} title={signature ?? call.data ?? undefined}>
-        {signature ??
-          (call.selector
-            ? `Selector ${call.selector}, no ${definitionName(chain)}`
-            : 'Sends value, no data')}
+        {call.decoder === RELAY_DECODER
+          ? 'Signed by its caller, sent as it came'
+          : (signature ??
+            (call.selector
+              ? `Selector ${call.selector}, no ${definitionName(chain)}`
+              : 'Sends value, no data'))}
       </span>
       {changed && <span className={css.lineEffects}>{changed}</span>}
       {missing && <AddDefinitionLink chain={chain} address={missing} />}

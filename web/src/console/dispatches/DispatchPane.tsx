@@ -10,7 +10,7 @@ import { StatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
 import type { Chain } from '../../domain/chains';
-import type { Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
+import type { BulkCallSettings, Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
 import type { ErrorContext } from '../../domain/errors';
 import type { Flow } from '../../domain/flow';
 import type { Status } from '../../domain/status';
@@ -40,8 +40,10 @@ interface DispatchPaneProps {
   chain: Chain;
   /** Null while the first load is out, or when it failed: `body` says which. */
   flow: Flow | null;
-  /** Null for a Relay Dispatch, which has no items: its tab is left out. */
+  /** A Relay Dispatch's one transaction as its item; null when there is nothing to list, and its tab is left out. */
   items: readonly Item[] | null;
+  /** What items sharing a hash went out as: "Bulk Call" on a Bulk Call, else "transaction". */
+  bundled?: string;
   /** Where the items' errors happened, for the error catalogue. */
   errors: ErrorContext;
   details: readonly { label: string; value: ReactNode }[];
@@ -139,6 +141,7 @@ export function DispatchPane(props: DispatchPaneProps) {
                   chain={props.chain}
                   approvals={props.approvals}
                   items={items}
+                  bundled={props.bundled}
                   filter={props.itemFilter}
                   onFilter={props.onItemFilter}
                   search={props.itemSearch}
@@ -157,7 +160,9 @@ export function DispatchPane(props: DispatchPaneProps) {
                       </div>
                     ))}
                   </dl>
-                  {items && <CallDetails items={items} chain={props.chain} />}
+                  {items && head.mode === 'managed' && (
+                    <CallDetails items={items} chain={props.chain} />
+                  )}
                   {props.approvals && (
                     <div className={styles.detailsApprovals}>
                       <h3 className={styles.detailsHeading}>Approval</h3>
@@ -184,6 +189,19 @@ export function TotalsDetail({ totals }: { totals: readonly Money[] }) {
           {total.name !== total.asset && <span className={styles.muted}> {total.name}</span>}
         </span>
       ))}
+    </span>
+  );
+}
+
+/** The Details tab's Bulk Call: the aggregator by label and address, then its settings (ADR-0038). */
+export function BulkCallDetail({ bulk }: { bulk: BulkCallSettings }) {
+  return (
+    <span className={styles.senderDetail}>
+      {bulk.label ?? 'Through an aggregator'}
+      <MonoValue value={bulk.aggregator} />
+      <span className={styles.muted}>
+        allowFailure {String(bulk.allowFailure)}, up to {bulk.maxBatchSize} items per transaction
+      </span>
     </span>
   );
 }

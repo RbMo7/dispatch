@@ -339,6 +339,17 @@ const PLAIN: Entry = {
   fix: () => docs('API reference', 'rest/dispatches'),
 };
 
+/**
+ * An item row's error line: the catalogue's own line where it names the
+ * fact ("Reverted: …"), else its title with the engine's message, so the row
+ * says what happened and not only what kind of error it was.
+ */
+export function errorRow(error: ReadError, ctx: ErrorContext): string {
+  const { title, line } = explainError(error, ctx);
+  if (line !== title || !error.message.trim()) return line;
+  return `${title}: ${error.message.trim()}`;
+}
+
 /** Pure: an error, read with where it happened, as the console shows it. */
 export function explainError(error: ReadError, ctx: ErrorContext): Explanation {
   const entry: Entry =

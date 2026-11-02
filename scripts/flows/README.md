@@ -48,7 +48,7 @@ To run against another engine, skip `local-engine.ts` and set `FLOWS_ENGINE_URL`
 
 ## Output
 
-- `shots/<row>-<label>-<view>.png`, with `<view>` one of `flow`, `items` or `details`, and a `.txt` beside each with the page's visible text. A Relay Dispatch has no Items tab, so its `items` shot shows the Flow tab.
+- `shots/<row>-<label>-<view>.png`, with `<view>` one of `flow`, `items` or `details`, and a `.txt` beside each with the page's visible text. A Relay Dispatch's Items tab shows its one transaction; against an engine too old to read the signed bytes it has no Items tab, and its `items` shot shows the Flow tab.
 - `shots/<row>-<page>.png` for whole pages: Overview, Activity and Dispatches for row 3; the Held page and the held Dispatch while it waits for row 13; Senders for row 14.
 - `results-<runId>.json`: each row's outcome (`ran`, `skipped` or `failed`, with the reason), its Dispatch ids, end states and notes, and every wallet's balance before and after, which is what the run spent.
 

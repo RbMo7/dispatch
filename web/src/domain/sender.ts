@@ -144,6 +144,23 @@ export function headlineAsset(holding: Holding): AssetBalance | undefined {
   return tokens.find((a) => a.balance.ok && BigInt(a.balance.value.raw) > 0n) ?? native;
 }
 
+/**
+ * A Sender card's figures: the chain's native coin first, since it pays the
+ * fees, then each token it holds or has work committed in.
+ */
+export function cardBalances(holding: Holding): {
+  native: AssetBalance | undefined;
+  tokens: AssetBalance[];
+} {
+  const [native, ...tokens] = holding.assets;
+  return {
+    native,
+    tokens: tokens.filter(
+      (a) => BigInt(a.committed.raw) > 0n || (a.balance.ok && BigInt(a.balance.value.raw) > 0n),
+    ),
+  };
+}
+
 /** Whether the engine's key is pinned to this Sender's multisig (ADR-0055). Null for a single key. */
 export function pinnedToMultisig(sender: Sender): boolean | null {
   if (!sender.multisig || !sender.signerKey.ok) return null;

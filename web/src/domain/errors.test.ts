@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-import { CATALOGUE, explainError } from './errors';
+import { CATALOGUE, errorRow, explainError } from './errors';
 
 type Schema = { properties: { code: { enum: string[] } } };
 const spec = parse(
@@ -159,5 +159,31 @@ describe('the error catalogue', () => {
     expect(
       explainError({ code: 'SOMETHING_NEW', message: 'a new failure' }, { chain: null }),
     ).toMatchObject({ title: 'SOMETHING_NEW', text: 'A new failure.' });
+  });
+});
+
+describe("an item row's error line", () => {
+  const base = { chain: 'base' as const };
+
+  it('keeps the catalogue line where it names the fact', () => {
+    expect(
+      errorRow(
+        {
+          code: 'CHAIN_REJECTED',
+          message: 'reverted',
+          detail: { reason: 'FlowVault: always reverts' },
+        },
+        base,
+      ),
+    ).toBe('Reverted: FlowVault: always reverts');
+  });
+
+  it("adds the engine's message where the line is only the kind of error", () => {
+    expect(
+      errorRow(
+        { code: 'CHAIN_REJECTED', message: 'base reported this transaction as failed' },
+        base,
+      ),
+    ).toBe('Not valid on the chain: base reported this transaction as failed');
   });
 });

@@ -9,7 +9,7 @@ import { StatusPill } from '../../components/StatusPill';
 import { type Column, VirtualTable } from '../../components/VirtualTable';
 import type { Chain } from '../../domain/chains';
 import { type Item, type ItemFilter, itemTarget } from '../../domain/dispatch';
-import { type ErrorContext, explainError } from '../../domain/errors';
+import { type ErrorContext, errorRow, explainError } from '../../domain/errors';
 import { STATUSES } from '../../domain/status';
 import { EXPORT_FORMATS, type ExportFormat } from '../../export/download';
 import styles from '../console.module.css';
@@ -80,6 +80,8 @@ const COLUMNS: readonly Column<ItemRow>[] = [
 
 interface ItemsTabProps {
   chain: Chain;
+  /** What items sharing a hash went out as, for the bundle heading: "Bulk Call" or "transaction". */
+  bundled?: string | undefined;
   items: readonly Item[];
   filter: ItemFilter;
   onFilter: (filter: ItemFilter) => void;
@@ -96,16 +98,17 @@ interface ItemsTabProps {
 /** The error catalogue's one line on why an item failed, under the item; the next step on hover. */
 function ErrorLine({ item, errors }: { item: Item; errors: ErrorContext }) {
   if (!item.error) return null;
-  const explained = explainError(item.error, errors);
+  const line = errorRow(item.error, errors);
   return (
-    <span className={styles.itemError} title={`${explained.line}. ${explained.next}`}>
-      {explained.line}
+    <span className={styles.itemError} title={`${line}. ${explainError(item.error, errors).next}`}>
+      {line}
     </span>
   );
 }
 
 export function ItemsTab({
   chain,
+  bundled = 'transaction',
   items,
   filter,
   onFilter,
@@ -199,7 +202,7 @@ export function ItemsTab({
                 <CaretRight size={12} aria-hidden="true" />
               )}
               <span className={styles.bundleLabel}>
-                {count.format(row.count)} items in one transaction
+                {count.format(row.count)} items in one {bundled}
               </span>
               <span className={styles.bundleHash}>{row.hash}</span>
             </button>

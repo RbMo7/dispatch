@@ -214,6 +214,35 @@
   font-size: var(--text-13);
 }
 
+.hashes {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hashRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: var(--text-13);
+}
+
+.hashOutcome,
+.hashFailed {
+  font-size: var(--text-12-5);
+}
+
+.hashOutcome {
+  color: var(--muted);
+}
+
+.hashFailed {
+  color: var(--danger);
+}
+
 .detail {
   margin-top: 3px;
   color: var(--muted);

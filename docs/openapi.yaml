@@ -3557,6 +3557,14 @@ components:
             hash: { type: string }
             items: { type: array, items: { type: integer } }
             replaces: { type: [string, 'null'] }
+            fee:
+              type: object
+              additionalProperties: false
+              required: [maxFeePerGas, maxPriorityFeePerGas]
+              description: Base only. The EIP-1559 fees this version was signed with, in wei, so a fee bump shows what it paid before and after.
+              properties:
+                maxFeePerGas: { type: string, pattern: '^[0-9]+$' }
+                maxPriorityFeePerGas: { type: string, pattern: '^[0-9]+$' }
         - title: sent
           type: object
           additionalProperties: false
@@ -3663,6 +3671,19 @@ components:
         sender: { $ref: '#/components/schemas/SenderRef' }
         createdAt: { type: string, format: date-time, description: When the engine stored it. }
         status: { $ref: '#/components/schemas/DispatchStatus' }
+        retryPolicy:
+          type: boolean
+          description: Whether the engine may send a stuck transaction again at a higher fee, as the request or the operator's default set it.
+        bulkCall:
+          type: object
+          additionalProperties: false
+          required: [aggregator, maxBatchSize, allowFailure]
+          description: Only on a Bulk Call. The aggregator, with its label when the contract registry has one, and the settings in force.
+          properties:
+            aggregator: { type: string }
+            label: { type: string }
+            maxBatchSize: { type: integer, minimum: 1 }
+            allowFailure: { type: boolean }
         items:
           type: array
           description: One entry per item, in the order you sent them. Each repeats what you asked for and adds its own outcome.
@@ -3692,6 +3713,13 @@ components:
           enum: [queued, broadcasting, confirmed, failed, abandoned, cancelled]
         transactionHash: { type: [string, 'null'] }
         error: { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/Error' }] }
+        signer: { type: string, description: The address that signed the transaction, read from its bytes. }
+        target:
+          type: string
+          description: Base, its `to`. Solana, the recipient of a System transfer, else the first program it calls after the Compute Budget program.
+        value:
+          $ref: '#/components/schemas/AssetTotal'
+          description: The native coin it moves. On Solana, only for a System transfer.
         cancellation: { $ref: '#/components/schemas/Cancellation' }
         effects: { $ref: '#/components/schemas/Effects' }
         timeline:
@@ -3714,6 +3742,11 @@ components:
             status: { $ref: '#/components/schemas/DispatchStatus' }
             createdAt: { type: string, format: date-time }
             itemCount: { type: integer }
+            callCount: { type: integer, description: How many of the items are calls; the rest are payments. }
+            heldBy:
+              type: array
+              items: { type: string }
+              description: Only on a held row. The names of the rules holding it.
             totals:
               type: array
               description: The sum per asset of the payment items. Call items carry no amount.
