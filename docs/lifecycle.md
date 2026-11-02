@@ -8,7 +8,7 @@ A Managed Dispatch has a status, and so does each of its items. Act on the item 
 
 1. **Stored.** `POST /v1/dispatch` checks the request and stores it. Every item is `queued`. Nothing has checked a balance, signed anything or touched the chain, so the `202` answer carries no chain result.
 2. **Claimed.** The worker looks for queued Dispatches every two seconds, between rounds of work, and claims yours. From here it cannot be cancelled.
-3. **Checked.** The [Funding Check](#the-funding-check) adds up what the Dispatch needs, per asset and payer, and compares that with the balances on chain. Items the payer cannot cover fail now with `INSUFFICIENT_FUNDS`, before anything is signed.
+3. **Checked.** The [Funding Check](#the-funding-check) adds up what the Dispatch needs, per asset and payer, and compares that with the balances on chain. If the payer cannot cover all of it, every item fails now with `INSUFFICIENT_FUNDS`, before anything is signed.
 4. **Built and signed.** The worker builds each transaction and assigns its nonce. The Signer signs it if the key's policy allows, and the worker checks that the signature comes from the Sender's key.
 5. **Written down, then sent.** The worker writes the signed transaction and its hash to Postgres before it sends it, so a crash can never lose track of a transaction that might land. The item is `broadcasting`.
 6. **Tracked.** The worker checks the transaction until the chain answers. The item becomes `confirmed`, or `failed` if the chain refused or reverted it.
@@ -76,16 +76,18 @@ Before the engine signs anything for a Managed Dispatch, it checks that the paye
 
 The worker runs the check when it claims a batch of queued Dispatches, before it builds any transaction. It does not run when you call `POST /v1/dispatch`, so a `202` says nothing about the balance. Top up the Sender before you submit, or expect `INSUFFICIENT_FUNDS` on the items. [Read Sender balances before you send](./guides/sender-balances.md) shows how.
 
-For each asset, the check adds up everything the claimed Dispatches need from each payer:
+The worker can claim several of your Dispatches at once. The check takes them oldest first and admits each one whose needs still fit what is left after the ones admitted before it. A Dispatch that does not fit fails, and the check goes on to the next one, so one oversized Dispatch never fails the smaller ones claimed with it.
+
+For each asset, the check adds up everything a Dispatch needs from each payer:
 
 - **Payments.** Every `payment` item's amount, per asset.
-- **Fees, on Solana.** The SOL for each transaction's fee, any priority fee, and the rent for every recipient token account the engine has to create.
+- **Fees, on Solana.** The SOL for each transaction's fee, any priority fee, and the rent for every recipient token account the engine has to create, estimated for the Dispatch's own items.
 - **The real payer.** Each amount is checked against whoever pays it. The Sender pays almost everything. A Bulk Call's ERC-20 items are paid from the aggregator contract's own balance, so they are checked against the aggregator.
 - **Money already promised, for a Multisig Sender.** Open Proposals, Calls waiting to be proposed, and timed-out Proposals the engine still watches all hold back part of the balance. The check subtracts that `committed` amount first, so a second Dispatch cannot spend what the first is waiting to pay.
 
 A `call` item is not counted, not even the `value` a Base call sends. The engine does not read what your encoded call spends, so make sure the Sender holds enough for your calls yourself. If the engine cannot read a balance at all, for example because the RPC is down, it fails the affected items rather than send them unchecked.
 
-Items the balance can cover still go ahead, so a Dispatch with one unaffordable item can read `partial`. The check is a snapshot at claim time. If something else spends from the Sender between the check and the send, the chain can still refuse a transaction, and the item fails with `INSUFFICIENT_FUNDS` from the chain instead.
+A Dispatch the payer cannot cover in full fails as a whole: every item is `failed` with the same `INSUFFICIENT_FUNDS`, whose `chainDetail` names the first asset that is short and by how much, counting the Dispatches admitted before it. Nothing of it is signed, so no half-paid Dispatch goes out. The check is a snapshot at claim time. If something else spends from the Sender between the check and the send, the chain can still refuse a transaction, and the item fails with `INSUFFICIENT_FUNDS` from the chain instead.
 
 ## Retry Policy and stuck transactions
 

@@ -92,26 +92,32 @@ Read it top to bottom:
 
 Both items carry the same `transactionHash`. Open it in an explorer: `https://explorer.solana.com/tx/<transactionHash>?cluster=devnet`, or on Base Sepolia `https://sepolia.basescan.org/tx/<transactionHash>`.
 
-## When an item fails before signing
+## When a Dispatch fails before signing
 
-This Dispatch paid ETH and a test token, `FLOW`, of which the Sender held too little. Its timeline shows a `failed` entry with `hash: null`: the Funding Check failed the `FLOW` item right after the claim, before anything was signed.
+This Dispatch paid 0.00005 ETH and a test token, `FLOW`, from a Sender that held too little ETH. The [Funding Check](../lifecycle.md#the-funding-check) failed the whole Dispatch right after the claim, before anything was signed, so its timeline shows a `failed` entry with `hash: null` for each item, both with the same error:
 
 ```json
 "timeline": [
-  { "kind": "created", "at": "2026-11-01T16:44:48.033Z" },
-  { "kind": "claimed", "at": "2026-11-01T16:44:48.290Z" },
+  { "kind": "created", "at": "2026-11-02T05:07:52.597Z" },
+  { "kind": "claimed", "at": "2026-11-02T05:07:54.035Z" },
   {
     "kind": "failed",
-    "at": "2026-11-01T16:44:48.786Z",
+    "at": "2026-11-02T05:07:54.366Z",
+    "hash": null,
+    "items": [0],
+    "error": { "code": "INSUFFICIENT_FUNDS", "message": "insufficient ETH balance", "chainDetail": { "asset": "ETH", "short": "17823374504336" } }
+  },
+  {
+    "kind": "failed",
+    "at": "2026-11-02T05:07:54.369Z",
     "hash": null,
     "items": [1],
-    "error": { "code": "INSUFFICIENT_FUNDS", "message": "insufficient FLOW balance", "chainDetail": { "asset": "FLOW", "short": "1001001500000" } }
-  },
-  { "kind": "written", "at": "2026-11-01T16:44:49.275Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0], "replaces": null },
-  { "kind": "sent", "at": "2026-11-01T16:44:49.558Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0] },
-  { "kind": "confirmed", "at": "2026-11-01T16:44:51.329Z", "hash": "0xae879f57fb8426063d97a216c29bac8727d13d99846fb7ad2b3df739af7897f9", "items": [0] }
+    "error": { "code": "INSUFFICIENT_FUNDS", "message": "insufficient ETH balance", "chainDetail": { "asset": "ETH", "short": "17823374504336" } }
+  }
 ]
 ```
+
+The `FLOW` item fails too, although the Sender held enough `FLOW`, because a Dispatch the Sender cannot cover in full never goes out in part.
 
 ## When a transaction is replaced
 
