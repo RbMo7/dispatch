@@ -74,6 +74,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "sender": { "name": "payouts", "address": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e" },
   "createdAt": "2026-11-01T17:32:59.300Z",
   "status": "confirmed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "call",
@@ -250,6 +251,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID" -H "Authorization: Bearer $DISP
   "sender": { "name": "payouts", "address": "7oCe2HetopE1x3eepG7suVMWh8a8CKUYShTnY8b96a82" },
   "createdAt": "2026-11-01T17:32:59.344Z",
   "status": "confirmed",
+  "retryPolicy": false,
   "items": [
     {
       "type": "call",

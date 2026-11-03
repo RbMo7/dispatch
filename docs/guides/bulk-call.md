@@ -51,6 +51,8 @@ curl -s "$DISPATCH_URL/v1/dispatch/$DISPATCH_ID?include=timeline" -H "Authorizat
   "chain": "base",
   "createdAt": "2026-11-01T02:12:18.037Z",
   "status": "confirmed",
+  "retryPolicy": false,
+  "bulkCall": { "aggregator": "0xcA11bde05977b3631167028862bE2a173976CA11", "maxBatchSize": 10, "allowFailure": false },
   "items": [
     {
       "type": "payment",

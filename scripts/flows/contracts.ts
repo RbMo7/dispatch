@@ -48,6 +48,15 @@ contract FlowVault {
 
 export const FLOW_VAULT_ABI = [
   {
+    type: 'event',
+    name: 'Deposited',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'note', type: 'string', indexed: false },
+    ],
+  },
+  {
     type: 'function',
     name: 'deposit',
     stateMutability: 'payable',

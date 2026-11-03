@@ -14,7 +14,14 @@ import path from 'node:path';
 import postgres from 'postgres';
 
 import { baseAddress, readJson, REPO_ROOT, senderKeys, statePath, writeJson } from './config.js';
-import { prepareAssets } from './prepare.js';
+import {
+  APPROVER_LABELS,
+  type Multisigs,
+  prepareMultisigs,
+  safeKeys,
+  squadsKeys,
+} from './multisig.js';
+import { prepareAssets, prepareExtraToken } from './prepare.js';
 
 const API_PORT = Number(process.env.FLOWS_API_PORT ?? 8501);
 const SIGNER_PORT = Number(process.env.FLOWS_SIGNER_PORT ?? 8502);
@@ -49,8 +56,15 @@ async function admin<T>(work: (sql: postgres.Sql) => Promise<T>): Promise<T> {
   }
 }
 
-function writeEngineConfig() {
+/** Row 11's Proposals time out this long after they are created, so the run can watch one do it. */
+const SQUADS_DEADLINE_MS = Number(process.env.FLOWS_SQUADS_DEADLINE_MS ?? 180_000);
+
+function writeEngineConfig(multisigs: Multisigs) {
   const keys = senderKeys();
+  const squads = squadsKeys();
+  const safe = safeKeys();
+  const labels = (addresses: string[]) =>
+    Object.fromEntries(addresses.map((a, i) => [a, APPROVER_LABELS[i]!]));
   const solana = {
     payouts: keys.solana.payouts.publicKey.toBase58(),
     refunds: keys.solana.refunds.publicKey.toBase58(),
@@ -59,11 +73,30 @@ function writeEngineConfig() {
   writeJson(statePath('senders.json'), {
     solana: {
       default: 'payouts',
-      senders: { payouts: { address: solana.payouts }, refunds: { address: solana.refunds } },
+      senders: {
+        payouts: { address: solana.payouts },
+        refunds: { address: solana.refunds },
+        treasury: {
+          mode: 'squads',
+          multisig: multisigs.squads.multisig,
+          memberKey: multisigs.squads.member,
+          approvalDeadlineMs: SQUADS_DEADLINE_MS,
+          approvers: labels(multisigs.squads.voters),
+        },
+      },
     },
     base: {
       default: 'payouts',
-      senders: { payouts: { address: base.payouts }, refunds: { address: base.refunds } },
+      senders: {
+        payouts: { address: base.payouts },
+        refunds: { address: base.refunds },
+        treasury: {
+          mode: 'safe',
+          safe: multisigs.safe.safe,
+          executor: multisigs.safe.executor,
+          approvers: labels(multisigs.safe.owners),
+        },
+      },
     },
   });
   writeJson(statePath('signer-config.json'), {
@@ -71,6 +104,19 @@ function writeEngineConfig() {
     [solana.refunds]: { curve: 'ed25519', backend: 'keyfile', keyRef: 'solana-refunds' },
     [base.payouts]: { curve: 'secp256k1', backend: 'keyfile', keyRef: 'base-payouts' },
     [base.refunds]: { curve: 'secp256k1', backend: 'keyfile', keyRef: 'base-refunds' },
+    // The multisig keys carry the policies the engine's pin check asks for (ADR-0055).
+    [multisigs.squads.member]: {
+      curve: 'ed25519',
+      backend: 'keyfile',
+      keyRef: 'squads-member',
+      policy: { allowedMultisig: multisigs.squads.multisig },
+    },
+    [multisigs.safe.executor]: {
+      curve: 'secp256k1',
+      backend: 'keyfile',
+      keyRef: 'safe-executor',
+      policy: { chainIds: [84532], allowedSafe: multisigs.safe.safe },
+    },
   });
   const seed = (kp: { secretKey: Uint8Array }) =>
     Buffer.from(kp.secretKey.slice(0, 32)).toString('hex');
@@ -78,10 +124,12 @@ function writeEngineConfig() {
     ed25519: {
       'solana-payouts': seed(keys.solana.payouts),
       'solana-refunds': seed(keys.solana.refunds),
+      'squads-member': seed(squads.member),
     },
     secp256k1: {
       'base-payouts': keys.base.payouts.slice(2),
       'base-refunds': keys.base.refunds.slice(2),
+      'safe-executor': safe.executor.slice(2),
     },
   });
 }
@@ -115,7 +163,8 @@ async function waitFor(url: string, token: string) {
 async function up(): Promise<EngineHandle> {
   if (existsSync(ENGINE_FILE)) throw new Error(`${ENGINE_FILE} exists: run "down" first`);
   const assets = await prepareAssets();
-  writeEngineConfig();
+  await prepareExtraToken();
+  writeEngineConfig(await prepareMultisigs(assets));
   mkdirSync(statePath('logs'), { recursive: true });
 
   await admin(async (sql) => {
@@ -172,6 +221,11 @@ async function up(): Promise<EngineHandle> {
       OPERATOR_TOKEN: handle.operatorToken,
     }),
   );
+  writeJson(ENGINE_FILE, handle);
+  // The API and the worker each run the Safe Sender's startup checks against the hosted
+  // Safe Transaction Service, whose unauthenticated limit is 2 requests a second: start
+  // the worker once the API is up, so the two do not trip it together.
+  await waitFor(`${handle.url}/v1/token`, handle.authToken);
   handle.pids.push(
     launch('worker', ['src/worker.ts'], REPO_ROOT, {
       ...engineEnv,
@@ -180,7 +234,6 @@ async function up(): Promise<EngineHandle> {
     }),
   );
   writeJson(ENGINE_FILE, handle);
-  await waitFor(`${handle.url}/v1/token`, handle.authToken);
   return handle;
 }
 

@@ -102,10 +102,20 @@ For `INSUFFICIENT_FUNDS` from a plain Sender, `chainDetail` names the asset and 
 }
 ```
 
-For a Multisig Sender it also names which balance is short, its address, and how much open Proposals already hold back on it:
+For a Multisig Sender it also names which balance is short, its address, and how much open Proposals already hold back on it. This Dispatch asked a Squads vault holding about 0.029 SOL for 1 SOL, while a timed-out Proposal still held back 0.0005 SOL:
 
 ```json
-{ "asset": "USDC", "short": "40", "holder": "vault", "address": "<the vault's address>", "committed": "100" }
+{
+  "code": "INSUFFICIENT_FUNDS",
+  "message": "insufficient SOL balance",
+  "chainDetail": {
+    "asset": "SOL",
+    "short": "971500000",
+    "holder": "vault",
+    "address": "7iBjxLVqhsc65X3jSSE5WKpwJMLrAaYRbFtkuDuhKfET",
+    "committed": "500000"
+  }
+}
 ```
 
 `holder` is `vault` or `memberKey` on Solana, and `safe` or `executor` on Base. The vault or the Safe pays the payments. The engine's own key, the Squads member key or the Safe executor, pays the network fees and any Proposal rent. `committed` is the amount of that asset already held back on that balance, in the smallest unit, by Proposals in flight or timed out and still watched, by Calls waiting to be proposed, and on the proposing key by Proposal rent that stays locked until the Proposal is closed. `short` is the extra the holder needs, `committed` included.
@@ -150,6 +160,7 @@ curl -s "$DISPATCH_URL/v1/dispatch/46e3aef7-40ec-46ed-a3b9-78a24407afe8" -H "Aut
   "sender": { "name": "payouts", "address": "0x65a57ff11d4E6025922074Ba6dBe89FA8add150e" },
   "createdAt": "2026-11-01T17:27:16.940Z",
   "status": "partial",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",

@@ -228,7 +228,7 @@ The owner signs EIP-712 typed data with their own key:
 - type: `Delegate(address delegateAddress, uint256 totp)`
 - `totp`: `floor(unix_seconds / 3600)`. The signature is only valid in that hour, so send the request in the same hour.
 
-Then send it with `POST <service url>/api/v2/delegates/`. This example uses a throwaway key placeholder. It shows the shape (the typed-data signing was run offline with a generated key, and the request itself was measured against the service in the spike, but this script was not run against it as written):
+Then send it with `POST <service url>/api/v2/delegates/`. This example uses a throwaway key placeholder. The repository's flow-coverage run (`scripts/flows/multisig.ts`) registers its executor with the same typed data and the same request against the hosted service on Base Sepolia, unauthenticated, and gets `201`:
 
 ```js
 // register-delegate.mjs: run by an OWNER. Needs: npm i viem

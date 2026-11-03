@@ -163,6 +163,8 @@ curl -s "$DISPATCH_URL/v1/dispatches?status=held" -H "Authorization: Bearer $DIS
       "status": "held",
       "createdAt": "2026-11-01T12:52:25.266Z",
       "itemCount": 2,
+      "callCount": 0,
+      "heldBy": ["Large SOL payment"],
       "totals": [{ "asset": "SOL", "amount": "7502500000", "decimals": 9 }]
     }
   ],
@@ -218,6 +220,7 @@ curl -s -X POST "$DISPATCH_URL/v1/dispatch/fbd73f42-3dcb-4317-8628-3c4f7a16addb/
   "sender": { "name": "payouts", "address": "33zPSL7vhxoi6TU8DAeTJCrmcmEU7zsmhZGh7BrDjCXf" },
   "createdAt": "2026-11-01T12:53:11.676Z",
   "status": "queued",
+  "retryPolicy": false,
   "items": [
     {
       "type": "payment",
