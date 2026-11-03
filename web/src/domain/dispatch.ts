@@ -32,6 +32,14 @@ export interface DispatchSummary {
   totals: Money[];
   /** On a held row: the names of the rules holding it. */
   heldBy?: string[];
+  /** On a `failed` Managed Dispatch whose items are all `abandoned`: why, from the first item (#188). */
+  abandoned?: Abandoned;
+}
+
+export interface Abandoned {
+  code: string | null;
+  /** With `APPROVAL_TIMEOUT`: the Proposal's deadline. */
+  deadlineAt?: Date;
 }
 
 /** docs/openapi.yaml's per-item status, also a Relay Dispatch's top-level one. */
@@ -333,6 +341,37 @@ export function summaryOf(detail: DispatchDetail): DispatchSummary {
     itemCount: detail.items.length,
     callCount: detail.items.filter((item) => item.type === 'call').length,
     totals: [...totals.values()],
+    ...(status === 'failed' && abandonedOf(detail.items)),
+  };
+}
+
+/** #188: the reason every item was abandoned, the first item's; nothing when any item ended otherwise. */
+function abandonedOf(items: readonly Item[]): { abandoned?: Abandoned } {
+  const [first] = items;
+  if (!first || items.some((item) => item.status !== 'abandoned')) return {};
+  const deadlineAt = first.error?.detail?.deadlineAt;
+  return { abandoned: { code: first.error?.code ?? null, ...(deadlineAt && { deadlineAt }) } };
+}
+
+/**
+ * #188: the status a Dispatch shows. The wire reads `failed` when every item is
+ * `abandoned`, but the engine only stopped waiting: a Proposal past its deadline
+ * is still open, and a transaction may still land. So it shows as Abandoned,
+ * never in the red of a failure, with a note on what is still open.
+ */
+export function shownStatus(summary: Pick<DispatchSummary, 'status' | 'abandoned'>): {
+  status: Status;
+  note: string | null;
+} {
+  if (summary.status !== 'failed' || !summary.abandoned) {
+    return { status: summary.status, note: null };
+  }
+  return {
+    status: 'abandoned',
+    note:
+      summary.abandoned.code === 'APPROVAL_TIMEOUT'
+        ? 'Deadline passed, Proposal still open'
+        : 'The engine stopped waiting, it may still land',
   };
 }
 

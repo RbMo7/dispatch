@@ -42,7 +42,7 @@ The top-level `status` of a Managed Dispatch is one of these:
 | `failed` | Every item is final, and none is `confirmed`. |
 | `cancelled` | Withdrawn before it was claimed. Every item is `cancelled` too. |
 
-`abandoned` counts as not confirmed, so a Dispatch whose items are all `abandoned` reads `failed`. Check the items, where the difference shows. `awaiting_approval` counts as in progress, so a Dispatch waiting on Approvers reads `broadcasting`.
+`abandoned` counts as not confirmed, so a Dispatch whose items are all `abandoned` reads `failed`. Check the items, where the difference shows. Its row in [List Dispatches](./openapi.yaml#list-dispatches) also carries `abandoned`, with the first item's error `code`, and the console shows it as Abandoned, not Failed. `awaiting_approval` counts as in progress, so a Dispatch waiting on Approvers reads `broadcasting`.
 
 The engine stores only `queued`, `held`, `broadcasting` and `cancelled`. It works out `confirmed`, `partial` and `failed` from the items each time you read.
 

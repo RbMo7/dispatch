@@ -301,7 +301,7 @@ function approvalStages(
       );
     } else if (late.length > 0) {
       stages.push(
-        stage('failed', 'Approved after the deadline', {
+        stage('stopped', 'Approved after the deadline', {
           ...(p.timedOutAt && { at: clock.time(p.timedOutAt) }),
           detail: `The engine will not execute it. Execute or reject it in ${app} yourself.`,
           ...approversOf(p),
@@ -309,10 +309,11 @@ function approvalStages(
         }),
       );
     } else if (timedOut.length > 0) {
+      const deadline = p.approval?.deadline;
       stages.push(
-        stage('failed', 'Timed out', {
+        stage('stopped', 'Deadline passed', {
           at: clock.time(p.timedOutAt!),
-          detail: `Nobody decided by the deadline, so the engine will not execute it. It may still be approved and executed in ${app}: check there before sending it again.`,
+          detail: `Nobody decided by the deadline${deadline ? `, ${clock.time(deadline)},` : ','} so the engine will not execute it. The Proposal is still open in ${app}, where it may still be approved and executed.`,
           ...approversOf(p),
           links: openProposal(network, p.chainRef),
         }),
@@ -351,7 +352,13 @@ function approvalStages(
   const next = awaiting[0];
   stages.push(
     stage(
-      awaiting.length > 0 ? 'current' : ended === all.length ? 'failed' : 'done',
+      awaiting.length > 0
+        ? 'current'
+        : ended === all.length
+          ? rejected.length > 0
+            ? 'failed'
+            : 'stopped'
+          : 'done',
       `Approved, ${n(approved.length)} of ${n(all.length)} Proposals`,
       {
         ...(awaiting.length > 0 && { at: 'now' }),
@@ -565,10 +572,13 @@ function managedFlow(
       }),
     );
   }
+  // #188: every item abandoned is not a failure. The engine stopped waiting, and what it sent may still land.
+  const allAbandoned = !open && t('abandoned') === total;
+  const timedOut = allAbandoned && items[0]?.error?.code === 'APPROVAL_TIMEOUT';
   const abandoned = items.filter(
     (i) => i.status === 'abandoned' && i.error?.code !== 'APPROVAL_TIMEOUT',
   );
-  if (total > 1 && abandoned.length > 0) {
+  if (total > 1 && abandoned.length > 0 && !allAbandoned) {
     const at = first(timeline, 'abandoned')?.at;
     stages.push(
       stage('branch-failed', `Abandoned, ${n(abandoned.length)}`, {
@@ -581,45 +591,47 @@ function managedFlow(
   }
 
   const confirmedAt = last(timeline, 'confirmed')?.at;
-  const stopped = stages.some((s) => s.kind === 'failed');
+  const ended = stages.some((s) => s.kind === 'failed' || s.kind === 'stopped');
   const outcomeKind: StageKind = open
     ? sentItems > 0 && !waitingOnApprovers
       ? 'current'
       : 'todo'
     : confirmed > 0
       ? 'done'
-      : stopped
+      : ended
         ? 'todo'
-        : 'failed';
+        : allAbandoned
+          ? 'stopped'
+          : 'failed';
+  const outcomeEnded = outcomeKind === 'failed' || outcomeKind === 'stopped';
   const failure = items.find((i) => i.status === 'failed' || i.status === 'abandoned');
-  const outcomeTitle =
-    outcomeKind === 'failed'
-      ? failure?.status === 'abandoned'
-        ? 'Abandoned'
-        : expired(failure?.error ?? null)
-          ? 'Expired'
-          : 'Failed'
-      : 'Confirmed';
+  const outcomeTitle = outcomeEnded
+    ? failure?.status === 'abandoned'
+      ? 'Abandoned'
+      : expired(failure?.error ?? null)
+        ? 'Expired'
+        : 'Failed'
+    : 'Confirmed';
   stages.push(
     stage(outcomeKind, outcomeTitle, {
       ...(outcomeKind === 'current'
         ? { at: 'now' }
         : outcomeKind === 'done' && confirmedAt
           ? { at: clock.time(confirmedAt) }
-          : outcomeKind === 'failed'
+          : outcomeEnded
             ? (() => {
                 const at = last(timeline, 'failed')?.at ?? last(timeline, 'abandoned')?.at;
                 return at ? { at: clock.time(at) } : {};
               })()
             : {}),
       ...(outcomeKind === 'current' && { detail: 'Waiting for a block' }),
-      ...(outcomeKind === 'failed' &&
+      ...(outcomeEnded &&
         failure && {
           detail: unfunded.length === total ? shortfall : outcomeDetail(failure, chain, errors),
           links: errorLinks(failure.error, errors),
         }),
       ...(total > 1 &&
-        outcomeKind !== 'failed' &&
+        !outcomeEnded &&
         (confirmed > 0 || outcomeKind === 'current') && {
           count: { reached: confirmed, of: total },
         }),
@@ -650,9 +662,11 @@ function managedFlow(
   } else if (sent.length > 1 && sent.length <= LISTED_HASHES && sent.some((h) => h.failed)) {
     // A partial Dispatch: every transaction it sent, each with how it ended.
     stages.push(
-      stage(firstHash ? 'end-done' : 'end-failed', `${n(sent.length)} transaction hashes`, {
-        hashes: sent,
-      }),
+      stage(
+        firstHash ? 'end-done' : allAbandoned ? 'end-stopped' : 'end-failed',
+        `${n(sent.length)} transaction hashes`,
+        { hashes: sent },
+      ),
     );
   } else if (firstHash) {
     stages.push(
@@ -666,6 +680,8 @@ function managedFlow(
         },
       ),
     );
+  } else if (allAbandoned) {
+    stages.push(stoppedWaiting(detail, network, sent));
   } else {
     stages.push(
       stage('end-failed', 'No transaction landed', {
@@ -695,8 +711,12 @@ function managedFlow(
     line = end ? `Done in ${duration(end.getTime() - created.getTime())}` : 'Done';
   } else if (confirmed > 0) {
     line = `${n(confirmed)} of ${n(total)} confirmed`;
+  } else if (allAbandoned) {
+    const at = position(stages, (s) => s.kind === 'stopped');
+    line = timedOut ? `Deadline passed at ${at}, Proposal still open` : `Stopped waiting at ${at}`;
   } else {
-    line = `Failed at ${position(stages, (s) => s.kind === 'failed')}`;
+    // A timed-out Proposal beside a failed item stops the line at its own stage.
+    line = `Failed at ${position(stages, (s) => s.kind === 'failed' || s.kind === 'stopped')}`;
   }
   return {
     summary: line,
@@ -707,6 +727,26 @@ function managedFlow(
         : 'Ended',
     stages,
   };
+}
+
+/** #188: the end of a Dispatch whose items were all abandoned: what may still land, and where to check first. */
+function stoppedWaiting(detail: ManagedDetail, network: Network, sent: StageHash[]): Stage {
+  const [proposal] = proposals(detail.timeline, detail.items);
+  if (proposal) {
+    const app = proposalApp(proposal.chainRef);
+    return stage('end-stopped', 'Stopped waiting', {
+      detail: `The engine stopped waiting and executed nothing. Check the Proposal in ${app} before sending it again, or the payment may happen twice.`,
+      links: [
+        ...openProposal(network, proposal.chainRef),
+        { label: 'After a timeout', href: '/docs/guides/multisig#after-a-timeout' },
+      ],
+    });
+  }
+  return stage('end-stopped', 'Stopped waiting', {
+    detail:
+      'The engine stopped waiting for an answer from the chain. Check the transaction before sending it again, or the payment may happen twice.',
+    ...(sent.length > 0 && sent.length <= LISTED_HASHES && { hashes: sent }),
+  });
 }
 
 /** A finished Dispatch lists every hash it sent, up to this many; past it, the first and Items. */
@@ -897,7 +937,7 @@ function relayFlow(
   } else {
     const abandoned = status === 'abandoned';
     stages.push(
-      stage('failed', abandoned ? 'Abandoned' : 'Failed', {
+      stage(abandoned ? 'stopped' : 'failed', abandoned ? 'Abandoned' : 'Failed', {
         ...(outcome && { at: clock.time(outcome.at) }),
         detail: abandoned
           ? 'No answer from the chain before the timeout. It may still land, so check before sending it again.'
@@ -905,10 +945,11 @@ function relayFlow(
         links: errorLinks(detail.error, errorContext(detail.chain, null, [])),
       }),
     );
+    const endKind = abandoned ? 'end-stopped' : 'end-failed';
     stages.push(
       hash
-        ? stage('end-failed', 'Transaction hash', { hash, links: explorer(network, hash) })
-        : stage('end-failed', 'No transaction landed'),
+        ? stage(endKind, 'Transaction hash', { hash, links: explorer(network, hash) })
+        : stage(endKind, abandoned ? 'Stopped waiting' : 'No transaction landed'),
     );
   }
 
@@ -919,7 +960,9 @@ function relayFlow(
         ? outcome
           ? `Done in ${duration(outcome.at.getTime() - created.getTime())}`
           : 'Done'
-        : `Failed at ${position(stages, (s) => s.kind === 'failed')}`,
+        : status === 'abandoned'
+          ? `Stopped waiting at ${position(stages, (s) => s.kind === 'stopped')}`
+          : `Failed at ${position(stages, (s) => s.kind === 'failed')}`,
     elapsed: open
       ? `${duration(clock.now.getTime() - created.getTime())} so far`
       : outcome

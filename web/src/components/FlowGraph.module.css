@@ -42,6 +42,10 @@
   background: var(--danger);
 }
 
+.segment[data-segment='stopped'] {
+  background: var(--warn);
+}
+
 .segment[data-segment='cancelled'] {
   background: var(--border-strong);
 }
@@ -129,6 +133,12 @@
   color: var(--on-danger);
 }
 
+.node[data-dot='warn'] .dot {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: var(--on-accent);
+}
+
 .node[data-dot='muted'] .dot {
   border-color: var(--muted);
   background: var(--muted);
@@ -166,6 +176,10 @@
 
 .node[data-box='failed'] .box {
   border-color: var(--danger-line);
+}
+
+.node[data-box='stopped'] .box {
+  border-color: var(--warn);
 }
 
 .node[data-box='end'] .box {

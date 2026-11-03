@@ -482,6 +482,7 @@ function Pane({
         when: whenText(loaded.summary.createdAt),
         totals: loaded.summary.totals,
         status: loaded.summary.status,
+        ...(loaded.summary.abandoned && { abandoned: loaded.summary.abandoned }),
       }
     : {
         id,

@@ -583,6 +583,57 @@ describe('the flow of one Dispatch', () => {
     expect(flow.summary).toBe('2 of 3 confirmed');
   });
 
+  it('ends an abandoned Relay Dispatch as stopped waiting, not failed (#188)', () => {
+    const lost = { code: 'CHAIN_REJECTED', message: 'no receipt before the timeout' };
+    const flow = dispatchFlow(
+      load(
+        {
+          mode: 'relay',
+          chain: 'base',
+          status: 'abandoned',
+          transactionHash: H_AA,
+          error: lost,
+          createdAt: '2026-10-30T12:00:00.000Z',
+          itemCount: 1,
+          totals: [],
+        },
+        {
+          mode: 'relay',
+          status: 'abandoned',
+          transactionHash: H_AA,
+          error: lost,
+          timeline: [
+            { at: '2026-10-30T12:00:00.000Z', kind: 'created' },
+            { at: '2026-10-30T12:00:01.000Z', kind: 'claimed' },
+            {
+              at: '2026-10-30T12:00:02.000Z',
+              kind: 'written',
+              hash: H_AA,
+              items: [0],
+              replaces: null,
+            },
+            {
+              at: '2026-10-30T12:15:02.000Z',
+              kind: 'abandoned',
+              hash: H_AA,
+              items: [0],
+              error: lost,
+            },
+          ],
+        },
+      ),
+      clock('2026-10-30T13:00:00Z'),
+    );
+    expect(main(flow)).toEqual([
+      'done Received',
+      'done Claimed',
+      'done Sent',
+      'stopped Abandoned',
+      'end-stopped Transaction hash',
+    ]);
+    expect(flow.summary).toBe('Stopped waiting at stage 4 of 5');
+  });
+
   it('ends an expired Relay Dispatch with no transaction landed', () => {
     const SIG =
       '5h2kXUzWZ3nLcVJd8gVQe1tBp4Ry7mN6oAsF9wT2xKbE3uHqL8vC1dP5yR6zS4aG7jM9nB2cX3fV5gH8kJ1lQ4wE';
@@ -678,105 +729,162 @@ describe('the flow of one Dispatch', () => {
     );
   });
 
-  it('abandons a Proposal nobody decided on, and says it may still be executed', () => {
-    const chainRef = {
-      kind: 'safe',
-      safe: '0x9a07b5d93f7a0c9e4d2b1f6a8c5e3d0a2f1e2c4c',
-      safeTxHash: H_AA,
-      nonce: 12,
-    };
-    const timeout = {
-      code: 'APPROVAL_TIMEOUT',
-      message: 'Nobody decided on the Proposal by its deadline',
-      chainDetail: { deadlineAt: '2026-10-24T12:00:00.000Z' },
-    };
-    const flow = dispatchFlow(
-      load(
-        {
-          mode: 'managed',
-          chain: 'base',
-          status: 'failed',
-          createdAt: '2026-10-21T12:00:00.000Z',
-          itemCount: 1,
-          totals: [{ asset: 'USDC', decimals: 6, amount: '15000000' }],
-        },
-        {
-          mode: 'managed',
-          status: 'failed',
-          items: [
-            usdc('15000000', {
-              status: 'abandoned',
-              transactionHash: null,
-              error: timeout,
-              approval: {
-                state: 'awaiting',
-                approvals: 1,
-                threshold: 2,
-                remaining: 1,
-                approvers: [
-                  { address: '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a', decision: 'approved' },
-                  { address: '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b', decision: 'pending' },
-                ],
-                deadline: '2026-10-24T12:00:00.000Z',
-                expected: { recipients: 1, totals: [{ asset: 'USDC', amount: '15000000' }] },
-                chainRef,
-              },
-            }),
+  const SAFE_REF = {
+    kind: 'safe',
+    safe: '0x9a07b5d93f7a0c9e4d2b1f6a8c5e3d0a2f1e2c4c',
+    safeTxHash: H_AA,
+    nonce: 12,
+  };
+  const SQUADS_REF = {
+    kind: 'squads',
+    multisig: 'Gx7kP2mWqR9tVbN4cLs8YdE3fHj6UaZ1oXeK5iMvQ2rv',
+    proposal: '8xQyR1sT2uV3wX4yZ5a6B7c8D9e1F2g3H4i5J6k7L8m9',
+    transactionIndex: 4,
+  };
+  const TIMEOUT = {
+    code: 'APPROVAL_TIMEOUT',
+    message: 'Nobody decided on the Proposal by its deadline',
+    chainDetail: { deadlineAt: '2026-10-24T12:00:00.000Z' },
+  };
+
+  /** A one-Proposal Dispatch whose items ended as `outcomes` say, each in its own item. */
+  function proposalEnded(
+    chain: Chain,
+    chainRef: object,
+    outcomes: { status: string; error: object | null }[] = [
+      { status: 'abandoned', error: TIMEOUT },
+    ],
+  ): LoadedDispatch {
+    const items = outcomes.map(({ status, error }) =>
+      usdc('15000000', {
+        status,
+        transactionHash: null,
+        error,
+        approval: {
+          state: 'awaiting',
+          approvals: 1,
+          threshold: 2,
+          remaining: 1,
+          approvers: [
+            { address: '0x1f4a8b2c3d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a', decision: 'approved' },
+            { address: '0x2e5b9c3d4e0f1a8b7c6d5e4f3a2b1c0d9e8f7a6b', decision: 'pending' },
           ],
-          timeline: [
-            { at: '2026-10-21T12:00:00.000Z', kind: 'created' },
-            { at: '2026-10-21T12:00:01.000Z', kind: 'claimed' },
-            {
-              at: '2026-10-21T12:00:04.000Z',
-              kind: 'proposal_created',
-              proposalId: 'p-9',
-              chainRef,
-              items: [0],
-            },
-            {
-              at: '2026-10-24T12:00:30.000Z',
-              kind: 'abandoned',
-              hash: null,
-              items: [0],
-              error: timeout,
-            },
-            {
-              at: '2026-10-24T12:00:30.000Z',
-              kind: 'proposal_approval',
-              proposalId: 'p-9',
-              state: 'awaiting',
-              approvals: 1,
-              threshold: 2,
-            },
-            { at: '2026-10-24T12:00:30.000Z', kind: 'proposal_timed_out', proposalId: 'p-9' },
-          ],
+          deadline: '2026-10-24T12:00:00.000Z',
+          expected: { recipients: 1, totals: [{ asset: 'USDC', amount: '15000000' }] },
+          chainRef,
         },
-      ),
-      clock('2026-10-31T11:00:00Z'),
+      }),
     );
+    const indexes = items.map((_, i) => i);
+    const allAbandoned = outcomes.every((o) => o.status === 'abandoned');
+    return load(
+      {
+        mode: 'managed',
+        chain,
+        status: 'failed',
+        createdAt: '2026-10-21T12:00:00.000Z',
+        itemCount: items.length,
+        totals: [{ asset: 'USDC', decimals: 6, amount: String(15000000 * items.length) }],
+        ...(allAbandoned && {
+          abandoned: { code: 'APPROVAL_TIMEOUT', deadlineAt: '2026-10-24T12:00:00.000Z' },
+        }),
+      },
+      {
+        mode: 'managed',
+        status: 'failed',
+        items,
+        timeline: [
+          { at: '2026-10-21T12:00:00.000Z', kind: 'created' },
+          { at: '2026-10-21T12:00:01.000Z', kind: 'claimed' },
+          {
+            at: '2026-10-21T12:00:04.000Z',
+            kind: 'proposal_created',
+            proposalId: 'p-9',
+            chainRef,
+            items: indexes,
+          },
+          ...outcomes.map(({ status, error }, i) => ({
+            at: '2026-10-24T12:00:30.000Z',
+            kind: status,
+            hash: null,
+            items: [i],
+            error,
+          })),
+          {
+            at: '2026-10-24T12:00:30.000Z',
+            kind: 'proposal_approval',
+            proposalId: 'p-9',
+            state: 'awaiting',
+            approvals: 1,
+            threshold: 2,
+          },
+          { at: '2026-10-24T12:00:30.000Z', kind: 'proposal_timed_out', proposalId: 'p-9' },
+        ],
+      },
+    );
+  }
+
+  it('reads a timed-out Safe Proposal as abandoned, not failed, with its deadline (#188)', () => {
+    const flow = dispatchFlow(proposalEnded('base', SAFE_REF), clock('2026-10-31T11:00:00Z'));
     expect(main(flow)).toEqual([
       'done Submitted',
       'done Claimed',
       'done Proposed',
-      'failed Timed out',
+      'stopped Deadline passed',
       'todo Executed',
       'todo Confirmed',
-      'end-failed No transaction landed',
+      'end-stopped Stopped waiting',
     ]);
-    expect(titled(flow, 'Timed out').detail).toContain(
-      'may still be approved and executed in Safe',
+    expect(flow.summary).toBe('Deadline passed at stage 4 of 7, Proposal still open');
+    const passed = titled(flow, 'Deadline passed');
+    expect(passed.at).toBe('12:00:30');
+    expect(passed.detail).toBe(
+      'Nobody decided by the deadline, 12:00:00, so the engine will not execute it. The Proposal is still open in Safe, where it may still be approved and executed.',
     );
-    expect(titled(flow, 'Timed out').approvers?.map((a) => a.decision)).toEqual([
-      'approved',
-      'pending',
+    expect(passed.approvers?.map((a) => a.decision)).toEqual(['approved', 'pending']);
+    const open = {
+      label: 'Open nonce 12 in Safe',
+      href: `https://app.safe.global/transactions/queue?safe=base:${SAFE_REF.safe}`,
+    };
+    expect(passed.links).toEqual([open]);
+    expect(end(flow).detail).toBe(
+      'The engine stopped waiting and executed nothing. Check the Proposal in Safe before sending it again, or the payment may happen twice.',
+    );
+    expect(end(flow).links).toEqual([
+      open,
+      { label: 'After a timeout', href: '/docs/guides/multisig#after-a-timeout' },
     ]);
-    expect(titled(flow, 'Timed out').links).toEqual([
-      {
-        label: 'Open nonce 12 in Safe',
-        href: `https://app.safe.global/transactions/queue?safe=base:${chainRef.safe}`,
-      },
-    ]);
+    expect(flow.stages.some((s) => s.kind === 'failed' || s.kind === 'end-failed')).toBe(false);
     expect(branches(flow)).toEqual([]);
+  });
+
+  it('reads a timed-out Squads Proposal as abandoned, not failed, with its deadline (#188)', () => {
+    const flow = dispatchFlow(proposalEnded('solana', SQUADS_REF), clock('2026-10-31T11:00:00Z'));
+    expect(main(flow)).toContain('stopped Deadline passed');
+    expect(end(flow).kind).toBe('end-stopped');
+    expect(flow.summary).toBe('Deadline passed at stage 4 of 7, Proposal still open');
+    expect(titled(flow, 'Deadline passed').detail).toContain('deadline, 12:00:00');
+    expect(titled(flow, 'Deadline passed').detail).toContain('still open in Squads');
+    expect(end(flow).links?.[0]).toEqual({
+      label: 'Open #4 in Squads',
+      href: `https://app.squads.so/squads/${SQUADS_REF.multisig}/transactions`,
+    });
+  });
+
+  it('keeps Failed for a Dispatch that mixes abandoned with failed items', () => {
+    const flow = dispatchFlow(
+      proposalEnded('base', SAFE_REF, [
+        { status: 'abandoned', error: TIMEOUT },
+        {
+          status: 'failed',
+          error: { code: 'CHAIN_REJECTED', message: 'reverted', chainDetail: null },
+        },
+      ]),
+      clock('2026-10-31T11:00:00Z'),
+    );
+    expect(flow.summary).toBe('Failed at stage 4 of 7');
+    expect(end(flow).kind).toBe('end-failed');
+    expect(end(flow).title).toBe('No transaction landed');
   });
 
   it('names a Funding Check shortfall once, as an amount, when nothing was funded', () => {

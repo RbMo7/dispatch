@@ -3717,6 +3717,19 @@ components:
               type: array
               items: { type: string }
               description: Only on a held row. The names of the rules holding it.
+            abandoned:
+              type: object
+              additionalProperties: false
+              required: [code]
+              description: Only on a `failed` row whose items are all `abandoned`. The engine stopped waiting, and the transactions or the Proposal may still land, so check before you send it again.
+              properties:
+                code:
+                  type: [string, 'null']
+                  description: The first item's error code, such as `APPROVAL_TIMEOUT` for a Proposal nobody decided by its deadline.
+                deadlineAt:
+                  type: string
+                  format: date-time
+                  description: Only with `APPROVAL_TIMEOUT`. The Proposal's deadline.
             totals:
               type: array
               description: The sum per asset of the payment items. Call items carry no amount.

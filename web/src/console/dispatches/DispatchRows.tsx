@@ -3,10 +3,10 @@ import type { ReactNode } from 'react';
 
 import { Amount } from '../../components/Amount';
 import { Checkbox } from '../../components/Checkbox';
-import { StatusPill } from '../../components/StatusPill';
+import { DispatchStatusPill } from '../../components/StatusPill';
 import { CHAINS } from '../../domain/chains';
 import { dayKey } from '../../domain/dateRange';
-import { dispatchName, type DispatchSummary, shortId } from '../../domain/dispatch';
+import { dispatchName, type DispatchSummary, shortId, shownStatus } from '../../domain/dispatch';
 import { layoutSpring, rowEnter } from '../../motion/transitions';
 import styles from '../console.module.css';
 
@@ -110,7 +110,10 @@ export function DispatchRows<Row extends DispatchSummary>({
                   {senderOf?.(row) && `, ${senderOf(row)}`}
                 </span>
                 <span className={styles.spacer} />
-                {statusOf ? statusOf(row) : <StatusPill status={row.status} />}
+                {!statusOf && shownStatus(row).note && (
+                  <span className={styles.rowSub}>{shownStatus(row).note}</span>
+                )}
+                {statusOf ? statusOf(row) : <DispatchStatusPill summary={row} />}
               </button>
               <RowTotals row={row} />
             </motion.div>

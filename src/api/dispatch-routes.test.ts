@@ -1199,7 +1199,15 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
         committed: { sender: [], proposer: [] },
         transactionIds,
       });
-    return { store, dispatch, calls, get, propose };
+    const list = async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/dispatches',
+        headers: AUTH_HEADERS,
+      });
+      return response.json<{ dispatches: Record<string, unknown>[] }>().dispatches;
+    };
+    return { store, dispatch, calls, get, propose, list };
   }
 
   it('reports Calls not yet in a Proposal as queued, with no approval block, and the Dispatch as broadcasting', async () => {
@@ -1329,6 +1337,45 @@ describe('GET /v1/dispatch/:id for a multisig Dispatch (ADR-0054)', () => {
       error: { code: 'APPROVAL_TIMEOUT' },
       approval: { state: 'approved_after_deadline' },
     });
+  });
+
+  it('lists a Dispatch whose items all timed out as abandoned, with its deadline (#188)', async () => {
+    const { list, calls, store, propose } = await setup(1);
+    const proposal = await propose([calls[0]?.id ?? ''], 'prop');
+    await store.settleProposal(proposal.id, {
+      status: 'ABANDONED',
+      error: {
+        code: 'APPROVAL_TIMEOUT',
+        message: 'no decision',
+        chainDetail: { deadlineAt: '2026-10-24T12:00:00.000Z' },
+      },
+    });
+
+    const [row] = await list();
+
+    expect(row).toMatchObject({
+      status: 'failed',
+      abandoned: { code: 'APPROVAL_TIMEOUT', deadlineAt: '2026-10-24T12:00:00.000Z' },
+    });
+  });
+
+  it('gives no abandoned block to a Dispatch that mixes abandoned with failed items', async () => {
+    const { list, calls, store, propose } = await setup();
+    const first = await propose([calls[0]?.id ?? ''], 'prop-a');
+    const second = await propose([calls[1]?.id ?? ''], 'prop-b');
+    await store.settleProposal(first.id, {
+      status: 'ABANDONED',
+      error: { code: 'APPROVAL_TIMEOUT', message: 'no decision' },
+    });
+    await store.settleProposal(second.id, {
+      status: 'FAILED',
+      error: { code: 'APPROVAL_REJECTED', message: 'rejected' },
+    });
+
+    const [row] = await list();
+
+    expect(row?.status).toBe('failed');
+    expect(row).not.toHaveProperty('abandoned');
   });
 
   it('gives each Call the block of its own Proposal when a Dispatch has several', async () => {

@@ -6,11 +6,19 @@ import { Button } from '../../components/Button';
 import { DockedPane } from '../../components/DockedPane';
 import { FlowGraph } from '../../components/FlowGraph';
 import { MonoValue } from '../../components/MonoValue';
-import { StatusPill } from '../../components/StatusPill';
+import { DispatchStatusPill } from '../../components/StatusPill';
 import { Tabs } from '../../components/Tabs';
 import type { Money } from '../../domain/assets';
 import type { Chain } from '../../domain/chains';
-import type { BulkCallSettings, Item, ItemFilter, Mode, SenderRef } from '../../domain/dispatch';
+import {
+  type Abandoned,
+  type BulkCallSettings,
+  type Item,
+  type ItemFilter,
+  type Mode,
+  type SenderRef,
+  shownStatus,
+} from '../../domain/dispatch';
 import type { ErrorContext } from '../../domain/errors';
 import type { Flow } from '../../domain/flow';
 import type { Status } from '../../domain/status';
@@ -33,6 +41,8 @@ export interface PaneHead {
   when: string;
   totals: readonly Money[];
   status: Status;
+  /** #188: on a `failed` Dispatch whose items were all abandoned. */
+  abandoned?: Abandoned;
 }
 
 interface DispatchPaneProps {
@@ -120,7 +130,10 @@ export function DispatchPane(props: DispatchPaneProps) {
               </div>
             )}
             <div className={styles.summaryPill}>
-              <StatusPill status={head.status} />
+              <DispatchStatusPill summary={head} />
+              {shownStatus(head).note && (
+                <span className={styles.summaryNote}>{shownStatus(head).note}</span>
+              )}
             </div>
           </div>
           {props.body ?? (

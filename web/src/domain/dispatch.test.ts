@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseDetail } from '../console/api/parse';
-import { dispatchName, RELAY_DECODER, relayItem, summaryOf } from './dispatch';
+import { parseDetail, parsePage } from '../console/api/parse';
+import { dispatchName, RELAY_DECODER, relayItem, shownStatus, summaryOf } from './dispatch';
 
 const ID = '7f3a91c2-0b1e-4c55-9a7e-2d41f0c3b8e6';
 const payment = (asset: string, amount: string, decimals?: number) => ({
@@ -136,5 +136,82 @@ describe('a Dispatch named by what it carries', () => {
 
   it('names a Relay Dispatch by its mode', () => {
     expect(dispatchName({ mode: 'relay', itemCount: 1, totals: [] })).toBe('Relay transaction');
+  });
+});
+
+describe('the status the console shows for a Dispatch (#188)', () => {
+  const timeout = {
+    code: 'APPROVAL_TIMEOUT',
+    message: 'no decision',
+    chainDetail: { deadlineAt: '2026-10-24T12:00:00.000Z' },
+  };
+  const abandonedItem = { ...payment('USDC', '1', 6), status: 'abandoned', error: timeout };
+  const row = (extra: object) =>
+    parsePage({
+      dispatches: [
+        {
+          dispatchId: ID,
+          mode: 'managed',
+          chain: 'base',
+          status: 'failed',
+          createdAt: '2026-10-21T12:00:00.000Z',
+          itemCount: 1,
+          totals: [],
+          ...extra,
+        },
+      ],
+      nextCursor: null,
+    }).dispatches[0]!;
+
+  it('reads a list row whose items all timed out as Abandoned, the deadline passed and the Proposal open', () => {
+    const summary = row({
+      abandoned: { code: 'APPROVAL_TIMEOUT', deadlineAt: '2026-10-24T12:00:00.000Z' },
+    });
+    expect(summary.abandoned).toEqual({
+      code: 'APPROVAL_TIMEOUT',
+      deadlineAt: new Date('2026-10-24T12:00:00.000Z'),
+    });
+    expect(shownStatus(summary)).toEqual({
+      status: 'abandoned',
+      note: 'Deadline passed, Proposal still open',
+    });
+  });
+
+  it('reads one abandoned for another reason as Abandoned, with no deadline', () => {
+    expect(shownStatus(row({ abandoned: { code: 'CONFIRMATION_TIMEOUT' } }))).toEqual({
+      status: 'abandoned',
+      note: 'The engine stopped waiting, it may still land',
+    });
+  });
+
+  it('keeps Failed for a row with no abandoned block', () => {
+    expect(shownStatus(row({}))).toEqual({ status: 'failed', note: null });
+  });
+
+  it('derives the same from a detail whose items are all abandoned, and not from a mixed one', () => {
+    const detail = (items: object[]) =>
+      parseDetail({
+        dispatchId: ID,
+        mode: 'managed',
+        chain: 'base',
+        status: 'failed',
+        createdAt: '2026-10-21T12:00:00.000Z',
+        items,
+      });
+    expect(shownStatus(summaryOf(detail([abandonedItem, abandonedItem]))).status).toBe('abandoned');
+    expect(
+      shownStatus(
+        summaryOf(
+          detail([
+            abandonedItem,
+            {
+              ...payment('USDC', '1', 6),
+              status: 'failed',
+              error: { code: 'CHAIN_REJECTED', message: 'x' },
+            },
+          ]),
+        ),
+      ),
+    ).toEqual({ status: 'failed', note: null });
   });
 });

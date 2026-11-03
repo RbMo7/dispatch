@@ -6,16 +6,19 @@ export type StageKind =
   | 'current'
   | 'todo'
   | 'failed'
+  /** #188: the engine stopped waiting without an answer, as on an `abandoned` item. Not a failure. */
+  | 'stopped'
   | 'branch-done'
   | 'branch-failed'
   | 'end-done'
   | 'end-todo'
   | 'end-failed'
+  | 'end-stopped'
   | 'end-cancelled';
 
-export type Dot = 'check' | 'cross' | 'ring' | 'muted' | 'empty';
-export type Box = 'plain' | 'current' | 'todo' | 'failed' | 'end' | 'end-todo';
-export type Segment = 'done' | 'current' | 'todo' | 'failed' | 'cancelled';
+export type Dot = 'check' | 'cross' | 'warn' | 'ring' | 'muted' | 'empty';
+export type Box = 'plain' | 'current' | 'todo' | 'failed' | 'stopped' | 'end' | 'end-todo';
+export type Segment = 'done' | 'current' | 'todo' | 'failed' | 'stopped' | 'cancelled';
 
 interface StageLook {
   dot: Dot;
@@ -30,11 +33,13 @@ export const STAGE_LOOK = {
   current: { dot: 'ring', box: 'current', segment: 'current', reached: true, branch: false },
   todo: { dot: 'empty', box: 'todo', segment: 'todo', reached: false, branch: false },
   failed: { dot: 'cross', box: 'failed', segment: 'failed', reached: true, branch: false },
+  stopped: { dot: 'warn', box: 'stopped', segment: 'stopped', reached: true, branch: false },
   'branch-done': { dot: 'check', box: 'plain', segment: null, reached: true, branch: true },
   'branch-failed': { dot: 'cross', box: 'failed', segment: null, reached: true, branch: true },
   'end-done': { dot: 'check', box: 'end', segment: 'done', reached: true, branch: false },
   'end-todo': { dot: 'empty', box: 'end-todo', segment: 'todo', reached: false, branch: false },
   'end-failed': { dot: 'cross', box: 'end', segment: 'failed', reached: true, branch: false },
+  'end-stopped': { dot: 'warn', box: 'end', segment: 'stopped', reached: true, branch: false },
   'end-cancelled': { dot: 'muted', box: 'end', segment: 'cancelled', reached: true, branch: false },
 } as const satisfies Record<StageKind, StageLook>;
 
