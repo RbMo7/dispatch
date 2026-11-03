@@ -1793,6 +1793,53 @@ describe('GET /v1/dispatches (#110)', () => {
     });
   });
 
+  it('counts the native value a call sends toward its row, and a call with none adds nothing', async () => {
+    const { app, store } = await buildTestApp();
+    const create = (idempotencyKey: string, items: DispatchItem<'base'>[]) =>
+      store.createDispatch({ chain: 'base', idempotencyKey, items, retryPolicy: false });
+    const withValue = await create('with-value', [
+      { call: { to: '0xvault', data: '0xd0e30db0', value: '1000000000000' }, payment: null },
+    ]);
+    const withNone = await create('with-none', [
+      { call: { to: '0xvault', data: '0xd0e30db0', value: '0' }, payment: null },
+    ]);
+    const mixed = await create('mixed', [
+      {
+        call: { to: '0xa', data: '0x', value: '5' },
+        payment: { recipient: '0xa', asset: 'ETH', amount: '5' },
+      },
+      {
+        call: { to: '0xb', data: '0x', value: '0' },
+        payment: { recipient: '0xb', asset: 'USDC', amount: '7' },
+      },
+      { call: { to: '0xvault', data: '0xd0e30db0', value: '0x10' }, payment: null },
+    ]);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/dispatches',
+      headers: AUTH_HEADERS,
+    });
+
+    const rows = new Map(
+      response.json<ListBody>().dispatches.map((row) => [row.dispatchId as string, row]),
+    );
+    expect(rows.get(withValue.id)).toMatchObject({
+      itemCount: 1,
+      callCount: 1,
+      totals: [{ asset: 'ETH', decimals: 18, amount: '1000000000000' }],
+    });
+    expect(rows.get(withNone.id)).toMatchObject({ itemCount: 1, callCount: 1, totals: [] });
+    expect(rows.get(mixed.id)).toMatchObject({
+      itemCount: 3,
+      callCount: 1,
+      totals: [
+        { asset: 'ETH', decimals: 18, amount: '21' },
+        { asset: 'USDC', decimals: 6, amount: '7' },
+      ],
+    });
+  });
+
   it('pages 25 rows by default and hands back a cursor for the rest', async () => {
     const { app, store } = await buildTestApp();
     for (let i = 0; i < 26; i++) {

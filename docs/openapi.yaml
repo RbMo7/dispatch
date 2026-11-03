@@ -3719,7 +3719,7 @@ components:
               description: Only on a held row. The names of the rules holding it.
             totals:
               type: array
-              description: The sum per asset of the payment items. Call items carry no amount.
+              description: The sum per asset of what the items send. A payment counts its amount; a Base call counts the native `value` it sends; a call with no value adds nothing.
               items: { $ref: '#/components/schemas/AssetTotal' }
         - title: A Relay Dispatch row
           type: object

@@ -2,6 +2,7 @@ import type { DispatchItem } from '../domain/call.js';
 import type { Chain } from '../domain/chain.js';
 import type { Dispatch, DispatchStatus, ItemStatus } from '../domain/dispatch.js';
 import type { Hold } from '../domain/flag-rule.js';
+import { NATIVE_ASSETS } from '../domain/known-asset.js';
 import type { AssetAmount, Proposal } from '../domain/proposal.js';
 import type { RelayDispatch } from '../domain/relay-dispatch.js';
 import type { Transaction, TransactionStatus } from '../domain/transaction.js';
@@ -355,12 +356,22 @@ export function summarizeDispatch(
     itemCount: dispatch.items.length,
     callCount: dispatch.items.filter((item) => item.payment === null).length,
     totals: sumAssetAmounts([
-      dispatch.items.flatMap(({ payment }) =>
-        payment ? [{ asset: payment.asset, amount: payment.amount }] : [],
-      ),
+      dispatch.items.flatMap((item) => itemSends(dispatch.chain, item)),
     ]).map((total) => {
       const decimals = decimalsOf(dispatch.chain, total.asset);
       return decimals === undefined ? total : { ...total, decimals };
     }),
   };
+}
+
+/**
+ * What one item sends, for its row's totals: a payment's amount, or the native
+ * value a Base call carries. A payment's own Call is not counted again, and a
+ * call with no value sends nothing.
+ */
+function itemSends(chain: Chain, { call, payment }: DispatchItem): AssetAmount[] {
+  if (payment) return [{ asset: payment.asset, amount: payment.amount }];
+  if (!('value' in call)) return [];
+  const value = BigInt(call.value || '0');
+  return value > 0n ? [{ asset: NATIVE_ASSETS[chain].symbol, amount: value.toString() }] : [];
 }

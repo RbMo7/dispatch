@@ -308,14 +308,25 @@ export function relayItem(detail: RelayDetail): Item | null {
   };
 }
 
-/** The list row for a Dispatch, from its detail: `totals` sums the `payment` items the engine reports decimals for. */
+/** The native value a call item sends, when the engine named its asset and it is more than zero. */
+function callValue(item: Item): Money | null {
+  if (item.type !== 'call') return null;
+  const money = item.call.value?.money;
+  return money && BigInt(money.raw) > 0n ? money : null;
+}
+
+/**
+ * The list row for a Dispatch, from its detail: `totals` sums what its items
+ * send, each payment's amount and each call's native value, for the assets
+ * the engine reports decimals for.
+ */
 export function summaryOf(detail: DispatchDetail): DispatchSummary {
   const { id, mode, chain, status, createdAt } = detail;
   if (detail.mode === 'relay')
     return { id, mode, chain, sender: null, status, createdAt, itemCount: 1, totals: [] };
   const totals = new Map<string, Money>();
   for (const item of detail.items) {
-    const amount = itemAmount(item);
+    const amount = itemAmount(item) ?? callValue(item);
     if (!amount) continue;
     const sum = totals.get(amount.asset);
     totals.set(

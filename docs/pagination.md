@@ -38,7 +38,7 @@ curl -s "$DISPATCH_URL/v1/dispatches?limit=2" -H "Authorization: Bearer $DISPATC
 }
 ```
 
-Each row is the Dispatch without its items, plus `itemCount`, `callCount` (how many of the items are calls) and `totals`: the sum per asset of the payment items, in the asset's smallest unit, with the asset's `decimals`. Call items carry no amount, and a Relay Dispatch has none, so its `totals` is empty. A Relay row also has `transactionHash` and `error`.
+Each row is the Dispatch without its items, plus `itemCount`, `callCount` (how many of the items are calls) and `totals`: the sum per asset of what the items send, in the asset's smallest unit, with the asset's `decimals`. A payment counts its amount, and a Base call counts the native `value` it sends, so a call that deposits 0.000001 ETH adds 0.000001 ETH. A call with no value adds nothing, and a Relay Dispatch has no items, so its `totals` is empty. A Relay row also has `transactionHash` and `error`.
 
 ## Follow `nextCursor`
 
