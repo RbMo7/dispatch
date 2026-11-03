@@ -130,21 +130,6 @@ export function isShort(balance: Money, committed: Money): boolean {
 }
 
 /**
- * The one figure a Sender card leads with: the token carrying the most
- * committed work, else the first token holding anything, else the native asset.
- */
-export function headlineAsset(holding: Holding): AssetBalance | undefined {
-  const [native, ...tokens] = holding.assets;
-  const committed = [...tokens, ...(native ? [native] : [])].filter(
-    (a) => BigInt(a.committed.raw) > 0n,
-  );
-  if (committed.length > 0) {
-    return committed.reduce((a, b) => (BigInt(b.committed.raw) > BigInt(a.committed.raw) ? b : a));
-  }
-  return tokens.find((a) => a.balance.ok && BigInt(a.balance.value.raw) > 0n) ?? native;
-}
-
-/**
  * A Sender card's figures: the chain's native coin first, since it pays the
  * fees, then each token it holds or has work committed in.
  */
