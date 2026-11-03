@@ -117,6 +117,8 @@ A label is 1 to 40 characters. It changes only how the Approver is shown. Who ma
 
 In the console, the Dispatch's **Flow** tab reads like "1 of 2 approved, 1 more needed". It lists each Approver by label, or by address without one, with their decision, shows the deadline, and links to the Proposal in the Squads app or the Safe app. The **Items** and **Details** tabs show the same block for each Proposal the items sit in. The Overview's **Needs attention** counts the Proposals awaiting approval.
 
+When the deadline passes with nobody deciding, the console shows the Dispatch as **Abandoned**, not Failed, because the Proposal is still open. The Flow tab says the deadline passed, gives its time, and ends at **Stopped waiting**, with a link to the Proposal and to [After a timeout](#after-a-timeout).
+
 ## 5. Read the outcome
 
 At the threshold, after any Squads time lock, the engine executes the Proposal. The items become `broadcasting`, then `confirmed` or `failed`, with `transactionHash` set to the transaction that executed it. On Solana the engine then closes finished Proposals to get their rent back.

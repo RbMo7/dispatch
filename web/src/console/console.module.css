@@ -289,7 +289,15 @@
 }
 
 .summaryPill {
+  display: flex;
   margin-top: 10px;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.summaryNote {
+  color: var(--muted);
+  font-size: var(--text-12-5);
 }
 
 .tabBody {

@@ -18,6 +18,7 @@ import type {
 import { CHAINS, type Chain, type Network } from '../../domain/chains';
 import type { ContractPreview, KnownContract } from '../../domain/contracts';
 import type {
+  Abandoned,
   Approval,
   Approver,
   BulkCallSettings,
@@ -643,6 +644,20 @@ function summary(value: unknown, path: string, names: AssetNames): DispatchSumma
       total(value, at, chain, names),
     ).filter((t): t is Money => t !== null),
     ...(json.heldBy === undefined ? {} : { heldBy: list(json.heldBy, `${path}.heldBy`, string) }),
+    ...(json.abandoned === undefined
+      ? {}
+      : { abandoned: abandoned(json.abandoned, `${path}.abandoned`) }),
+  };
+}
+
+/** #188: why every item of a `failed` row was abandoned. */
+function abandoned(value: unknown, path: string): Abandoned {
+  const json = object(value, path);
+  return {
+    code: nullableString(json.code, `${path}.code`),
+    ...(json.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: date(json.deadlineAt, `${path}.deadlineAt`) }),
   };
 }
 

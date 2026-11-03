@@ -325,6 +325,26 @@ export async function readDispatchView(
   return null;
 }
 
+/**
+ * #188: a `failed` Dispatch whose every item is `abandoned` says so on its list
+ * row, with the first item's reason, so a list can tell "the engine stopped
+ * waiting" from "it failed" without loading each Dispatch. The status itself
+ * stays `failed` (docs/lifecycle.md).
+ */
+function abandonedView(transactions: Transaction[]) {
+  if (transactions.length === 0 || transactions.some((t) => t.status !== 'ABANDONED')) return {};
+  const error = transactions[0]?.error ?? null;
+  const detail = error?.chainDetail;
+  const deadlineAt =
+    detail && typeof detail === 'object' && 'deadlineAt' in detail ? detail.deadlineAt : undefined;
+  return {
+    abandoned: {
+      code: error?.code ?? null,
+      ...(typeof deadlineAt === 'string' && { deadlineAt }),
+    },
+  };
+}
+
 export function summarizeDispatch(
   listed: ListedDispatch,
   decimalsOf: AssetDecimals,
@@ -345,12 +365,15 @@ export function summarizeDispatch(
     };
   }
   const { dispatch } = listed;
+  const current = listed.transactions.filter(isCurrentVersion);
+  const status = deriveDispatchStatus(dispatch, current);
   return {
     dispatchId: dispatch.id,
     mode: 'managed' as const,
     chain: dispatch.chain,
     ...senderView(dispatch, nameOf),
-    status: deriveDispatchStatus(dispatch, listed.transactions.filter(isCurrentVersion)),
+    status,
+    ...(status === 'failed' && abandonedView(current)),
     createdAt: dispatch.createdAt,
     itemCount: dispatch.items.length,
     callCount: dispatch.items.filter((item) => item.payment === null).length,

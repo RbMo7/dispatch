@@ -1,4 +1,4 @@
-import { Check, X } from '@phosphor-icons/react';
+import { Check, ExclamationMark, X } from '@phosphor-icons/react';
 
 import type { ItemFilter } from '../domain/dispatch';
 import {
@@ -19,6 +19,7 @@ import { StackedBar } from './StackedBar';
 const SPOKEN: Record<Dot, string> = {
   check: 'Done',
   cross: 'Failed',
+  warn: 'Stopped waiting',
   ring: 'In progress',
   muted: 'Ended',
   empty: 'Not reached yet',
@@ -81,6 +82,7 @@ function StageNode({
       <span className={styles.dot}>
         {look.dot === 'check' && <Check size={11} weight="bold" aria-hidden="true" />}
         {look.dot === 'cross' && <X size={10} weight="bold" aria-hidden="true" />}
+        {look.dot === 'warn' && <ExclamationMark size={11} weight="bold" aria-hidden="true" />}
         {look.dot === 'ring' && <span className={styles.ring} />}
         <span className="visually-hidden">{SPOKEN[look.dot]}: </span>
       </span>
