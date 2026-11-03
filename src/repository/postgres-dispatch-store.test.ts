@@ -94,6 +94,28 @@ describe('PostgresDispatchStore (real Postgres)', () => {
       expect(await store.getDispatch(dispatch.id)).toEqual(dispatch);
     });
 
+    it("stamps creation times from the engine's clock, which stamps every later event", async () => {
+      // A database clock even a fraction of a millisecond behind Node's put a row's creation
+      // before a time Node read earlier, so time filters and timelines came out of order.
+      for (let i = 0; i < 25; i++) {
+        const before = new Date();
+        const dispatch = await store.createDispatch({
+          chain: 'solana',
+          idempotencyKey: randomUUID(),
+          items: [solanaItem],
+          retryPolicy: false,
+        });
+        const relay = await store.createRelayDispatch({
+          chain: 'solana',
+          idempotencyKey: randomUUID(),
+          signedTransaction: 'signed',
+        });
+
+        expect(dispatch.createdAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+        expect(relay.createdAt.getTime()).toBeGreaterThanOrEqual(dispatch.createdAt.getTime());
+      }
+    });
+
     it('is idempotent via the real unique index on idempotency_key (ADR-0021)', async () => {
       const key = randomUUID();
       const first = await store.createDispatch({

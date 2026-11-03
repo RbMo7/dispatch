@@ -29,6 +29,14 @@ import type {
 import type { Fix } from '../setup/check.js';
 import type { SignerPins } from '../signer/client.js';
 
+/**
+ * The store stamps every event it records (claimed, sent, confirmed, resolved…) with the
+ * engine's clock, so a row's creation time comes from the same clock: a database `now()`
+ * default can sit a millisecond or more away from it and order a timeline or a time filter
+ * wrongly. The SQL default stays for rows written outside the engine.
+ */
+const engineClock = () => new Date();
+
 export const dispatches = pgTable(
   'dispatches',
   {
@@ -46,7 +54,10 @@ export const dispatches = pgTable(
     firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }),
     /** ADR-0056: when an operator cancelled it, before any claim. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
     /**
      * ADR-0060: the Sender that pays, its identity. Null only for a row stored
      * without one (from before named Senders, or a caller that named none): its
@@ -167,8 +178,14 @@ export const proposals = pgTable(
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     /** `pending` until a finished Proposal's accounts are closed (#88), then `closed`; null when never asked. */
     closeState: text('close_state'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    nextCheckAt: timestamp('next_check_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
+    nextCheckAt: timestamp('next_check_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
     checkFailures: integer('check_failures').notNull().default(0),
     proposeSignedBytes: text('propose_signed_bytes'),
     proposeHash: text('propose_hash'),
@@ -191,7 +208,10 @@ export const attempts = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => transactions.id),
-    broadcastAt: timestamp('broadcast_at', { withTimezone: true }).notNull().defaultNow(),
+    broadcastAt: timestamp('broadcast_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
     error: jsonb('error').$type<DispatchError | null>(),
   },
   (table) => [index('attempts_transaction_id_idx').on(table.transactionId)],
@@ -217,7 +237,10 @@ export const nonceHistory = pgTable(
     senderAddress: text('sender_address').notNull(),
     nonce: integer('nonce').notNull(),
     hash: text('hash').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
   },
   (table) => [
     uniqueIndex('nonce_history_chain_sender_nonce_idx').on(
@@ -235,7 +258,10 @@ export const senderForeignNonces = pgTable(
     chain: text('chain').notNull(),
     senderAddress: text('sender_address').notNull(),
     nonce: integer('nonce').notNull(),
-    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
   },
   (table) => [
     primaryKey({ columns: [table.chain, table.senderAddress, table.nonce] }),
@@ -253,7 +279,10 @@ export const relayDispatches = pgTable(
     signedTransaction: text('signed_transaction').notNull(),
     status: text('status').notNull().default('queued'),
     transactionId: uuid('transaction_id').references(() => transactions.id),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
     /** #20: when a worker last claimed this row. */
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
     /** #169: when a worker first claimed this row. */
@@ -291,7 +320,10 @@ export const operatorActions = pgTable(
 export const flagRules = pgTable('flag_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
   currentVersion: integer('current_version').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$defaultFn(engineClock),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
 });
 
@@ -309,7 +341,10 @@ export const flagRuleVersions = pgTable(
     senderAddress: text('sender_address'),
     enabled: boolean('enabled').notNull(),
     definition: jsonb('definition').notNull().$type<FlagRuleDefinitionJson>(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
   },
   (table) => [primaryKey({ columns: [table.ruleId, table.version] })],
 );
@@ -322,7 +357,10 @@ export const dispatchHolds = pgTable('dispatch_holds', {
   matched: jsonb('matched')
     .notNull()
     .$type<{ ruleId: string; ruleVersion: number; items: number[] }[]>(),
-  heldAt: timestamp('held_at', { withTimezone: true }).notNull().defaultNow(),
+  heldAt: timestamp('held_at', { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$defaultFn(engineClock),
   releasedAt: timestamp('released_at', { withTimezone: true }),
   releaseReason: text('release_reason'),
 });
@@ -375,7 +413,10 @@ export const knownAssets = pgTable(
     kind: text('kind').notNull(),
     source: text('source').notNull(),
     addedBy: text('added_by'),
-    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+    addedAt: timestamp('added_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$defaultFn(engineClock),
     enabled: boolean('enabled').notNull(),
   },
   (table) => [

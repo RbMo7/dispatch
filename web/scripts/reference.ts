@@ -1,4 +1,5 @@
 import type { Element, ElementContent, Properties, Root } from 'hast';
+import { toHtml } from 'hast-util-to-html';
 
 import type { DocHeading, HttpMethod } from '../src/docs/manifest.ts';
 import {
@@ -9,6 +10,7 @@ import {
   type ApiTag,
   type Json,
   SAMPLE_LANGUAGES,
+  type Scenario,
   type Schema,
   schemaName,
 } from './openapi.ts';
@@ -41,6 +43,16 @@ function el(tagName: string, properties: Properties, children: ElementContent[])
 
 function text(value: string): ElementContent {
   return { type: 'text', value };
+}
+
+/**
+ * Markup kept as raw text the HTML parser does not build into elements, inside a script block that
+ * never runs; `Article` builds it into the document when it is first shown.
+ */
+function lazy(content: ElementContent[]): Element {
+  const html = toHtml({ type: 'root', children: content });
+  if (/<\/script/i.test(html)) throw new Error('lazy markup cannot contain a closing script tag');
+  return el('script', { type: 'text/html', dataLazy: true }, [text(html)]);
 }
 
 function code(value: string): Element {
@@ -308,47 +320,92 @@ function samples(op: ApiOperation, render: Renderers, nextId: () => string): Ele
       ),
     ),
   ]);
+  // A schema belongs to a status, not to an example: several examples share one, and it is by far
+  // the largest block on the page, so each status's schema is rendered once and shown alongside
+  // whichever of its examples is picked. Only the first example is built with the page; the page
+  // builds the others when they are picked.
+  const statuses = [...new Set(op.scenarios.map((scenario) => scenario.status))];
+  const forExample = (scenario: Scenario, content: ElementContent[]) =>
+    el(
+      'div',
+      {
+        dataExample: scenario.name,
+        dataOp: op.anchor,
+        dataStatus: scenario.status,
+        hidden: scenario !== first,
+      },
+      scenario === first ? content : [lazy(content)],
+    );
   return [
     el('div', { className: ['sample'] }, [
       el('div', { className: ['sample-head'] }, [
         el('p', { className: ['sample-title'] }, [text('Request example')]),
         ...(op.scenarios.length > 1 ? [menu] : []),
       ]),
-      ...op.scenarios.map((scenario) => {
-        const response = op.responses.find((r) => r.status === scenario.status);
-        const schema = response?.schema;
-        return el(
-          'div',
-          { dataExample: scenario.name, dataOp: op.anchor, hidden: scenario !== first },
-          [
-            el('p', { className: ['sample-route'] }, [
-              el('span', { className: ['method'], dataMethod: op.method }, [text(op.method)]),
-              text(' '),
-              code(scenario.url),
-            ]),
-            render.tabs(
-              SAMPLE_LANGUAGES.map(({ title, lang, sample }) =>
-                render.code(sample(op, scenario), lang, title),
-              ),
-              nextId(),
+      ...op.scenarios.map((scenario) =>
+        forExample(scenario, [
+          el('p', { className: ['sample-route'] }, [
+            el('span', { className: ['method'], dataMethod: op.method }, [text(op.method)]),
+            text(' '),
+            code(scenario.url),
+          ]),
+          render.tabs(
+            SAMPLE_LANGUAGES.map(({ title, lang, sample }) =>
+              render.code(sample(op, scenario), lang, title),
             ),
-            el('p', { className: ['sample-title'] }, [text('Response')]),
-            render.tabs(
-              [
-                el('div', { dataTitle: 'Example response' }, [
+            nextId(),
+          ),
+        ]),
+      ),
+      el('p', { className: ['sample-title'] }, [text('Response')]),
+      ownTabs(
+        render.tabs(
+          [
+            el(
+              'div',
+              { dataTitle: 'Example response' },
+              op.scenarios.map((scenario) =>
+                forExample(scenario, [
                   el('p', { className: ['sample-status'] }, [text(`Status: ${scenario.status}`)]),
                   render.code(JSON.stringify(scenario.response, null, 2), 'json'),
                 ]),
-                el('div', { dataTitle: 'Response schema' }, [
-                  el('p', { className: ['sample-status'] }, [text(`Status: ${scenario.status}`)]),
-                  render.code(JSON.stringify(withoutDescriptions(schema ?? {}), null, 2), 'json'),
-                ]),
-              ],
-              nextId(),
+              ),
+            ),
+            el(
+              'div',
+              { dataTitle: 'Response schema' },
+              statuses.map((status) => {
+                const schema = op.responses.find((r) => r.status === status)?.schema;
+                return el(
+                  'div',
+                  { dataSchemaOp: op.anchor, dataStatus: status, hidden: status !== first.status },
+                  [
+                    el('p', { className: ['sample-status'] }, [text(`Status: ${status}`)]),
+                    // Highlighted, a schema is thousands of elements, in a tab most readers never
+                    // open; the page builds it when the tab is first shown.
+                    lazy([
+                      render.code(
+                        JSON.stringify(withoutDescriptions(schema ?? {}), null, 2),
+                        'json',
+                      ),
+                    ]),
+                  ],
+                );
+              }),
             ),
           ],
-        );
-      }),
+          nextId(),
+        ),
+      ),
     ]),
   ];
+}
+
+/**
+ * Picking a language switches every sample on the page; the response tabs belong to one
+ * operation, so opening a schema builds only that operation's.
+ */
+function ownTabs(group: Element): Element {
+  group.properties = { ...group.properties, dataOwnTabs: true };
+  return group;
 }

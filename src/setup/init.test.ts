@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { configFrom, type Env } from '../config.js';
 import { parseSendersConfig } from '../senders-config.js';
@@ -59,9 +60,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function harness(env: Env = {}, probe: Probe = probeWithout()) {
+function harness(env: Env = {}, probe: Probe = probeWithout(), from?: string) {
   const root = mkdtempSync(path.join(tmpdir(), 'dispatch-init-'));
   roots.push(root);
+  if (from) cpSync(from, root, { recursive: true });
   let output = '';
   const tokens: string[] = [];
   const doctorRuns: Env[] = [];
@@ -119,6 +121,25 @@ const EXISTING_ENV = [
   'SOLANA_KNOWN_TOKENS=USDC:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU:6',
   '',
 ].join('\n');
+
+/**
+ * Each key init makes runs the Signer CLI in a child process and derives its keystore key with
+ * scrypt at the production cost, the heaviest work in the suite. The tests that start from a
+ * set-up Solana chain copy one made once here, rather than each making its own.
+ */
+const SET_UP_PASSPHRASE = `pass-${randomBytes(12).toString('hex')}`;
+let setUpSolana: string;
+beforeAll(async () => {
+  const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: SET_UP_PASSPHRASE });
+  roots.splice(roots.indexOf(t.root), 1);
+  const code = await init(
+    ['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'],
+    t.io,
+  );
+  if (code !== INIT_EXIT.ok) throw new Error(`setting up Solana failed:\n${t.output()}`);
+  setUpSolana = t.root;
+});
+afterAll(() => rmSync(setUpSolana, { recursive: true, force: true }));
 
 describe('pnpm dispatch init --yes', () => {
   it('writes .env and the Signer config, keeps existing lines, backs up, and never prints a secret', async () => {
@@ -183,9 +204,7 @@ describe('pnpm dispatch init --yes', () => {
   });
 
   it('adds a second chain on a re-run, keeping the first chain, its key and every token', async () => {
-    const passphrase = `pass-${randomBytes(12).toString('hex')}`;
-    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: passphrase });
-    await init(['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'], t.io);
+    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: SET_UP_PASSPHRASE }, undefined, setUpSolana);
     const first = t.env();
     const solanaKey = first.SOLANA_SENDER_ADDRESS!;
 
@@ -236,9 +255,7 @@ describe('pnpm dispatch init --yes', () => {
   });
 
   it('adds a named Sender to a set-up chain without touching the first, then a third as the default', async () => {
-    const passphrase = `pass-${randomBytes(12).toString('hex')}`;
-    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: passphrase });
-    await init(['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'], t.io);
+    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: SET_UP_PASSPHRASE }, undefined, setUpSolana);
     expect(existsSync(path.join(t.root, 'senders.json'))).toBe(false);
     expect(existsSync(path.join(t.root, 'config/senders.json'))).toBe(false);
     const first = t.env();
@@ -339,8 +356,7 @@ describe('pnpm dispatch init --yes', () => {
   });
 
   it('stops before writing when a new key would not share the keystore passphrase', async () => {
-    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: 'the first passphrase' });
-    await init(['--yes', '--chains', 'solana', '--solana-signer', 'local', '--no-start'], t.io);
+    const t = harness({ SIGNER_KEYSTORE_PASSPHRASE: SET_UP_PASSPHRASE }, undefined, setUpSolana);
     const before = t.file('.env');
 
     t.io.env = { ...process.env, SIGNER_KEYSTORE_PASSPHRASE: 'a different passphrase' };
