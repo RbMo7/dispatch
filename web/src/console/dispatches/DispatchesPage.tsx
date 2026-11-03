@@ -11,6 +11,7 @@ import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { proposalApprovals } from '../../domain/approval';
 import { CHAINS, type Chain, proposalApp, proposalUrl, txLink } from '../../domain/chains';
+import { consoleClock } from '../../domain/clockTime';
 import {
   dispatchName,
   type DispatchSummary,
@@ -62,12 +63,6 @@ import {
 
 const count = new Intl.NumberFormat('en-US');
 const rowsText = (n: number) => `${count.format(n)} ${n === 1 ? 'row' : 'rows'}`;
-const clock = new Intl.DateTimeFormat('en-US', {
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hourCycle: 'h23',
-});
 const minute = new Intl.DateTimeFormat('en-US', {
   hour: '2-digit',
   minute: '2-digit',
@@ -470,7 +465,7 @@ function Pane({
   const network =
     (loaded && senders.data?.find((s) => s.chain === loaded.summary.chain)?.network) ?? 'unknown';
   const flow = useMemo(
-    () => (loaded ? dispatchFlow(loaded, { now, time: (at) => clock.format(at) }, network) : null),
+    () => (loaded ? dispatchFlow(loaded, consoleClock(now), network) : null),
     [loaded, now, network],
   );
 
