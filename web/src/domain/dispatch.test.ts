@@ -56,6 +56,54 @@ describe('a Dispatch row from its detail alone', () => {
     });
   });
 
+  describe('a call that sends native value', () => {
+    const ETH = { symbol: 'ETH', name: 'Ether', decimals: 18 };
+    const call = (value?: string) => ({
+      type: 'call',
+      to: '0xVault',
+      call: {
+        target: '0xVault',
+        decoded: true,
+        function: 'deposit',
+        ...(value === undefined ? {} : { value: { amount: value, asset: ETH } }),
+      },
+      status: 'queued',
+      transactionHash: null,
+      error: null,
+    });
+    const base = (items: object[]) =>
+      summaryOf(
+        parseDetail({
+          dispatchId: ID,
+          mode: 'managed',
+          chain: 'base',
+          sender: null,
+          createdAt: '2026-10-31T10:00:00.000Z',
+          status: 'queued',
+          items,
+        }),
+      );
+
+    it('counts its value toward the row, and the name still says it is a call', () => {
+      const row = base([call('1000000000000')]);
+      expect(row.totals).toEqual([
+        { asset: 'ETH', name: 'Ether', raw: '1000000000000', decimals: 18 },
+      ]);
+      expect(dispatchName(row)).toBe('1 call');
+    });
+
+    it('adds nothing for a call with no value, or a value of zero', () => {
+      expect(base([call(), call('0')]).totals).toEqual([]);
+    });
+
+    it('sums it with a payment of the same asset', () => {
+      expect(base([payment('ETH', '5', 18), payment('USDC', '7', 6), call('16')]).totals).toEqual([
+        { asset: 'ETH', name: 'ETH', raw: '21', decimals: 18 },
+        { asset: 'USDC', name: 'USDC', raw: '7', decimals: 6 },
+      ]);
+    });
+  });
+
   it('reads a Relay Dispatch as one item with no totals', () => {
     const detail = parseDetail({
       dispatchId: ID,
