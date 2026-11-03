@@ -13,7 +13,7 @@ import { share } from '../../domain/assets';
 import { CHAINS } from '../../domain/chains';
 import { dispatchName, type DispatchSummary, shortId } from '../../domain/dispatch';
 import { duration } from '../../domain/dispatchFlow';
-import { free, headlineAsset, isShort, payer, senderKey } from '../../domain/sender';
+import { free, isShort, senderKey } from '../../domain/sender';
 import { AREA_LABEL, type Setup } from '../../domain/setup';
 import { describeFailure } from '../api/client';
 import { RowTotals } from '../dispatches/DispatchRows';
@@ -21,7 +21,7 @@ import styles from '../console.module.css';
 import { useHeld } from '../held/heldData';
 import { nextDelay, SENDERS_MS, usePoll } from '../live';
 import { Link, type Page, PAGES } from '../router';
-import { useSenders } from '../senderData';
+import { senderCard, useSenders } from '../senderData';
 import { useApi, useOperator } from '../session';
 import { useSetup } from '../setup/setupData';
 import { PageBar } from '../Shell';
@@ -248,6 +248,10 @@ function Chart({ current, previous }: { current: number[]; previous: number[] })
   );
 }
 
+/**
+ * Each Sender as the sidebar card shows it (`senderCard`): the native coin
+ * first, as it pays the fees, then each token it holds or has work in.
+ */
 function SendersCard() {
   const { data, error } = useSenders();
   return (
@@ -257,43 +261,60 @@ function SendersCard() {
       ) : data.length === 0 ? (
         <p className={styles.cardNote}>No chain is enabled.</p>
       ) : (
-        <div className={styles.senderRows}>
+        <ul className={styles.senderRows}>
           {data.map((sender) => {
-            const holding = payer(sender);
-            const headline = holding && headlineAsset(holding);
-            if (!headline) return null;
-            const balance = headline.balance;
-            const short = balance.ok && isShort(balance.value, headline.committed);
+            const card = senderCard(sender);
+            if (!card) return null;
+            const { balance, committed, tokens = [] } = card;
+            const short = !('error' in balance) && isShort(balance, committed);
             return (
-              <div key={senderKey(sender)}>
+              <li key={senderKey(sender)}>
                 <div className={styles.senderRowLine}>
                   <ChainDot chain={sender.chain}>{sender.name}</ChainDot>
-                  {balance.ok ? (
-                    <Amount {...balance.value} />
-                  ) : (
+                  {'error' in balance ? (
                     <span className={styles.fieldError}>{balance.error}</span>
+                  ) : (
+                    <Amount {...balance} />
                   )}
                 </div>
-                {balance.ok && (
+                {!('error' in balance) && (
                   <>
                     <div className={styles.senderBar}>
-                      <StackedBar
-                        committed={share(headline.committed, balance.value)}
-                        low={short}
-                      />
+                      <StackedBar committed={share(committed, balance)} low={short} />
                     </div>
                     <div className={styles.help}>
-                      <Amount {...headline.committed} variant="plain" /> committed,{' '}
+                      <Amount {...committed} variant="plain" /> committed,{' '}
                       <span className={short ? styles.short : undefined}>
-                        <Amount {...free(balance.value, headline.committed)} variant="plain" /> free
+                        <Amount {...free(balance, committed)} variant="plain" /> free
                       </span>
                     </div>
                   </>
                 )}
-              </div>
+                {tokens.length > 0 && (
+                  <ul className={styles.senderTokens}>
+                    {tokens.map((token) =>
+                      'error' in token ? (
+                        <li key={token.asset}>
+                          <span>{token.asset}</span>
+                          <span className={styles.fieldError}>Unavailable</span>
+                        </li>
+                      ) : (
+                        <li key={token.balance.asset}>
+                          <Amount {...token.balance} variant="plain" unit />
+                          {BigInt(token.committed.raw) > 0n && (
+                            <span>
+                              <Amount {...token.committed} variant="plain" /> committed
+                            </span>
+                          )}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                )}
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
     </Card>
   );

@@ -24,7 +24,7 @@ There is no separate console password and there are no user accounts. Anyone hol
 
 ## The pages
 
-**Overview.** Dispatches in flight, with a breakdown, and Dispatches created over the last hour, day or week against the period before. Each Sender's balance, with how much is committed. What needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, abandoned items, which may still land, any failing setup check, and, in an operator session, how many requests the engine refused in the last 24 hours. The most recent Dispatches.
+**Overview.** Dispatches in flight, with a breakdown, and Dispatches created over the last hour, day or week against the period before. Each Sender's balance, the same as its sidebar card: the native coin first, as it pays the fees, with how much of it is committed and free, then each token the Sender holds or has work committed in. What needs you: the oldest unclaimed Dispatch, Proposals awaiting approval, abandoned items, which may still land, any failing setup check, and, in an operator session, how many requests the engine refused in the last 24 hours. The most recent Dispatches.
 
 **Dispatches.** Every Dispatch, newest first, grouped by day. Filter by date range (today, 7 days, 30 days, or a custom range), chain, status and mode, and by Sender when a chain has more than one. On a chain with more than one Sender, each row names its Sender. Type an id, or the start of one, and press Enter to open it. Each row is named by what the Dispatch carries, such as "3 payments", "2 calls" or "1 payment, 1 call", and shows the status and every asset's total, so a Dispatch paying in two assets shows both. The URL holds the selection, the tab and the filters, so a link opens the same view.
 
